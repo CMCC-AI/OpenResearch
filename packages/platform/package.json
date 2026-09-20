@@ -1,0 +1,25 @@
+{
+  "name": "@openresearch/platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.20"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "migrate": "node src/admin.mjs migrate",
+    "admin": "node src/admin.mjs",
+    "runner": "node src/runner.mjs",
+    "test": "node --test test/*.test.mjs",
+    "format:check": "prettier --check 'src/*.mjs' 'test/*.mjs' 'public/*' package.json compose*.yaml",
+    "test:integration": "node --test test/integration.mjs"
+  },
+  "dependencies": {
+    "pg": "8.16.3",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "prettier": "3.6.2"
+  }
+}

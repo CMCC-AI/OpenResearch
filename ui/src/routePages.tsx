@@ -1,6 +1,7 @@
 import { setScopedQueryData } from "./queries/client";
 import { isCancelledError, useQuery } from "@tanstack/react-query";
 import { listProjectsQuery, getUiStateQuery } from "./queries/projects";
+import { isCloudWorkspace } from "./product/CloudWorkspace";
 import { useRouteContext, Link, useNavigate, useSearch, type ErrorComponentProps } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
@@ -77,7 +78,7 @@ export function ProjectsPage() {
   const state = stateQuery.data;
   const error = projectsQuery.error ?? stateQuery.error;
   const retry = () => { void projectsQuery.refetch(); void stateQuery.refetch(); };
-  const { status } = useUpdateStatus(runtime.kind === "local");
+  const { status } = useUpdateStatus(runtime.kind === "local" && !isCloudWorkspace());
   useEffect(() => {
     document.title = "OpenResearch";
     if (!state) return;
@@ -91,10 +92,10 @@ export function ProjectsPage() {
   return (
     <PlatformFrame title="AI 原生科研工作台">
     <div className="app flex flex-col flex-1 min-h-0">
-      {runtime.kind === "local" && <><OfflineBanner /><UpdateBanner status={status} /></>}
+      {runtime.kind === "local" && !isCloudWorkspace() && <><OfflineBanner /><UpdateBanner status={status} /></>}
       {error && (!projects || !state) ? <RouteFailure error={error} reset={retry} />
         : !projects || !state ? <RoutePending />
-          : projects.length === 0 && !state.onboardingCompleted ? (
+          : projects.length === 0 && !state.onboardingCompleted && !isCloudWorkspace() ? (
             <Onboarding
               remote={runtime.kind === "ssh"}
               preferredAgent={state.preferredAgent}

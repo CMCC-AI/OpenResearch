@@ -1,0 +1,25 @@
+# Run this separately per workspace, with a UNIQUE Compose project name.
+# Supply a credential file owned/readable by container UID 1000, mode 0600.
+services:
+  executor:
+    build:
+      context: ../..
+      dockerfile: packages/platform/Dockerfile.executor
+    environment:
+      PLATFORM_ORIGIN: ${PLATFORM_ORIGIN:?Set HTTPS platform origin}
+      RUNNER_TOKEN_FILE: /run/secrets/runner_token
+    secrets: [runner_token]
+    volumes: [executor_home:/home/node]
+    init: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 512
+    mem_limit: 8g
+    cpus: 4
+    restart: unless-stopped
+    # Do not publish 4791, mount docker.sock, or share a home volume across workspaces.
+secrets:
+  runner_token:
+    file: ${RUNNER_TOKEN_FILE:?Set a private credential file}
+volumes:
+  executor_home:

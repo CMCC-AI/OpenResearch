@@ -1,0 +1,22 @@
+FROM rust:1.93-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY src ./src
+COPY ui/dist ./ui/dist
+COPY agent-skills ./agent-skills
+COPY demo ./demo
+COPY SYSTEM_PROMPT.md SKILL.md ./
+RUN cargo build --release --locked
+
+FROM node:22-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client python3 ca-certificates curl && rm -rf /var/lib/apt/lists/*
+WORKDIR /app/platform
+COPY packages/platform/package.json packages/platform/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts
+COPY packages/platform/src ./src
+COPY --from=build /src/target/release/orx /usr/local/bin/orx
+COPY LICENSE /usr/share/doc/openresearch/LICENSE
+RUN mkdir -p /home/node/research /home/node/.runner-state && chown -R node:node /home/node
+USER node
+ENV ORX_DATA_DIR=/home/node/research/state RUNNER_STATE_DIR=/home/node/.runner-state RUNNER_ISOLATION_ACK=dedicated-workspace ORX_UPSTREAM=http://127.0.0.1:4791
+CMD ["node", "src/executor-entry.mjs"]

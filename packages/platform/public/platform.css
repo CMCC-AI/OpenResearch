@@ -1,0 +1,290 @@
+:root {
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: #18352f;
+  background: #f6f8f6;
+  font-synthesis: none;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+header {
+  height: 86px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6%;
+  border-bottom: 1px solid #dde5df;
+  background: #fff;
+}
+a {
+  color: #256450;
+}
+button,
+a,
+input,
+select {
+  font: inherit;
+}
+button {
+  cursor: pointer;
+  border: 1px solid #cad7ce;
+  border-radius: 8px;
+  padding: 10px 16px;
+  background: white;
+  color: #204e3e;
+}
+button:hover {
+  background: #e8f0e9;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+button.primary {
+  background: #256450;
+  color: white;
+  border-color: #256450;
+}
+button.danger {
+  color: #a02d2d;
+}
+input,
+select {
+  padding: 12px;
+  border: 1px solid #cbd7ce;
+  border-radius: 8px;
+  background: white;
+  min-width: 0;
+}
+input:focus,
+select:focus,
+button:focus-visible {
+  outline: 2px solid #4e946d;
+  outline-offset: 2px;
+}
+label {
+  display: grid;
+  gap: 8px;
+  font-size: 14px;
+}
+.brand {
+  text-decoration: none;
+  font-size: 22px;
+  font-weight: 650;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.brand span {
+  color: #4c7858;
+  font-size: 32px;
+}
+.brand small {
+  font-size: 10px;
+  letter-spacing: 2px;
+  border-left: 1px solid #ddd;
+  padding-left: 16px;
+}
+main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 56px 28px 90px;
+}
+h1 {
+  font-size: 40px;
+  letter-spacing: -1.5px;
+  margin: 14px 0;
+}
+h2 {
+  font-size: 23px;
+  letter-spacing: -0.5px;
+}
+p {
+  color: #64756a;
+  line-height: 1.8;
+}
+.eyebrow {
+  font-size: 12px;
+  letter-spacing: 2px;
+  color: #57815f;
+}
+.hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 30px;
+}
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 22px;
+  margin-top: 32px;
+}
+.card {
+  border: 1px solid #dce5dd;
+  border-radius: 16px;
+  background: white;
+  padding: 26px;
+  box-shadow: 0 4px 18px #203b2304;
+}
+.card h2 {
+  margin: 16px 0 8px;
+  overflow-wrap: anywhere;
+}
+.badge {
+  font-size: 12px;
+  border-radius: 30px;
+  background: #edf3ec;
+  padding: 5px 10px;
+  display: inline-block;
+}
+.offline {
+  background: #f6efe4;
+  color: #8d6a25;
+}
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 24px;
+}
+.auth {
+  max-width: 460px;
+  margin: 25px auto;
+}
+.auth form,
+form.stack {
+  display: grid;
+  gap: 18px;
+}
+.auth h1 {
+  font-size: 30px;
+}
+.empty {
+  padding: 60px;
+  text-align: center;
+  border: 1px dashed #ccd9ce;
+  border-radius: 16px;
+  margin-top: 30px;
+}
+.muted {
+  font-size: 13px;
+  color: #7a867d;
+}
+dialog {
+  border: 1px solid #ccd7ce;
+  border-radius: 16px;
+  width: min(720px, 94vw);
+  padding: 30px;
+  max-height: 85vh;
+}
+dialog::backdrop {
+  background: #132b2050;
+  backdrop-filter: blur(3px);
+}
+.close {
+  position: absolute;
+  right: 16px;
+  top: 12px;
+  border: 0;
+  font-size: 24px;
+  background: transparent;
+}
+#notice {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #153f30;
+  color: #fff;
+  padding: 12px 20px;
+  border-radius: 9px;
+  max-width: 90vw;
+  display: none;
+}
+#notice:empty {
+  display: none;
+}
+#notice:not(:empty) {
+  display: block;
+}
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: #edf3ee;
+  border-radius: 8px;
+  padding: 16px;
+  font-size: 12px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+td,
+th {
+  text-align: left;
+  border-bottom: 1px solid #e2e8e2;
+  padding: 12px 6px;
+  overflow-wrap: anywhere;
+}
+.wide {
+  width: 100%;
+}
+.secret {
+  border: 1px solid #c69238;
+  background: #fff9ed;
+  padding: 16px;
+  border-radius: 10px;
+}
+.section {
+  margin-top: 28px;
+  border-top: 1px solid #e0e7e0;
+  padding-top: 16px;
+}
+@media (max-width: 650px) {
+  header {
+    height: auto;
+    min-height: 80px;
+    padding: 16px;
+    gap: 15px;
+    flex-wrap: wrap;
+  }
+  .brand small {
+    display: none;
+  }
+  main {
+    padding: 28px 16px;
+  }
+  .hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  h1 {
+    font-size: 32px;
+  }
+  .auth {
+    margin: 0 auto;
+  }
+  .empty {
+    padding: 30px;
+  }
+  table {
+    font-size: 11px;
+  }
+}

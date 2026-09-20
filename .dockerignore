@@ -1,0 +1,12 @@
+.git
+**/.env
+**/.env.*
+**/.secrets
+**/.runner-state
+**/node_modules
+target
+.codegraph
+**/*.log
+**/*.db
+**/*.db-wal
+**/*.db-shm

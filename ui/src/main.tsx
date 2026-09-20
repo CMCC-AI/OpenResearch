@@ -7,6 +7,7 @@ import { router } from "./router";
 import { Toaster } from "./components/ui";
 import { getLocale } from "./paraglide/runtime.js";
 import "./tailwind.css";
+import { CloudWorkspace } from "./product/CloudWorkspace";
 
 const locale = getLocale();
 document.documentElement.lang = locale;
@@ -15,7 +16,7 @@ document.documentElement.dir = "ltr";
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <CloudWorkspace><RouterProvider router={router} /></CloudWorkspace>
     </QueryClientProvider>
     <Toaster />
   </StrictMode>,

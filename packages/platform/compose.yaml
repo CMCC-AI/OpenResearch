@@ -1,0 +1,44 @@
+name: openresearch-platform
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: research_platform
+      POSTGRES_USER: research_platform
+      POSTGRES_PASSWORD: ${PLATFORM_DB_PASSWORD:?Set PLATFORM_DB_PASSWORD}
+    volumes:
+      - platform_db:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U research_platform -d research_platform]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  migrate:
+    build:
+      context: ../..
+      dockerfile: packages/platform/Dockerfile
+    command: [node, src/admin.mjs, migrate]
+    environment:
+      DATABASE_URL: postgres://research_platform:${PLATFORM_DB_PASSWORD}@db:5432/research_platform
+    depends_on:
+      db: { condition: service_healthy }
+  platform:
+    build:
+      context: ../..
+      dockerfile: packages/platform/Dockerfile
+    environment:
+      DATABASE_URL: postgres://research_platform:${PLATFORM_DB_PASSWORD}@db:5432/research_platform
+      PLATFORM_ORIGIN: ${PLATFORM_ORIGIN:?Set the HTTPS portal origin}
+      BIND_ADDRESS: 0.0.0.0
+      ORX_UI_DIST: /app/ui/dist
+    ports: ["127.0.0.1:5300:5300"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+volumes:
+  platform_db:
