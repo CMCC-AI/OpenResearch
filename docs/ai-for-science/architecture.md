@@ -41,7 +41,7 @@ Blog Worker 将正文前 36,000 字符交给 Qwen 生成结构化 JSON，校验�
 
 PDF 下载包含最大大小、PDF 签名、SHA-256 和临时文件原子落盘；文件路径与存储 key 分离。Compose 当前把主机 papers 目录绑定到 /data/papers，数据库使用命名卷。旧文档提到 paper_files 命名卷的描述与当前 Compose 不一致，以 compose.yaml 为准。
 
-个人文库、笔记、阅读进度和评论在 Deep Literature 登录域内。公开 feed 不携带这些个人数据。聊天 /api/chat 检查登录和 Origin，再把客户端提供的标题、摘要、历史消息传给 Qwen SSE；没有服务端按 paper ID 检索章节的完整 RAG 链路。界面 PDF 选区能补充用户消息，也不能替代完整的检索和引用校验。
+个人文库、笔记、阅读进度和评论仍存储在 Deep Literature，但托管部署以 OpenResearch 用户 UUID 建立身份映射。公开 feed 不携带这些个人数据。聊天 /api/chat 检查登录和 Origin，再把客户端提供的标题、摘要、历史消息传给 Qwen SSE；没有服务端按 paper ID 检索章节的完整 RAG 链路。界面 PDF 选区能补充用户消息，也不能替代完整的检索和引用校验。
 
 ## OpenResearch 原有科研执行逻辑
 
@@ -54,9 +54,9 @@ PDF 下载包含最大大小、PDF 签名、SHA-256 和临时文件原子落盘�
 
 ## 我们新增的整合实际做了什么
 
-/literature → OpenResearch /api/deep-literature/papers → Deep Literature /api/papers?paginated=1。服务端选取公开字段，忽略 viewerStates，不转发 Cookie。前端展示论文并在新标签页打开 /abs/{id}。创建研究项目仍走原来的 alphaXiv 解析链路：Deep Literature 在线不保证 alphaXiv 在线。
+/literature → OpenResearch /api/deep-literature/papers → Deep Literature /api/papers?paginated=1。服务端选取公开字段，忽略 viewerStates，不转发 Cookie。云工作空间打开论文时先走 Deep Literature 的 OpenResearch 登录入口，再进入 /abs/{id}。创建研究项目仍走原来的 alphaXiv 解析链路：Deep Literature 在线不保证 alphaXiv 在线。
 
-当前没有项目多篇文献关联表、双向跳转状态、跨系统笔记同步、统一登录或研究证据包。因此按钮已改为准确的“从此论文创建项目”，避免误认为已收藏到现有项目。
+当前已经统一登录，但仍没有项目多篇文献关联表、双向跳转状态、跨系统笔记同步或研究证据包。因此按钮使用准确的“从此论文创建项目”，避免误认为已收藏到现有项目。
 
 ## 下一阶段的数据契约（待建设）
 

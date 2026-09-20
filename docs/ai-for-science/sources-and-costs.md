@@ -33,7 +33,7 @@
 | 联合发现 | 2–500字符，每来源1–25；alphaXiv/OpenAlex检索20秒超时 | 其他原有论文接口未全部统一超时/重试 |
 | Deep Literature 原生 feed | limit≤100、offset 分页，数据库搜索/排序 | OpenResearch adapter 的限制不保护直接访问 Deep Literature |
 | HF 采集 | 20秒；最多3次尝试；分页最多20页 | 没有集中式 Retry-After 协调 |
-| Deep Literature 登录 | 进程内 Map，默认8次/15分钟；SSO exchange 60次/分钟 | 多副本不共享，进程重启清空；不是全站限流 |
+| Deep Literature 登录 | 本地模式进程内 Map 默认8次/15分钟；托管 SSO 授权120次/用户/分钟、换码与退出300次/服务IP/分钟、会话内省6000次/服务IP/分钟 | OpenResearch 限流存 PostgreSQL，可跨网关共享；仍应在边缘网关设置连接/IP总量保护 |
 | Deep Literature 聊天 | 登录、同源检查；生成 max_tokens=4096 | 无完整用户日预算、消息体 schema 和全链路取消控制 |
 
 ## 成本治理设计（待建设）
@@ -61,4 +61,3 @@ OpenResearch Cargo.toml 标注 MIT；保留上游版权。元数据开放不表�
 - [阿里云模型限流](https://www.alibabacloud.com/help/en/model-studio/rate-limit)
 
 每次上线及采购前复核；数值变更时更新核查日期，不把不同年代的 credit 与 dollar 表混算。
-

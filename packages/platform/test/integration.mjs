@@ -7,7 +7,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { createPool, migrate } from "../src/db.mjs";
 import { createPlatform, configuration } from "../src/server.mjs";
 import { connectRunner } from "../src/runner.mjs";
-import { id, passwordHash } from "../src/security.mjs";
+import { id, passwordHash, pkce } from "../src/security.mjs";
 
 test(
   "PostgreSQL multi-user authorization and outbound executor",
@@ -39,6 +39,9 @@ test(
       const config = configuration({
         DATABASE_URL: url.href,
         PLATFORM_ORIGIN: "http://localhost:5300",
+        DEEPLIT_ORIGIN: "http://localhost:3000",
+        DEEPLIT_SSO_CLIENT_SECRET:
+          "integration-test-sso-secret-with-32-characters",
       });
       app = await createPlatform(config, pool);
       app.server.listen(0, "127.0.0.1");
@@ -55,6 +58,7 @@ test(
           host = portal,
           origin = config.origin.origin,
           raw,
+          headers = {},
         } = {},
       ) {
         return new Promise((resolve, reject) => {
@@ -78,6 +82,7 @@ test(
                       "content-length": Buffer.byteLength(payload),
                     }
                   : {}),
+                ...headers,
               },
             },
             (res) => {
@@ -115,6 +120,95 @@ test(
       }
       const alice = await login("alice"),
         bob = await login("bob");
+      let aliceSso;
+      await t.test("DeepLiterature SSO is PKCE-bound and one-use", async () => {
+        const state = "s".repeat(43),
+          verifier = "v".repeat(43),
+          redirectUri = "http://localhost:3000/api/auth/openresearch/callback",
+          query = new URLSearchParams({
+            client_id: "deeplit",
+            redirect_uri: redirectUri,
+            state,
+            code_challenge: pkce(verifier),
+            code_challenge_method: "S256",
+          });
+        const anonymous = await request(`/api/auth/sso/authorize?${query}`);
+        assert.equal(anonymous.status, 303);
+        assert.match(anonymous.headers.location, /continue=/);
+        const pkceAttempt = await request(`/api/auth/sso/authorize?${query}`, {
+          cookie: alice,
+        });
+        const consumedCode = new URL(
+          pkceAttempt.headers.location,
+        ).searchParams.get("code");
+        const ssoHeaders = {
+          "x-sso-client-secret":
+            "integration-test-sso-secret-with-32-characters",
+        };
+        assert.equal(
+          (
+            await request("/api/auth/sso/exchange", {
+              method: "POST",
+              data: {
+                code: consumedCode,
+                verifier: "x".repeat(43),
+                redirectUri,
+                state,
+              },
+              headers: ssoHeaders,
+            })
+          ).status,
+          401,
+        );
+        assert.equal(
+          (
+            await request("/api/auth/sso/exchange", {
+              method: "POST",
+              data: { code: consumedCode, verifier, redirectUri, state },
+              headers: ssoHeaders,
+            })
+          ).status,
+          401,
+        );
+        const authorized = await request(`/api/auth/sso/authorize?${query}`, {
+          cookie: alice,
+        });
+        assert.equal(authorized.status, 303);
+        const code = new URL(authorized.headers.location).searchParams.get(
+          "code",
+        );
+        assert.match(code, /^[A-Za-z0-9_-]{43}$/);
+        const exchange = (extra = {}) =>
+          request("/api/auth/sso/exchange", {
+            method: "POST",
+            data: { code, verifier, redirectUri, state },
+            headers: { ...ssoHeaders, ...extra },
+          });
+        assert.equal(
+          (
+            await exchange({
+              "x-sso-client-secret": "wrong-client-secret-value-over-32-chars",
+            })
+          ).status,
+          401,
+        );
+        const exchanged = await exchange();
+        assert.equal(exchanged.status, 200, JSON.stringify(exchanged.data));
+        assert.equal(exchanged.data.data.subject, users.alice);
+        assert.equal(exchanged.data.data.requestId, state);
+        aliceSso = exchanged.data.data;
+        assert.equal((await exchange()).status, 401);
+        const introspection = await request("/api/auth/sso/session", {
+          method: "POST",
+          data: {
+            subject: aliceSso.subject,
+            sessionId: aliceSso.sessionId,
+          },
+          headers: ssoHeaders,
+        });
+        assert.equal(introspection.status, 200);
+        assert.equal(introspection.data.data.email, "alice@test.invalid");
+      });
       async function workspace(cookie, name) {
         const r = await request("/api/platform/workspaces", {
           method: "POST",
@@ -600,6 +694,22 @@ test(
             (await request("/api/platform/me", { cookie: alice })).status,
             401,
           );
+          assert.equal(
+            (
+              await request("/api/auth/sso/session", {
+                method: "POST",
+                data: {
+                  subject: aliceSso.subject,
+                  sessionId: aliceSso.sessionId,
+                },
+                headers: {
+                  "x-sso-client-secret":
+                    "integration-test-sso-secret-with-32-characters",
+                },
+              })
+            ).status,
+            401,
+          );
         },
       );
       if (process.env.ORX_TEST_UPSTREAM)
@@ -634,6 +744,77 @@ test(
             assert.match(html.data, /type="module"/);
           },
         );
+      await t.test(
+        "DeepLiterature logout revokes portal and workspace sessions",
+        async () => {
+          const state = "l".repeat(43),
+            verifier = "z".repeat(43),
+            redirectUri =
+              "http://localhost:3000/api/auth/openresearch/callback",
+            query = new URLSearchParams({
+              client_id: "deeplit",
+              redirect_uri: redirectUri,
+              state,
+              code_challenge: pkce(verifier),
+              code_challenge_method: "S256",
+            });
+          const authorized = await request(`/api/auth/sso/authorize?${query}`, {
+            cookie: bob,
+          });
+          const code = new URL(authorized.headers.location).searchParams.get(
+            "code",
+          );
+          const headers = {
+            "x-sso-client-secret":
+              "integration-test-sso-secret-with-32-characters",
+          };
+          const exchange = await request("/api/auth/sso/exchange", {
+            method: "POST",
+            data: { code, verifier, redirectUri, state },
+            headers,
+          });
+          const identity = exchange.data.data;
+          assert.equal(
+            (
+              await request("/api/auth/sso/logout", {
+                method: "POST",
+                data: {
+                  subject: identity.subject,
+                  sessionId: identity.sessionId,
+                },
+                headers,
+              })
+            ).status,
+            200,
+          );
+          assert.equal(
+            (await request("/api/platform/me", { cookie: bob })).status,
+            401,
+          );
+          assert.equal(
+            (
+              await request("/_platform/context", {
+                host: bHost,
+                cookie: bSession.cookie,
+              })
+            ).status,
+            401,
+          );
+          assert.equal(
+            (
+              await request("/api/auth/sso/session", {
+                method: "POST",
+                data: {
+                  subject: identity.subject,
+                  sessionId: identity.sessionId,
+                },
+                headers,
+              })
+            ).status,
+            401,
+          );
+        },
+      );
     } finally {
       for (const socket of sockets) socket.terminate();
       for (const { server, ws } of backends) {

@@ -46,7 +46,7 @@ web依赖db/migrate；首次执行会迁移所连接数据库，因此必须使�
 | QWEN_API_KEY / QWEN_BASE_URL / QWEN_MODEL / QWEN_BLOG_MODEL | Deep Literature | 付费模型与区域 |
 | CRON_SECRET | Deep Literature | 内部采集/worker API验证，不是用户登录 |
 
-生产secret走秘密管理或权限0600的服务环境文件；不提交.env，不在诊断输出原始配置，不在浏览器query中传key。Deep Literature已有DockAPI SSO是旧平台特定桥接，并非OpenResearch已统一登录。
+生产secret走秘密管理或权限0600的服务环境文件；不提交.env，不在诊断输出原始配置，不在浏览器query中传key。OpenResearch 与 DeepLiterature 使用独立服务端 SSO secret；浏览器只接触一次性授权码、state 与 PKCE challenge。
 
 ## 适配 API
 

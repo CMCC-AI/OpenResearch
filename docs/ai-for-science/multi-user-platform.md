@@ -79,7 +79,7 @@ docker compose -p research-team-a -f compose.executor.yaml up -d --build
 
 该模板不发布orx端口，使用非root用户、独立HOME卷、4CPU/8GiB/512进程限制、关闭额外capability。凭据文件须可由容器UID1000读取且不对其他用户开放。Agent CLI、Python依赖、GPU运行时和模型授权应做成受控派生镜像/环境；模板不会自动采购算力或安装所有Agent。容器共享内核且有默认出站网络，不作为公网恶意代码隔离方案。
 
-Deep Literature地址需要在执行器环境显式设置 `ORX_DEEP_LITERATURE_URL` 与浏览器可达的 `ORX_DEEP_LITERATURE_WEB_URL`。容器内默认127.0.0.1不会指向宿主文献服务。本轮复用公开文献流；个人笔记和问答仍使用Deep Literature原账户，尚未完成跨服务SSO。
+Deep Literature地址需要在执行器环境显式设置 `ORX_DEEP_LITERATURE_URL` 与浏览器可达的 `ORX_DEEP_LITERATURE_WEB_URL`。容器内默认127.0.0.1不会指向宿主文献服务。云工作空间的精读链接先进入 DeepLiterature `/api/auth/openresearch/start`，再以一次性授权码与 PKCE 复用平台账户；个人文库、笔记和问答按 OpenResearch 用户 UUID 隔离。系统不会按邮箱自动合并旧 DeepLiterature 账户。
 
 ## 运维与未完成项
 
@@ -87,7 +87,7 @@ Deep Literature地址需要在执行器环境显式设置 `ORX_DEEP_LITERATURE_U
 
 撤销执行器仅关闭访问，不自动停掉已经运行的实验和远端GPU。需要取消时调用原有run cancel并确认终态、资源释放，再回收执行器。测试环境恢复、生产RPO/RTO、容量和故障演练需按部署规模完成。
 
-后续事项：企业OIDC/MFA、Deep Literature SSO、项目级细粒度权限、托管算力自动供给、统一预算硬停、持久化调度/多网关、集中监控和对象存储。不要把本轮邀请制多用户能力描述成这些功能已经完成。
+后续事项：企业OIDC/MFA、旧 DeepLiterature 账户的人工核验迁移、项目级细粒度权限、托管算力自动供给、统一预算硬停、持久化调度/多网关、集中监控和对象存储。不要把本轮邀请制多用户能力描述成这些功能已经完成。
 
 ## 验证方法
 

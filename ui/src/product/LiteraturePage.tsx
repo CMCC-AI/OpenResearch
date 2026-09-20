@@ -4,12 +4,17 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, BookOpenCheck, ExternalLink, Eye, FileText, Heart, MessageCircle, Search } from "lucide-react";
 import { getDeepLiteraturePapers, getDeepLiteratureStatus, type DeepLiteraturePaper } from "../api";
 import { PlatformFrame } from "./ProductNav";
+import { isCloudWorkspace } from "./CloudWorkspace";
 
-function paperUrl(webUrl: string, id: string) {
-  return `${webUrl.replace(/\/$/, "")}/abs/${encodeURIComponent(id)}`;
+function paperUrl(webUrl: string, id: string, unifiedLogin: boolean) {
+  const destination = `/abs/${encodeURIComponent(id)}`;
+  if (!unifiedLogin) return `${webUrl.replace(/\/$/, "")}${destination}`;
+  const login = new URL("/api/auth/openresearch/start", webUrl);
+  login.searchParams.set("returnTo", destination);
+  return login.href;
 }
 
-function PaperCard({ paper, webUrl }: { paper: DeepLiteraturePaper; webUrl: string }) {
+function PaperCard({ paper, webUrl, unifiedLogin }: { paper: DeepLiteraturePaper; webUrl: string; unifiedLogin: boolean }) {
   return <article className="flex flex-col rounded-xl border border-border-variant bg-background p-5 transition-shadow hover:shadow-card">
     <div className="mb-3 flex flex-wrap items-center gap-2">
       {paper.hasBlog && <span className="rounded-full bg-primary-subtle px-2.5 py-1 text-xs font-medium text-primary">已有深度解读</span>}
@@ -26,13 +31,14 @@ function PaperCard({ paper, webUrl }: { paper: DeepLiteraturePaper; webUrl: stri
       {paper.githubStars != null && <span>GitHub ★ {paper.githubStars}</span>}
     </div>
     <footer className="mt-auto flex flex-wrap items-center gap-3 border-t border-border-variant pt-4">
-      <a href={paperUrl(webUrl, paper.id)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-sm font-medium text-primary no-underline">进入 Deep Literature 精读 <ExternalLink size={14} /></a>
+      <a href={paperUrl(webUrl, paper.id, unifiedLogin)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-sm font-medium text-primary no-underline">进入 Deep Literature 精读 <ExternalLink size={14} /></a>
       <Link to="/projects" search={{ paper: `arxiv:${paper.id}` }} className="ms-auto inline-flex items-center gap-1.5 text-sm font-medium text-text no-underline">从此论文创建项目 <ArrowRight size={14} /></Link>
     </footer>
   </article>;
 }
 
 export function LiteraturePage() {
+  const unifiedLogin = isCloudWorkspace();
   const [input, setInput] = useState("");
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<"hot" | "new">("hot");
@@ -60,7 +66,7 @@ export function LiteraturePage() {
           <div className="mt-6 flex items-center justify-between"><div className="flex gap-2">{([['hot', '热门论文'], ['new', '最新论文']] as const).map(([value, label]) => <button key={value} onClick={() => { setTab(value); setOffset(0); }} className={`rounded-full border px-3 py-1.5 text-xs ${tab === value ? "border-primary bg-primary-subtle text-primary" : "border-border text-subtext"}`}>{label}</button>)}</div><span className="text-xs text-muted">{feed.data ? `共 ${feed.data.total} 篇 · 第 ${offset / 18 + 1} 页` : ""}</span></div>
           {feed.isFetching && <div className="py-16 text-center text-sm text-subtext">正在读取 Deep Literature…</div>}
           {feed.error && <div role="alert" className="mt-6 rounded-lg border border-accent-red bg-accent-red-subtle p-4 text-sm text-accent-red">暂时无法读取论文。<button disabled={feed.isFetching} onClick={() => void feed.refetch()} className="ms-3 underline">重试</button></div>}
-          {feed.data && <div className="mt-4 grid grid-cols-2 gap-3 [@media((max-width:_880px))]:grid-cols-1">{feed.data.papers.map((paper) => <PaperCard key={paper.id} paper={paper} webUrl={feed.data.webUrl} />)}</div>}
+          {feed.data && <div className="mt-4 grid grid-cols-2 gap-3 [@media((max-width:_880px))]:grid-cols-1">{feed.data.papers.map((paper) => <PaperCard key={paper.id} paper={paper} webUrl={feed.data.webUrl} unifiedLogin={unifiedLogin} />)}</div>}
           {feed.data?.papers.length === 0 && <div className="py-16 text-center text-subtext"><FileText className="mx-auto mb-3" />没有找到相关论文。</div>}
           <nav aria-label="文献分页" className="mt-6 flex justify-between gap-3"><button disabled={offset === 0 || feed.isFetching} onClick={() => setOffset(Math.max(0, offset - 18))} className="rounded-lg border border-border px-4 py-2 text-sm disabled:opacity-40">上一页</button><button disabled={!feed.data?.hasMore || feed.isFetching || feed.isError} onClick={() => setOffset(offset + 18)} className="rounded-lg border border-border px-4 py-2 text-sm disabled:opacity-40">下一页</button></nav>
         </>}

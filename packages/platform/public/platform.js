@@ -5,6 +5,13 @@ const app = document.querySelector("#app"),
 let me,
   workspaces = [];
 const invite = new URLSearchParams(location.hash.slice(1)).get("invite");
+const continuePath = new URLSearchParams(location.search).get("continue");
+const safeContinue =
+  continuePath &&
+  /^\/api\/auth\/sso\/authorize\?/.test(continuePath) &&
+  !continuePath.startsWith("//")
+    ? continuePath
+    : null;
 if (invite) history.replaceState(null, "", location.pathname);
 const esc = (value) =>
   String(value ?? "").replace(
@@ -80,6 +87,10 @@ async function load() {
   } catch {
     me = null;
     login();
+    return;
+  }
+  if (safeContinue) {
+    location.replace(safeContinue);
     return;
   }
   workspaces = await api("/workspaces");

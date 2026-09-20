@@ -10,6 +10,14 @@ const scrypt = promisify(derive);
 export const id = () => randomUUID();
 export const token = () => randomBytes(32).toString("base64url");
 export const hash = (value) => createHash("sha256").update(value).digest("hex");
+export const pkce = (value) =>
+  createHash("sha256").update(value).digest("base64url");
+export function secretEqual(actual, expected) {
+  if (typeof actual !== "string" || typeof expected !== "string") return false;
+  const left = Buffer.from(actual),
+    right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
 export class HttpError extends Error {
   constructor(status, message) {
     super(message);

@@ -21,6 +21,8 @@ import {
   workspaceOrigin,
   sameOrigin,
   permitted,
+  secretEqual,
+  pkce,
 } from "./security.mjs";
 import { Tunnel, body } from "./tunnel.mjs";
 
@@ -40,12 +42,38 @@ export function configuration(env = process.env) {
     "Public deployments require HTTPS",
   );
   check(env.DATABASE_URL, 500, "DATABASE_URL is required");
+  const deepLiteratureOrigin = env.DEEPLIT_ORIGIN
+    ? new URL(env.DEEPLIT_ORIGIN)
+    : null;
+  const deepLiteratureSecret = env.DEEPLIT_SSO_CLIENT_SECRET || "";
+  check(
+    (!deepLiteratureOrigin && !deepLiteratureSecret) ||
+      (deepLiteratureOrigin && deepLiteratureSecret.length >= 32),
+    500,
+    "DEEPLIT_ORIGIN and a 32-character DEEPLIT_SSO_CLIENT_SECRET are required together",
+  );
+  if (deepLiteratureOrigin)
+    check(
+      ["http:", "https:"].includes(deepLiteratureOrigin.protocol) &&
+        !deepLiteratureOrigin.username &&
+        !deepLiteratureOrigin.password &&
+        deepLiteratureOrigin.pathname === "/" &&
+        !deepLiteratureOrigin.search &&
+        !deepLiteratureOrigin.hash &&
+        (deepLiteratureOrigin.protocol === "https:" ||
+          deepLiteratureOrigin.hostname === "localhost"),
+      500,
+      "DEEPLIT_ORIGIN must be an HTTPS origin (localhost may use HTTP)",
+    );
   return {
     origin,
     secure,
     database: env.DATABASE_URL,
     port: Number(env.PORT || 5300),
     bind: env.BIND_ADDRESS || "127.0.0.1",
+    deepLiterature: deepLiteratureOrigin
+      ? { origin: deepLiteratureOrigin.origin, secret: deepLiteratureSecret }
+      : null,
     ui: resolve(
       env.ORX_UI_DIST ||
         fileURLToPath(new URL("../../../ui/dist", import.meta.url)),
@@ -141,6 +169,74 @@ export async function createPlatform(
     );
     return secret;
   }
+  function deepLiteratureRedirect() {
+    check(config.deepLiterature, 404, "Deep Literature SSO is disabled");
+    return `${config.deepLiterature.origin}/api/auth/openresearch/callback`;
+  }
+  async function authorizeDeepLiterature(req, res, s, workspace = null) {
+    await limit(`sso-authorize:${s.user_id}`, 120, 60);
+    const url = new URL(req.url, config.origin);
+    check(url.searchParams.get("client_id") === "deeplit", 400);
+    const redirectUri = url.searchParams.get("redirect_uri") || "";
+    check(
+      redirectUri === deepLiteratureRedirect(),
+      400,
+      "Invalid redirect URI",
+    );
+    const state = url.searchParams.get("state") || "";
+    const challenge = url.searchParams.get("code_challenge") || "";
+    check(/^[A-Za-z0-9_-]{43}$/.test(state), 400, "Invalid state");
+    check(/^[A-Za-z0-9_-]{43}$/.test(challenge), 400, "Invalid PKCE challenge");
+    check(url.searchParams.get("code_challenge_method") === "S256", 400);
+    const code = token();
+    const root = s.parent_hash || s.token_hash;
+    await pool.query(
+      `INSERT INTO sso_authorization_codes(token_hash,root_session_hash,user_id,workspace_id,redirect_uri,code_challenge,state,expires_at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,now()+interval '60 seconds')`,
+      [hash(code), root, s.user_id, workspace, redirectUri, challenge, state],
+    );
+    await audit(pool, s.user_id, workspace, "sso.authorize", "deeplit");
+    const destination = new URL(redirectUri);
+    destination.searchParams.set("code", code);
+    destination.searchParams.set("state", state);
+    res.writeHead(303, { location: destination.href });
+    res.end();
+  }
+  function requireSsoService(req) {
+    check(config.deepLiterature, 404, "Deep Literature SSO is disabled");
+    check(
+      secretEqual(
+        req.headers["x-sso-client-secret"],
+        config.deepLiterature.secret,
+      ),
+      401,
+      "Invalid client credentials",
+    );
+  }
+  async function ssoIdentity(grantId, subject) {
+    const { rows } = await pool.query(
+      `SELECT g.id,g.user_id,g.workspace_id,g.expires_at,u.name,u.email
+       FROM sso_grants g JOIN platform_sessions s ON s.token_hash=g.root_session_hash
+       JOIN platform_users u ON u.id=g.user_id
+       LEFT JOIN memberships m ON m.workspace_id=g.workspace_id AND m.user_id=g.user_id
+       WHERE g.id=$1 AND g.user_id=$2 AND g.expires_at>now() AND s.expires_at>now()
+       AND NOT u.disabled AND (g.workspace_id IS NULL OR m.user_id IS NOT NULL)`,
+      [grantId, subject],
+    );
+    check(rows[0], 401, "SSO session expired");
+    const row = rows[0];
+    return {
+      issuer: "openresearch",
+      audience: "deeplit",
+      subject: row.user_id,
+      name: row.name,
+      email: row.email,
+      sessionId: row.id,
+      workspaceId: row.workspace_id,
+      expiresAt: new Date(row.expires_at).toISOString(),
+      requestId: null,
+    };
+  }
   async function staticFile(res, directory, pathname) {
     check(!pathname.includes("\\") && !pathname.includes("\0"), 400);
     const path = resolve(directory, `.${pathname}`);
@@ -217,6 +313,8 @@ export async function createPlatform(
         }
         const s = await session(req);
         const role = await member(s.user_id, workspace);
+        if (path === "/api/auth/sso/authorize" && req.method === "GET")
+          return await authorizeDeepLiterature(req, res, s, workspace);
         if (path === "/_platform/context" && req.method === "GET")
           return json(res, {
             workspace,
@@ -292,6 +390,85 @@ export async function createPlatform(
       if (path === "/healthz") {
         await pool.query("SELECT 1");
         return json(res, { ok: true });
+      }
+      if (path === "/api/auth/sso/authorize" && req.method === "GET") {
+        const s = await session(req);
+        return await authorizeDeepLiterature(req, res, s);
+      }
+      if (
+        [
+          "/api/auth/sso/exchange",
+          "/api/auth/sso/session",
+          "/api/auth/sso/logout",
+        ].includes(path) &&
+        req.method === "POST"
+      ) {
+        requireSsoService(req);
+        await limit(
+          `sso-service:${path}:${hash(req.socket.remoteAddress || "")}`,
+          path === "/api/auth/sso/session" ? 6000 : 300,
+          60,
+        );
+        const b = await input(req);
+        if (path === "/api/auth/sso/exchange") {
+          check(/^[A-Za-z0-9_-]{43}$/.test(b.code || ""), 401);
+          check(/^[A-Za-z0-9_-]{43}$/.test(b.verifier || ""), 401);
+          check(b.redirectUri === deepLiteratureRedirect(), 401);
+          const grant = id();
+          // Consume before validation so a bad verifier cannot be retried online.
+          const consumed = await pool.query(
+            `DELETE FROM sso_authorization_codes
+             WHERE token_hash=$1 AND expires_at>now()
+             RETURNING *`,
+            [hash(b.code)],
+          );
+          const issued = consumed.rows[0];
+          check(issued, 401, "Authorization code expired");
+          check(
+            issued.redirect_uri === b.redirectUri &&
+              pkce(b.verifier) === issued.code_challenge,
+            401,
+            "Invalid authorization code",
+          );
+          const inserted = await pool.query(
+            `INSERT INTO sso_grants(id,client,root_session_hash,user_id,workspace_id,expires_at)
+             SELECT $1,'deeplit',$2,$3,$4,LEAST(expires_at,now()+interval '12 hours')
+             FROM platform_sessions WHERE token_hash=$2 AND expires_at>now()
+             RETURNING expires_at`,
+            [
+              grant,
+              issued.root_session_hash,
+              issued.user_id,
+              issued.workspace_id,
+            ],
+          );
+          check(inserted.rows[0], 401, "Platform session expired");
+          const identity = await ssoIdentity(grant, issued.user_id);
+          identity.requestId = issued.state;
+          return json(res, { code: 200, data: identity });
+        }
+        check(/^[0-9a-f-]{36}$/.test(b.subject || ""), 401);
+        check(/^[0-9a-f-]{36}$/.test(b.sessionId || ""), 401);
+        if (path === "/api/auth/sso/session")
+          return json(res, {
+            code: 200,
+            data: await ssoIdentity(b.sessionId, b.subject),
+          });
+        const grant = await pool.query(
+          "SELECT root_session_hash FROM sso_grants WHERE id=$1 AND user_id=$2",
+          [b.sessionId, b.subject],
+        );
+        check(grant.rows[0], 401, "SSO session expired");
+        const children = await pool.query(
+          "SELECT token_hash FROM platform_sessions WHERE token_hash=$1 OR parent_hash=$1",
+          [grant.rows[0].root_session_hash],
+        );
+        await pool.query("DELETE FROM platform_sessions WHERE token_hash=$1", [
+          grant.rows[0].root_session_hash,
+        ]);
+        for (const tunnel of tunnels.values())
+          for (const row of children.rows) tunnel.revokeSession(row.token_hash);
+        return json(res, { code: 200, data: { ok: true } });
       }
       if (!path.startsWith("/api/platform/")) {
         check(req.method === "GET" || req.method === "HEAD", 405);
@@ -595,6 +772,17 @@ export async function createPlatform(
       throw new HttpError(405, "不支持的操作");
     } catch (error) {
       if (res.headersSent) return res.destroy();
+      const failedPath = new URL(req.url, config.origin).pathname;
+      if (
+        error.status === 401 &&
+        req.method === "GET" &&
+        failedPath === "/api/auth/sso/authorize"
+      ) {
+        const destination = new URL(config.origin);
+        destination.searchParams.set("continue", req.url);
+        res.writeHead(303, { location: destination.href });
+        return res.end();
+      }
       if (
         error.status === 401 &&
         req.method === "GET" &&
@@ -681,7 +869,7 @@ export async function createPlatform(
     () =>
       pool
         .query(
-          `DELETE FROM auth_limits WHERE expires_at<now(); DELETE FROM platform_sessions WHERE expires_at<now(); DELETE FROM launch_tickets WHERE expires_at<now(); DELETE FROM workspace_invites WHERE expires_at<now()`,
+          `DELETE FROM auth_limits WHERE expires_at<now(); DELETE FROM platform_sessions WHERE expires_at<now(); DELETE FROM launch_tickets WHERE expires_at<now(); DELETE FROM workspace_invites WHERE expires_at<now(); DELETE FROM sso_authorization_codes WHERE expires_at<now(); DELETE FROM sso_grants WHERE expires_at<now()`,
         )
         .catch(() => {}),
     60000,
