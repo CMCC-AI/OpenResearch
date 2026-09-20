@@ -37,6 +37,7 @@ function loadModule(filename, api = {}, remembered = null) {
       if (id === "../product/LandingPage") return { LandingPage: () => null };
       if (id === "../product/CapabilitiesPage") return { CapabilitiesPage: () => null };
       if (id === "../product/DiscoverPage") return { DiscoverPage: () => null };
+      if (id === "../product/LiteraturePage") return { LiteraturePage: () => null };
       if (id.startsWith("./routes/")) return load(new URL(`${id}.tsx`, url));
       throw new Error(`Unexpected dependency: ${id}`);
     }, exports);
@@ -57,6 +58,7 @@ test("real file routes distinguish task/new, task IDs, project index, and settin
     ["/", "/"],
     ["/capabilities", "/capabilities"],
     ["/discover", "/discover"],
+    ["/literature", "/literature"],
     ["/projects", "/projects/"],
     ["/projects/p", "/projects/$projectId/"],
     ["/projects/p/tasks/new", "/projects/$projectId/tasks/new"],

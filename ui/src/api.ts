@@ -319,6 +319,45 @@ export const discoverPapers = (
   signal,
 );
 
+export interface DeepLiteratureStatus {
+  connected: boolean;
+  webUrl: string;
+  message: string;
+}
+
+export interface DeepLiteraturePaper {
+  id: string;
+  title: string;
+  abstract: string;
+  authors: string[];
+  date: string;
+  categories: string[];
+  views: number;
+  likes: number;
+  commentCount: number;
+  institution?: string | null;
+  githubUrl?: string | null;
+  githubStars?: number | null;
+  hasBlog: boolean;
+}
+
+export interface DeepLiteratureFeed {
+  papers: DeepLiteraturePaper[];
+  webUrl: string;
+}
+
+export const getDeepLiteratureStatus = (signal?: AbortSignal) =>
+  get<DeepLiteratureStatus>("/api/deep-literature/status", signal);
+
+export const getDeepLiteraturePapers = (
+  q: string,
+  tab: "hot" | "new",
+  signal?: AbortSignal,
+) => get<DeepLiteratureFeed>(
+  `/api/deep-literature/papers?${new URLSearchParams({ q, tab, limit: "18" })}`,
+  signal,
+);
+
 /** The signed-in GitHub login, for naming the account a new repo lands on.
  * `login` is null when there's no usable token. */
 export const githubAccount = (signal?: AbortSignal) => get<{ login: string | null }>("/api/github/account", signal);

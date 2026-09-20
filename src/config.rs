@@ -46,6 +46,25 @@ pub fn biorxiv_api_url() -> String {
     std::env::var("BIORXIV_API_URL").unwrap_or_else(|_| "https://api.biorxiv.org".to_string())
 }
 
+/// Base URL of the Deep Literature web application. OpenResearch only uses its
+/// public paper feed and links users into the full reading workspace; personal
+/// notes and sessions remain owned by Deep Literature.
+pub fn deep_literature_url() -> String {
+    std::env::var("ORX_DEEP_LITERATURE_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:3000".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// Browser-visible Deep Literature origin. This may differ from the server-side
+/// URL when both applications run on an internal container network.
+pub fn deep_literature_web_url() -> String {
+    std::env::var("ORX_DEEP_LITERATURE_WEB_URL")
+        .unwrap_or_else(|_| deep_literature_url())
+        .trim_end_matches('/')
+        .to_string()
+}
+
 /// Contact address sent to OpenAlex as `mailto=` to enter its faster "polite
 /// pool". OpenAlex asks API users to identify themselves this way. Override with
 /// `OPENALEX_MAILTO`.

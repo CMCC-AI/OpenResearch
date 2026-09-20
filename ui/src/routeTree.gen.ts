@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as CapabilitiesRouteImport } from './routes/capabilities'
 import { Route as DiscoverRouteImport } from './routes/discover'
+import { Route as LiteratureRouteImport } from './routes/literature'
 import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as RemoteLaunchRouteImport } from './routes/remote-launch'
 import { Route as ProjectsIndexRouteImport } from './routes/projects.index'
@@ -35,6 +36,11 @@ const CapabilitiesRoute = CapabilitiesRouteImport.update({
 const DiscoverRoute = DiscoverRouteImport.update({
   id: '/discover',
   path: '/discover',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LiteratureRoute = LiteratureRouteImport.update({
+  id: '/literature',
+  path: '/literature',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProjectsRoute = ProjectsRouteImport.update({
@@ -90,6 +96,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/capabilities': typeof CapabilitiesRoute
   '/discover': typeof DiscoverRoute
+  '/literature': typeof LiteratureRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/remote-launch': typeof RemoteLaunchRoute
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
@@ -104,6 +111,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/capabilities': typeof CapabilitiesRoute
   '/discover': typeof DiscoverRoute
+  '/literature': typeof LiteratureRoute
   '/remote-launch': typeof RemoteLaunchRoute
   '/projects': typeof ProjectsIndexRoute
   '/projects/$projectId/skills': typeof ProjectsProjectIdSkillsRoute
@@ -117,6 +125,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/capabilities': typeof CapabilitiesRoute
   '/discover': typeof DiscoverRoute
+  '/literature': typeof LiteratureRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/remote-launch': typeof RemoteLaunchRoute
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
@@ -133,6 +142,7 @@ export interface FileRouteTypes {
     | '/'
     | '/capabilities'
     | '/discover'
+    | '/literature'
     | '/projects'
     | '/remote-launch'
     | '/projects/$projectId'
@@ -147,6 +157,7 @@ export interface FileRouteTypes {
     | '/'
     | '/capabilities'
     | '/discover'
+    | '/literature'
     | '/remote-launch'
     | '/projects'
     | '/projects/$projectId/skills'
@@ -159,6 +170,7 @@ export interface FileRouteTypes {
     | '/'
     | '/capabilities'
     | '/discover'
+    | '/literature'
     | '/projects'
     | '/remote-launch'
     | '/projects/$projectId'
@@ -174,6 +186,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CapabilitiesRoute: typeof CapabilitiesRoute
   DiscoverRoute: typeof DiscoverRoute
+  LiteratureRoute: typeof LiteratureRoute
   ProjectsRoute: typeof ProjectsRouteWithChildren
   RemoteLaunchRoute: typeof RemoteLaunchRoute
 }
@@ -199,6 +212,13 @@ declare module '@tanstack/react-router' {
       path: '/discover'
       fullPath: '/discover'
       preLoaderRoute: typeof DiscoverRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/literature': {
+      id: '/literature'
+      path: '/literature'
+      fullPath: '/literature'
+      preLoaderRoute: typeof LiteratureRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/projects': {
@@ -304,6 +324,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CapabilitiesRoute: CapabilitiesRoute,
   DiscoverRoute: DiscoverRoute,
+  LiteratureRoute: LiteratureRoute,
   ProjectsRoute: ProjectsRouteWithChildren,
   RemoteLaunchRoute: RemoteLaunchRoute,
 }

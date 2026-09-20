@@ -1,10 +1,11 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { BookOpen, Boxes, FlaskConical, Home, Info, Search } from "lucide-react";
+import { BookOpen, Boxes, FlaskConical, Home, Info, Library, Search } from "lucide-react";
 
 const links = [
   { to: "/projects" as const, label: "开始研究", icon: Home },
   { to: "/discover" as const, label: "论文发现", icon: BookOpen },
+  { to: "/literature" as const, label: "深度文献", icon: Library },
   { to: "/capabilities" as const, label: "能力中心", icon: Boxes },
   { to: "/" as const, label: "产品介绍", icon: Info },
 ];

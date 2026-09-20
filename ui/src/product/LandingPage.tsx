@@ -30,7 +30,7 @@ export function LandingPage() {
           <Link to="/projects" search={{ new: true }} className="inline-flex items-center gap-2 rounded-lg bg-primary px-6 py-3 font-medium text-background no-underline">开始研究 <ArrowRight size={18} /></Link>
           <Link to="/capabilities" className="inline-flex items-center gap-2 rounded-lg border border-border px-6 py-3 text-text no-underline hover:bg-canvas">了解能力</Link>
         </div>
-        <div className="mt-12 flex flex-wrap items-center gap-5 text-xs text-muted"><span>论文渠道</span><strong className="text-text">alphaXiv</strong><strong className="text-text">bioRxiv</strong><strong className="text-text">OpenAlex</strong><span>Deep Literature · 即将接入</span></div>
+        <div className="mt-12 flex flex-wrap items-center gap-5 text-xs text-muted"><span>论文渠道</span><strong className="text-text">alphaXiv</strong><strong className="text-text">bioRxiv</strong><strong className="text-text">OpenAlex</strong><strong className="text-text">Deep Literature</strong></div>
       </div>
 
       <div className="relative min-h-145 [@media((max-width:_860px))]:min-h-110" aria-hidden="true">

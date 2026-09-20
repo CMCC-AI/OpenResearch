@@ -469,6 +469,8 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
         .route("/api/papers/search", get(search_papers_api))
         .route("/api/papers/discover", get(discover_papers_api))
         .route("/api/papers/resolve", get(resolve_paper_api))
+        .route("/api/deep-literature/status", get(deep_literature_status))
+        .route("/api/deep-literature/papers", get(deep_literature_papers))
         .route("/api/compute/backends", get(compute_backends))
         .route("/api/runs", post(create_run))
         .route("/api/runs/{id}", get(get_run))
@@ -1436,6 +1438,179 @@ async fn discover_papers_api(Query(q): Query<PaperDiscoverQ>) -> ApiResult {
     Ok(Json(
         json!({ "papers": papers, "sourceErrors": source_errors }),
     ))
+}
+
+// --- Deep Literature (public reading and knowledge layer) -----------------
+
+#[derive(Deserialize)]
+struct DeepLiteratureQ {
+    q: Option<String>,
+    tab: Option<String>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeepLiteratureAuthor {
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeepLiteraturePaper {
+    id: String,
+    title: String,
+    #[serde(default, rename = "abstract")]
+    abstract_text: String,
+    #[serde(default)]
+    authors: Vec<DeepLiteratureAuthor>,
+    #[serde(default)]
+    date: String,
+    #[serde(default)]
+    categories: Vec<String>,
+    #[serde(default)]
+    views: u64,
+    #[serde(default)]
+    likes: u64,
+    #[serde(default)]
+    comment_count: u64,
+    institution: Option<String>,
+    github_url: Option<String>,
+    github_stars: Option<u64>,
+    blog: Option<Value>,
+}
+
+fn deep_literature_origin(value: &str, label: &str) -> std::result::Result<reqwest::Url, ApiError> {
+    let url = reqwest::Url::parse(value).map_err(|error| {
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("invalid {label}: {error}"),
+        )
+    })?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.cannot_be_a_base()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "{label} must be an HTTP(S) origin without credentials, path, query, or fragment"
+            ),
+        ));
+    }
+    Ok(url)
+}
+
+fn deep_literature_client() -> std::result::Result<reqwest::Client, ApiError> {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|error| ApiError(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+}
+
+async fn fetch_deep_literature_papers(
+    query: &str,
+    tab: &str,
+    limit: u32,
+    offset: u32,
+) -> std::result::Result<(Vec<DeepLiteraturePaper>, String), String> {
+    let base = deep_literature_origin(
+        &crate::config::deep_literature_url(),
+        "Deep Literature API URL",
+    )
+    .map_err(|error| error.1)?;
+    let web_url = deep_literature_origin(
+        &crate::config::deep_literature_web_url(),
+        "Deep Literature web URL",
+    )
+    .map_err(|error| error.1)?
+    .as_str()
+    .trim_end_matches('/')
+    .to_string();
+    let mut url = base.join("api/papers").map_err(|error| error.to_string())?;
+    url.query_pairs_mut()
+        .append_pair("q", query)
+        .append_pair("tab", tab)
+        .append_pair("limit", &limit.to_string())
+        .append_pair("offset", &offset.to_string());
+    let response = deep_literature_client()
+        .map_err(|error| error.1)?
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Deep Literature returned HTTP {}",
+            response.status()
+        ));
+    }
+    let papers = response
+        .json::<Vec<DeepLiteraturePaper>>()
+        .await
+        .map_err(|error| format!("invalid Deep Literature response: {error}"))?;
+    Ok((papers, web_url))
+}
+
+async fn deep_literature_status() -> ApiResult {
+    match fetch_deep_literature_papers("", "hot", 1, 0).await {
+        Ok((_, web_url)) => Ok(Json(json!({
+            "connected": true,
+            "webUrl": web_url,
+            "message": "Deep Literature 已连接",
+        }))),
+        Err(error) => Ok(Json(json!({
+            "connected": false,
+            "webUrl": crate::config::deep_literature_web_url(),
+            "message": error,
+        }))),
+    }
+}
+
+async fn deep_literature_papers(Query(q): Query<DeepLiteratureQ>) -> ApiResult {
+    let query = q.q.unwrap_or_default();
+    let query = query.trim();
+    if query.len() == 1 {
+        return Err(bad_request(
+            "query must be empty or contain at least 2 characters",
+        ));
+    }
+    let tab = q.tab.as_deref().unwrap_or("hot");
+    if !matches!(tab, "hot" | "new") {
+        return Err(bad_request("tab must be hot or new"));
+    }
+    let limit = q.limit.unwrap_or(18).clamp(1, 50);
+    let offset = q.offset.unwrap_or(0);
+    let (papers, web_url) = fetch_deep_literature_papers(query, tab, limit, offset)
+        .await
+        .map_err(|error| ApiError(StatusCode::BAD_GATEWAY, error))?;
+    let papers = papers
+        .into_iter()
+        .map(|paper| {
+            json!({
+                "id": paper.id,
+                "title": paper.title,
+                "abstract": paper.abstract_text,
+                "authors": paper.authors.into_iter().map(|author| author.name).collect::<Vec<_>>(),
+                "date": paper.date,
+                "categories": paper.categories,
+                "views": paper.views,
+                "likes": paper.likes,
+                "commentCount": paper.comment_count,
+                "institution": paper.institution,
+                "githubUrl": paper.github_url,
+                "githubStars": paper.github_stars,
+                "hasBlog": paper.blog.is_some(),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(json!({ "papers": papers, "webUrl": web_url })))
 }
 
 #[derive(Deserialize)]
@@ -8163,6 +8338,29 @@ pub(crate) async fn spa(uri: Uri) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deep_literature_origins_accept_http_and_https() {
+        for origin in ["http://127.0.0.1:3000", "https://literature.example.com"] {
+            let parsed = deep_literature_origin(origin, "test").map_err(|error| error.1);
+            assert_eq!(parsed.unwrap().origin().ascii_serialization(), origin);
+        }
+    }
+
+    #[test]
+    fn deep_literature_origins_reject_unsafe_or_ambiguous_urls() {
+        for origin in [
+            "file:///tmp/papers",
+            "https://user:secret@literature.example.com",
+            "https://literature.example.com/api",
+            "https://literature.example.com?tenant=other",
+        ] {
+            assert!(
+                deep_literature_origin(origin, "test").is_err(),
+                "accepted {origin}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn closed_dashboard_releases_idle_chat_receiver() {
