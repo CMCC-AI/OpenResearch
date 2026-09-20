@@ -321,7 +321,7 @@ export const discoverPapers = (
 
 export interface DeepLiteratureStatus {
   connected: boolean;
-  webUrl: string;
+  webUrl: string | null;
   message: string;
 }
 
@@ -344,6 +344,9 @@ export interface DeepLiteraturePaper {
 export interface DeepLiteratureFeed {
   papers: DeepLiteraturePaper[];
   webUrl: string;
+  total: number;
+  hasMore: boolean;
+  offset: number;
 }
 
 export const getDeepLiteratureStatus = (signal?: AbortSignal) =>
@@ -353,8 +356,9 @@ export const getDeepLiteraturePapers = (
   q: string,
   tab: "hot" | "new",
   signal?: AbortSignal,
+  offset = 0,
 ) => get<DeepLiteratureFeed>(
-  `/api/deep-literature/papers?${new URLSearchParams({ q, tab, limit: "18" })}`,
+  `/api/deep-literature/papers?${new URLSearchParams({ q, tab, limit: "18", offset: String(offset) })}`,
   signal,
 );
 

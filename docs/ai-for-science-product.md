@@ -1,5 +1,7 @@
 # AI for Science 产品层
 
+完整说明见 [开发文档中心](ai-for-science/README.md)：包含原有实现、真实数据来源、费用限制、生产缺口与运维流程。
+
 本产品直接扩展 OpenResearch，不再依赖原 `ai4s` 仓库。OpenResearch 继续负责项目、Agent、实验、运行、代码、数据和产物；Deep Literature 通过稳定的公开接口提供文献理解能力；`ui/src/product` 提供面向科研用户的产品入口与能力导航。
 
 ## 页面结构

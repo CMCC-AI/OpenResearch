@@ -423,6 +423,8 @@ fn available_bytes(path: &Path) -> Option<u64> {
         return None;
     }
     // Available blocks to non-root × fragment size.
+    // statvfs field widths differ across Unix targets.
+    #[allow(clippy::unnecessary_cast)]
     Some(stat.f_bavail as u64 * stat.f_frsize as u64)
 }
 

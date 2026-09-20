@@ -451,6 +451,7 @@ async fn discover_papers(
     let url = paper_discovery_url(&base, strategy, query, options)?;
     let res = http()
         .get(url)
+        .timeout(std::time::Duration::from_secs(20))
         .header("user-agent", ALPHAXIV_UA)
         .send()
         .await
@@ -979,7 +980,7 @@ fn openalex_discovery_url(
     {
         let mut params = url.query_pairs_mut();
         params.append_pair("search", query);
-        params.append_pair("per_page", &fetch_limit.clamp(1, 200).to_string());
+        params.append_pair("per_page", &fetch_limit.clamp(1, 100).to_string());
         params.append_pair("mailto", mailto);
         params.append_pair("select", OPENALEX_SELECT);
 
@@ -1023,19 +1024,31 @@ fn rerank_openalex_works(works: &mut [OpenAlexWork], prioritize: &str) {
     }
 }
 
-/// Search OpenAlex works, optionally restricted to a source such as bioRxiv.
+/// Apply server-side authentication and a bounded timeout to OpenAlex reads.
+fn openalex_request(url: &str) -> reqwest::RequestBuilder {
+    let request = http()
+        .get(url)
+        .header("user-agent", ALPHAXIV_UA)
+        .timeout(std::time::Duration::from_secs(20));
+    match std::env::var("OPENALEX_API_KEY")
+        .ok()
+        .filter(|key| !key.trim().is_empty())
+    {
+        Some(key) => request.bearer_auth(key.trim()),
+        None => request,
+    }
+}
+
 pub async fn discover_openalex(
     query: &str,
     options: OpenAlexDiscoveryOptions<'_>,
 ) -> Result<Vec<LitHit>> {
     let base = crate::config::openalex_api_url();
     let url = openalex_discovery_url(&base, query, &crate::config::openalex_mailto(), options)?;
-    let res = http()
-        .get(url)
-        .header("user-agent", ALPHAXIV_UA)
+    let res = openalex_request(url.as_str())
         .send()
         .await
-        .map_err(|e| anyhow!("Could not reach OpenAlex at {}: {}", base, e))?;
+        .map_err(|_| anyhow!("Could not reach OpenAlex"))?;
     let status = res.status();
     if !status.is_success() {
         let reason = status.canonical_reason().unwrap_or("");
@@ -1083,12 +1096,10 @@ pub async fn fetch_openalex_work(id_or_doi: &str) -> Result<Option<OpenAlexWork>
         openalex_selector(id_or_doi),
         urlencoding::encode(&crate::config::openalex_mailto()),
     );
-    let res = http()
-        .get(&url)
-        .header("user-agent", ALPHAXIV_UA)
+    let res = openalex_request(&url)
         .send()
         .await
-        .map_err(|e| anyhow!("Could not reach OpenAlex at {}: {}", base, e))?;
+        .map_err(|_| anyhow!("Could not reach OpenAlex"))?;
     let status = res.status();
     if status.as_u16() == 404 {
         return Ok(None);
@@ -1251,6 +1262,31 @@ mod tests {
             params.get("filter").map(|value| value.as_ref()),
             Some("primary_location.source.id:S4306402567,from_publication_date:2024-01-01,to_publication_date:2026-01-31")
         );
+    }
+
+    #[test]
+    fn openalex_discovery_respects_current_page_limit() {
+        let url = openalex_discovery_url(
+            "https://api.openalex.org",
+            "science",
+            "",
+            OpenAlexDiscoveryOptions {
+                limit: u32::MAX,
+                published_after: None,
+                published_before: None,
+                prioritize: "recency",
+                source_filter: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            url.query_pairs()
+                .find(|(key, _)| key == "per_page")
+                .unwrap()
+                .1,
+            "100"
+        );
+        assert!(!url.as_str().contains("api_key"));
     }
 
     #[test]

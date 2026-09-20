@@ -34,8 +34,8 @@ pub fn alphaxiv_web_url() -> String {
     std::env::var("ALPHAXIV_WEB_URL").unwrap_or_else(|_| "https://www.alphaxiv.org".to_string())
 }
 
-/// Base URL for the OpenAlex REST API (scholarly works search). Public, no
-/// token. Backs OpenAlex and bioRxiv discovery. Override with `OPENALEX_API_URL`.
+/// OpenAlex REST API for OpenAlex and bioRxiv discovery. Optional server-side
+/// authentication uses `OPENALEX_API_KEY`; override the URL with `OPENALEX_API_URL`.
 pub fn openalex_api_url() -> String {
     std::env::var("OPENALEX_API_URL").unwrap_or_else(|_| "https://api.openalex.org".to_string())
 }
@@ -65,9 +65,8 @@ pub fn deep_literature_web_url() -> String {
         .to_string()
 }
 
-/// Contact address sent to OpenAlex as `mailto=` to enter its faster "polite
-/// pool". OpenAlex asks API users to identify themselves this way. Override with
-/// `OPENALEX_MAILTO`.
+/// Contact address sent as `mailto=`. This does not replace API-key authentication
+/// or grant an increased quota. Override the upstream default with `OPENALEX_MAILTO`.
 pub fn openalex_mailto() -> String {
     std::env::var("OPENALEX_MAILTO").unwrap_or_else(|_| "orx@alphaxiv.org".to_string())
 }

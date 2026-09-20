@@ -1323,8 +1323,8 @@ async fn discover_papers_api(Query(q): Query<PaperDiscoverQ>) -> ApiResult {
     };
 
     let query = q.q.trim();
-    if query.len() < 2 {
-        return Err(bad_request("query must contain at least 2 characters"));
+    if !(2..=500).contains(&query.chars().count()) {
+        return Err(bad_request("query must contain 2 to 500 characters"));
     }
     let source = q.source.as_deref().unwrap_or("all");
     if !matches!(source, "all" | "alphaxiv" | "openalex" | "biorxiv") {
@@ -1346,7 +1346,7 @@ async fn discover_papers_api(Query(q): Query<PaperDiscoverQ>) -> ApiResult {
             PaperDiscoveryOptions {
                 published_after: None,
                 published_before: None,
-                prioritize: "recent",
+                prioritize: "recency",
             },
         )
         .await
@@ -1368,7 +1368,7 @@ async fn discover_papers_api(Query(q): Query<PaperDiscoverQ>) -> ApiResult {
                 limit,
                 published_after: None,
                 published_before: None,
-                prioritize: "recent",
+                prioritize: "recency",
                 source_filter: None,
             },
         )
@@ -1384,7 +1384,7 @@ async fn discover_papers_api(Query(q): Query<PaperDiscoverQ>) -> ApiResult {
                 limit,
                 published_after: None,
                 published_before: None,
-                prioritize: "recent",
+                prioritize: "recency",
                 source_filter: Some(BIORXIV_SOURCE_ID),
             },
         )
@@ -1481,6 +1481,23 @@ struct DeepLiteraturePaper {
     blog: Option<Value>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeepLiteraturePage {
+    papers: Vec<DeepLiteraturePaper>,
+    total: u64,
+    has_more: bool,
+}
+
+fn validate_literature_query(query: &str, offset: u32) -> std::result::Result<(), ApiError> {
+    if query.chars().count() > 500 || offset > 10_000 {
+        return Err(bad_request(
+            "query is limited to 500 characters and offset to 10000",
+        ));
+    }
+    Ok(())
+}
+
 fn deep_literature_origin(value: &str, label: &str) -> std::result::Result<reqwest::Url, ApiError> {
     let url = reqwest::Url::parse(value).map_err(|error| {
         ApiError(
@@ -1508,6 +1525,7 @@ fn deep_literature_origin(value: &str, label: &str) -> std::result::Result<reqwe
 
 fn deep_literature_client() -> std::result::Result<reqwest::Client, ApiError> {
     reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(2))
         .timeout(std::time::Duration::from_secs(8))
         .build()
@@ -1519,7 +1537,12 @@ async fn fetch_deep_literature_papers(
     tab: &str,
     limit: u32,
     offset: u32,
-) -> std::result::Result<(Vec<DeepLiteraturePaper>, String), String> {
+) -> std::result::Result<(DeepLiteraturePage, String), String> {
+    // Bound concurrent public reads without an unbounded waiting queue.
+    static REQUESTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+    let _permit = REQUESTS
+        .try_acquire()
+        .map_err(|_| "文献服务繁忙，请稍后重试".to_string())?;
     let base = deep_literature_origin(
         &crate::config::deep_literature_url(),
         "Deep Literature API URL",
@@ -1538,24 +1561,38 @@ async fn fetch_deep_literature_papers(
         .append_pair("q", query)
         .append_pair("tab", tab)
         .append_pair("limit", &limit.to_string())
-        .append_pair("offset", &offset.to_string());
-    let response = deep_literature_client()
+        .append_pair("offset", &offset.to_string())
+        .append_pair("paginated", "1");
+    let mut response = deep_literature_client()
         .map_err(|error| error.1)?
         .get(url)
         .send()
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "无法连接文献服务，请稍后重试".to_string())?;
     if !response.status().is_success() {
         return Err(format!(
             "Deep Literature returned HTTP {}",
             response.status()
         ));
     }
-    let papers = response
-        .json::<Vec<DeepLiteraturePaper>>()
+    const MAX_BYTES: usize = 4 * 1024 * 1024;
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|error| format!("invalid Deep Literature response: {error}"))?;
-    Ok((papers, web_url))
+        .map_err(|_| "文献响应读取失败".to_string())?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_BYTES {
+            return Err("文献响应超过大小限制".to_string());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let page = serde_json::from_slice::<DeepLiteraturePage>(&body)
+        .map_err(|_| "文献服务响应格式不兼容".to_string())?;
+    if page.papers.len() > limit as usize {
+        return Err("文献服务返回数量超过请求限制".to_string());
+    }
+    Ok((page, web_url))
 }
 
 async fn deep_literature_status() -> ApiResult {
@@ -1565,10 +1602,10 @@ async fn deep_literature_status() -> ApiResult {
             "webUrl": web_url,
             "message": "Deep Literature 已连接",
         }))),
-        Err(error) => Ok(Json(json!({
+        Err(_) => Ok(Json(json!({
             "connected": false,
-            "webUrl": crate::config::deep_literature_web_url(),
-            "message": error,
+            "webUrl": null,
+            "message": "文献服务暂不可用，请检查服务配置或稍后重试",
         }))),
     }
 }
@@ -1576,21 +1613,23 @@ async fn deep_literature_status() -> ApiResult {
 async fn deep_literature_papers(Query(q): Query<DeepLiteratureQ>) -> ApiResult {
     let query = q.q.unwrap_or_default();
     let query = query.trim();
-    if query.len() == 1 {
-        return Err(bad_request(
-            "query must be empty or contain at least 2 characters",
-        ));
-    }
+    validate_literature_query(query, q.offset.unwrap_or(0))?;
     let tab = q.tab.as_deref().unwrap_or("hot");
     if !matches!(tab, "hot" | "new") {
         return Err(bad_request("tab must be hot or new"));
     }
     let limit = q.limit.unwrap_or(18).clamp(1, 50);
     let offset = q.offset.unwrap_or(0);
-    let (papers, web_url) = fetch_deep_literature_papers(query, tab, limit, offset)
+    let (page, web_url) = fetch_deep_literature_papers(query, tab, limit, offset)
         .await
-        .map_err(|error| ApiError(StatusCode::BAD_GATEWAY, error))?;
-    let papers = papers
+        .map_err(|_| {
+            ApiError(
+                StatusCode::BAD_GATEWAY,
+                "文献服务暂不可用，请稍后重试".to_string(),
+            )
+        })?;
+    let papers = page
+        .papers
         .into_iter()
         .map(|paper| {
             json!({
@@ -1610,7 +1649,10 @@ async fn deep_literature_papers(Query(q): Query<DeepLiteratureQ>) -> ApiResult {
             })
         })
         .collect::<Vec<_>>();
-    Ok(Json(json!({ "papers": papers, "webUrl": web_url })))
+    Ok(Json(
+        json!({ "papers": papers, "webUrl": web_url, "total": page.total,
+        "hasMore": page.has_more && offset + limit <= 10_000, "offset": offset }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -8338,6 +8380,30 @@ pub(crate) async fn spa(uri: Uri) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn literature_query_bounds_support_single_character_and_unicode() {
+        assert!(validate_literature_query("", 0).is_ok());
+        assert!(validate_literature_query("脑", 18).is_ok());
+        assert!(validate_literature_query(&"脑".repeat(500), 10000).is_ok());
+        assert!(validate_literature_query(&"脑".repeat(501), 0).is_err());
+        assert!(validate_literature_query("", 10001).is_err());
+    }
+
+    #[test]
+    fn literature_paginated_contract_preserves_abstract_and_ignores_viewer_state() {
+        let page: DeepLiteraturePage = serde_json::from_value(json!({
+            "papers": [{"id":"2401.00001", "title":"Evidence", "abstract":"Source text",
+                "authors":[{"name":"Researcher","slug":"researcher"}]}],
+            "total": 27, "hasMore": true, "viewerStates": {}, "authenticated": false
+        }))
+        .unwrap();
+        assert_eq!(page.total, 27);
+        assert!(page.has_more);
+        assert_eq!(page.papers[0].abstract_text, "Source text");
+        assert_eq!(page.papers[0].authors[0].name, "Researcher");
+        assert!(serde_json::from_value::<DeepLiteraturePage>(json!({"papers":[]})).is_err());
+    }
 
     #[test]
     fn deep_literature_origins_accept_http_and_https() {

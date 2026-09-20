@@ -30,6 +30,8 @@ literature, develop hypotheses, run experiments, and produce research artifacts.
 
 ## Get started
 
+AI for Science 产品扩展与 Deep Literature 集成见 [开发文档中心](docs/ai-for-science/README.md)。
+
 Install the CLI on macOS or Linux, then launch OpenResearch:
 
 ```sh
