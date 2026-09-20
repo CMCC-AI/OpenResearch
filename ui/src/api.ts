@@ -293,6 +293,32 @@ export const searchPapers = (q: string, signal?: AbortSignal) =>
     (r) => r.papers,
   );
 
+export type LiteratureSource = "alphaxiv" | "openalex" | "biorxiv";
+
+export interface LiteratureHit {
+  source: LiteratureSource;
+  id: string;
+  title: string;
+  abstract: string;
+  publicationDate?: string | null;
+  votes?: number;
+  citations?: number;
+}
+
+export interface LiteratureDiscovery {
+  papers: LiteratureHit[];
+  sourceErrors: { source: LiteratureSource; error: string }[];
+}
+
+export const discoverPapers = (
+  q: string,
+  source: LiteratureSource | "all" = "all",
+  signal?: AbortSignal,
+) => get<LiteratureDiscovery>(
+  `/api/papers/discover?${new URLSearchParams({ q, source, limit: "8" })}`,
+  signal,
+);
+
 /** The signed-in GitHub login, for naming the account a new repo lands on.
  * `login` is null when there's no usable token. */
 export const githubAccount = (signal?: AbortSignal) => get<{ login: string | null }>("/api/github/account", signal);

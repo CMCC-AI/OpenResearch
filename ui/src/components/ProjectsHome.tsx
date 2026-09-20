@@ -15,15 +15,18 @@ import {
 
 import { NewProjectForm } from "./NewProjectForm";
 import { Button } from "./ui";
+import { ResearchStartPanel } from "../product/ResearchStartPanel";
 
 export function NewProjectDialog({
   onClose,
   onCreated,
   remote = false,
+  initialPaperId,
 }: {
   onClose: () => void;
   onCreated: (project: Project, githubPublicationError: string | null) => void;
   remote?: boolean;
+  initialPaperId?: string;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
@@ -97,7 +100,7 @@ export function NewProjectDialog({
         tabIndex={-1}
       >
         <h2 id="new-project-dialog-title">{m.projects_home_new_project()}</h2>
-        <NewProjectForm onCancel={onClose} onCreated={onCreated} remote={remote} />
+        <NewProjectForm onCancel={onClose} onCreated={onCreated} remote={remote} initialPaperId={initialPaperId} />
       </div>
     </div>
   );
@@ -214,14 +217,18 @@ export function ProjectsHome({
   onCreated,
   onDeleted,
   remote = false,
+  initialDialogOpen = false,
+  initialPaperId,
 }: {
   projects: Project[];
   onOpen: (id: string) => void;
   onCreated: (project: Project, githubPublicationError: string | null) => void;
   onDeleted: (id: string) => void;
   remote?: boolean;
+  initialDialogOpen?: boolean;
+  initialPaperId?: string;
 }) {
-  const [modalOpen, setModalOpen] = useState(false);
+  const [modalOpen, setModalOpen] = useState(initialDialogOpen);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [projectPendingDelete, setProjectPendingDelete] = useState<Project | null>(null);
@@ -246,8 +253,9 @@ export function ProjectsHome({
   return (
     <div className="home flex-1 min-h-0 overflow-y-auto [scrollbar-gutter:stable_both-edges] bg-canvas">
       <div className="home-inner max-w-290 my-0 mx-auto pt-12 px-6 pb-16 [@media((max-width:_960px))]:pt-6 [@media((max-width:_960px))]:px-4">
+        <ResearchStartPanel onStart={() => setModalOpen(true)} />
         <div className="home-head flex items-center justify-between gap-3 mb-4.5 [&_h2]:m-0 [&_h2]:text-4xl [&_h2]:tracking-[-0.02em] [@media((max-width:_520px))]:items-start [@media((max-width:_520px))]:flex-col">
-          <h2>{m.projects_home_projects()}</h2>
+          <h2>继续研究</h2>
           <Button
             onClick={() => setModalOpen(true)}
           >
@@ -383,6 +391,7 @@ export function ProjectsHome({
       {modalOpen && (
         <NewProjectDialog
           remote={remote}
+          initialPaperId={initialPaperId}
           onClose={() => setModalOpen(false)}
           onCreated={(project, githubPublicationError) => {
             setModalOpen(false);

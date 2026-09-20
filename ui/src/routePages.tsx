@@ -1,7 +1,7 @@
 import { setScopedQueryData } from "./queries/client";
 import { isCancelledError, useQuery } from "@tanstack/react-query";
 import { listProjectsQuery, getUiStateQuery } from "./queries/projects";
-import { useRouteContext, Link, useNavigate, type ErrorComponentProps } from "@tanstack/react-router";
+import { useRouteContext, Link, useNavigate, useSearch, type ErrorComponentProps } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import { useRuntime } from "./RemoteRuntime";
@@ -17,6 +17,7 @@ import { OfflineBanner } from "./components/OfflineBanner";
 import { RemoteStatus } from "./components/RemoteStatus";
 import { UpdateBanner, useUpdateStatus } from "./components/UpdateBanner";
 import { Button, showAlert, Spinner } from "./components/ui";
+import { PlatformFrame } from "./product/ProductNav";
 
 export function RoutePending() {
   return <div className="flex flex-1 h-full items-center justify-center"><Spinner /></div>;
@@ -68,6 +69,7 @@ export function ResumeProject({ projectId }: { projectId: string }) { return <Re
 export function ProjectsPage() {
   const runtime = useRuntime();
   const navigate = useNavigate();
+  const start = useSearch({ from: "/projects/" });
   const projectsOptions = listProjectsQuery();
   const projectsQuery = useQuery(projectsOptions);
   const stateQuery = useQuery(getUiStateQuery());
@@ -87,7 +89,8 @@ export function ProjectsPage() {
   const openProject = (projectId: string) => void navigate({ to: "/projects/$projectId", params: { projectId } });
 
   return (
-    <div className="app flex flex-col h-full">
+    <PlatformFrame title="AI 原生科研工作台">
+    <div className="app flex flex-col flex-1 min-h-0">
       {runtime.kind === "local" && <><OfflineBanner /><UpdateBanner status={status} /></>}
       {error && (!projects || !state) ? <RouteFailure error={error} reset={retry} />
         : !projects || !state ? <RoutePending />
@@ -104,6 +107,8 @@ export function ProjectsPage() {
             <ProjectsHome
               remote={runtime.kind === "ssh"}
               projects={projects}
+              initialDialogOpen={Boolean(start.new || start.paper)}
+              initialPaperId={start.paper}
               onOpen={openProject}
               onCreated={(project, publicationError) => {
                 if (publicationError) {
@@ -116,5 +121,6 @@ export function ProjectsPage() {
           )}
       {runtime.kind === "ssh" && <RemoteStatus runtime={runtime} corner />}
     </div>
+    </PlatformFrame>
   );
 }

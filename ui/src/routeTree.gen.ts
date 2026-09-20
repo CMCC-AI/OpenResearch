@@ -10,6 +10,8 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as CapabilitiesRouteImport } from './routes/capabilities'
+import { Route as DiscoverRouteImport } from './routes/discover'
 import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as RemoteLaunchRouteImport } from './routes/remote-launch'
 import { Route as ProjectsIndexRouteImport } from './routes/projects.index'
@@ -23,6 +25,16 @@ import { Route as ProjectsProjectIdTasksNewRouteImport } from './routes/projects
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CapabilitiesRoute = CapabilitiesRouteImport.update({
+  id: '/capabilities',
+  path: '/capabilities',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DiscoverRoute = DiscoverRouteImport.update({
+  id: '/discover',
+  path: '/discover',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProjectsRoute = ProjectsRouteImport.update({
@@ -76,6 +88,8 @@ const ProjectsProjectIdTasksNewRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/capabilities': typeof CapabilitiesRoute
+  '/discover': typeof DiscoverRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/remote-launch': typeof RemoteLaunchRoute
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
@@ -88,6 +102,8 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/capabilities': typeof CapabilitiesRoute
+  '/discover': typeof DiscoverRoute
   '/remote-launch': typeof RemoteLaunchRoute
   '/projects': typeof ProjectsIndexRoute
   '/projects/$projectId/skills': typeof ProjectsProjectIdSkillsRoute
@@ -99,6 +115,8 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/capabilities': typeof CapabilitiesRoute
+  '/discover': typeof DiscoverRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/remote-launch': typeof RemoteLaunchRoute
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
@@ -113,6 +131,8 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/capabilities'
+    | '/discover'
     | '/projects'
     | '/remote-launch'
     | '/projects/$projectId'
@@ -125,6 +145,8 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/capabilities'
+    | '/discover'
     | '/remote-launch'
     | '/projects'
     | '/projects/$projectId/skills'
@@ -135,6 +157,8 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/capabilities'
+    | '/discover'
     | '/projects'
     | '/remote-launch'
     | '/projects/$projectId'
@@ -148,6 +172,8 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  CapabilitiesRoute: typeof CapabilitiesRoute
+  DiscoverRoute: typeof DiscoverRoute
   ProjectsRoute: typeof ProjectsRouteWithChildren
   RemoteLaunchRoute: typeof RemoteLaunchRoute
 }
@@ -159,6 +185,20 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/capabilities': {
+      id: '/capabilities'
+      path: '/capabilities'
+      fullPath: '/capabilities'
+      preLoaderRoute: typeof CapabilitiesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/discover': {
+      id: '/discover'
+      path: '/discover'
+      fullPath: '/discover'
+      preLoaderRoute: typeof DiscoverRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/projects': {
@@ -262,6 +302,8 @@ const ProjectsRouteWithChildren = ProjectsRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  CapabilitiesRoute: CapabilitiesRoute,
+  DiscoverRoute: DiscoverRoute,
   ProjectsRoute: ProjectsRouteWithChildren,
   RemoteLaunchRoute: RemoteLaunchRoute,
 }

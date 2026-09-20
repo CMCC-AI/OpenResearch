@@ -34,6 +34,9 @@ function loadModule(filename, api = {}, remembered = null) {
       if (id === "../App") return { default: () => null };
       if (id === "../RemoteRuntime") return { RuntimeRoot: () => null, useRuntime: () => ({ kind: "local" }) };
       if (id === "../routePages") return { ResumeGlobal: () => null, ResumeProject: () => null, ProjectsPage: () => null };
+      if (id === "../product/LandingPage") return { LandingPage: () => null };
+      if (id === "../product/CapabilitiesPage") return { CapabilitiesPage: () => null };
+      if (id === "../product/DiscoverPage") return { DiscoverPage: () => null };
       if (id.startsWith("./routes/")) return load(new URL(`${id}.tsx`, url));
       throw new Error(`Unexpected dependency: ${id}`);
     }, exports);
@@ -52,6 +55,8 @@ async function match(path) {
 test("real file routes distinguish task/new, task IDs, project index, and settings", async () => {
   for (const [path, routeId] of [
     ["/", "/"],
+    ["/capabilities", "/capabilities"],
+    ["/discover", "/discover"],
     ["/projects", "/projects/"],
     ["/projects/p", "/projects/$projectId/"],
     ["/projects/p/tasks/new", "/projects/$projectId/tasks/new"],
@@ -68,6 +73,13 @@ test("real file routes distinguish task/new, task IDs, project index, and settin
     const invalid = await match(path);
     assert(invalid.state.matches.some((route) => route.status === "notFound"), path);
   }
+});
+
+test("product start links preserve new-project and alphaXiv paper intent", async () => {
+  const blank = await match("/projects?new=true");
+  assert.deepEqual(blank.state.matches.at(-1).search, { new: true, paper: undefined });
+  const { parseProjectsSearch } = loadModule("routes/projects.index.tsx");
+  assert.deepEqual(parseProjectsSearch({ paper: "arxiv:2401.00001" }), { new: undefined, paper: "2401.00001" });
 });
 
 test("project search validates every pane variant and rejects malformed panes", async () => {

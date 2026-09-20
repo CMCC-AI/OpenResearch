@@ -1,4 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ResumeGlobal } from "../routePages";
+import { LandingPage } from "../product/LandingPage";
 
-export const Route = createFileRoute("/")({ component: ResumeGlobal });
+export const Route = createFileRoute("/")({ component: LandingPage });

@@ -467,6 +467,7 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
         .route("/api/projects/{id}/experiments", get(list_experiments))
         .route("/api/projects/{id}/runs", get(list_project_runs))
         .route("/api/papers/search", get(search_papers_api))
+        .route("/api/papers/discover", get(discover_papers_api))
         .route("/api/papers/resolve", get(resolve_paper_api))
         .route("/api/compute/backends", get(compute_backends))
         .route("/api/runs", post(create_run))
@@ -1304,6 +1305,137 @@ async fn search_papers_api(Query(q): Query<PaperSearchQ>) -> ApiResult {
         .await
         .map_err(bad_request)?;
     Ok(Json(json!({ "papers": papers })))
+}
+
+#[derive(Deserialize)]
+struct PaperDiscoverQ {
+    q: String,
+    source: Option<String>,
+    limit: Option<u32>,
+}
+
+async fn discover_papers_api(Query(q): Query<PaperDiscoverQ>) -> ApiResult {
+    use crate::client::{
+        discover_openalex, discover_papers_by_keyword, LitHit, OpenAlexDiscoveryOptions,
+        PaperDiscoveryOptions, BIORXIV_SOURCE_ID,
+    };
+
+    let query = q.q.trim();
+    if query.len() < 2 {
+        return Err(bad_request("query must contain at least 2 characters"));
+    }
+    let source = q.source.as_deref().unwrap_or("all");
+    if !matches!(source, "all" | "alphaxiv" | "openalex" | "biorxiv") {
+        return Err(bad_request("unknown literature source"));
+    }
+    let limit = q.limit.unwrap_or(8).clamp(1, 25);
+    let disabled = crate::config::disabled_lit_sources();
+    let enabled = |name: &str| !disabled.iter().any(|item| item == name);
+    let use_alpha = (source == "all" || source == "alphaxiv") && enabled("alphaxiv");
+    let use_openalex = (source == "all" || source == "openalex") && enabled("openalex");
+    let use_biorxiv = (source == "all" || source == "biorxiv") && enabled("biorxiv");
+
+    let alpha = async {
+        if !use_alpha {
+            return Ok(Vec::new());
+        }
+        discover_papers_by_keyword(
+            query,
+            PaperDiscoveryOptions {
+                published_after: None,
+                published_before: None,
+                prioritize: "recent",
+            },
+        )
+        .await
+        .map(|papers| {
+            papers
+                .into_iter()
+                .take(limit as usize)
+                .map(LitHit::from)
+                .collect::<Vec<_>>()
+        })
+    };
+    let openalex = async {
+        if !use_openalex {
+            return Ok(Vec::new());
+        }
+        discover_openalex(
+            query,
+            OpenAlexDiscoveryOptions {
+                limit,
+                published_after: None,
+                published_before: None,
+                prioritize: "recent",
+                source_filter: None,
+            },
+        )
+        .await
+    };
+    let biorxiv = async {
+        if !use_biorxiv {
+            return Ok(Vec::new());
+        }
+        discover_openalex(
+            query,
+            OpenAlexDiscoveryOptions {
+                limit,
+                published_after: None,
+                published_before: None,
+                prioritize: "recent",
+                source_filter: Some(BIORXIV_SOURCE_ID),
+            },
+        )
+        .await
+    };
+
+    let (alpha_result, openalex_result, biorxiv_result) = tokio::join!(alpha, openalex, biorxiv);
+    let mut papers = Vec::new();
+    let mut source_errors = Vec::new();
+    for (name, selected, is_enabled, result) in [
+        (
+            "alphaxiv",
+            source == "all" || source == "alphaxiv",
+            enabled("alphaxiv"),
+            alpha_result,
+        ),
+        (
+            "openalex",
+            source == "all" || source == "openalex",
+            enabled("openalex"),
+            openalex_result,
+        ),
+        (
+            "biorxiv",
+            source == "all" || source == "biorxiv",
+            enabled("biorxiv"),
+            biorxiv_result,
+        ),
+    ] {
+        if !selected {
+            continue;
+        }
+        if !is_enabled {
+            source_errors
+                .push(json!({ "source": name, "error": "source is disabled in settings" }));
+            continue;
+        }
+        match result {
+            Ok(mut hits) => papers.append(&mut hits),
+            Err(error) => source_errors.push(json!({ "source": name, "error": error.to_string() })),
+        }
+    }
+    if source != "all" && papers.is_empty() && !source_errors.is_empty() {
+        return Err(bad_request(
+            source_errors[0]["error"]
+                .as_str()
+                .unwrap_or("paper discovery failed"),
+        ));
+    }
+    papers.sort_by(|a, b| b.publication_date.cmp(&a.publication_date));
+    Ok(Json(
+        json!({ "papers": papers, "sourceErrors": source_errors }),
+    ))
 }
 
 #[derive(Deserialize)]
