@@ -7,8 +7,18 @@ services:
       dockerfile: packages/platform/Dockerfile.executor
     environment:
       PLATFORM_ORIGIN: ${PLATFORM_ORIGIN:?Set HTTPS platform origin}
+      PLATFORM_CONNECT_URL: ${PLATFORM_CONNECT_URL:-${PLATFORM_ORIGIN}}
       RUNNER_TOKEN_FILE: /run/secrets/runner_token
-    secrets: [runner_token]
+      ORX_DEEP_LITERATURE_URL: ${ORX_DEEP_LITERATURE_URL:-http://host.docker.internal:3000}
+      ORX_DEEP_LITERATURE_WEB_URL: ${ORX_DEEP_LITERATURE_WEB_URL:-http://localhost:3000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    secrets:
+      - source: runner_token
+        target: runner_token
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
     volumes: [executor_home:/home/node]
     init: true
     cap_drop: [ALL]

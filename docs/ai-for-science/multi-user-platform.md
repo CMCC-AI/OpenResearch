@@ -77,6 +77,19 @@ RUNNER_TOKEN_FILE=/secure/runner.token \
 docker compose -p research-team-a -f compose.executor.yaml up -d --build
 ```
 
+本地 Docker 联调时，执行器容器通过宿主机访问平台：
+
+```sh
+PLATFORM_ORIGIN=http://localhost:5300 \
+PLATFORM_CONNECT_URL=http://host.docker.internal:5300 \
+ORX_DEEP_LITERATURE_URL=http://host.docker.internal:3000 \
+ORX_DEEP_LITERATURE_WEB_URL=http://localhost:3000 \
+RUNNER_TOKEN_FILE=/secure/runner.token \
+docker compose -p research-team-a -f compose.executor.yaml up -d --build
+```
+
+`host.docker.internal` 只允许用于本地 HTTP 容器桥接。公网平台仍必须使用 HTTPS。
+
 该模板不发布orx端口，使用非root用户、独立HOME卷、4CPU/8GiB/512进程限制、关闭额外capability。凭据文件须可由容器UID1000读取且不对其他用户开放。Agent CLI、Python依赖、GPU运行时和模型授权应做成受控派生镜像/环境；模板不会自动采购算力或安装所有Agent。容器共享内核且有默认出站网络，不作为公网恶意代码隔离方案。
 
 Deep Literature地址需要在执行器环境显式设置 `ORX_DEEP_LITERATURE_URL` 与浏览器可达的 `ORX_DEEP_LITERATURE_WEB_URL`。容器内默认127.0.0.1不会指向宿主文献服务。云工作空间的精读链接先进入 DeepLiterature `/api/auth/openresearch/start`，再以一次性授权码与 PKCE 复用平台账户；个人文库、笔记和问答按 OpenResearch 用户 UUID 隔离。系统不会按邮箱自动合并旧 DeepLiterature 账户。

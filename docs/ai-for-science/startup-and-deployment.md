@@ -91,7 +91,34 @@ curl -I 'http://localhost:3000/api/auth/openresearch/start?returnTo=%2Flibrary'
 
 第二条命令应返回 `303`，`Location` 应以 `http://localhost:5300/api/auth/sso/authorize` 开头。
 
-### 3. 浏览器验收
+### 3. 启动工作空间执行器
+
+先在团队平台的“空间管理”中签发执行器凭据，只会显示一次。将其保存到 Git 仓库外并设置权限：
+
+```bash
+mkdir -p ~/.config/openresearch/runners
+chmod 700 ~/.config/openresearch/runners
+chmod 600 ~/.config/openresearch/runners/test.token
+```
+
+每个工作空间使用独立的 Compose 项目名、token 文件和数据卷：
+
+```bash
+cd /Users/levent/cmccProjects/OpenResearch/packages/platform
+
+PLATFORM_ORIGIN=http://localhost:5300 \
+PLATFORM_CONNECT_URL=http://host.docker.internal:5300 \
+ORX_DEEP_LITERATURE_URL=http://host.docker.internal:3000 \
+ORX_DEEP_LITERATURE_WEB_URL=http://localhost:3000 \
+RUNNER_TOKEN_FILE=$HOME/.config/openresearch/runners/test.token \
+docker compose -p openresearch-test -f compose.executor.yaml up -d --build
+
+docker compose -p openresearch-test -f compose.executor.yaml logs executor
+```
+
+日志出现 `Executor connected` 后，刷新团队平台应显示“执行器在线”。执行器镜像包含 OpenResearch 后端，但默认不携带 Agent CLI 账号；要运行 Agent 任务，还需要在受控派生镜像中安装 Claude Code、Codex、OpenCode 等一种执行端并配置对应模型凭据。
+
+### 4. 浏览器验收
 
 1. 打开 `http://localhost:5300/login` 登录 OpenResearch。
 2. 打开 `http://localhost:5300/projects` 检查项目工作台。
@@ -109,6 +136,12 @@ docker compose -f compose.yaml -f compose.dev.yaml up -d
 
 cd /Users/levent/cmccProjects/DeepLiterature
 docker compose up -d
+
+cd /Users/levent/cmccProjects/OpenResearch/packages/platform
+PLATFORM_ORIGIN=http://localhost:5300 \
+PLATFORM_CONNECT_URL=http://host.docker.internal:5300 \
+RUNNER_TOKEN_FILE=$HOME/.config/openresearch/runners/test.token \
+docker compose -p openresearch-test -f compose.executor.yaml up -d
 ```
 
 只重启 Web，不触发全部 Worker 重建：
@@ -129,7 +162,14 @@ docker compose -f compose.yaml -f compose.dev.yaml logs -f platform migrate db
 cd /Users/levent/cmccProjects/DeepLiterature
 docker compose logs -f web scheduler pdf-worker blog-worker
 
-# 先停 DeepLiterature，再停身份与平台服务
+# 先停工作空间执行器
+cd /Users/levent/cmccProjects/OpenResearch/packages/platform
+PLATFORM_ORIGIN=http://localhost:5300 \
+RUNNER_TOKEN_FILE=$HOME/.config/openresearch/runners/test.token \
+docker compose -p openresearch-test -f compose.executor.yaml stop
+
+# 再停 DeepLiterature 和身份控制平台
+cd /Users/levent/cmccProjects/DeepLiterature
 docker compose stop
 cd /Users/levent/cmccProjects/OpenResearch/packages/platform
 docker compose -f compose.yaml -f compose.dev.yaml stop

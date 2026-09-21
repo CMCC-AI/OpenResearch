@@ -6,12 +6,20 @@ import { MAX_BODY, decoded, send } from "./tunnel.mjs";
 import { pathToFileURL } from "node:url";
 
 // No public listener: this connector only reaches a fixed local OpenResearch instance.
-export function connectRunner({ platform, credential, upstream }) {
-  const remote = new URL("/_platform/runner", platform);
+export function connectRunner({
+  platform,
+  connect = platform,
+  credential,
+  upstream,
+}) {
+  const publicOrigin = new URL(platform);
+  const remote = new URL("/_platform/runner", connect);
   check(
     remote.protocol === "https:" ||
       (remote.protocol === "http:" &&
-        ["localhost", "127.0.0.1"].includes(remote.hostname)),
+        ["localhost", "127.0.0.1", "host.docker.internal"].includes(
+          remote.hostname,
+        )),
   );
   remote.protocol = remote.protocol === "https:" ? "wss:" : "ws:";
   const local = new URL(upstream);
@@ -24,7 +32,10 @@ export function connectRunner({ platform, credential, upstream }) {
       !local.password,
   );
   const ws = new WebSocket(remote, {
-    headers: { authorization: `Bearer ${credential}` },
+    headers: {
+      authorization: `Bearer ${credential}`,
+      host: publicOrigin.host,
+    },
     maxPayload: 12 * 1024 * 1024,
     handshakeTimeout: 10000,
     perMessageDeflate: false,
@@ -167,6 +178,7 @@ export function connectRunner({ platform, credential, upstream }) {
 
 async function main() {
   const platform = process.env.PLATFORM_ORIGIN;
+  const connect = process.env.PLATFORM_CONNECT_URL || platform;
   const upstream = process.env.ORX_UPSTREAM || "http://127.0.0.1:4791";
   const file = process.env.RUNNER_TOKEN_FILE;
   check(platform && file, 400, "Set PLATFORM_ORIGIN and RUNNER_TOKEN_FILE");
@@ -202,7 +214,7 @@ async function main() {
   process.on("SIGTERM", stop);
   let failures = 0;
   while (!stopping) {
-    socket = connectRunner({ platform, credential, upstream });
+    socket = connectRunner({ platform, connect, credential, upstream });
     socket.on("open", () => {
       failures = 0;
       console.log("Executor connected");

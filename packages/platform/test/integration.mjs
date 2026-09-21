@@ -345,6 +345,7 @@ test(
         assert.equal(r.status, 201);
         const socket = connectRunner({
           platform: config.origin.origin,
+          connect: `http://127.0.0.1:${port}`,
           credential: r.data.token,
           upstream,
         });
