@@ -209,6 +209,23 @@ test(
         });
         assert.equal(introspection.status, 200);
         assert.equal(introspection.data.data.email, "alice@test.invalid");
+        const dockerBridgeIntrospection = await request(
+          "/api/auth/sso/session",
+          {
+            method: "POST",
+            host: `host.docker.internal:${port}`,
+            data: {
+              subject: aliceSso.subject,
+              sessionId: aliceSso.sessionId,
+            },
+            headers: ssoHeaders,
+          },
+        );
+        assert.equal(dockerBridgeIntrospection.status, 200);
+        assert.equal(
+          dockerBridgeIntrospection.data.data.email,
+          "alice@test.invalid",
+        );
       });
       async function workspace(cookie, name) {
         const r = await request("/api/platform/workspaces", {

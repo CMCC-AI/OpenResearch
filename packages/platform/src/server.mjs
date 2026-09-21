@@ -278,8 +278,21 @@ export async function createPlatform(
         "max-age=31536000; includeSubDomains",
       );
     try {
-      const requestedWorkspace = hostWorkspace(config, req.headers.host);
       const path = new URL(req.url, config.origin).pathname;
+      const ssoServicePath = [
+        "/api/auth/sso/exchange",
+        "/api/auth/sso/session",
+        "/api/auth/sso/logout",
+      ].includes(path);
+      const localDockerSsoBridge =
+        ssoServicePath &&
+        req.method === "POST" &&
+        config.origin.hostname === "localhost" &&
+        req.headers.host ===
+          `host.docker.internal:${config.origin.port || "80"}`;
+      const requestedWorkspace = localDockerSsoBridge
+        ? null
+        : hostWorkspace(config, req.headers.host);
       if (requestedWorkspace) {
         const workspace = requestedWorkspace;
         if (path === "/_platform/enter" && req.method === "GET")

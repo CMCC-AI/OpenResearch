@@ -11,6 +11,7 @@
     "migrate": "node src/admin.mjs migrate",
     "admin": "node src/admin.mjs",
     "runner": "node src/runner.mjs",
+    "executor:local": "node src/local-executor.mjs",
     "test": "node --test test/*.test.mjs",
     "format:check": "prettier --check 'src/*.mjs' 'test/*.mjs' 'public/*' package.json compose*.yaml",
     "test:integration": "node --test test/integration.mjs"
