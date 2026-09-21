@@ -241,7 +241,7 @@ export async function createPlatform(
   async function staticFile(res, directory, pathname) {
     check(!pathname.includes("\\") && !pathname.includes("\0"), 400);
     const path = resolve(directory, `.${pathname}`);
-    check(path.startsWith(directory + sep), 404);
+    check(path === directory || path.startsWith(directory + sep), 404);
     let file = path;
     try {
       if (!(await stat(file)).isFile()) file = resolve(directory, "index.html");

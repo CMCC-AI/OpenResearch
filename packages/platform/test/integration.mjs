@@ -120,6 +120,7 @@ test(
       }
       const alice = await login("alice"),
         bob = await login("bob");
+      assert.equal((await request("/")).status, 200);
       let aliceSso;
       await t.test("DeepLiterature SSO is PKCE-bound and one-use", async () => {
         const state = "s".repeat(43),
