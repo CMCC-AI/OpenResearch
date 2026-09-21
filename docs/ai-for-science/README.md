@@ -4,7 +4,7 @@
 
 ## 阅读顺序
 
-新增：[多用户平台与部署](multi-user-platform.md)——邀请制账户、工作空间角色、独立执行器和交付方式；[统一登录](unified-login.md)——OpenResearch 与 DeepLiterature 的授权、映射、撤权和发布流程。下列2026-09-20审查记录保留当时状态，最新实现以上述文档为准。
+新增：[启动与部署](startup-and-deployment.md)——两套系统的环境变量、完整启动顺序、验收、停止与生产发布；[多用户平台与部署](multi-user-platform.md)——邀请制账户、工作空间角色、独立执行器和交付方式；[统一登录](unified-login.md)——OpenResearch 与 DeepLiterature 的授权、映射、撤权和发布流程。下列2026-09-20审查记录保留当时状态，最新实现以上述文档为准。
 
 1. [实现与数据流](architecture.md)：原生实现、后加的产品层、论文的真实来源、执行链路。
 2. [渠道、费用和限制](sources-and-costs.md)：官方依据、项目实际调用、收费边界、配额估算。

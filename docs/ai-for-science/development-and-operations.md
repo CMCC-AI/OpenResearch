@@ -2,10 +2,11 @@
 
 ## 目录与职责
 
-正式来源仓库：/Users/levent/cmccProjects/OpenResearch。
-当前功能分支工作区：/private/tmp/openresearch-ai4s，分支 feat/ai4s-product。
-文献服务：/Users/levent/cmccProjects/DeepLiterature。
-旧 /Users/levent/cmccProjects/ai4s 已暂停开发。功能分支尚未合并到main；临时worktree不应成为长期发布路径，应在正式CI从提交SHA构建。
+OpenResearch 仓库：`/Users/levent/cmccProjects/OpenResearch`，当前产品分支为 `feat/ai4s-product`。
+DeepLiterature 仓库：`/Users/levent/cmccProjects/DeepLiterature`，当前统一登录分支为 `codex/unified-login`。
+旧 `/Users/levent/cmccProjects/ai4s` 已暂停开发。发布必须从正式仓库的提交 SHA 构建，不能依赖临时 worktree。
+
+两套系统的 Docker 环境配置、完整启动顺序、验收和生产发布流程见[启动与部署](startup-and-deployment.md)。
 
 ## 开发启动
 
