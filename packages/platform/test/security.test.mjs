@@ -8,6 +8,7 @@ import {
   verifyPassword,
   hostWorkspace,
   sessionCookie,
+  workspaceEntryOrigin,
 } from "../src/security.mjs";
 import { configuration } from "../src/server.mjs";
 test("cancelling an overloaded stream does not crash the gateway", () => {
@@ -95,4 +96,37 @@ test("origins and cookies are host-scoped, public HTTP rejected", () => {
   assert.ok(cookie.startsWith("__Host-"));
   assert.ok(cookie.includes("Secure"));
   assert.ok(!cookie.includes("Domain="));
+});
+test("workspace entry accepts only explicit or embedded same-origin navigation", () => {
+  const expected = "http://workspace.localhost:5300";
+  assert.doesNotThrow(() =>
+    workspaceEntryOrigin({ headers: { origin: expected } }, expected),
+  );
+  assert.doesNotThrow(() =>
+    workspaceEntryOrigin(
+      {
+        headers: {
+          origin: "null",
+          "sec-fetch-site": "same-origin",
+          "sec-fetch-mode": "navigate",
+        },
+      },
+      expected,
+    ),
+  );
+  for (const headers of [
+    { origin: "null" },
+    {
+      origin: "null",
+      "sec-fetch-site": "cross-site",
+      "sec-fetch-mode": "navigate",
+    },
+    {
+      origin: "null",
+      "sec-fetch-site": "same-origin",
+      "sec-fetch-mode": "cors",
+    },
+    { origin: "http://evil.example" },
+  ])
+    assert.throws(() => workspaceEntryOrigin({ headers }, expected));
 });

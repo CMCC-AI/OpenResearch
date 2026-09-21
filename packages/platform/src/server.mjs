@@ -19,6 +19,7 @@ import {
   sessionCookie,
   hostWorkspace,
   workspaceOrigin,
+  workspaceEntryOrigin,
   sameOrigin,
   permitted,
   secretEqual,
@@ -286,7 +287,7 @@ export async function createPlatform(
         if (path === "/workspace-enter.js" && req.method === "GET")
           return await staticFile(res, publicDir, path);
         if (path === "/_platform/enter" && req.method === "POST") {
-          sameOrigin(req, workspaceOrigin(config, workspace));
+          workspaceEntryOrigin(req, workspaceOrigin(config, workspace));
           const params = new URLSearchParams(
             (await body(req, 4096)).toString(),
           );

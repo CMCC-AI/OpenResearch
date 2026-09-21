@@ -94,6 +94,17 @@ export function hostWorkspace(config, host) {
 export function sameOrigin(req, origin) {
   check(req.headers.origin === origin, 403, "请求来源不受信任");
 }
+export function workspaceEntryOrigin(req, origin) {
+  const embeddedSameOriginNavigation =
+    req.headers.origin === "null" &&
+    req.headers["sec-fetch-site"] === "same-origin" &&
+    req.headers["sec-fetch-mode"] === "navigate";
+  check(
+    req.headers.origin === origin || embeddedSameOriginNavigation,
+    403,
+    "请求来源不受信任",
+  );
+}
 // A workspace is a trust boundary: its members can access all its research projects.
 // Never expose machine administration or internal callback endpoints through the gateway.
 export function permitted(role, method, path) {

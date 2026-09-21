@@ -236,8 +236,12 @@ test(
         const entered = await request("/_platform/enter", {
           method: "POST",
           host: `${w}.${portal}`,
-          origin: `http://${w}.${portal}`,
+          origin: "null",
           raw: `ticket=${ticket}`,
+          headers: {
+            "sec-fetch-site": "same-origin",
+            "sec-fetch-mode": "navigate",
+          },
         });
         assert.equal(entered.status, 303, JSON.stringify(entered.data));
         return { ...entered, ticket };
@@ -282,8 +286,12 @@ test(
               await request("/_platform/enter", {
                 method: "POST",
                 host: aHost,
-                origin: `http://${aHost}`,
+                origin: "null",
                 raw: `ticket=${aSession.ticket}`,
+                headers: {
+                  "sec-fetch-site": "same-origin",
+                  "sec-fetch-mode": "navigate",
+                },
               })
             ).status,
             401,
