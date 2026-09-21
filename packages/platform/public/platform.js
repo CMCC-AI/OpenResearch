@@ -132,16 +132,9 @@ function createDialog() {
 }
 async function launch(id) {
   const result = await api(`/workspaces/${id}/launch`, "POST");
-  const f = document.createElement("form");
-  f.method = "POST";
-  f.action = result.url;
-  const i = document.createElement("input");
-  i.type = "hidden";
-  i.name = "ticket";
-  i.value = result.ticket;
-  f.append(i);
-  document.body.append(f);
-  f.submit();
+  const target = new URL(result.url);
+  target.hash = new URLSearchParams({ ticket: result.ticket });
+  location.assign(target);
 }
 function passwordDialog() {
   show(

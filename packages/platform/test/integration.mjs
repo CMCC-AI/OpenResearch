@@ -229,9 +229,14 @@ test(
         });
         assert.equal(r.status, 200);
         const ticket = r.data.ticket;
+        const entry = await request("/_platform/enter", {
+          host: `${w}.${portal}`,
+        });
+        assert.equal(entry.status, 200);
         const entered = await request("/_platform/enter", {
           method: "POST",
           host: `${w}.${portal}`,
+          origin: `http://${w}.${portal}`,
           raw: `ticket=${ticket}`,
         });
         assert.equal(entered.status, 303, JSON.stringify(entered.data));
@@ -277,6 +282,7 @@ test(
               await request("/_platform/enter", {
                 method: "POST",
                 host: aHost,
+                origin: `http://${aHost}`,
                 raw: `ticket=${aSession.ticket}`,
               })
             ).status,

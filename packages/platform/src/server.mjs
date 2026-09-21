@@ -281,8 +281,12 @@ export async function createPlatform(
       const path = new URL(req.url, config.origin).pathname;
       if (requestedWorkspace) {
         const workspace = requestedWorkspace;
+        if (path === "/_platform/enter" && req.method === "GET")
+          return await staticFile(res, publicDir, "/workspace-enter.html");
+        if (path === "/workspace-enter.js" && req.method === "GET")
+          return await staticFile(res, publicDir, path);
         if (path === "/_platform/enter" && req.method === "POST") {
-          sameOrigin(req, config.origin.origin);
+          sameOrigin(req, workspaceOrigin(config, workspace));
           const params = new URLSearchParams(
             (await body(req, 4096)).toString(),
           );
