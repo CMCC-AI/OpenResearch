@@ -2,6 +2,8 @@
 
 本文是当前个人版本的部署基线，覆盖三个运行单元：
 
+官方源码同步与产品发行包升级流程见[官方版本同步与产品升级](upstream-upgrades.md)。产品构建不会从官方仓库自动替换自身。
+
 1. OpenResearch 本地科研工作台：本地项目、Agent、Git、实验和计算后端。
 2. OpenResearch 统一账号服务：注册、登录、会话、退出和 SSO 授权。
 3. Deep Literature：论文发现、精读、文库、笔记及后台 Worker。

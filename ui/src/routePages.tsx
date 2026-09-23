@@ -15,7 +15,7 @@ import { m } from "./paraglide/messages.js";
 import { Onboarding } from "./components/Onboarding";
 import { ProjectsHome } from "./components/ProjectsHome";
 import { OfflineBanner } from "./components/OfflineBanner";
-import { RemoteStatus } from "./components/RemoteStatus";
+import { WorkspaceConnection } from "./components/WorkspaceConnection";
 import { UpdateBanner, useUpdateStatus } from "./components/UpdateBanner";
 import { Button, showAlert, Spinner } from "./components/ui";
 import { PlatformFrame } from "./product/ProductNav";
@@ -76,6 +76,7 @@ export function ProjectsPage() {
   const stateQuery = useQuery(getUiStateQuery());
   const projects = projectsQuery.data;
   const state = stateQuery.data;
+  const onboarding = projects?.length === 0 && state?.onboardingCompleted === false;
   const error = projectsQuery.error ?? stateQuery.error;
   const retry = () => { void projectsQuery.refetch(); void stateQuery.refetch(); };
   const { status } = useUpdateStatus(runtime.kind === "local" && !isCloudWorkspace());
@@ -95,7 +96,7 @@ export function ProjectsPage() {
       {runtime.kind === "local" && !isCloudWorkspace() && <><OfflineBanner /><UpdateBanner status={status} /></>}
       {error && (!projects || !state) ? <RouteFailure error={error} reset={retry} />
         : !projects || !state ? <RoutePending />
-          : projects.length === 0 && !state.onboardingCompleted && !isCloudWorkspace() ? (
+          : onboarding && !isCloudWorkspace() ? (
             <Onboarding
               remote={runtime.kind === "ssh"}
               preferredAgent={state.preferredAgent}
@@ -120,7 +121,7 @@ export function ProjectsPage() {
               onDeleted={(id) => setScopedQueryData(projectsOptions.queryKey, (current) => current?.filter((project) => project.id !== id))}
             />
           )}
-      {runtime.kind === "ssh" && <RemoteStatus runtime={runtime} corner />}
+      {runtime.kind === "ssh" && <WorkspaceConnection runtime={runtime} corner />}
     </div>
     </PlatformFrame>
   );

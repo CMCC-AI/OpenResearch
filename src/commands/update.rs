@@ -33,6 +33,11 @@ use crate::updates::{self, UpdateTarget};
 /// respawning on every command. A foreground run records too — a user who fixes
 /// the cause and updates by hand should not stay stuck behind the backoff.
 pub async fn run(args: crate::UpdateArgs) -> Result<()> {
+    if !updates::OFFICIAL_UPDATE_CHANNEL_ENABLED {
+        return Err(anyhow!(
+            "This product build is updated through its own release package, not upstream `orx update`."
+        ));
+    }
     // Checked before `apply` so a switched-off install never records a failed
     // attempt — nothing was attempted, and the backoff must not be waiting on it
     // if the user turns updates back on.

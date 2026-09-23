@@ -587,6 +587,17 @@ export const openFileInEditor = (
     sessionId: opts.sessionId,
   });
 
+/** Reveal a checkout file in the OS file manager on the machine running `orx up`. */
+export const revealFileInManager = (
+  projectId: string,
+  path: string,
+  opts: { sessionId?: string } = {},
+) =>
+  post<{ ok: boolean }>(`/api/projects/${projectId}/file/reveal`, {
+    path,
+    sessionId: opts.sessionId,
+  });
+
 export interface LatexEngine {
   /** The engine that will run, or null when the machine has none. */
   engine: string | null;
@@ -881,7 +892,7 @@ export const saveTinkerKey = (key: string) => post<TinkerSettings>("/api/setting
 // --- updates ------------------------------------------------------------------
 
 /** How orx was installed. `installer`, `app-bundle` and `portable` update themselves. */
-export type InstallChannel = "installer" | "app-bundle" | "portable" | "cargo" | "homebrew" | "nix" | "unknown";
+export type InstallChannel = "product" | "installer" | "app-bundle" | "portable" | "cargo" | "homebrew" | "nix" | "unknown";
 
 export interface UpdateStatus {
   current: string;
@@ -1022,6 +1033,7 @@ export const moveDataDir = (path: string) =>
   post<{ started: boolean }>("/api/settings/data-dir/move", { path });
 
 export interface SshHost {
+  container?: string | null;
   host: string;
   hostname?: string;
   user?: string;
@@ -1031,8 +1043,16 @@ export interface SshHost {
   lastTest?: SshPreflight;
 }
 
-export const getSshHosts = (signal?: AbortSignal) =>
-  get<{ hosts: SshHost[] }>("/api/settings/ssh", signal).then((r) => r.hosts);
+export interface SshSettings { hosts: SshHost[]; defaultHost: string | null }
+export const getSshSettings = (signal?: AbortSignal) => get<SshSettings>("/api/settings/ssh", signal);
+export const saveSshHost = (body: { host: string; container: string | null }) =>
+  post<{ ok: boolean }>("/api/settings/ssh", body);
+export const saveSshDefault = (host: string | null) => post<{ ok: boolean }>("/api/settings/ssh/default", { host });
+export interface SshExecutionPreflight extends SshPreflight {
+  container: { reference: string; ready: boolean; error: string | null } | null;
+}
+export const testSshExecution = (host: string, container: string | null) =>
+  post<SshExecutionPreflight>("/api/settings/ssh/preflight", { host, container });
 
 export interface SshConfigFile {
   path: string;
@@ -1425,6 +1445,7 @@ export interface LitSourcesSettings {
   alphaxiv: boolean;
   openalex: boolean;
   biorxiv: boolean;
+  pubmed: boolean;
 }
 
 export const getLitSources = (signal?: AbortSignal) =>
@@ -1706,15 +1727,26 @@ export interface Harness {
   plan?: string;
   agentReady: boolean;
   agentNote?: string;
+  /** Setup is blocked by something no install/update/login command repairs —
+   * an environment credential overriding the saved login, a database the CLI
+   * will not open. `agentNote` carries the repair; offer no setup button. */
+  needsConfigRepair?: boolean;
   /** A running turn takes further input, so the composer steers instead of
    * queueing. Narrowed per installation (codex's legacy exec path can't). */
   supportsSteering: boolean;
+  /** A snapshot answer whose model catalog is still filling in the
+   * background — `models` is the static placeholder until `harness.catalog`
+   * arrives and a plain re-read swaps in the real list. */
+  catalogPending?: boolean;
   models: HarnessModel[];
   options: HarnessOptions;
 }
 
 export interface HarnessSetupCommands {
   install: string;
+  /** The vendor bootstrap URL an install note quotes; `install` runs the
+   * platform's own installer, which on Windows is a PowerShell script. */
+  installUrl?: string;
   login: string;
   update: string;
   requiresNpm: boolean;
@@ -1915,6 +1947,8 @@ export interface ChatSession {
   permissionMode: string | null;
   /** Independent Plan axis for Codex/OpenCode/Cursor. */
   planMode: boolean;
+  /** What `/goal` asked the agent to keep working toward; null when unset. */
+  goal?: string | null;
   reasoningLevel: string | null;
   /** Hidden from the default Recents list, but fully intact and resumable. */
   archived: boolean;
@@ -1933,6 +1967,31 @@ export const listChatSessions = (projectId: string, signal?: AbortSignal) =>
     `/api/chat/sessions?projectId=${encodeURIComponent(projectId)}`,
     signal,
   ).then((r) => r.sessions);
+
+/** A chat the user had in an agent's own CLI, which orx has no session for. */
+export interface NativeChat {
+  harness: HarnessId;
+  nativeId: string;
+  title: string | null;
+  cwd: string | null;
+  updatedAt: number;
+}
+
+export const listNativeChats = (signal?: AbortSignal) =>
+  get<{ chats: NativeChat[] }>("/api/chat/native-sessions", signal).then((r) => r.chats);
+
+/** Adopt one, as a session that resumes the agent's own chat. */
+export const importNativeChat = (projectId: string, chat: NativeChat) =>
+  post<{ session: ChatSession }>("/api/chat/native-sessions/import", {
+    projectId,
+    harness: chat.harness,
+    nativeId: chat.nativeId,
+    title: chat.title,
+  }).then((r) => r.session);
+
+/** Every project's sessions, newest first, for the composer's `/resume` picker. */
+export const listAllChatSessions = (signal?: AbortSignal) =>
+  get<{ sessions: ChatSession[] }>("/api/chat/sessions?scope=all", signal).then((r) => r.sessions);
 
 /** Per-session (and per-turn) composer selections beyond the harness itself. */
 export interface TurnOptions {
@@ -1972,6 +2031,12 @@ export const renameChatSession = (sessionId: string, title: string) =>
 /** Enter/leave the session-specific Plan axis used by Codex/OpenCode/Cursor. */
 export const setChatSessionPlanMode = (sessionId: string, planMode: boolean) =>
   patch<{ session: ChatSession }>(`/api/chat/sessions/${sessionId}`, { planMode }).then(
+    (r) => r.session,
+  );
+
+/** `null` clears the goal. */
+export const setChatSessionGoal = (sessionId: string, goal: string | null) =>
+  patch<{ session: ChatSession }>(`/api/chat/sessions/${sessionId}`, { goal }).then(
     (r) => r.session,
   );
 
@@ -2052,6 +2117,10 @@ export const sendChatMessage = (
     mode,
   },
   );
+
+/** Compact a chat's context: natively where the agent can, else by summarizing. */
+export const compactChatSession = (sessionId: string) =>
+  post<{ message: ChatMessage }>(`/api/chat/sessions/${sessionId}/compact`, {});
 
 /** A composer `!` command, run in the session's checkout and recorded on its
  * transcript as a user-side exchange the next turn is told about. */
@@ -2185,7 +2254,13 @@ export function backendDetail(backend: Run["backend"]): string {
   if (typeof backend.manifest === "string" && backend.manifest) return backend.manifest;
   // Ray's namespace is the whole Jobs URL — too long for a badge.
   if (backendKind(backend) === "ray_job") return "";
-  if (typeof backend.namespace === "string" && backend.namespace) return backend.namespace;
+  if (typeof backend.namespace === "string" && backend.namespace) {
+    const container = backend.sshContainer;
+    if (container && typeof container === "object" && "reference" in container && typeof container.reference === "string") {
+      return `${backend.namespace} / ${container.reference}`;
+    }
+    return backend.namespace;
+  }
   return "";
 }
 

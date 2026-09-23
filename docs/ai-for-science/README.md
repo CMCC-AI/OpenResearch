@@ -4,7 +4,7 @@
 
 ## 阅读顺序
 
-先读：[个人版产品主线](product-experience.md)——当前用户旅程和交付边界；[统一登录](unified-login.md)——OpenResearch 与 Deep Literature 的身份、授权和撤权；[启动与部署](startup-and-deployment.md)——两套系统的环境变量、启动和验收。多用户平台文档记录的是暂停进入主线的内部兼容能力，不代表个人版使用流程。
+先读：[个人版产品主线](product-experience.md)——当前用户旅程和交付边界；[统一登录](unified-login.md)——OpenResearch 与 Deep Literature 的身份、授权和撤权；[启动与部署](startup-and-deployment.md)——两套系统的环境变量、启动和验收；[官方版本同步与产品升级](upstream-upgrades.md)——上游合并、发行门禁和回滚。多用户平台文档记录的是暂停进入主线的内部兼容能力，不代表个人版使用流程。
 
 1. [实现与数据流](architecture.md)：原生实现、后加的产品层、论文的真实来源、执行链路。
 2. [渠道、费用和限制](sources-and-costs.md)：官方依据、项目实际调用、收费边界、配额估算。

@@ -25,6 +25,29 @@ pub async fn run(args: crate::VersionArgs) -> Result<()> {
 
     let current = updates::current_version();
 
+    if !updates::OFFICIAL_UPDATE_CHANNEL_ENABLED {
+        if args.json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "current": current.to_string(),
+                    "latest": null,
+                    "updateAvailable": false,
+                    "channel": "product",
+                    "autoUpdate": false,
+                })
+            );
+        } else if args.check {
+            println!(
+                "orx {} (product build; use the product release package to update)",
+                current
+            );
+        } else {
+            println!("orx {}", current);
+        }
+        return Ok(());
+    }
+
     if !args.check && !args.json {
         println!("orx {}", current);
         return Ok(());

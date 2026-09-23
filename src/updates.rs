@@ -35,6 +35,11 @@ pub(crate) mod windows;
 /// GitHub repo the released binaries come from.
 pub const REPO_URL: &str = "https://github.com/alphaXiv/OpenResearch";
 
+/// This fork has no independently signed and published product release feed yet.
+/// Keep upstream discovery and self-install disabled until our own manifest,
+/// signing identity, release CI, and rollback path have been verified together.
+pub const OFFICIAL_UPDATE_CHANNEL_ENABLED: bool = false;
+
 /// The cargo-dist app name (the *package* name, not the `orx` bin name) — used
 /// in release asset names and the receipt path.
 pub const APP_NAME: &str = "openresearch-cli";
@@ -448,7 +453,8 @@ pub fn current_channel() -> Result<&'static InstallChannel> {
 /// the silent apply but leaves the check and the outdated warning in place, so
 /// a user who wants to choose their moment still learns there is a release.
 pub fn auto_update_eligible() -> bool {
-    !opted_out()
+    OFFICIAL_UPDATE_CHANNEL_ENABLED
+        && !opted_out()
         && crate::config::auto_update_enabled()
         && current_channel()
             .map(|channel| channel.self_updates())
@@ -818,6 +824,21 @@ pub struct UpdateStatus {
 
 pub fn status() -> UpdateStatus {
     let current = current_version();
+    if !OFFICIAL_UPDATE_CHANNEL_ENABLED {
+        return UpdateStatus {
+            current: current.to_string(),
+            latest: None,
+            channel: "product",
+            self_updates: false,
+            auto_update: false,
+            env_disabled: false,
+            update_available: false,
+            installed_version: None,
+            restart_required: false,
+            can_restart: false,
+            instance: instance_id(),
+        };
+    }
     let cache = read_cache();
     let channel = current_channel().ok();
     let latest = cache.as_ref().and_then(|c| Version::parse(&c.latest).ok());
@@ -950,6 +971,9 @@ fn relaunch_app_bundle(root: &Path, port: u16) -> std::io::Error {
 /// install would advertise — and endlessly re-attempt — a build that does not
 /// exist for it. `Ok(None)` means "nothing newer published for this channel".
 pub async fn fetch_latest_for_channel(timeout: Duration) -> Result<Option<Version>> {
+    if !OFFICIAL_UPDATE_CHANNEL_ENABLED {
+        return Ok(None);
+    }
     if matches!(current_channel(), Ok(InstallChannel::AppBundle(_))) {
         return Ok(macos_app::fetch_manifest(timeout)
             .await?
@@ -963,6 +987,11 @@ pub async fn fetch_latest_for_channel(timeout: Duration) -> Result<Option<Versio
 /// asking is a better signal than the timer. Waits for the updater so the caller
 /// can report the outcome, unlike the fire-and-forget background path.
 pub async fn apply_now() -> Result<()> {
+    if !OFFICIAL_UPDATE_CHANNEL_ENABLED {
+        return Err(anyhow!(
+            "This product build is updated through its own release package."
+        ));
+    }
     if opted_out() {
         return Err(anyhow!(
             "Updates are switched off for this install (ORX_NO_UPDATE_CHECK / \
@@ -1042,7 +1071,8 @@ const WARNING_LABEL: &str = "Warning:";
 /// warning is shown and no background refresh runs — the one escape hatch for
 /// anyone who can't tolerate the extra stderr line (including CI).
 fn opted_out() -> bool {
-    std::env::var_os("ORX_NO_UPDATE_CHECK").is_some()
+    !OFFICIAL_UPDATE_CHANNEL_ENABLED
+        || std::env::var_os("ORX_NO_UPDATE_CHECK").is_some()
         // The generic convention honored by update-notifier and friends.
         || std::env::var_os("NO_UPDATE_NOTIFIER").is_some()
         // cargo-dist's own "don't manage updates for this install" switch; the
@@ -1257,10 +1287,12 @@ mod tests {
         relaunch_target, render, retired_path, warning_for, CheckCache, InstallChannel,
         ATTEMPT_BACKOFF_MAX, ATTEMPT_BACKOFF_MIN,
     };
+    use super::{apply_now, auto_update_eligible, fetch_latest_for_channel, status};
     use semver::Version;
     use std::ffi::OsString;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     #[test]
     fn render_sets_off_the_warning_in_its_own_block() {
@@ -1420,6 +1452,23 @@ mod tests {
             assert_eq!(channel.as_str(), want, "{exe}");
             assert!(!channel.self_updates(), "{exe}");
         }
+    }
+
+    #[tokio::test]
+    async fn product_build_never_discovers_or_applies_official_releases() {
+        assert!(!auto_update_eligible());
+        assert!(fetch_latest_for_channel(Duration::from_millis(1))
+            .await
+            .unwrap()
+            .is_none());
+        let product = status();
+        assert_eq!(product.channel, "product");
+        assert!(!product.self_updates);
+        assert!(!product.auto_update);
+        assert!(!product.update_available);
+        assert!(!product.restart_required);
+        assert!(product.latest.is_none());
+        assert!(apply_now().await.is_err());
     }
 
     #[test]
