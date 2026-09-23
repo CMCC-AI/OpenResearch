@@ -92,6 +92,21 @@ test("origins and cookies are host-scoped, public HTTP rejected", () => {
       PLATFORM_ORIGIN: "http://research.example",
     }),
   );
+  assert.equal(
+    configuration({
+      DATABASE_URL: "postgres://unused",
+      PLATFORM_ORIGIN: "http://localhost:5300",
+      OPENRESEARCH_APP_ORIGIN: "http://localhost:5202",
+    }).appOrigin,
+    "http://localhost:5202",
+  );
+  assert.throws(() =>
+    configuration({
+      DATABASE_URL: "postgres://unused",
+      PLATFORM_ORIGIN: "http://localhost:5300",
+      OPENRESEARCH_APP_ORIGIN: "http://untrusted.example",
+    }),
+  );
   const cookie = sessionCookie("test", true);
   assert.ok(cookie.startsWith("__Host-"));
   assert.ok(cookie.includes("Secure"));

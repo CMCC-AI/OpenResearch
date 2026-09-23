@@ -6624,7 +6624,13 @@ async fn disconnect_remote_session(
 }
 
 async fn local_runtime() -> Json<Value> {
-    Json(json!({ "kind": "local", "version": env!("CARGO_PKG_VERSION") }))
+    let account_url =
+        std::env::var("ORX_ACCOUNT_URL").unwrap_or_else(|_| "http://localhost:5300".to_string());
+    Json(json!({
+        "kind": "local",
+        "version": env!("CARGO_PKG_VERSION"),
+        "accountUrl": account_url,
+    }))
 }
 
 async fn run_ssh_host_preflight(host: String) -> SshHostTest {

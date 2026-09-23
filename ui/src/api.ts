@@ -1077,7 +1077,7 @@ export interface RemoteSessionInfo {
 }
 
 export type RuntimeInfo =
-  | { kind: "local"; version: string }
+  | { kind: "local"; version: string; accountUrl: string }
   | { kind: "ssh"; version: string; dashboardProtocol: number; session: RemoteSessionInfo };
 
 export const getRuntime = (signal?: AbortSignal) => get<RuntimeInfo>("/_orx/runtime", signal);

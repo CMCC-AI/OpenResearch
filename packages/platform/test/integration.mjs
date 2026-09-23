@@ -118,6 +118,80 @@ test(
         assert.equal(r.status, 200, JSON.stringify(r.data));
         return r.cookie;
       }
+      await t.test(
+        "personal account registration needs no workspace",
+        async () => {
+          const registered = await request("/api/platform/register", {
+            method: "POST",
+            data: {
+              name: "New researcher",
+              email: "new-researcher@test.invalid",
+              password,
+            },
+          });
+          assert.equal(registered.status, 201, JSON.stringify(registered.data));
+          assert.ok(registered.cookie);
+          const profile = await request("/api/platform/me", {
+            cookie: registered.cookie,
+          });
+          assert.equal(profile.status, 200);
+          assert.equal(profile.data.email, "new-researcher@test.invalid");
+          const memberships = await pool.query(
+            "SELECT count(*)::int AS n FROM memberships WHERE user_id=$1",
+            [profile.data.id],
+          );
+          assert.equal(memberships.rows[0].n, 0);
+          const browserSession = await request(
+            "/api/platform/browser-session",
+            {
+              cookie: registered.cookie,
+              origin: config.appOrigin,
+            },
+          );
+          assert.equal(browserSession.status, 200);
+          assert.equal(
+            browserSession.data.user.email,
+            "new-researcher@test.invalid",
+          );
+          assert.equal(
+            browserSession.headers["access-control-allow-origin"],
+            config.appOrigin,
+          );
+          assert.equal(
+            (
+              await request("/api/platform/browser-session", {
+                cookie: registered.cookie,
+                origin: "http://evil.test",
+              })
+            ).status,
+            403,
+          );
+          const duplicate = await request("/api/platform/register", {
+            method: "POST",
+            data: {
+              name: "Duplicate",
+              email: "new-researcher@test.invalid",
+              password,
+            },
+          });
+          assert.equal(duplicate.status, 409);
+          const loggedOut = await request("/api/platform/browser-logout", {
+            method: "POST",
+            cookie: registered.cookie,
+            origin: config.appOrigin,
+          });
+          assert.equal(loggedOut.status, 200);
+          assert.equal(
+            (
+              await request("/api/platform/browser-session", {
+                cookie: registered.cookie,
+                origin: config.appOrigin,
+              })
+            ).status,
+            401,
+          );
+        },
+      );
       const alice = await login("alice"),
         bob = await login("bob");
       assert.equal((await request("/")).status, 200);
@@ -240,6 +314,65 @@ test(
         b = await workspace(bob, "Bob research"),
         aHost = `${a}.${portal}`,
         bHost = `${b}.${portal}`;
+      await t.test(
+        "owner deletes a workspace with exact-name confirmation",
+        async () => {
+          const doomed = await workspace(alice, "Disposable workspace");
+          assert.equal(
+            (
+              await request(`/api/platform/workspaces/${doomed}`, {
+                method: "DELETE",
+                cookie: alice,
+                data: { name: "wrong name" },
+              })
+            ).status,
+            409,
+          );
+          assert.equal(
+            (
+              await request(`/api/platform/workspaces/${doomed}`, {
+                method: "DELETE",
+                cookie: bob,
+                data: { name: "Disposable workspace" },
+              })
+            ).status,
+            404,
+          );
+          assert.equal(
+            (
+              await request(`/api/platform/workspaces/${doomed}/runner`, {
+                method: "POST",
+                cookie: alice,
+              })
+            ).status,
+            201,
+          );
+          assert.equal(
+            (
+              await request(`/api/platform/workspaces/${doomed}`, {
+                method: "DELETE",
+                cookie: alice,
+                data: { name: "Disposable workspace" },
+              })
+            ).status,
+            200,
+          );
+          assert.deepEqual(
+            (
+              await request("/api/platform/workspaces", { cookie: alice })
+            ).data.map((row) => row.id),
+            [a],
+          );
+          assert.equal(
+            (
+              await request(`/api/platform/workspaces/${doomed}/runner`, {
+                cookie: alice,
+              })
+            ).status,
+            404,
+          );
+        },
+      );
       async function enter(cookie, w) {
         const r = await request(`/api/platform/workspaces/${w}/launch`, {
           method: "POST",
@@ -264,8 +397,161 @@ test(
         assert.equal(entered.status, 303, JSON.stringify(entered.data));
         return { ...entered, ticket };
       }
+      await t.test(
+        "workspace settings and invitation lifecycle respect ownership",
+        async () => {
+          const route = `/api/platform/workspaces/${a}`;
+          assert.equal(
+            (
+              await request(route, {
+                method: "PATCH",
+                cookie: bob,
+                data: { name: "Forbidden" },
+              })
+            ).status,
+            404,
+          );
+          assert.equal(
+            (
+              await request(route, {
+                method: "PATCH",
+                cookie: alice,
+                data: { name: "  " },
+              })
+            ).status,
+            400,
+          );
+          assert.equal(
+            (
+              await request(route, {
+                method: "PATCH",
+                cookie: alice,
+                data: { name: "Renamed research" },
+              })
+            ).data.name,
+            "Renamed research",
+          );
+          const issued = await request(`${route}/invites`, {
+            method: "POST",
+            cookie: alice,
+            data: { email: "withdrawn@test.invalid", role: "viewer" },
+          });
+          const invitations = await request(`${route}/invites`, {
+            cookie: alice,
+          });
+          assert.equal(invitations.data.length, 1);
+          assert.deepEqual(Object.keys(invitations.data[0]).sort(), [
+            "email",
+            "expires_at",
+            "role",
+          ]);
+          assert.equal(
+            (
+              await request(`${route}/invites`, {
+                method: "DELETE",
+                cookie: bob,
+                data: { email: "withdrawn@test.invalid" },
+              })
+            ).status,
+            404,
+          );
+          assert.equal(
+            (
+              await request(`${route}/invites`, {
+                method: "DELETE",
+                cookie: alice,
+                data: { email: "withdrawn@test.invalid" },
+              })
+            ).status,
+            200,
+          );
+          const secret = new URLSearchParams(
+            new URL(issued.data.url).hash.slice(1),
+          ).get("invite");
+          assert.equal(
+            (
+              await request("/api/platform/invites/accept", {
+                method: "POST",
+                cookie: alice,
+                data: { token: secret },
+              })
+            ).status,
+            400,
+          );
+          assert.equal(
+            (await request(`${route}/invites`, { cookie: alice })).data.length,
+            0,
+          );
+        },
+      );
       const aSession = await enter(alice, a),
         bSession = await enter(bob, b);
+      await t.test(
+        "managed workspace queues provisioning without exposing credentials",
+        async () => {
+          const create = () =>
+            request("/api/platform/workspaces", {
+              method: "POST",
+              cookie: alice,
+              data: { name: "Managed test", mode: "managed" },
+            });
+          assert.equal((await create()).status, 409);
+          config.managed = true;
+          const created = await create();
+          assert.equal(created.status, 201);
+          const route = `/api/platform/workspaces/${created.data.id}`;
+          assert.equal(
+            (await request(`${route}/runtime`, { cookie: alice })).data.status,
+            "queued",
+          );
+          assert.equal(
+            (await request(`${route}/runtime`, { cookie: bob })).status,
+            404,
+          );
+          assert.equal(
+            (
+              await request(`${route}/runner`, {
+                method: "POST",
+                cookie: alice,
+              })
+            ).status,
+            409,
+          );
+          await pool.query(
+            "UPDATE workspace_runtimes SET status='failed' WHERE workspace_id=$1",
+            [created.data.id],
+          );
+          assert.equal(
+            (
+              await request(`${route}/runtime`, {
+                method: "POST",
+                cookie: alice,
+              })
+            ).data.status,
+            "queued",
+          );
+          assert.equal(
+            (
+              await request(route, {
+                method: "DELETE",
+                cookie: alice,
+                data: { name: "Managed test" },
+              })
+            ).status,
+            200,
+          );
+          assert.equal(
+            (
+              await pool.query(
+                "SELECT desired FROM workspace_runtimes WHERE workspace_id=$1",
+                [created.data.id],
+              )
+            ).rows[0].desired,
+            "deleted",
+          );
+          config.managed = false;
+        },
+      );
       await t.test(
         "anonymous, CSRF, IDOR and host-scoped sessions",
         async () => {
@@ -354,6 +640,17 @@ test(
       }
       const upstreamA = await backend("only-a"),
         upstreamB = await backend("only-b");
+      const emptyRunner = await request(
+        `/api/platform/workspaces/${a}/runner`,
+        { cookie: alice },
+      );
+      assert.equal(emptyRunner.status, 200);
+      assert.deepEqual(emptyRunner.data, {
+        issued: false,
+        online: false,
+        lastSeen: null,
+        expiresAt: null,
+      });
       async function runner(cookie, w, upstream) {
         const r = await request(`/api/platform/workspaces/${w}/runner`, {
           method: "POST",
@@ -372,6 +669,13 @@ test(
       }
       const ar = await runner(alice, a, upstreamA);
       await runner(bob, b, upstreamB);
+      const connectedRunner = await request(
+        `/api/platform/workspaces/${a}/runner`,
+        { cookie: alice },
+      );
+      assert.equal(connectedRunner.status, 200);
+      assert.equal(connectedRunner.data.issued, true);
+      assert.equal(connectedRunner.data.online, true);
       await t.test(
         "tunnel routes to assigned executor and strips browser credentials",
         async () => {
@@ -429,7 +733,7 @@ test(
       );
       let viewer;
       await t.test(
-        "invitation creates an account without public registration",
+        "legacy invitation can still create an account",
         async () => {
           const issued = await request(
             `/api/platform/workspaces/${a}/invites`,

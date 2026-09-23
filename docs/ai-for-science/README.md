@@ -1,10 +1,10 @@
 # AI for Science 开发文档
 
-核查日期：2026-09-20。范围：OpenResearch 本地科研执行平台及 Deep Literature 文献服务；不包含商业伴随服务 openresearch.sh 的服务端源码审计。主开发分支为 feat/ai4s-product，当前检出位置是 OpenResearch Git worktree /private/tmp/openresearch-ai4s。此目录名不是继续开发旧 ai4s 仓库。
+核查日期：2026-09-22。范围：OpenResearch 本地科研执行平台、Deep Literature 文献服务及二者的统一账号；不包含商业伴随服务 openresearch.sh 的服务端源码审计。
 
 ## 阅读顺序
 
-新增：[启动与部署](startup-and-deployment.md)——两套系统的环境变量、完整启动顺序、验收、停止与生产发布；[多用户平台与部署](multi-user-platform.md)——邀请制账户、工作空间角色、独立执行器和交付方式；[统一登录](unified-login.md)——OpenResearch 与 DeepLiterature 的授权、映射、撤权和发布流程。下列2026-09-20审查记录保留当时状态，最新实现以上述文档为准。
+先读：[个人版产品主线](product-experience.md)——当前用户旅程和交付边界；[统一登录](unified-login.md)——OpenResearch 与 Deep Literature 的身份、授权和撤权；[启动与部署](startup-and-deployment.md)——两套系统的环境变量、启动和验收。多用户平台文档记录的是暂停进入主线的内部兼容能力，不代表个人版使用流程。
 
 1. [实现与数据流](architecture.md)：原生实现、后加的产品层、论文的真实来源、执行链路。
 2. [渠道、费用和限制](sources-and-costs.md)：官方依据、项目实际调用、收费边界、配额估算。
@@ -13,7 +13,7 @@
 
 ## 当前交付边界
 
-系统已具备原有单用户科研工作台、文献服务和公开论文流适配。2026-09-21新增邀请制多用户控制平台、工作空间角色、独立执行器连接，以及 OpenResearch → DeepLiterature 统一登录与统一退出；计费、托管算力、企业身份源和公网恶意代码隔离尚未完成。前端能力卡片会引导 Agent 工作，不代表每个科学工作流都有独立确定性执行器。
+当前产品主线是 OpenResearch 本地科研工作台 + Deep Literature 文献服务 + 统一账号。未登录时展示产品介绍页，登录后进入本地工作台并同步建立 Deep Literature 会话；用户不需要团队空间或连接器。本地项目、Agent 配置和实验数据仍只保存在用户电脑。此前实现的多用户控制平台、工作空间角色和独立执行器作为内部兼容代码保留，不出现在个人版用户入口。前端能力卡片会引导 Agent 工作，不代表每个科学工作流都有独立确定性执行器。
 
 文档中“现有”来自当前代码；“本轮”表示此次修补；“待建设”是设计，不是已实现承诺。官方限制带核查日期，真实调用以账户额度、响应头和供应商合同为准。不要沿用旧文档的配额数字。
 

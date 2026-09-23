@@ -1,6 +1,6 @@
 # 实现与数据流
 
-2026-09-21新增 `packages/platform`：独立PostgreSQL控制面、邀请制身份、工作空间RBAC、专属执行器出站通道。原有本地数据流不变；部署与权限边界见[多用户平台](multi-user-platform.md)。
+2026-09-22 产品主线收敛为本地 OpenResearch、Deep Literature 与统一账号。`packages/platform` 的前台只承担个人账号和 SSO；其中工作空间 RBAC、专属执行器和托管环境代码作为内部兼容能力保留，不进入个人版用户路径。原有本地数据流和设置不变；边界见[个人版产品主线](product-experience.md)。
 
 ## 系统边界与代码导航
 
@@ -14,7 +14,8 @@
 | 执行与监督 | 本地或远端任务、独立 supervise 进程、日志、退出码、取消 | src/commands/supervise.rs、src/jobs |
 | 文献产品 | Next.js 16 / React 19，Feed、PDF 阅读、Blog、个人文库 | DeepLiterature src/app、src/components |
 | 文献存储 | PostgreSQL、论文/来源/产物/队列/账户/笔记；本地 PDF 文件 | DeepLiterature db/migrations、src/lib/papers |
-| 商业伴随平台 | 登录、组织、托管算力目录与供应 | openresearch.sh 外部服务，本仓库只有客户端 |
+| 统一账号 | 个人注册、登录、改密、退出、Deep Literature SSO | packages/platform |
+| 商业伴随平台 | 组织、托管算力目录与供应 | openresearch.sh 外部服务，本仓库只有客户端 |
 
 ## 论文从哪里来
 
@@ -54,7 +55,7 @@ PDF 下载包含最大大小、PDF 签名、SHA-256 和临时文件原子落盘�
 
 ## 我们新增的整合实际做了什么
 
-/literature → OpenResearch /api/deep-literature/papers → Deep Literature /api/papers?paginated=1。服务端选取公开字段，忽略 viewerStates，不转发 Cookie。云工作空间打开论文时先走 Deep Literature 的 OpenResearch 登录入口，再进入 /abs/{id}。创建研究项目仍走原来的 alphaXiv 解析链路：Deep Literature 在线不保证 alphaXiv 在线。
+/literature → OpenResearch /api/deep-literature/papers → Deep Literature /api/papers?paginated=1。服务端选取公开字段，忽略 viewerStates，不转发 Cookie。本地版打开论文时也先走 Deep Literature 的 OpenResearch 登录入口，再进入 /abs/{id}。创建研究项目仍走原来的 alphaXiv 解析链路：Deep Literature 在线不保证 alphaXiv 在线。
 
 当前已经统一登录，但仍没有项目多篇文献关联表、双向跳转状态、跨系统笔记同步或研究证据包。因此按钮使用准确的“从此论文创建项目”，避免误认为已收藏到现有项目。
 

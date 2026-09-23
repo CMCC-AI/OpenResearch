@@ -30,6 +30,7 @@ services:
     environment:
       DATABASE_URL: postgres://research_platform:${PLATFORM_DB_PASSWORD}@db:5432/research_platform
       PLATFORM_ORIGIN: ${PLATFORM_ORIGIN:?Set the HTTPS portal origin}
+      OPENRESEARCH_APP_ORIGIN: ${OPENRESEARCH_APP_ORIGIN:-http://127.0.0.1:4791}
       DEEPLIT_ORIGIN: ${DEEPLIT_ORIGIN:-}
       DEEPLIT_SSO_CLIENT_SECRET: ${DEEPLIT_SSO_CLIENT_SECRET:-}
       BIND_ADDRESS: 0.0.0.0

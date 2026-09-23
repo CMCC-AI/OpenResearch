@@ -1,0 +1,25 @@
+# Trusted local/team prototype. The public gateway has no Docker socket.
+services:
+  platform:
+    environment:
+      MANAGED_EXECUTORS: "true"
+  provisioner:
+    build:
+      context: ../..
+      dockerfile: packages/platform/Dockerfile
+    user: "0:0"
+    command: [node, src/provisioner.mjs]
+    environment:
+      DATABASE_URL: postgres://research_platform:${PLATFORM_DB_PASSWORD}@db:5432/research_platform
+      PLATFORM_ORIGIN: ${PLATFORM_ORIGIN}
+      MANAGED_CONNECT_URL: http://host.docker.internal:5300
+      MANAGED_EXECUTOR_IMAGE: openresearch-managed-executor:local
+      ORX_DEEP_LITERATURE_URL: http://host.docker.internal:3000
+      ORX_DEEP_LITERATURE_WEB_URL: http://localhost:3000
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    init: true
+    read_only: true
+    restart: unless-stopped

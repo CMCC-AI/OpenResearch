@@ -39,6 +39,7 @@ import { RemoteStopDialog } from "./components/RemoteStopDialog";
 import { SshConnectTerminal } from "./components/SshConnectTerminal";
 import { resetGlobalWorkspace } from "./workspacePersistence";
 import { clearProjectWorkspaceCache } from "./useProjectWorkspace";
+import { AuthSessionProvider } from "./product/AuthSession";
 
 const REMOTE_FAVICON =
   "data:image/svg+xml," +
@@ -460,7 +461,7 @@ export function RuntimeRoot() {
       </main>
     );
   }
-  if (runtime.kind === "local") return <RuntimeContext key={workspaceScope()[1]} value={runtime}><QueryEvents /><Outlet /></RuntimeContext>;
+  if (runtime.kind === "local") return <RuntimeContext key={workspaceScope()[1]} value={runtime}><QueryEvents /><AuthSessionProvider runtime={runtime}><Outlet /></AuthSessionProvider></RuntimeContext>;
   const keepWorkspace = workspaceMounted.current &&
     (runtime.session.status !== "disconnected" || runtime.session.error !== null);
   if (!keepWorkspace && runtime.session.status !== "connected") {

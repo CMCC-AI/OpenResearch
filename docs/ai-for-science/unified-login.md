@@ -1,59 +1,71 @@
-# OpenResearch 与 DeepLiterature 统一登录
+# OpenResearch 与 Deep Literature 统一登录
 
-核查日期：2026-09-21。
+核查日期：2026-09-22。
 
-## 最终边界
+## 产品边界
 
-OpenResearch 是托管产品唯一的登录入口和会话权威。DeepLiterature 保留自己的用户主键、文库、笔记、阅读进度与兴趣数据，但只用不可变的 OpenResearch 用户 UUID 建立身份映射。旧 APP-CMCC / DockAPI 的 iframe 消息桥、换票 API、配置和文档已从 DeepLiterature 删除。
+统一账号只负责身份，不承担本地运行环境管理，也不引入“个人工作空间”。
 
-本地开发仍可把 `DEEPLIT_AUTH_MODE` 设为 `local`，使用 DeepLiterature 原有邮箱登录；生产托管模式必须为 `openresearch`。两种模式不能在同一实例中同时接受，避免本地密码会话绕过统一撤权。
+- OpenResearch 本地版负责项目、Agent、模型凭据、Git、环境、算力和实验数据；未登录时展示产品介绍页，登录后进入产品功能区。
+- Deep Literature 负责个人文库、笔记、阅读进度和兴趣数据；访问个人能力时需要统一登录。
+- 账号服务负责注册、登录、改密、退出和两个产品之间的 SSO。
+- 团队空间、成员角色、专属执行器和托管运行环境不属于当前个人版主流程，其后端实现仅保留为内部兼容能力。
 
-## 浏览器流程
+OpenResearch 的原生设置页保持不变。设置中的 OpenResearch 登录仍用于其已有的组织计算和远程资源能力，不应被解释为本地 Agent 或模型配置。
 
-1. 用户在 OpenResearch `/literature` 点击“进入 Deep Literature 精读”。云工作空间把目标改写为 DeepLiterature `/api/auth/openresearch/start?returnTo=/abs/{paper}`。
-2. DeepLiterature 生成 256 位 `state` 和 PKCE verifier，在 HttpOnly、SameSite=Lax、10 分钟 Cookie 中保存流程状态；浏览器只把 challenge 发给 OpenResearch。
-3. OpenResearch 未登录时先回到门户。门户只接受同源 `/api/auth/sso/authorize?...` 作为继续路径；登录后恢复授权流程。
-4. OpenResearch 校验固定 client、固定回调地址、state 和 S256 challenge，签发 60 秒一次性授权码。授权码数据库只保存 SHA-256 摘要。
-5. DeepLiterature 回调同时校验 state Cookie，再通过服务端 client secret 和 PKCE verifier 换码。错误 verifier 也会消耗授权码，不能在线试探后重放。
-6. DeepLiterature 以 `('openresearch', user_uuid)` 查找或创建内部账户，建立不超过 OpenResearch 根会话寿命的本地会话，再清理 URL 中的 code 并返回论文页。
+## 用户流程
+
+1. 用户安装并启动 OpenResearch，未登录时看到产品介绍页，不需要创建空间或配置连接器。
+2. 用户点击登录后进入统一账号页，可自助注册或登录。
+3. 账号登录完成后，浏览器经过 Deep Literature SSO 建立同一身份的会话，再自动进入 OpenResearch `/projects`。
+4. 用户进入“深度文献”浏览论文，文库和精读链接直接复用已有 Deep Literature 会话。
+5. Deep Literature 使用 OpenResearch 用户 UUID 映射内部账户；论文、文库、笔记和问答不会按邮箱与旧本地账号自动合并。
+
+本地网页通过账号服务受限的浏览器会话接口读取当前身份，但不接触 HttpOnly 会话 token，也不在本地复制账号数据库。跨产品首次登录通过标准浏览器跳转完成；后续文库和精读使用直接链接。
+
+## SSO 协议
+
+1. Deep Literature 生成 256 位 `state` 和 PKCE verifier，按 state 使用独立的 HttpOnly、SameSite=Lax、10 分钟 Cookie 保存流程状态，只把 challenge 发给账号服务；并发标签页互不覆盖。
+2. 账号服务校验固定 client、固定回调地址、state 和 S256 challenge，签发 60 秒一次性授权码；数据库只保存授权码摘要。
+3. Deep Literature 回调校验 state，再通过服务端 client secret 和 PKCE verifier 换码。
+4. Deep Literature 以 `('openresearch', user_uuid)` 查找或创建内部账户，建立不超过账号根会话寿命的本地会话。
+
+授权和会话不依赖 workspace membership。个人账号即使没有任何工作空间，也能完成 Deep Literature SSO。
 
 ## 撤权语义
 
-OpenResearch 根会话是门户、工作空间子会话和 DeepLiterature grant 的共同父级。门户退出或修改密码会删除根会话，数据库外键级联清除授权码和 grant；工作空间连接也随之失效。
+统一账号根会话是 Deep Literature grant 的父级。账号页退出或修改密码会删除根会话，并通过数据库外键级联清除授权码和 grant。Deep Literature 的账户读取通过服务端 `/api/auth/sso/session` 内省；账户禁用或根会话过期会在下一次请求生效。
 
-DeepLiterature 的每次账户读取都通过服务端 `/api/auth/sso/session` 内省，不做跨请求缓存。账户禁用、根会话过期和工作空间成员撤权会在下一次请求生效。DeepLiterature 退出会调用 `/api/auth/sso/logout` 删除根会话，因此也会退出门户和所有工作空间。
+团队空间子会话如果仍用于内部部署，可以继续依附同一根会话，但团队成员变化不再影响个人 Deep Literature 身份。
 
-## 安全属性
+## 配置
 
-- 授权码、launch ticket 和会话 token 均随机 256 位；数据库只存授权码与会话 token 摘要。
-- 回调地址固定为配置的 DeepLiterature origin，不接受用户提供的外部跳转。
-- `returnTo` 只允许单斜杠开头的本地路径，最大 2000 字符。
-- client secret 使用恒定时间比较，只在服务端请求头中传递。
-- 授权码 60 秒过期且一次性；PKCE、state、精确 redirect URI 三重绑定。
-- SSO 授权和服务接口使用 PostgreSQL 共享限流，适用于多网关部署。
-- DeepLiterature 不按邮箱合并账户。旧本地账户数据需要管理员核验身份后单独迁移。
-
-## 配置与发布
-
-OpenResearch：
+账号服务：
 
 ```dotenv
-PLATFORM_ORIGIN=https://research.example.org
+PLATFORM_ORIGIN=https://account.example.org
+OPENRESEARCH_APP_ORIGIN=https://app.example.org
 DEEPLIT_ORIGIN=https://literature.example.org
 DEEPLIT_SSO_CLIENT_SECRET=<32字符以上的随机值>
 ```
 
-DeepLiterature：
+Deep Literature：
 
 ```dotenv
 DEEPLIT_AUTH_MODE=openresearch
-DEEPLIT_OPENRESEARCH_URL=https://research.example.org
+DEEPLIT_OPENRESEARCH_URL=https://account.example.org
+DEEPLIT_OPENRESEARCH_APP_ORIGIN=https://app.example.org
 DEEPLIT_PUBLIC_ORIGIN=https://literature.example.org
 DEEPLIT_SSO_CLIENT_SECRET=<同一个随机值>
 DEEPLIT_COOKIE_MODE=same-site
 DEEPLIT_SECURE_COOKIES=true
 ```
 
-先应用 OpenResearch `packages/platform/migrations/002.sql`，再应用 DeepLiterature `db/migrations/011_openresearch_sso.sql`。之后先发布 OpenResearch，再发布 DeepLiterature。两个服务必须通过 HTTPS，且服务器之间能访问 OpenResearch 的 SSO API。
+本地 OpenResearch 使用 `ORX_DEEP_LITERATURE_URL` 读取公开论文 API，使用 `ORX_DEEP_LITERATURE_WEB_URL` 构造浏览器入口。浏览器地址必须与 `DEEPLIT_PUBLIC_ORIGIN` 完全一致；即使都指向本机，也不能混用 `127.0.0.1` 和 `localhost`。两个线上服务必须使用 HTTPS，且 Deep Literature 服务端能访问账号服务的 SSO API。
 
-验证项目包括：错误 client secret、错误 PKCE、授权码重放、错误用户/会话绑定、平台退出后的 grant 失效、DeepLiterature 统一退出、两个 OpenResearch 用户映射到不同文库账户。当前实现不包含旧本地账户的自动合并工具。
+## 上线前仍需补齐
+
+- 邮箱验证、忘记密码与邮件送达状态。
+- 账号删除和 Deep Literature 数据导出/删除联动。
+- 登录设备列表、主动撤销其他会话和异常登录通知。
+- 旧 Deep Literature 本地账户经人工核验后的迁移工具；不得按邮箱自动合并。

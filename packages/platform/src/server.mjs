@@ -42,6 +42,21 @@ export function configuration(env = process.env) {
     400,
     "Public deployments require HTTPS",
   );
+  const appOrigin = new URL(
+    env.OPENRESEARCH_APP_ORIGIN || "http://127.0.0.1:4791",
+  );
+  check(
+    !appOrigin.username &&
+      !appOrigin.password &&
+      appOrigin.pathname === "/" &&
+      !appOrigin.search &&
+      !appOrigin.hash &&
+      (appOrigin.protocol === "https:" ||
+        (appOrigin.protocol === "http:" &&
+          ["localhost", "127.0.0.1"].includes(appOrigin.hostname))),
+    500,
+    "OPENRESEARCH_APP_ORIGIN must be HTTPS or a loopback HTTP origin",
+  );
   check(env.DATABASE_URL, 500, "DATABASE_URL is required");
   const deepLiteratureOrigin = env.DEEPLIT_ORIGIN
     ? new URL(env.DEEPLIT_ORIGIN)
@@ -68,7 +83,9 @@ export function configuration(env = process.env) {
     );
   return {
     origin,
+    appOrigin: appOrigin.origin,
     secure,
+    managed: env.MANAGED_EXECUTORS === "true",
     database: env.DATABASE_URL,
     port: Number(env.PORT || 5300),
     bind: env.BIND_ADDRESS || "127.0.0.1",
@@ -488,6 +505,44 @@ export async function createPlatform(
           for (const row of children.rows) tunnel.revokeSession(row.token_hash);
         return json(res, { code: 200, data: { ok: true } });
       }
+      const browserSessionPath = [
+        "/api/platform/browser-session",
+        "/api/platform/browser-logout",
+      ].includes(path);
+      if (browserSessionPath) {
+        sameOrigin(req, config.appOrigin);
+        res.setHeader("access-control-allow-origin", config.appOrigin);
+        res.setHeader("access-control-allow-credentials", "true");
+        res.setHeader("vary", "Origin");
+        if (req.method === "OPTIONS") {
+          res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+          res.setHeader("access-control-allow-headers", "content-type");
+          res.writeHead(204);
+          return res.end();
+        }
+        const s = await session(req);
+        if (path === "/api/platform/browser-session" && req.method === "GET")
+          return json(res, {
+            user: { id: s.user_id, email: s.email, name: s.name },
+            deepLiteratureUrl: config.deepLiterature?.origin || null,
+          });
+        if (path === "/api/platform/browser-logout" && req.method === "POST") {
+          const children = await pool.query(
+            "SELECT token_hash FROM platform_sessions WHERE token_hash=$1 OR parent_hash=$1",
+            [s.token_hash],
+          );
+          await pool.query(
+            "DELETE FROM platform_sessions WHERE token_hash=$1",
+            [s.token_hash],
+          );
+          for (const tunnel of tunnels.values())
+            for (const row of children.rows)
+              tunnel.revokeSession(row.token_hash);
+          res.setHeader("set-cookie", sessionCookie("", config.secure, 0));
+          return json(res, { ok: true });
+        }
+        throw new HttpError(405, "不支持的操作");
+      }
       if (!path.startsWith("/api/platform/")) {
         check(req.method === "GET" || req.method === "HEAD", 405);
         return await staticFile(res, publicDir, path);
@@ -513,6 +568,36 @@ export async function createPlatform(
         await audit(pool, rows[0].id, null, "login");
         res.setHeader("set-cookie", sessionCookie(secret, config.secure));
         return json(res, { ok: true });
+      }
+      if (path === "/api/platform/register" && req.method === "POST") {
+        await limit(
+          `register-ip:${hash(req.socket.remoteAddress || "")}`,
+          10,
+          3600,
+        );
+        const b = await input(req);
+        const address = email(b.email);
+        const name = text(b.name);
+        const encoded = await passwordHash(b.password);
+        const user = id();
+        let secret;
+        try {
+          secret = await transaction(pool, async (db) => {
+            await db.query(
+              "INSERT INTO platform_users(id,email,name,password_hash) VALUES($1,$2,$3,$4)",
+              [user, address, name, encoded],
+            );
+            const created = await newSession(db, user, req.headers.host);
+            await audit(db, user, null, "account.register");
+            return created;
+          });
+        } catch (error) {
+          if (error.code === "23505")
+            throw new HttpError(409, "该邮箱已注册，请直接登录");
+          throw error;
+        }
+        res.setHeader("set-cookie", sessionCookie(secret, config.secure));
+        return json(res, { ok: true }, 201);
       }
       if (path === "/api/platform/invites/accept" && req.method === "POST") {
         await limit(
@@ -570,6 +655,11 @@ export async function createPlatform(
       }
       const s = await session(req);
       await limit(`portal:${s.user_id}`, 180, 60);
+      if (path === "/api/platform/capabilities" && req.method === "GET")
+        return json(res, {
+          deepLiteratureUrl: config.deepLiterature?.origin || null,
+          openResearchAppUrl: config.appOrigin,
+        });
       if (path === "/api/platform/me" && req.method === "GET")
         return json(res, { id: s.user_id, email: s.email, name: s.name });
       if (path === "/api/platform/logout" && req.method === "POST") {
@@ -614,7 +704,7 @@ export async function createPlatform(
       if (path === "/api/platform/workspaces") {
         if (req.method === "GET") {
           const { rows } = await pool.query(
-            `SELECT w.id,w.name,m.role,r.last_seen,r.expires_at AS credential_expires_at FROM workspaces w JOIN memberships m ON m.workspace_id=w.id LEFT JOIN runners r ON r.workspace_id=w.id WHERE m.user_id=$1 ORDER BY w.created_at`,
+            `SELECT w.id,w.name,m.role,r.last_seen,r.expires_at AS credential_expires_at,rt.status AS runtime_status,rt.error AS runtime_error FROM workspaces w JOIN memberships m ON m.workspace_id=w.id LEFT JOIN runners r ON r.workspace_id=w.id LEFT JOIN workspace_runtimes rt ON rt.workspace_id=w.id WHERE m.user_id=$1 ORDER BY w.created_at`,
             [s.user_id],
           );
           return json(
@@ -624,8 +714,22 @@ export async function createPlatform(
         }
         check(req.method === "POST", 405);
         const b = await input(req);
+        const managed = b.mode === "managed";
+        check(!b.mode || ["managed", "external"].includes(b.mode));
+        check(!managed || config.managed, 409, "平台托管暂未启用");
         const workspace = id();
         await transaction(pool, async (db) => {
+          if (managed) {
+            await db.query("SELECT pg_advisory_xact_lock(721947)");
+            const capacity = await db.query(
+              "SELECT count(*)::int AS n FROM workspace_runtimes WHERE desired='running'",
+            );
+            check(
+              capacity.rows[0].n < 4,
+              409,
+              "本地托管容量已满（4 个空间），请删除闲置空间后重试",
+            );
+          }
           await db.query(
             "SELECT id FROM platform_users WHERE id=$1 FOR UPDATE",
             [s.user_id],
@@ -644,11 +748,91 @@ export async function createPlatform(
             s.user_id,
           ]);
           await audit(db, s.user_id, workspace, "workspace.create");
+          if (managed)
+            await db.query(
+              "INSERT INTO workspace_runtimes(workspace_id) VALUES($1)",
+              [workspace],
+            );
         });
         return json(res, { id: workspace }, 201);
       }
+      const deleteWorkspace = path.match(
+        /^\/api\/platform\/workspaces\/([0-9a-f-]{36})$/,
+      );
+      if (deleteWorkspace && req.method === "PATCH") {
+        const workspace = deleteWorkspace[1];
+        const b = await input(req);
+        const name = text(b.name);
+        await transaction(pool, async (db) => {
+          await db.query("SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", [
+            workspace,
+          ]);
+          await member(s.user_id, workspace, ["owner"], db);
+          await db.query("UPDATE workspaces SET name=$2 WHERE id=$1", [
+            workspace,
+            name,
+          ]);
+          await audit(db, s.user_id, workspace, "workspace.rename", name);
+        });
+        return json(res, { name });
+      }
+      if (deleteWorkspace && req.method === "DELETE") {
+        const workspace = deleteWorkspace[1];
+        const b = await input(req);
+        const revoked = await transaction(pool, async (db) => {
+          const found = await db.query(
+            "SELECT name FROM workspaces WHERE id=$1 FOR UPDATE",
+            [workspace],
+          );
+          check(found.rows[0], 404, "工作空间不存在");
+          await member(s.user_id, workspace, ["owner"], db);
+          check(b.name === found.rows[0].name, 409, "空间名称不匹配");
+          await db.query(
+            "UPDATE workspace_runtimes SET desired='deleted',checked_at=NULL WHERE workspace_id=$1",
+            [workspace],
+          );
+          const sessions = await db.query(
+            "DELETE FROM platform_sessions WHERE host=$1 RETURNING token_hash",
+            [new URL(workspaceOrigin(config, workspace)).host],
+          );
+          await db.query("DELETE FROM launch_tickets WHERE workspace_id=$1", [
+            workspace,
+          ]);
+          await db.query(
+            "DELETE FROM workspace_invites WHERE workspace_id=$1",
+            [workspace],
+          );
+          await db.query(
+            "DELETE FROM workspace_preferences WHERE workspace_id=$1",
+            [workspace],
+          );
+          await db.query("DELETE FROM runners WHERE workspace_id=$1", [
+            workspace,
+          ]);
+          await db.query("DELETE FROM memberships WHERE workspace_id=$1", [
+            workspace,
+          ]);
+          await db.query(
+            "UPDATE audit_events SET workspace_id=NULL WHERE workspace_id=$1",
+            [workspace],
+          );
+          await db.query("DELETE FROM workspaces WHERE id=$1", [workspace]);
+          await audit(
+            db,
+            s.user_id,
+            null,
+            "workspace.delete",
+            `${workspace}:${found.rows[0].name}`,
+          );
+          return sessions.rows;
+        });
+        const tunnel = tunnels.get(workspace);
+        for (const row of revoked) tunnel?.revokeSession(row.token_hash);
+        tunnel?.close();
+        return json(res, { ok: true });
+      }
       const match = path.match(
-        /^\/api\/platform\/workspaces\/([0-9a-f-]{36})\/(launch|members|invites|runner|audit)(?:\/([0-9a-f-]{36}))?$/,
+        /^\/api\/platform\/workspaces\/([0-9a-f-]{36})\/(launch|members|invites|runner|runtime|audit)(?:\/([0-9a-f-]{36}))?$/,
       );
       check(match, 404, "接口不存在");
       const [, workspace, action, target] = match;
@@ -657,6 +841,36 @@ export async function createPlatform(
         workspace,
         action === "launch" ? undefined : ["owner"],
       );
+      if (action === "runtime") {
+        if (req.method === "POST") {
+          check(config.managed, 409, "平台托管暂未启用");
+          await transaction(pool, async (db) => {
+            await db.query("SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", [
+              workspace,
+            ]);
+            await member(s.user_id, workspace, ["owner"], db);
+            const result = await db.query(
+              "UPDATE workspace_runtimes SET status='queued',error=NULL,checked_at=NULL WHERE workspace_id=$1 AND desired='running' AND status='failed' RETURNING workspace_id",
+              [workspace],
+            );
+            check(result.rows.length, 409, "仅失败的托管环境可以重试");
+            await audit(db, s.user_id, workspace, "runtime.retry");
+          });
+        } else check(req.method === "GET", 405);
+        const { rows } = await pool.query(
+          "SELECT status,error,checked_at FROM workspace_runtimes WHERE workspace_id=$1",
+          [workspace],
+        );
+        check(rows[0], 404, "该空间使用自有设备");
+        return json(res, { ...rows[0], online: tunnels.has(workspace) });
+      }
+      if (action === "runner" && req.method !== "GET") {
+        const managed = await pool.query(
+          "SELECT workspace_id FROM workspace_runtimes WHERE workspace_id=$1",
+          [workspace],
+        );
+        check(!managed.rows.length, 409, "托管空间的连接凭据由平台自动管理");
+      }
       if (action === "launch" && req.method === "POST") {
         const ticket = token();
         await pool.query(
@@ -721,6 +935,34 @@ export async function createPlatform(
         tunnels.get(workspace)?.close();
         return json(res, { ok: true });
       }
+      if (action === "invites" && req.method === "GET") {
+        const { rows } = await pool.query(
+          "SELECT email,role,expires_at FROM workspace_invites WHERE workspace_id=$1 ORDER BY expires_at DESC",
+          [workspace],
+        );
+        return json(res, rows);
+      }
+      if (action === "invites" && req.method === "DELETE") {
+        const b = await input(req);
+        await transaction(pool, async (db) => {
+          await db.query("SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", [
+            workspace,
+          ]);
+          await member(s.user_id, workspace, ["owner"], db);
+          await db.query(
+            "DELETE FROM workspace_invites WHERE workspace_id=$1 AND email=$2",
+            [workspace, email(b.email)],
+          );
+          await audit(
+            db,
+            s.user_id,
+            workspace,
+            "invite.revoke",
+            email(b.email),
+          );
+        });
+        return json(res, { ok: true });
+      }
       if (action === "invites" && req.method === "POST") {
         const b = await input(req);
         check(["editor", "viewer"].includes(b.role));
@@ -745,6 +987,18 @@ export async function createPlatform(
           { url: `${config.origin.origin}/#invite=${secret}` },
           201,
         );
+      }
+      if (action === "runner" && req.method === "GET") {
+        const { rows } = await pool.query(
+          "SELECT last_seen,expires_at FROM runners WHERE workspace_id=$1",
+          [workspace],
+        );
+        return json(res, {
+          issued: !!rows[0],
+          online: tunnels.has(workspace),
+          lastSeen: rows[0]?.last_seen || null,
+          expiresAt: rows[0]?.expires_at || null,
+        });
       }
       if (action === "runner" && req.method === "POST") {
         const secret = token();

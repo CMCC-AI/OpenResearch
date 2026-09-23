@@ -3,18 +3,31 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>OpenResearch · 团队科研平台</title>
+    <title>OpenResearch · 统一科研账号</title>
     <link rel="stylesheet" href="/platform.css" />
     <script type="module" src="/platform.js"></script>
   </head>
   <body>
     <header>
-      <a href="/" class="brand"
-        ><span>◈</span> OpenResearch <small>AI FOR SCIENCE</small></a
-      >
+      <a href="/" class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+          >
+            <path
+              d="M9 3h6M10 3v6.4L5.5 17a2.5 2.5 0 0 0 2.15 3.75h8.7A2.5 2.5 0 0 0 18.5 17L14 9.4V3"
+            />
+            <path d="M7.5 15h9" />
+          </svg>
+        </span>
+        <span>OpenResearch <small>AI for Science</small></span>
+      </a>
       <div id="account"></div>
     </header>
-    <main id="app"><p>正在连接科研平台…</p></main>
+    <main id="app"><p>正在连接统一科研账号…</p></main>
     <div id="notice" role="status" aria-live="polite"></div>
     <dialog id="detail">
       <button class="close" id="close-dialog" aria-label="关闭">×</button>

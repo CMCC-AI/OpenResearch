@@ -60,7 +60,7 @@ pub fn deep_literature_url() -> String {
 /// URL when both applications run on an internal container network.
 pub fn deep_literature_web_url() -> String {
     std::env::var("ORX_DEEP_LITERATURE_WEB_URL")
-        .unwrap_or_else(|_| deep_literature_url())
+        .unwrap_or_else(|_| "http://localhost:3000".to_string())
         .trim_end_matches('/')
         .to_string()
 }

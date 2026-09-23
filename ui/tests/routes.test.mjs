@@ -84,6 +84,12 @@ test("product start links preserve new-project and alphaXiv paper intent", async
   assert.deepEqual(parseProjectsSearch({ paper: "arxiv:2401.00001" }), { new: undefined, paper: "2401.00001" });
 });
 
+test("Deep Literature links reuse the synchronized session instead of restarting SSO", () => {
+  const source = readFileSync(new URL("../src/product/LiteraturePage.tsx", import.meta.url), "utf8");
+  assert.match(source, /new URL\(destination,/);
+  assert.doesNotMatch(source, /api\/auth\/openresearch\/start/);
+});
+
 test("project search validates every pane variant and rejects malformed panes", async () => {
   const panes = [
     { kind: "home", view: "files" },

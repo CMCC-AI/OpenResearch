@@ -1,218 +1,256 @@
-# OpenResearch + DeepLiterature 启动与部署
+# OpenResearch + Deep Literature 完整部署指南
 
-本文覆盖两个独立仓库的统一启动：OpenResearch 提供账户、科研项目与工作流，DeepLiterature 提供论文发现、阅读、文库和论文处理 Worker。统一登录要求先启动 OpenResearch，再启动 DeepLiterature。
+本文是当前个人版本的部署基线，覆盖三个运行单元：
 
-## 本地端口与依赖
+1. OpenResearch 本地科研工作台：本地项目、Agent、Git、实验和计算后端。
+2. OpenResearch 统一账号服务：注册、登录、会话、退出和 SSO 授权。
+3. Deep Literature：论文发现、精读、文库、笔记及后台 Worker。
 
-| 服务 | 地址或端口 | 用途 |
+团队空间和托管执行器仍作为内部兼容能力保留，不是个人版的默认部署路径。相关部署见[平台托管空间](managed-workspaces.md)和[多用户平台](multi-user-platform.md)。
+
+## 1. 用户访问流程
+
+部署完成后的标准流程是：
+
+1. 用户打开 OpenResearch；未登录时只显示产品能力介绍页。
+2. 用户点击“登录”，进入统一账号页注册或登录。
+3. 账号服务签发一次性授权码，Deep Literature 建立同一用户会话。
+4. 浏览器自动回到 OpenResearch `/projects` 产品主页。
+5. `/projects`、`/discover`、`/literature`、`/capabilities` 均要求登录。
+6. “文库”和“进入 Deep Literature 精读”直接打开 Deep Literature 目标页面，复用已建立的会话，不重复发起 SSO。
+7. OpenResearch 左下角显示当前账号，可统一退出。
+
+本地研究数据不会上传到账号服务。统一账号只管理身份；OpenResearch 的项目、代码、Agent 配置和实验记录仍保存在本机。
+
+## 2. 版本、端口和依赖
+
+| 服务 | 本地默认地址 | 说明 |
 |---|---|---|
-| OpenResearch | `http://localhost:5300` | 统一登录、项目和科研工作台 |
-| OpenResearch PostgreSQL | `127.0.0.1:15439` | 平台数据库，仅本机 |
-| DeepLiterature | `http://localhost:3000` | 论文发现、阅读和文库 |
-| DeepLiterature PostgreSQL | `localhost:5433` | 文献数据库；生产环境应只绑定回环地址 |
+| OpenResearch release | `http://localhost:4791` | 面向用户的科研工作台 |
+| OpenResearch UI 开发服务器 | `http://localhost:5202` | 仅源码开发使用 |
+| 统一账号服务 | `http://localhost:5300` | 注册、登录和 SSO |
+| 账号 PostgreSQL | `127.0.0.1:15439` | 仅开发环境发布到回环地址 |
+| Deep Literature | `http://localhost:3000` | 论文、精读和个人文库 |
+| Deep Literature PostgreSQL | `127.0.0.1:5433` | 仅开发环境发布到回环地址 |
 
-本地运行需要 Docker Desktop、Docker Compose v2、Node.js 22.20 或更高版本以及 Rust 工具链。平台和 DeepLiterature 使用 Docker；工作空间执行器直接运行在 macOS，因而可以读取本机已安装并登录的 Antigravity、Codex 等 Agent CLI。两个仓库保持独立，不要复制数据库或 `.env` 到另一个仓库。
+依赖：
 
-## 环境变量
+- Docker Desktop 或 Docker Engine，Docker Compose v2；
+- Node.js 22.20 或更高版本；
+- pnpm；
+- Rust stable 工具链；
+- macOS 本地 Agent 场景还需要用户自行安装并登录 Codex、Antigravity 等 CLI。
 
-OpenResearch 使用 `/Users/levent/cmccProjects/OpenResearch/packages/platform/.env`：
+浏览器 origin 必须完全一致。`localhost` 与 `127.0.0.1` 是不同站点，不能混用于登录入口、回调和 Deep Literature Web 地址，否则浏览器不会携带同一 Cookie。
+
+## 3. 准备秘密和配置
+
+生成两个互不相同的随机值：
+
+```bash
+openssl rand -hex 32 # PLATFORM_DB_PASSWORD
+openssl rand -hex 32 # DEEPLIT_SSO_CLIENT_SECRET
+```
+
+### 3.1 统一账号服务
+
+复制 `packages/platform/.env.example` 为 `packages/platform/.env`，本地 release 示例：
 
 ```dotenv
 PLATFORM_ORIGIN=http://localhost:5300
+OPENRESEARCH_APP_ORIGIN=http://localhost:4791
 PLATFORM_DB_PASSWORD=<随机数据库密码>
 DEEPLIT_ORIGIN=http://localhost:3000
-DEEPLIT_SSO_CLIENT_SECRET=<两端相同且至少32字符>
+DEEPLIT_SSO_CLIENT_SECRET=<随机 SSO 密钥>
 ```
 
-DeepLiterature 使用 `/Users/levent/cmccProjects/DeepLiterature/.env.local`：
+源码 UI 使用端口 5202 时，将 `OPENRESEARCH_APP_ORIGIN` 改成 `http://localhost:5202`。该值决定统一登录完成后的落点和浏览器会话接口允许的精确来源。
+
+### 3.2 Deep Literature
+
+复制 `.env.production.example` 为 Deep Literature 仓库的 `.env.local`，本地 Docker 至少配置：
 
 ```dotenv
 DEEPLIT_AUTH_MODE=openresearch
 DEEPLIT_OPENRESEARCH_URL=http://host.docker.internal:5300
-# 可显式配置；省略时本地 Docker 会自动映射为 localhost。
 DEEPLIT_OPENRESEARCH_PUBLIC_ORIGIN=http://localhost:5300
+DEEPLIT_OPENRESEARCH_APP_ORIGIN=http://localhost:4791
 DEEPLIT_PUBLIC_ORIGIN=http://localhost:3000
-DEEPLIT_SSO_CLIENT_SECRET=<与 OpenResearch 完全相同>
+DEEPLIT_SSO_CLIENT_SECRET=<与账号服务完全相同>
 DEEPLIT_COOKIE_MODE=same-site
 DEEPLIT_SECURE_COOKIES=false
+POSTGRES_PASSWORD=<独立的文献数据库密码>
+DEEPLIT_PASSWORD_PEPPER=<长期稳定的独立随机值>
 ```
 
-`DEEPLIT_OPENRESEARCH_URL` 是容器到宿主机的服务端地址；`DEEPLIT_OPENRESEARCH_PUBLIC_ORIGIN` 是浏览器跳转地址，二者不能互换。`QWEN_API_KEY` 用于 Blog Worker，可能产生模型费用。`HF_TOKEN` 可选；未配置时只能调用不要求认证的 Hugging Face 资源。不要提交任何 `.env`。
+源码 UI 使用端口 5202 时，同样把 `DEEPLIT_OPENRESEARCH_APP_ORIGIN` 改成 `http://localhost:5202`。
 
-## 第一次启动或源码更新后启动
+地址职责不能互换：
 
-### 1. 启动 OpenResearch
+- `DEEPLIT_OPENRESEARCH_URL`：Deep Literature 容器访问账号服务的内部地址；
+- `DEEPLIT_OPENRESEARCH_PUBLIC_ORIGIN`：浏览器进入账号服务的公开地址；
+- `DEEPLIT_OPENRESEARCH_APP_ORIGIN`：登录完成后返回的 OpenResearch 地址；
+- `DEEPLIT_PUBLIC_ORIGIN`：Deep Literature 的浏览器公开地址和固定 SSO 回调 origin。
+
+`QWEN_API_KEY` 供 Blog Worker 使用，可能产生模型费用。`HF_TOKEN` 按所用 Hugging Face 资源决定是否必需。所有 `.env` 文件权限应为 `0600`，不得提交 Git。
+
+### 3.3 OpenResearch 本地进程
+
+```dotenv
+ORX_ACCOUNT_URL=http://localhost:5300
+ORX_DEEP_LITERATURE_URL=http://127.0.0.1:3000
+ORX_DEEP_LITERATURE_WEB_URL=http://localhost:3000
+```
+
+`ORX_DEEP_LITERATURE_URL` 是服务端读取论文 API 的地址；`ORX_DEEP_LITERATURE_WEB_URL` 是写入页面链接的浏览器地址。后者必须与 `DEEPLIT_PUBLIC_ORIGIN` 完全一致。本地默认浏览器地址已固定为 `http://localhost:3000`。
+
+## 4. 从零启动
+
+### 4.1 构建 OpenResearch Web 资源
+
+`ui/dist` 会被 Rust release 和账号服务 Docker 镜像嵌入，源码更新后必须重新生成：
+
+```bash
+cd /Users/levent/cmccProjects/OpenResearch/ui
+pnpm install --frozen-lockfile
+pnpm build
+```
+
+### 4.2 启动统一账号服务
 
 ```bash
 cd /Users/levent/cmccProjects/OpenResearch/packages/platform
 chmod 600 .env
 docker compose -f compose.yaml -f compose.dev.yaml up -d --build
 docker compose -f compose.yaml -f compose.dev.yaml ps -a
-```
-
-等待 `db` 显示 `healthy`、`migrate` 显示 `Exited (0)`、`platform` 显示 `Up`。验证：
-
-```bash
 curl -f http://localhost:5300/healthz
 ```
 
-首次部署若还没有管理员账户：
+预期状态：`db` 为 `healthy`、`migrate` 为 `Exited (0)`、`platform` 为 `Up`。`migrate` 正常退出不是故障。
 
-```bash
-cd /Users/levent/cmccProjects/OpenResearch/packages/platform
-node --env-file=.env src/admin.mjs create-user owner@example.org 管理员 < /secure/initial-password
-```
-
-密码从标准输入读取；不要把密码直接写在命令行历史中。
-
-### 2. 启动 DeepLiterature 全部服务
+### 4.3 启动 Deep Literature
 
 ```bash
 cd /Users/levent/cmccProjects/DeepLiterature
 chmod 600 .env.local
 docker compose up -d --build
 docker compose ps -a
+curl -f 'http://localhost:3000/api/papers?limit=1'
 ```
 
-启动顺序由 Compose 保证：`db` → `migrate` → `web`、`scheduler`、`pdf-worker`、`blog-worker`。验收状态：
-
-- `db` 和 `web` 为 `healthy`；
-- `migrate` 为 `Exited (0)`，这是正常完成，不是服务退出故障；
-- 三个 Worker 均为 `Up`；
-- scheduler 在 `DAILY_PIPELINE_RUN_ON_STARTUP=true` 时会立即采集一次论文；
-- Blog Worker 使用 Qwen，处理到队列任务时可能产生费用。
-
-验证 Web 与统一登录跳转：
+Compose 顺序为 `db` → `migrate` → `web`、`scheduler`、`pdf-worker`、`blog-worker`。只更新 Web 时可执行：
 
 ```bash
-curl -f http://localhost:3000/api/papers?limit=1
-curl -I 'http://localhost:3000/api/auth/openresearch/start?returnTo=%2Flibrary'
+docker compose up -d --build web
 ```
 
-第二条命令应返回 `303`，`Location` 应以 `http://localhost:5300/api/auth/sso/authorize` 开头。
-
-### 3. 在 macOS 启动本地工作空间执行器
-
-先在团队平台的“空间管理”中签发执行器凭据，只会显示一次。将其保存到 Git 仓库外并设置权限：
-
-```bash
-mkdir -p ~/.config/openresearch/runners
-chmod 700 ~/.config/openresearch/runners
-chmod 600 ~/.config/openresearch/runners/test.token
-```
-
-先编译本机 `orx`。每个工作空间必须使用独立的运行目录、连接器目录和 token：
+### 4.4 启动 OpenResearch release
 
 ```bash
 cd /Users/levent/cmccProjects/OpenResearch
 cargo build --release --locked
-
-cd packages/platform
-PLATFORM_ORIGIN=http://localhost:5300 \
-PLATFORM_CONNECT_URL=http://localhost:5300 \
-ORX_DATA_DIR=$HOME/.local/share/openresearch/workspaces/test/orx \
-RUNNER_STATE_DIR=$HOME/.local/share/openresearch/workspaces/test/connector \
-RUNNER_ISOLATION_ACK=dedicated-workspace \
-ORX_DEEP_LITERATURE_URL=http://localhost:3000 \
+ORX_ACCOUNT_URL=http://localhost:5300 \
+ORX_DEEP_LITERATURE_URL=http://127.0.0.1:3000 \
 ORX_DEEP_LITERATURE_WEB_URL=http://localhost:3000 \
-RUNNER_TOKEN_FILE=$HOME/.config/openresearch/runners/test.token \
-npm run executor:local
+./target/release/orx up
 ```
 
-保持这个终端运行。日志出现 `Executor connected` 后，刷新团队平台应显示“执行器在线”。工作台的“智能体工具”会检测宿主机上的 `agy`；Antigravity 仍显示未就绪时，在同一 macOS 用户下运行 `agy models` 检查登录和可用模型。
+浏览器打开 `http://localhost:4791`。若使用其他端口，必须同时更新账号服务与 Deep Literature 中的 App origin，再重启相应服务。
 
-同一 token 不能同时连接 Docker 与本机执行器。若以前启动过容器执行器，先停止它：
+### 4.5 启动源码开发环境
+
+本地实例应通过 `scripts/dev-slot.mjs` 隔离数据库、缓存和端口。若另行启动 UI 开发服务器，确保其代理指向该 slot 后端，并把两端 App origin 设置为实际 UI origin。
+
+## 5. 完整验收
+
+使用全新浏览器会话执行：
+
+1. 打开 OpenResearch `/`，确认显示产品介绍页和登录按钮。
+2. 直接访问 `/projects`，确认未登录时返回介绍页。
+3. 点击登录，注册或登录后确认最终落到 `/projects`。
+4. 确认左下角显示姓名和邮箱。
+5. 打开 `/literature`，确认状态为“Deep Literature 已连接”。
+6. 点击“登录并打开我的文库”，目标应是 `http://localhost:3000/library`，且不要求再次登录。
+7. 点击“进入 Deep Literature 精读”，目标应是 `http://localhost:3000/abs/<论文ID>`；URL 中不应出现 `/api/auth/openresearch/start`。
+8. 在 Deep Literature 打开账户页，确认身份与 OpenResearch 一致。
+9. 从 OpenResearch 退出，确认受保护页面返回介绍页，Deep Literature grant 同步失效。
+
+API 快速检查：
 
 ```bash
-cd /Users/levent/cmccProjects/OpenResearch/packages/platform
-PLATFORM_ORIGIN=http://localhost:5300 \
-RUNNER_TOKEN_FILE=$HOME/.config/openresearch/runners/test.token \
-docker compose -p openresearch-test -f compose.executor.yaml stop
+curl -f http://localhost:5300/healthz
+curl -f 'http://localhost:3000/api/papers?limit=1'
+curl -f http://127.0.0.1:4791/api/deep-literature/status
 ```
 
-### 4. 浏览器验收
+最后一项的 `webUrl` 必须是 `http://localhost:3000`。
 
-1. 打开 `http://localhost:5300/login` 登录 OpenResearch。
-2. 打开 `http://localhost:5300/projects` 检查项目工作台。
-3. 从文献入口进入，或打开 `http://localhost:3000`。
-4. 确认 DeepLiterature 不再要求第二次登录。
-5. 收藏一篇论文后检查文库，再退出 OpenResearch，确认 DeepLiterature 会话同步失效。
+## 6. 日常升级与回滚
 
-## 日常启动
+升级前：
 
-镜像和源码没有变化时不需要重新构建：
+1. 备份两个 PostgreSQL 数据库和 Deep Literature `papers` 目录；
+2. 记录两个仓库提交 SHA、镜像摘要和当前环境变量；
+3. 先在预发布环境执行迁移与完整 SSO 验收。
 
-```bash
-cd /Users/levent/cmccProjects/OpenResearch/packages/platform
-docker compose -f compose.yaml -f compose.dev.yaml up -d
+升级顺序：
 
-cd /Users/levent/cmccProjects/DeepLiterature
-docker compose up -d
+1. 构建 OpenResearch `ui/dist`；
+2. 更新账号服务并执行迁移；
+3. 更新 Deep Literature Web，验证统一登录；
+4. 更新 OpenResearch release；
+5. 最后更新 scheduler 和 Worker，观察队列、错误率和模型费用。
 
-cd /Users/levent/cmccProjects/OpenResearch/packages/platform
-PLATFORM_ORIGIN=http://localhost:5300 \
-PLATFORM_CONNECT_URL=http://localhost:5300 \
-ORX_DATA_DIR=$HOME/.local/share/openresearch/workspaces/test/orx \
-RUNNER_STATE_DIR=$HOME/.local/share/openresearch/workspaces/test/connector \
-RUNNER_ISOLATION_ACK=dedicated-workspace \
-ORX_DEEP_LITERATURE_URL=http://localhost:3000 \
-ORX_DEEP_LITERATURE_WEB_URL=http://localhost:3000 \
-RUNNER_TOKEN_FILE=$HOME/.config/openresearch/runners/test.token \
-npm run executor:local
-```
+数据库迁移必须向前兼容旧应用版本，才能安全滚动回滚。回滚镜像前先核对迁移说明，不得直接回滚数据库文件。
 
-只重启 Web，不触发全部 Worker 重建：
+## 7. 日志、停止和数据保护
 
 ```bash
-cd /Users/levent/cmccProjects/DeepLiterature
-docker compose up -d --build web
-```
-
-## 日志、停止与清理
-
-```bash
-# OpenResearch 日志
+# 账号服务
 cd /Users/levent/cmccProjects/OpenResearch/packages/platform
 docker compose -f compose.yaml -f compose.dev.yaml logs -f platform migrate db
 
-# DeepLiterature 日志
+# Deep Literature
 cd /Users/levent/cmccProjects/DeepLiterature
 docker compose logs -f web scheduler pdf-worker blog-worker
 
-# 先在运行 npm run executor:local 的终端按 Ctrl-C 停止工作空间执行器
-
-# 再停 DeepLiterature 和身份控制平台
-cd /Users/levent/cmccProjects/DeepLiterature
+# 停止当前目录对应的 Compose 服务，但保留数据库卷
 docker compose stop
-cd /Users/levent/cmccProjects/OpenResearch/packages/platform
-docker compose -f compose.yaml -f compose.dev.yaml stop
 ```
 
-`docker compose down` 删除容器和网络但保留命名卷。不要使用 `down -v`，除非明确要永久删除数据库。论文文件还位于 DeepLiterature 的 `papers` 挂载目录，清理容器不会自动删除它。
+`docker compose down` 会删除容器和网络但保留命名卷。除非明确永久删除数据库，不要运行 `docker compose down -v`。删除账号、论文文件或托管空间数据前必须先确认备份和保留策略。
 
-## 常见故障
+## 8. 常见故障
 
-| 现象 | 处理 |
+| 现象 | 原因与处理 |
 |---|---|
-| OpenResearch 迁移报 `28P01` | `.env` 密码与旧数据卷初始化密码不同；保留数据并由管理员重置数据库角色密码，不能直接删卷 |
-| DeepLiterature 报 `SSO URLs must use HTTPS outside localhost` | 服务端地址应为 `http://host.docker.internal:5300`，浏览器地址应为 `http://localhost:5300` |
-| DeepLiterature 登录跳转后无法打开 | 先确认 `http://localhost:5300/healthz`，再核对两端 SSO secret 完全一致 |
-| DeepLiterature 报“统一认证服务暂时不可用” | 确认平台已更新并重建；本地容器通过 `host.docker.internal` 调用平台，浏览器仍跳转 `localhost` |
-| Antigravity 显示未安装 | 不要使用 Linux 容器执行器；在 macOS 原生执行器终端确认 `agy --version` 和 `agy models` 均成功 |
-| `migrate` 显示 Exited | 退出码为 0 表示迁移完成；非 0 才需要查日志 |
-| Blog 不生成 | 检查 Blog Worker、任务队列、`QWEN_API_KEY` 和供应商额度 |
-| 页面正常但论文不更新 | 检查 scheduler 日志、Hugging Face 网络与数据日期；`HF_TOKEN` 不是公开数据的硬性要求 |
+| `登录流程已过期，请重新进入` | 关闭旧回调页，从 OpenResearch 重新登录；确认所有浏览器地址统一使用 `localhost`，不要把 `127.0.0.1` 与 `localhost` 混用 |
+| 登录后回到错误端口 | `OPENRESEARCH_APP_ORIGIN` 与 `DEEPLIT_OPENRESEARCH_APP_ORIGIN` 不一致；改为实际 OpenResearch origin 并重启两端 |
+| 精读链接再次进入 SSO | OpenResearch UI 或 `ui/dist` 未更新；重新运行 `pnpm build` 并更新 release/容器 |
+| Deep Literature 显示未登录 | 核对 `DEEPLIT_PUBLIC_ORIGIN`、Cookie 模式和 SSO secret；确认主登录确实经过 Deep Literature 回调 |
+| `SSO URLs must use HTTPS outside localhost` | 生产公开地址必须 HTTPS；只有本机 `localhost` 允许 HTTP |
+| 平台迁移报 `28P01` | `.env` 密码与已有数据库卷初始化密码不同；应重置数据库角色密码，不能为省事删除生产卷 |
+| `migrate` 显示 Exited | 退出码 0 表示迁移成功；非 0 才查看迁移日志 |
+| Blog 不生成 | 检查 Blog Worker、队列、`QWEN_API_KEY`、供应商额度和超时配置 |
+| Agent 未就绪 | 在运行 OpenResearch 的同一 OS 用户下执行 Agent CLI 的版本和登录检查；本地凭据不会由统一账号服务下发 |
 
-## 生产部署顺序
+## 9. 生产部署
 
-1. 准备两个独立 PostgreSQL 数据库、对象或持久文件存储、HTTPS 域名和秘密管理。
-2. 备份数据库和论文文件，记录当前提交 SHA 与镜像摘要。
-3. 将 `PLATFORM_ORIGIN`、`DEEPLIT_ORIGIN`、`DEEPLIT_PUBLIC_ORIGIN` 和平台公开地址全部改为精确 HTTPS origin。
-4. 生成独立数据库密码、SSO secret、CRON secret 和 password pepper；两端只共享 SSO secret。
-5. 先部署 OpenResearch 数据库并执行迁移，再部署平台服务并验证 `/healthz`。
-6. 部署 DeepLiterature 数据库并执行迁移，再启动 Web。
-7. 完成统一登录、授权码重放拒绝、跨用户数据隔离和退出联动验收。
-8. 最后启动 scheduler、PDF worker 和 Blog worker，观察队列、费用与错误率。
-9. 通过反向代理开放 HTTPS；数据库端口不得暴露公网。
+建议使用同一可注册域的三个 HTTPS 子域，例如：
 
-生产环境的执行器使用 `compose.executor.yaml`，为每个工作空间部署独立容器或 VM，并在派生镜像中安装服务端选定的 Agent CLI 与凭据。生产环境不要使用 `localhost`、`host.docker.internal`、默认密码或开发 Compose 覆盖文件。发布前还应完成备份恢复演练、限流、监控告警和 Worker 费用上限配置。
+- `https://app.example.org`：OpenResearch Web；
+- `https://account.example.org`：统一账号；
+- `https://literature.example.org`：Deep Literature。
+
+生产要求：
+
+1. 三个公开 origin 均使用 HTTPS，反向代理保留正确的 Host 和协议；
+2. PostgreSQL 仅在私网开放，使用两个独立数据库和独立密码；
+3. SSO secret、数据库密码、password pepper 和模型密钥进入 Secret Manager；
+4. 账号服务只允许配置的 App origin 跨源读取浏览器会话；
+5. Deep Literature Web 与 Worker 分开扩缩容，Worker 配置预算和并发上限；
+6. 配置数据库、论文文件和对象存储备份，并定期做恢复演练；
+7. 监控登录失败率、授权码交换失败、数据库连接、队列积压、模型费用和磁盘空间；
+8. 公网上线前补齐邮箱验证、找回密码、MFA/异常登录保护、账号删除和数据导出联动。
+
+示例生产变量参见 `packages/platform/.env.example` 与 Deep Literature `.env.production.example`。生产环境不得使用 `localhost`、`host.docker.internal`、默认密码或开发 Compose 覆盖文件。

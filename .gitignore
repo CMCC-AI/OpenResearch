@@ -9,6 +9,7 @@ Claude.local.md
 # never be committed — they get recorded as orphan gitlinks with no .gitmodules
 # entry, which breaks `git checkout --recurse-submodules` in CI.
 .claude/worktrees/
+.claude/launch.json
 
 # Keep local skills private.
 .claude/skills/

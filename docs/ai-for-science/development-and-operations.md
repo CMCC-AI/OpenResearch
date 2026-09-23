@@ -14,7 +14,7 @@ DeepLiterature 仓库：`/Users/levent/cmccProjects/DeepLiterature`，当前统�
 
 ```sh
 ORX_DEEP_LITERATURE_URL=http://127.0.0.1:3000 \
-ORX_DEEP_LITERATURE_WEB_URL=http://127.0.0.1:3000 \
+ORX_DEEP_LITERATURE_WEB_URL=http://localhost:3000 \
 node scripts/dev-slot.mjs start --db empty --worktree /private/tmp/openresearch-ai4s
 node scripts/dev-slot.mjs status --worktree /private/tmp/openresearch-ai4s
 ```
@@ -36,7 +36,7 @@ web依赖db/migrate；首次执行会迁移所连接数据库，因此必须使�
 | 变量 | 所在服务 | 含义 |
 |---|---|---|
 | ORX_DEEP_LITERATURE_URL | OpenResearch | 服务端HTTP(S) origin，默认127.0.0.1:3000，不接受路径/查询/账号密码 |
-| ORX_DEEP_LITERATURE_WEB_URL | OpenResearch | 浏览器origin，缺省复用服务端地址；远程部署不能把容器名当公开域名 |
+| ORX_DEEP_LITERATURE_WEB_URL | OpenResearch | 浏览器 origin，默认 `http://localhost:3000`；必须与 Deep Literature 的公开 origin 完全一致，远程部署不能使用容器名 |
 | OPENALEX_API_KEY | OpenResearch | 本轮支持的服务端Bearer key，不放入前端变量 |
 | OPENALEX_MAILTO | OpenResearch | 运营联系人；旧默认是上游项目地址，部署者应改为自己联系人；mailto不是API Key |
 | ALPHAXIV_API_URL / ALPHAXIV_WEB_URL | OpenResearch | alphaXiv接口/Markdown地址，仅管理员配置 |
