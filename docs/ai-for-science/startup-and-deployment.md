@@ -47,6 +47,24 @@
 
 ## 3. 准备秘密和配置
 
+### 本机一键启动（推荐）
+
+在 OpenResearch 仓库根目录运行：
+
+```bash
+node scripts/start-local.mjs
+```
+
+macOS 也可在 Finder 中双击仓库根目录的 `start-local.command`。
+
+脚本默认在相邻的 `../DeepLiterature` 查找文献仓库；其他位置可用 `--deeplit-dir /绝对路径`。它检查 Docker Compose、pnpm 和 Rust，生成或更新两个本地 `.env`，保留现有密钥与数据库密码，对变化的配置创建权限为 `0600` 的备份，然后构建前端和 Rust release，依次启动两个 Docker 服务，最后打开 `http://localhost:4791`。浏览器入口、账号服务和文献服务分别使用 `localhost:4791`、`localhost:5300`、`localhost:3000`。
+
+未配置 `QWEN_API_KEY` 时，脚本启动 Deep Literature 的数据库、迁移和 Web，足以完成登录、文库与精读。配置真实密钥后再次运行脚本，会自动启动采集和 Blog Worker。`--with-workers` 可在缺少密钥时提前报错；`--no-open` 可禁止自动打开浏览器。脚本在当前终端运行 OpenResearch；`Ctrl+C` 停止本地进程，Docker 服务继续运行。初次构建可能需要下载依赖和镜像。
+
+如果已有 Deep Literature 本地数据库沿用 Compose 旧默认密码，脚本会保留该密码并提示；如已有两端 SSO 密钥不一致，脚本会停止并要求先核对配置，不会改写其中任一密钥。
+
+下面的步骤适用于手动配置、生产部署或排查启动问题。
+
 生成两个互不相同的随机值：
 
 ```bash
@@ -135,15 +153,15 @@ curl -f http://localhost:5300/healthz
 ```bash
 cd /Users/levent/cmccProjects/DeepLiterature
 chmod 600 .env.local
-docker compose up -d --build
-docker compose ps -a
+docker compose --env-file .env.local up -d --build
+docker compose --env-file .env.local ps -a
 curl -f 'http://localhost:3000/api/papers?limit=1'
 ```
 
 Compose 顺序为 `db` → `migrate` → `web`、`scheduler`、`pdf-worker`、`blog-worker`。只更新 Web 时可执行：
 
 ```bash
-docker compose up -d --build web
+docker compose --env-file .env.local up -d --build web
 ```
 
 ### 4.4 启动 OpenResearch release
