@@ -45,6 +45,35 @@
 
 浏览器 origin 必须完全一致。`localhost` 与 `127.0.0.1` 是不同站点，不能混用于登录入口、回调和 Deep Literature Web 地址，否则浏览器不会携带同一 Cookie。
 
+### 本机已有环境的快速恢复
+
+以下命令在 OpenResearch 仓库根目录执行。已有 `.env`、数据库和构建产物时，先启动 Docker Desktop（macOS 可执行 `open -a Docker`）或 Docker Engine，再确认两组 Compose 服务：
+
+```bash
+docker info --format '{{.ServerVersion}}'
+docker compose -f packages/platform/compose.yaml -f packages/platform/compose.dev.yaml \
+  --project-directory packages/platform ps
+docker compose --env-file ../DeepLiterature/.env.local \
+  -f ../DeepLiterature/compose.yaml --project-directory ../DeepLiterature ps
+```
+
+Docker Desktop 可能自动恢复此前的 Compose 容器；若没有运行，按第 4.2、4.3 节分别启动。随后运行第 4.4 节的本地产品进程，并用第 5 节的健康检查确认。不要仅以 `docker ps` 中的 `Up` 判断登录链路可用。
+
+2026-09-30 本机恢复时，实际先通过 `node scripts/dev-slot.mjs start --db empty` 恢复了 `4902` 后端和 `5202` UI 开发预览；Docker Desktop 启动后，既有的账号服务与 Deep Literature Compose 项目自动恢复；最后在 `ORX_ACCOUNT_URL`、`ORX_DEEP_LITERATURE_URL`、`ORX_DEEP_LITERATURE_WEB_URL` 环境变量下，以 `/Users/levent/.local/share/openresearch-dev/cargo-target/debug/orx`（`orx 0.2.9`）运行 `up --no-browser`，让产品入口监听 `4791`。最终通过 Node.js `spawn` 的 `detached: true` 和 `unref()` 将该实例作为独立后台进程启动，日志位于 `/private/tmp/openresearch-orx-4791.log`。这是基于本机现有构建产物的快速恢复；首次部署或代码更新后应使用下文的一键脚本重新构建。
+
+`5202` 是隔离的源码开发预览，`4791` 是当前账号与 Deep Literature 配置的登录回调目标。若直接从 `5202` 测试登录，必须先将两端 App origin 都改为 `http://localhost:5202` 并重启相应服务；否则应从 `http://localhost:4791` 进入完整产品。
+
+检查 Docker 容器归属时使用 `docker compose ls --all` 和容器的 `com.docker.compose.project.working_dir` 标签。只停止明确属于其他项目的容器，使用 `docker stop <容器名>` 或该项目目录下的 `docker compose stop`；不要执行 `docker compose down -v`，以免删除数据库卷。本机的 `cmcc-local-dev` MySQL、Redis 属于另一个项目，已停止但未删除；`openresearch-test` 执行器属于本仓库测试环境，虽非个人版必需服务，不能归类为无关项目。
+
+| Compose 项目 | 服务 | 当前个人版用途 |
+|---|---|---|
+| `openresearch-platform` | `db`、`migrate`、`platform` | 统一账号与 Deep Literature SSO；迁移成功后退出 |
+| `deeplit` | `db`、`migrate`、`web` | 文献服务；迁移成功后退出 |
+| `deeplit` | `scheduler`、`pdf-worker`、`blog-worker` | 后台采集、解析和 Blog，可按需要启用 |
+| `openresearch-platform` | `provisioner` | 既有托管空间兼容服务，个人本地场景无需部署 |
+| `openresearch-test` | `executor` | 本仓库的测试执行器，个人本地场景无需部署 |
+| `cmcc-local-dev` | `mysql`、`redis` | 其他项目依赖，已停止 |
+
 ## 3. 准备秘密和配置
 
 ### 本机一键启动（推荐）
@@ -224,6 +253,15 @@ curl -f http://127.0.0.1:4791/api/deep-literature/status
 数据库迁移必须向前兼容旧应用版本，才能安全滚动回滚。回滚镜像前先核对迁移说明，不得直接回滚数据库文件。
 
 ## 7. 日志、停止和数据保护
+
+一键脚本在终端前台运行，按 `Ctrl+C` 停止本地 OpenResearch。本次恢复的 `4791` 实例在后台运行，可查看日志并核对进程：
+
+```bash
+tail -n 100 /private/tmp/openresearch-orx-4791.log
+lsof -nP -iTCP:4791 -sTCP:LISTEN
+```
+
+需要停止该后台实例时，在 `lsof` 输出中确认命令为 `orx`，再执行 `kill -TERM <实际PID>`。开发 slot 则在仓库根目录执行 `node scripts/dev-slot.mjs stop`；此操作保留隔离数据库。
 
 ```bash
 # 账号服务

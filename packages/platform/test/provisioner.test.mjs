@@ -18,6 +18,23 @@ test("managed configuration isolates storage, limits resources and keeps credent
   assert.equal(first.HostConfig.Memory, 1073741824);
   assert.equal(first.HostConfig.PortBindings, undefined);
   assert.equal(first.User, "1000:1000");
+  const configured = runtimeConfig(workspace, {
+    ...env,
+    MANAGED_OPENCODE_CONFIG_FILE: "/srv/config/opencode.json",
+  });
+  assert(
+    configured.HostConfig.Binds.includes(
+      "/srv/config/opencode.json:/home/node/.config/opencode/opencode.json:ro",
+    ),
+  );
+  assert.throws(
+    () =>
+      runtimeConfig(workspace, {
+        ...env,
+        MANAGED_OPENCODE_CONFIG_FILE: "/srv/config:rw",
+      }),
+    /absolute host path/,
+  );
   const archive = credentialArchive("x".repeat(43));
   assert.equal(parseInt(archive.toString("ascii", 100, 107), 8), 0o600);
   assert.equal(parseInt(archive.toString("ascii", 108, 115), 8), 1000);

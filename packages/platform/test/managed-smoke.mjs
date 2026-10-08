@@ -83,7 +83,9 @@ try {
     ...process.env,
     PLATFORM_ORIGIN: config.origin.origin,
     MANAGED_CONNECT_URL: `http://host.docker.internal:${port}`,
-    MANAGED_EXECUTOR_IMAGE: "openresearch-managed-executor:local",
+    MANAGED_EXECUTOR_IMAGE:
+      process.env.MANAGED_EXECUTOR_IMAGE ||
+      "openresearch-managed-executor:local",
   };
   for (let i = 0; i < 2; i++)
     created.push(
@@ -167,6 +169,17 @@ try {
     initializeGit: true,
     githubSyncEnabled: false,
   });
+  if (process.env.REQUIRE_OPENCODE === "true") {
+    const detected = await research[0]("/api/harnesses");
+    const opencode = detected.harnesses.find((h) => h.id === "opencode");
+    assert(
+      opencode?.installed,
+      "OpenResearch must discover installed OpenCode",
+    );
+    console.log(
+      "PASS: OpenCode discovered by the existing OpenResearch harness",
+    );
+  }
   assert(project.project.id);
   const firstProjects = JSON.stringify(await research[0]("/api/projects"));
   const secondProjects = JSON.stringify(await research[1]("/api/projects"));

@@ -1,0 +1,28 @@
+# Self-hosted private spaces. No user-facing runner setup or workspace sharing.
+services:
+  platform:
+    environment:
+      MANAGED_EXECUTORS: "true"
+      PRIVATE_USER_SPACES: "true"
+      MANAGED_CAPACITY: ${MANAGED_CAPACITY:-4}
+  provisioner:
+    build:
+      context: ../..
+      dockerfile: packages/platform/Dockerfile
+    user: "0:0"
+    command: [node, src/provisioner.mjs]
+    environment:
+      DATABASE_URL: postgres://research_platform:${PLATFORM_DB_PASSWORD}@db:5432/research_platform
+      PLATFORM_ORIGIN: ${PLATFORM_ORIGIN}
+      MANAGED_CONNECT_URL: ${PLATFORM_ORIGIN}
+      MANAGED_EXECUTOR_IMAGE: ${MANAGED_EXECUTOR_IMAGE:-openresearch-managed-executor:hosted}
+      MANAGED_OPENCODE_CONFIG_FILE: ${MANAGED_OPENCODE_CONFIG_FILE:?Set absolute host path to administrator OpenCode configuration}
+      ORX_DEEP_LITERATURE_URL: ${DEEPLIT_ORIGIN:?Set HTTPS Deep Literature origin}
+      ORX_DEEP_LITERATURE_WEB_URL: ${DEEPLIT_ORIGIN}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    init: true
+    read_only: true
+    restart: unless-stopped

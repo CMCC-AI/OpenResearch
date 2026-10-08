@@ -10,6 +10,7 @@ import {
 } from "react";
 import type { RuntimeInfo } from "../api";
 import { Spinner } from "../components/ui";
+import { isCloudWorkspace } from "./CloudWorkspace";
 
 type AccountUser = { id: string; name: string; email: string };
 
@@ -33,7 +34,8 @@ export function AuthSessionProvider({
   children: ReactNode;
 }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const accountUrl = runtime.kind === "local"
+  const cloud = isCloudWorkspace();
+  const accountUrl = cloud ? `${location.protocol}//${location.host.replace(/^[0-9a-f-]{36}\./, "")}` : runtime.kind === "local"
     ? runtime.accountUrl || "http://localhost:5300"
     : "";
   const [loading, setLoading] = useState(runtime.kind === "local");
@@ -47,7 +49,7 @@ export function AuthSessionProvider({
     }
     const controller = new AbortController();
     setLoading(true);
-    fetch(`${accountUrl}/api/platform/browser-session`, {
+    fetch(cloud ? "/_platform/context" : `${accountUrl}/api/platform/browser-session`, {
       credentials: "include",
       signal: controller.signal,
     })
@@ -72,7 +74,7 @@ export function AuthSessionProvider({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [accountUrl]);
+  }, [accountUrl, cloud]);
 
   const login = useCallback(() => {
     if (accountUrl) window.location.assign(accountUrl);
@@ -80,15 +82,15 @@ export function AuthSessionProvider({
 
   const logout = useCallback(async () => {
     if (accountUrl) {
-      await fetch(`${accountUrl}/api/platform/browser-logout`, {
+      await fetch(cloud ? "/_platform/logout" : `${accountUrl}/api/platform/browser-logout`, {
         method: "POST",
         credentials: "include",
       }).catch(() => undefined);
     }
     setUser(null);
     setDeepLiteratureUrl(null);
-    window.location.assign("/");
-  }, [accountUrl]);
+    window.location.assign(cloud ? accountUrl : "/");
+  }, [accountUrl, cloud]);
 
   const value = useMemo(
     () => ({ accountUrl, loading, user, deepLiteratureUrl, login, logout }),

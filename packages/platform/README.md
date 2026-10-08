@@ -1,5 +1,7 @@
 # OpenResearch 统一账号服务
 
+自有服务器多用户部署可启用 `compose.hosted.yaml`：自动私人空间、独立数据卷、共享 OpenCode 镜像及 Deep Literature SSO。部署说明见[服务器 OpenCode 模式](../../docs/ai-for-science/self-hosted-opencode.md)。本地个人版入口继续保持原行为。
+
 当前用户主线：OpenResearch 本地版 + Deep Literature + 统一账号。此 package 的门户负责个人注册、登录、改密、退出和 Deep Literature SSO，不再向个人用户展示工作空间或执行器配置。
 
 主项目可独立运行 `orx up`；未登录时显示产品介绍页，登录后进入项目、Agent 和设置。统一账号只提供身份，不读取或同步本地研究数据。

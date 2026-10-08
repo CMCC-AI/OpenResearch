@@ -553,6 +553,125 @@ test(
         },
       );
       await t.test(
+        "private hosted spaces are idempotent, owner-only and cannot be shared",
+        async () => {
+          config.privateSpaces = true;
+          config.managed = true;
+          try {
+            const create = (cookie) =>
+              request("/api/platform/personal-space", {
+                method: "POST",
+                cookie,
+              });
+            const [a, again, b] = await Promise.all([
+              create(alice),
+              create(alice),
+              create(bob),
+            ]);
+            assert.equal(a.status, 200, JSON.stringify(a.data));
+            assert.equal(again.data.id, a.data.id);
+            assert.equal(b.status, 200, JSON.stringify(b.data));
+            assert.notEqual(a.data.id, b.data.id);
+            assert.equal(
+              (
+                await request(`/api/platform/workspaces/${a.data.id}/launch`, {
+                  method: "POST",
+                  cookie: bob,
+                })
+              ).status,
+              404,
+            );
+            assert.equal(
+              (
+                await request(`/api/platform/workspaces/${a.data.id}/invites`, {
+                  method: "POST",
+                  cookie: alice,
+                  data: { email: "bob@test.invalid", role: "editor" },
+                })
+              ).status,
+              403,
+            );
+            assert.equal(
+              (
+                await request("/api/platform/invites/accept", {
+                  method: "POST",
+                  cookie: bob,
+                  data: { token: "unused" },
+                })
+              ).status,
+              403,
+            );
+            // Even an old shared membership must not expose another user's private space.
+            await pool.query("INSERT INTO memberships VALUES($1,$2,'viewer')", [
+              a.data.id,
+              users.bob,
+            ]);
+            assert.equal(
+              (
+                await request(`/api/platform/workspaces/${a.data.id}/launch`, {
+                  method: "POST",
+                  cookie: bob,
+                })
+              ).status,
+              404,
+            );
+            const list = await request("/api/platform/workspaces", {
+              cookie: bob,
+            });
+            assert(!list.data.some((w) => w.id === a.data.id));
+            const freshLogin = await login("alice");
+            const hostedSession = (await enter(freshLogin, a.data.id)).cookie;
+            const context = await request("/_platform/context", {
+              host: `${a.data.id}.${portal}`,
+              cookie: hostedSession,
+            });
+            assert.equal(context.data.user.id, users.alice);
+            assert.equal(context.data.privateSpaces, true);
+            assert.equal(
+              (
+                await request("/_platform/logout", {
+                  method: "POST",
+                  host: `${a.data.id}.${portal}`,
+                  origin: `http://${a.data.id}.${portal}`,
+                  cookie: hostedSession,
+                })
+              ).status,
+              200,
+            );
+            assert.equal(
+              (await request("/api/platform/me", { cookie: freshLogin }))
+                .status,
+              401,
+            );
+            assert.equal(
+              (
+                await request("/_platform/context", {
+                  host: `${a.data.id}.${portal}`,
+                  cookie: hostedSession,
+                })
+              ).status,
+              401,
+            );
+            for (const space of [a.data.id, b.data.id]) {
+              const cookie = space === a.data.id ? alice : bob;
+              assert.equal(
+                (
+                  await request(`/api/platform/workspaces/${space}`, {
+                    method: "DELETE",
+                    cookie,
+                    data: { name: "我的科研空间" },
+                  })
+                ).status,
+                200,
+              );
+            }
+          } finally {
+            config.privateSpaces = false;
+            config.managed = false;
+          }
+        },
+      );
+      await t.test(
         "anonymous, CSRF, IDOR and host-scoped sessions",
         async () => {
           assert.equal((await request("/api/platform/workspaces")).status, 401);

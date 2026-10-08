@@ -3,6 +3,61 @@ const account = document.querySelector("#account");
 const dialog = document.querySelector("#detail");
 const detail = document.querySelector("#detail-body");
 let me = null;
+let runtimeTimer;
+window.addEventListener("pagehide", () => clearTimeout(runtimeTimer));
+
+async function hostedHome(capabilities) {
+  renderAccount();
+  const space = await api("/personal-space", "POST");
+  app.innerHTML = `<section class="auth card account-card"><h1>我的科研空间</h1><p id="runtime-status" role="status">正在准备运行环境…</p><button id="enter-space" class="primary" disabled>进入科研工作台</button><button id="retry-space" hidden>重新准备环境</button>${capabilities.deepLiteratureUrl ? '<button id="literature">进入深度文献</button>' : ""}</section>`;
+  document.querySelector("#enter-space").onclick = async () => {
+    try {
+      const launch = await api(`/workspaces/${space.id}/launch`, "POST");
+      location.assign(
+        `${launch.url}#ticket=${encodeURIComponent(launch.ticket)}`,
+      );
+    } catch (error) {
+      notice(error.message);
+    }
+  };
+  document.querySelector("#retry-space").onclick = async () => {
+    try {
+      await api(`/workspaces/${space.id}/runtime`, "POST");
+      await refresh();
+    } catch (error) {
+      notice(error.message);
+    }
+  };
+  if (capabilities.deepLiteratureUrl)
+    document.querySelector("#literature").onclick = () =>
+      location.assign(
+        new URL(
+          "/api/auth/openresearch/start?returnTo=/library",
+          capabilities.deepLiteratureUrl,
+        ).href,
+      );
+  async function refresh() {
+    clearTimeout(runtimeTimer);
+    if (!document.querySelector("#runtime-status")) return;
+    try {
+      const runtime = await api(`/workspaces/${space.id}/runtime`);
+      const ready = runtime.status === "ready" && runtime.online;
+      document.querySelector("#runtime-status").textContent = ready
+        ? "环境已就绪，可使用服务器上的科研工具。"
+        : runtime.status === "failed"
+          ? runtime.error || "环境准备失败，请重试。"
+          : "正在准备运行环境，请稍候…";
+      document.querySelector("#enter-space").disabled = !ready;
+      document.querySelector("#retry-space").hidden =
+        runtime.status !== "failed";
+    } catch (error) {
+      notice(error.message);
+    }
+    if (document.querySelector("#runtime-status"))
+      runtimeTimer = setTimeout(refresh, 5000);
+  }
+  await refresh();
+}
 
 const invite = new URLSearchParams(location.hash.slice(1)).get("invite");
 const continuePath = new URLSearchParams(location.search).get("continue");
@@ -179,6 +234,7 @@ async function load() {
   }
   if (!new URLSearchParams(location.search).has("account")) {
     const capabilities = await api("/capabilities");
+    if (capabilities.privateSpaces) return hostedHome(capabilities);
     if (capabilities.deepLiteratureUrl) {
       const login = new URL(
         "/api/auth/openresearch/start",

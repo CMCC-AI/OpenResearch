@@ -83,6 +83,11 @@ export function runtimeConfig(workspace, env) {
   if (!/^[0-9a-f-]{36}$/.test(workspace)) throw new Error("Invalid workspace");
   if (!env.MANAGED_EXECUTOR_IMAGE)
     throw new Error("MANAGED_EXECUTOR_IMAGE is required");
+  const configFile = env.MANAGED_OPENCODE_CONFIG_FILE;
+  if (configFile && (!configFile.startsWith("/") || /[:\n\r]/.test(configFile)))
+    throw new Error(
+      "MANAGED_OPENCODE_CONFIG_FILE must be an absolute host path",
+    );
   return {
     Image: env.MANAGED_EXECUTOR_IMAGE,
     User: "1000:1000",
@@ -98,7 +103,13 @@ export function runtimeConfig(workspace, env) {
       `ORX_DEEP_LITERATURE_WEB_URL=${env.ORX_DEEP_LITERATURE_WEB_URL || "http://localhost:3000"}`,
     ],
     HostConfig: {
-      Binds: [`orx-managed-${workspace}:/home/node`],
+      Binds: [
+        `orx-managed-${workspace}:/home/node`,
+        ...(configFile
+          ? [`${configFile}:/home/node/.config/opencode/opencode.json:ro`]
+          : []),
+      ],
+      ...(env.MANAGED_NETWORK ? { NetworkMode: env.MANAGED_NETWORK } : {}),
       ExtraHosts: ["host.docker.internal:host-gateway"],
       RestartPolicy: { Name: "unless-stopped" },
       CapDrop: ["ALL"],

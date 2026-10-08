@@ -58,6 +58,17 @@ export function configuration(env = process.env) {
     "OPENRESEARCH_APP_ORIGIN must be HTTPS or a loopback HTTP origin",
   );
   check(env.DATABASE_URL, 500, "DATABASE_URL is required");
+  check(
+    env.PRIVATE_USER_SPACES !== "true" || env.MANAGED_EXECUTORS === "true",
+    500,
+    "PRIVATE_USER_SPACES requires MANAGED_EXECUTORS",
+  );
+  const managedCapacity = Number(env.MANAGED_CAPACITY || 4);
+  check(
+    Number.isSafeInteger(managedCapacity) && managedCapacity > 0,
+    500,
+    "MANAGED_CAPACITY must be a positive integer",
+  );
   const deepLiteratureOrigin = env.DEEPLIT_ORIGIN
     ? new URL(env.DEEPLIT_ORIGIN)
     : null;
@@ -86,6 +97,8 @@ export function configuration(env = process.env) {
     appOrigin: appOrigin.origin,
     secure,
     managed: env.MANAGED_EXECUTORS === "true",
+    privateSpaces: env.PRIVATE_USER_SPACES === "true",
+    managedCapacity,
     database: env.DATABASE_URL,
     port: Number(env.PORT || 5300),
     bind: env.BIND_ADDRESS || "127.0.0.1",
@@ -158,6 +171,13 @@ export async function createPlatform(
     db = pool,
   ) {
     check(/^[0-9a-f-]{36}$/.test(workspace), 404, "工作空间不存在");
+    if (config.privateSpaces) {
+      const owner = await db.query(
+        "SELECT id FROM workspaces WHERE id=$1 AND created_by=$2",
+        [workspace, user],
+      );
+      check(owner.rows.length, 404, "工作空间不存在");
+    }
     const { rows } = await db.query(
       "SELECT role FROM memberships WHERE workspace_id=$1 AND user_id=$2",
       [workspace, user],
@@ -356,8 +376,27 @@ export async function createPlatform(
             role,
             online: tunnels.has(workspace),
             portal: config.origin.origin,
-            user: { name: s.name, email: s.email },
+            privateSpaces: !!config.privateSpaces,
+            deepLiteratureUrl: config.deepLiterature?.origin || null,
+            user: { id: s.user_id, name: s.name, email: s.email },
           });
+        if (path === "/_platform/logout" && req.method === "POST") {
+          sameOrigin(req, workspaceOrigin(config, workspace));
+          const root = s.parent_hash || s.token_hash;
+          const children = await pool.query(
+            "SELECT token_hash FROM platform_sessions WHERE token_hash=$1 OR parent_hash=$1",
+            [root],
+          );
+          await pool.query(
+            "DELETE FROM platform_sessions WHERE token_hash=$1",
+            [root],
+          );
+          for (const tunnel of tunnels.values())
+            for (const row of children.rows)
+              tunnel.revokeSession(row.token_hash);
+          res.setHeader("set-cookie", sessionCookie("", config.secure, 0));
+          return json(res, { ok: true });
+        }
         if (path === "/_orx/runtime" && req.method === "GET")
           return json(res, { kind: "local", version: "platform" });
         // Navigation and model selection are personal preferences, never shared runner state.
@@ -545,6 +584,10 @@ export async function createPlatform(
       }
       if (!path.startsWith("/api/platform/")) {
         check(req.method === "GET" || req.method === "HEAD", 405);
+        if (config.privateSpaces && path === "/projects") {
+          res.writeHead(303, { location: "/" });
+          return res.end();
+        }
         return await staticFile(res, publicDir, path);
       }
       if (!["GET", "HEAD"].includes(req.method))
@@ -600,6 +643,7 @@ export async function createPlatform(
         return json(res, { ok: true }, 201);
       }
       if (path === "/api/platform/invites/accept" && req.method === "POST") {
+        check(!config.privateSpaces, 403, "私人空间不支持邀请");
         await limit(
           `invite-ip:${hash(req.socket.remoteAddress || "")}`,
           20,
@@ -657,11 +701,55 @@ export async function createPlatform(
       await limit(`portal:${s.user_id}`, 180, 60);
       if (path === "/api/platform/capabilities" && req.method === "GET")
         return json(res, {
+          privateSpaces: !!config.privateSpaces,
           deepLiteratureUrl: config.deepLiterature?.origin || null,
           openResearchAppUrl: config.appOrigin,
         });
       if (path === "/api/platform/me" && req.method === "GET")
         return json(res, { id: s.user_id, email: s.email, name: s.name });
+      if (path === "/api/platform/personal-space" && req.method === "POST") {
+        check(
+          config.privateSpaces && config.managed,
+          409,
+          "私人托管空间未启用",
+        );
+        const workspace = await transaction(pool, async (db) => {
+          await db.query("SELECT pg_advisory_xact_lock(721947)");
+          await db.query(
+            "SELECT id FROM platform_users WHERE id=$1 FOR UPDATE",
+            [s.user_id],
+          );
+          const existing = await db.query(
+            "SELECT w.id FROM workspaces w JOIN workspace_runtimes r ON r.workspace_id=w.id WHERE w.created_by=$1 AND r.desired='running' ORDER BY w.created_at LIMIT 1",
+            [s.user_id],
+          );
+          if (existing.rows.length) return existing.rows[0].id;
+          const capacity = await db.query(
+            "SELECT count(*)::int AS n FROM workspace_runtimes WHERE desired='running'",
+          );
+          check(
+            capacity.rows[0].n < (config.managedCapacity || 4),
+            409,
+            "服务器运行容量已满，请联系管理员",
+          );
+          const workspace = id();
+          await db.query(
+            "INSERT INTO workspaces(id,name,created_by) VALUES($1,$2,$3)",
+            [workspace, "我的科研空间", s.user_id],
+          );
+          await db.query("INSERT INTO memberships VALUES($1,$2,'owner')", [
+            workspace,
+            s.user_id,
+          ]);
+          await db.query(
+            "INSERT INTO workspace_runtimes(workspace_id) VALUES($1)",
+            [workspace],
+          );
+          await audit(db, s.user_id, workspace, "workspace.create");
+          return workspace;
+        });
+        return json(res, { id: workspace });
+      }
       if (path === "/api/platform/logout" && req.method === "POST") {
         const children = await pool.query(
           "SELECT token_hash FROM platform_sessions WHERE token_hash=$1 OR parent_hash=$1",
@@ -704,8 +792,8 @@ export async function createPlatform(
       if (path === "/api/platform/workspaces") {
         if (req.method === "GET") {
           const { rows } = await pool.query(
-            `SELECT w.id,w.name,m.role,r.last_seen,r.expires_at AS credential_expires_at,rt.status AS runtime_status,rt.error AS runtime_error FROM workspaces w JOIN memberships m ON m.workspace_id=w.id LEFT JOIN runners r ON r.workspace_id=w.id LEFT JOIN workspace_runtimes rt ON rt.workspace_id=w.id WHERE m.user_id=$1 ORDER BY w.created_at`,
-            [s.user_id],
+            `SELECT w.id,w.name,m.role,r.last_seen,r.expires_at AS credential_expires_at,rt.status AS runtime_status,rt.error AS runtime_error FROM workspaces w JOIN memberships m ON m.workspace_id=w.id LEFT JOIN runners r ON r.workspace_id=w.id LEFT JOIN workspace_runtimes rt ON rt.workspace_id=w.id WHERE m.user_id=$1 AND ($2::boolean=false OR w.created_by=$1) ORDER BY w.created_at`,
+            [s.user_id, !!config.privateSpaces],
           );
           return json(
             res,
@@ -713,6 +801,7 @@ export async function createPlatform(
           );
         }
         check(req.method === "POST", 405);
+        check(!config.privateSpaces, 403, "私人空间由平台自动创建");
         const b = await input(req);
         const managed = b.mode === "managed";
         check(!b.mode || ["managed", "external"].includes(b.mode));
@@ -725,7 +814,7 @@ export async function createPlatform(
               "SELECT count(*)::int AS n FROM workspace_runtimes WHERE desired='running'",
             );
             check(
-              capacity.rows[0].n < 4,
+              capacity.rows[0].n < (config.managedCapacity || 4),
               409,
               "本地托管容量已满（4 个空间），请删除闲置空间后重试",
             );
@@ -836,6 +925,12 @@ export async function createPlatform(
       );
       check(match, 404, "接口不存在");
       const [, workspace, action, target] = match;
+      check(
+        !config.privateSpaces ||
+          !["members", "invites", "runner"].includes(action),
+        403,
+        "私人空间不允许共享或外部执行器配置",
+      );
       await member(
         s.user_id,
         workspace,
