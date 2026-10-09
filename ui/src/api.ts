@@ -86,6 +86,7 @@ export interface Experiment {
   updatedAt: number;
   /** Chat session that created this experiment; null for dashboard/legacy rows. */
   chatSessionId?: string | null;
+  archived: boolean;
 }
 
 export type RunStatus = "starting" | "running" | "done" | "failed" | "cancelled";
@@ -110,6 +111,19 @@ export interface Run {
 export function runDisplayStatus(run: Pick<Run, "status" | "cancelRequested">): RunDisplayStatus {
   const live = run.status === "running" || run.status === "starting";
   return live && run.cancelRequested ? "cancelling" : run.status;
+}
+
+/** Why the supervisor can't currently observe a live run, if it can't. */
+export function runMonitoringError(run: Pick<Run, "status" | "backend">): string | null {
+  if (run.status !== "running" && run.status !== "starting") return null;
+  const error = run.backend?.monitoringError;
+  return typeof error === "string" && error ? error : null;
+}
+
+/** The newest live run's monitoring error: a forced relaunch can leave an older run live. */
+export function experimentMonitoringError(runs: Pick<Run, "status" | "backend" | "createdAt">[]): string | null {
+  const newestFirst = [...runs].sort((a, b) => b.createdAt - a.createdAt);
+  return newestFirst.map(runMonitoringError).find((error) => error !== null) ?? null;
 }
 
 const writeScopes = new WeakMap<Response, ReturnType<typeof workspaceScope>>();
@@ -188,6 +202,7 @@ export interface ProjectActivity {
   runningExperiments: number;
   totalExperiments: number;
   lastMessageAt: number | null;
+  lastActivityAt: number;
 }
 
 export const listProjectActivity = (signal?: AbortSignal) =>
@@ -208,7 +223,12 @@ export interface UiState {
   onboardingCompleted: boolean;
   tourCompleted: boolean;
   preferredAgent: AgentSelection | null;
+  preferredAutonomy: Autonomy | null;
 }
+
+/** How much of the research the agent owns before checking in. */
+export type Autonomy = "copilot" | "agentic";
+export const DEFAULT_AUTONOMY: Autonomy = "agentic";
 
 export const getUiState = (signal?: AbortSignal) => get<UiState>("/api/settings/ui-state", signal);
 
@@ -224,6 +244,7 @@ export const updateUiState = (body: {
   workspace?: GlobalWorkspace;
   tourCompleted?: boolean;
   preferredAgent?: AgentSelection;
+  preferredAutonomy?: Autonomy;
 }) => post<UiState>("/api/settings/ui-state", body);
 
 export const completeOnboarding = (selection: OnboardingSelection, profile: Profile) =>
@@ -234,6 +255,8 @@ export const completeOnboarding = (selection: OnboardingSelection, profile: Prof
 
 export interface ProjectPathStatus {
   gitVersion: string | null;
+  /** Only without a path: Windows with no Git, which `installGit` can fix. */
+  gitInstallable?: boolean;
   resolvedPath: string | null;
   exists: boolean | null;
   directory: boolean | null;
@@ -248,6 +271,8 @@ export const getProjectPathStatus = (path = "", signal?: AbortSignal) => {
   const query = path ? `?path=${encodeURIComponent(path)}` : "";
   return get<ProjectPathStatus>(`/api/project-path/status${query}`, signal);
 };
+
+export const installGit = () => post<Record<string, never>>("/api/git/install");
 
 export const pickProjectFolder = () =>
   post<{ path: string | null }>("/api/project-path/pick").then((result) => result.path);
@@ -441,6 +466,9 @@ export const listExperiments = (projectId: string, signal?: AbortSignal) =>
   get<{ experiments: Experiment[] }>(`/api/projects/${projectId}/experiments`, signal).then(
     (r) => r.experiments,
   );
+
+export const setExperimentArchived = (id: string, direction: "ancestors" | "descendants" | "only" | "region" | "taskRegion", archived: boolean) =>
+  patch<{ ids: string[] }>(`/api/experiments/${id}/archive`, { direction, archived });
 
 export const listRuns = (projectId: string, signal?: AbortSignal) =>
   get<{ runs: Run[] }>(`/api/projects/${projectId}/runs`, signal).then((r) => r.runs);
@@ -891,14 +919,15 @@ export const saveTinkerKey = (key: string) => post<TinkerSettings>("/api/setting
 
 // --- updates ------------------------------------------------------------------
 
-/** How orx was installed. `installer`, `app-bundle` and `portable` update themselves. */
-export type InstallChannel = "product" | "installer" | "app-bundle" | "portable" | "cargo" | "homebrew" | "nix" | "unknown";
+/** How orx was installed. `installer`, `app-bundle`, `appimage` and `portable` update themselves. */
+export type InstallChannel = "product" | "installer" | "app-bundle" | "appimage" | "portable" | "cargo" | "homebrew" | "nix" | "unknown";
 
 export interface UpdateStatus {
   current: string;
   /** Latest release this install can actually move to — the macOS app and the
    *  CLI read different manifests, and the app's can lag. */
   latest: string | null;
+  latestTag: string | null;
   channel: InstallChannel;
   /** Whether this install is one orx can replace at all. */
   selfUpdates: boolean;
@@ -909,6 +938,7 @@ export interface UpdateStatus {
   /** The newer version already on disk. Distinct from `latest`: a release can
    *  land between the install and the restart. */
   installedVersion: string | null;
+  installedTag: string | null;
   restartRequired: boolean;
   /** Whether `restartApp` is honored; always true today, kept for a channel that cannot. */
   canRestart: boolean;
@@ -1553,6 +1583,11 @@ export const captureUiEvent = (event: UiEvent): void => {
   void post<{ ok: boolean }>("/api/telemetry/event", event).catch(() => {});
 };
 
+/** Tells orx which language the dashboard displays, for usage analytics. Fire-and-forget. */
+export const reportLocale = (locale: string): void => {
+  void post<{ locale: string }>("/api/telemetry/locale", { locale }).catch(() => {});
+};
+
 export type HarnessId = "claude-code" | "codex" | "opencode" | "cursor" | "antigravity";
 
 export interface HarnessModel {
@@ -1566,8 +1601,7 @@ export interface HarnessModel {
    * directly.
    */
   reasoningLevels?: OptionChoice[];
-  /** The catalog's own human name ("Opus", "GPT-5.6 Sol"). Absent on
-   * statically-listed fallback models — derive from the id then. */
+  /** The catalog's own human name ("Opus", "GPT-5.6 Sol"). */
   displayName?: string;
   /** The catalog's one-line blurb. For Claude this carries the resolved
    * version ("Opus 4.8 with 1M context · …") — its aliases don't. */
@@ -1720,7 +1754,10 @@ export interface Harness {
   version?: string;
   authenticated: boolean;
   authState: "ready" | "needsLogin" | "unknown" | "unsupported";
-  authMethod?: "oauth" | "apiKey" | "local";
+  authMethod?: "oauth" | "apiKey" | "thirdParty" | "local";
+  authProvider?: string;
+  loginEligible?: boolean;
+  authCheckFailed?: boolean;
   accountLoading?: boolean;
   account?: string;
   org?: string;
@@ -1735,7 +1772,7 @@ export interface Harness {
    * queueing. Narrowed per installation (codex's legacy exec path can't). */
   supportsSteering: boolean;
   /** A snapshot answer whose model catalog is still filling in the
-   * background — `models` is the static placeholder until `harness.catalog`
+   * background — `models` stays empty until `harness.catalog`
    * arrives and a plain re-read swaps in the real list. */
   catalogPending?: boolean;
   models: HarnessModel[];
@@ -1770,10 +1807,13 @@ export interface SkillInfo {
   harness?: string | null;
   description: string;
   /** Built-in composer commands share the menu with harness/user skills. */
-  source?: "builtin" | "user" | "command";
+  source?: "builtin" | "user" | "project" | "command";
 }
 
-export const getSkills = (signal?: AbortSignal, harness?: string) => get<{ skills: SkillInfo[]; importing: boolean }>(`/api/skills${harness ? `?harness=${encodeURIComponent(harness)}` : ""}`, signal);
+export const getSkills = (signal?: AbortSignal, harness?: string, projectId?: string) => {
+  const query = new URLSearchParams({ ...(harness ? { harness } : {}), ...(projectId ? { project: projectId } : {}) });
+  return get<{ skills: SkillInfo[]; importing: boolean }>(`/api/skills${query.size ? `?${query}` : ""}`, signal);
+};
 
 export const getSkillContent = (name: string, projectId?: string, signal?: AbortSignal, harness?: string | null) =>
   get<{ content: string }>(
@@ -1949,12 +1989,16 @@ export interface ChatSession {
   planMode: boolean;
   /** What `/goal` asked the agent to keep working toward; null when unset. */
   goal?: string | null;
+  autonomy: Autonomy;
   reasoningLevel: string | null;
   /** Hidden from the default Recents list, but fully intact and resumable. */
   archived: boolean;
   /** Session whose agent spawned this one with `orx agent spawn`; null for
    * sessions the user started themselves. */
   parentSessionId?: string | null;
+  /** Chat this side chat branched from. Side chats share its worktree and
+   * stay out of history; closing the tab deletes one. */
+  sideParentSessionId?: string | null;
   createdAt: number;
   updatedAt: number;
   busy: boolean;
@@ -1993,6 +2037,15 @@ export const importNativeChat = (projectId: string, chat: NativeChat) =>
 export const listAllChatSessions = (signal?: AbortSignal) =>
   get<{ sessions: ChatSession[] }>("/api/chat/sessions?scope=all", signal).then((r) => r.sessions);
 
+export interface SidebarChatCursor { updatedAt: number; id: string }
+export interface SidebarChatPage { sessions: ChatSession[]; next: SidebarChatCursor | null }
+export const listSidebarChatSessions = (filter: "active" | "archived" | "all", before: SidebarChatCursor | null, signal?: AbortSignal) => {
+  const params = new URLSearchParams({ scope: "sidebar" });
+  if (filter !== "all") params.set("archived", String(filter === "archived"));
+  if (before) { params.set("beforeUpdatedAt", String(before.updatedAt)); params.set("beforeId", before.id); }
+  return get<SidebarChatPage>(`/api/chat/sessions?${params}`, signal);
+};
+
 /** Per-session (and per-turn) composer selections beyond the harness itself. */
 export interface TurnOptions {
   model?: string | null;
@@ -2005,7 +2058,7 @@ export interface TurnOptions {
 export const createChatSession = (
   projectId: string,
   harness: HarnessId,
-  opts: TurnOptions = {},
+  opts: TurnOptions & { autonomy?: Autonomy } = {},
 ) =>
   post<{ session: ChatSession }>("/api/chat/sessions", { projectId, harness, ...opts }).then(
     (r) => r.session,
@@ -2034,9 +2087,20 @@ export const setChatSessionPlanMode = (sessionId: string, planMode: boolean) =>
     (r) => r.session,
   );
 
+/** Branch a temporary side chat off a snapshot of `sessionId`'s transcript. */
+export const openSideChat = (sessionId: string) =>
+  post<{ session: ChatSession }>(`/api/chat/sessions/${sessionId}/side`, {}).then(
+    (r) => r.session,
+  );
+
 /** `null` clears the goal. */
 export const setChatSessionGoal = (sessionId: string, goal: string | null) =>
   patch<{ session: ChatSession }>(`/api/chat/sessions/${sessionId}`, { goal }).then(
+    (r) => r.session,
+  );
+
+export const setChatSessionAutonomy = (sessionId: string, autonomy: Autonomy) =>
+  patch<{ session: ChatSession }>(`/api/chat/sessions/${sessionId}`, { autonomy }).then(
     (r) => r.session,
   );
 

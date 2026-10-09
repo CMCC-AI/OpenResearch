@@ -72,7 +72,7 @@ async fn terminal(target: &SshTarget, dir: &str, container: Option<&ContainerRun
 
 async fn logs(target: &SshTarget, dir: &str) -> String {
     let mut output = String::new();
-    ssh::stream_logs(target, dir, 0, Duration::ZERO, &mut |line| {
+    ssh::stream_logs(target, dir, 0, Duration::ZERO, true, &mut |line| {
         output.push_str(line);
         output.push('\n');
     })
@@ -470,6 +470,7 @@ async fn supervisor_restart(target: &SshTarget, reference: &str, port: u16) {
             created_at: 1,
             updated_at: 1,
             chat_session_id: None,
+            archived: false,
         })
         .unwrap();
     let (dir, container) = launch(target, Some(reference), "echo ONCE; sleep 8; echo AFTER").await;

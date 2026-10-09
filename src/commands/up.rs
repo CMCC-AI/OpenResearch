@@ -12,7 +12,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::io::IsTerminal as _;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,8 +34,10 @@ use sha2::{Digest as _, Sha256};
 use tokio::sync::mpsc;
 
 use crate::commands::remote_host::{DashboardLock, DashboardLockMode, HostDescriptor, RemoteAuth};
+use crate::commands::up_remote::RemoteSessionStatus;
 use crate::error::{anyhow, Result};
 use crate::local;
+use crate::local::autonomy::Autonomy;
 use crate::local::chat::ChatHost;
 use crate::local::is_terminal;
 use crate::local::opencode::AgentHost;
@@ -45,9 +48,12 @@ use crate::updates;
 use crate::workspace_state::{GlobalWorkspaceState, WorkspaceState};
 use crate::{browser, UpArgs};
 
+pub(crate) mod compute_settings;
 mod harness_setup;
+use compute_settings::*;
 
 pub async fn run(args: UpArgs) -> Result<()> {
+    updates::note_startup_image();
     let port = args.port;
     let persistent_host = args.remote_host;
     let remote_auth = if persistent_host {
@@ -67,23 +73,19 @@ pub async fn run(args: UpArgs) -> Result<()> {
     )?;
     // Blocks only for a relaunched server, whose predecessor still holds the port.
     updates::await_replaced_parent();
-    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
-        Ok(listener) => listener,
-        // A second double-click should reach the running dashboard, not fail on its port.
-        Err(error)
-            if error.kind() == std::io::ErrorKind::AddrInUse
-                && crate::owns_its_console()
-                && dashboard_is_serving(port).await =>
-        {
-            let url = format!("http://127.0.0.1:{port}");
-            eprintln!("orx up: already running — opening {url}");
-            if !args.no_browser {
-                browser::open_browser(&url);
-            }
-            return Ok(());
-        }
-        Err(error) => return Err(anyhow!("Could not bind 127.0.0.1:{}: {}", port, error)),
-    };
+    let backend_lock = tokio::task::spawn_blocking(updates::BackendLock::acquire)
+        .await
+        .ok()
+        .flatten();
+    // An install that finished while this process waited replaced the image it was started from.
+    if backend_lock.is_some() && updates::newer_exe_on_disk().await {
+        drop(backend_lock);
+        let err = updates::relaunch(port);
+        return Err(anyhow!("orx up: could not restart: {err}"));
+    }
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .map_err(|error| anyhow!("Could not bind 127.0.0.1:{}: {}", port, error))?;
     let actual_port = listener.local_addr()?.port();
     // Open early so the schema exists before any request or agent spawn.
     {
@@ -104,6 +106,7 @@ pub async fn run(args: UpArgs) -> Result<()> {
     let codex = Arc::new(local::codex::CodexHost::new());
     let claude = Arc::new(local::claude::ClaudeHost::new());
     claude.start_reaper();
+    codex.start_reaper();
     let remote_instance_id = persistent_host.then(|| uuid::Uuid::new_v4().to_string());
     let stopping = Arc::new(AtomicBool::new(false));
     let state = AppState {
@@ -115,6 +118,7 @@ pub async fn run(args: UpArgs) -> Result<()> {
         project_creation_lock: Arc::new(tokio::sync::Mutex::new(())),
         publication_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         harness_fill_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        claude_catalog_queue: Arc::new(std::sync::Mutex::new(ClaudeCatalogQueue::default())),
         data_dir_move_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         data_dir_gate: Arc::new(tokio::sync::Mutex::new(())),
         remote_sessions: crate::commands::up_remote::RemoteSessionManager::new(),
@@ -160,14 +164,29 @@ pub async fn run(args: UpArgs) -> Result<()> {
         let gate = state.data_dir_gate.clone();
         tokio::task::spawn_blocking(move || local::demo::prewarm(move_in_progress, gate));
     }
+    if !persistent_host {
+        let chat = state.chat.clone();
+        tokio::spawn(async move {
+            if let Err(err) = local::chat::delete_side_chats(&chat).await {
+                eprintln!("orx up: side chat cleanup: {err}");
+            }
+        });
+    }
     // Deliver explicitly registered run wake-ups once their chat becomes idle.
     tokio::spawn(local::chat::watch_runs(
         state.chat.clone(),
         state.data_dir_move_in_progress.clone(),
         state.data_dir_gate.clone(),
     ));
-    spawn_claude_auth_monitor(state.chat.clone(), claude.clone());
+    spawn_claude_auth_monitor(
+        state.chat.clone(),
+        claude.clone(),
+        state.harness_fill_in_flight.clone(),
+    );
     spawn_background_tasks(remote_auth.is_none());
+    if !persistent_host && !args.desktop_app {
+        spawn_restart_when_idle(state.clone());
+    }
     let live_events = state.chat.clone();
     local::overleaf_live::set_event_sink(Box::new(move |name, data| {
         live_events.emit_event(name, data)
@@ -207,8 +226,14 @@ pub async fn run(args: UpArgs) -> Result<()> {
         if let Some(warning) = crate::local::bash::missing_toolchain() {
             eprintln!("orx up: warning: {warning}");
         }
+        if !args.desktop_app && !persistent_host && std::io::stderr().is_terminal() {
+            eprintln!(
+                "orx up: the OpenResearch desktop app opens these same projects: {}",
+                crate::updates::desktop_app_download_url()
+            );
+        }
         if !args.no_browser {
-            browser::open_browser(&url);
+            browser::open_dashboard(&url, crate::telemetry::UpLaunchMode::of(&args));
         }
     }
 
@@ -254,17 +279,50 @@ pub async fn run(args: UpArgs) -> Result<()> {
     }
     state.dashboard_lock.lock().unwrap().take();
     if restarting {
-        eprintln!("orx up: restarting into the updated orx");
+        drop(backend_lock);
+        if !updates::newer_exe_on_disk().await {
+            eprintln!("orx up: installing the update before restarting");
+            let failures = updates::failure_count();
+            if let Err(err) = updates::apply_now().await {
+                eprintln!("orx up: {err} Restarting on this version.");
+            }
+            // Unless the updater counted it or still will, back off (deferred again, or it
+            // never started), or the relaunch restarts straight back into this.
+            if !updates::newer_exe_on_disk().await
+                && updates::failure_count() == failures
+                && !updates::updater_running()
+            {
+                updates::record_attempt(false);
+            }
+        }
+        eprintln!("orx up: restarting");
         let err = updates::relaunch(actual_port);
         return Err(anyhow!("orx up: could not restart: {err}"));
     }
     Ok(())
 }
 
-/// Resolves when the process is asked to stop. SIGINT everywhere; on Unix also
+/// The desktop app's quit. A stored permit covers a quit that lands before the
+/// server is waiting for one.
+static SHUTDOWN_REQUESTED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+#[cfg(desktop_app)]
+pub(crate) fn request_shutdown() {
+    SHUTDOWN_REQUESTED.notify_one();
+}
+
+/// Resolves when the process is asked to stop: SIGINT everywhere; on Unix also
 /// SIGTERM and SIGHUP (SIGHUP is what an SSH tunnel delivers on disconnect, so
-/// a `--remote`-launched server exits with its tunnel instead of leaking).
+/// a `--remote`-launched server exits with its tunnel instead of leaking); and
+/// [`request_shutdown`].
 async fn shutdown_signal() {
+    tokio::select! {
+        _ = SHUTDOWN_REQUESTED.notified() => {}
+        _ = os_shutdown_signal() => {}
+    }
+}
+
+async fn os_shutdown_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, Signal, SignalKind};
@@ -330,6 +388,7 @@ struct AppState {
     /// Single-flight guard for the background catalog fill: without it every
     /// expired read would start its own full detection sweep.
     harness_fill_in_flight: Arc<std::sync::atomic::AtomicBool>,
+    claude_catalog_queue: Arc<std::sync::Mutex<ClaudeCatalogQueue>>,
     /// Set while a data-dir move is running. New chat turns and run launches
     /// check it and refuse (409) so nothing starts writing the store mid-move —
     /// closing the window between the move's in-flight check and its completion.
@@ -447,6 +506,7 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
         .route("/api/onboarding/complete", post(complete_onboarding))
         .route("/api/project-path/status", get(project_path_status))
         .route("/api/project-path/pick", post(pick_project_folder))
+        .route("/api/git/install", post(install_git))
         .route("/api/projects", get(list_projects).post(create_project))
         .route(
             "/api/projects/starter-prompts/prewarm",
@@ -494,6 +554,10 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
         .route("/api/runs/{id}/logs", get(run_logs))
         .route("/api/runs/{id}/diff", get(run_diff))
         .route("/api/experiments/{id}/diff", get(experiment_diff))
+        .route(
+            "/api/experiments/{id}/archive",
+            axum::routing::patch(set_experiment_archive),
+        )
         .route("/api/experiments/{id}/commits", get(experiment_commits))
         .route(
             "/api/experiments/{id}/commits/{sha}/diff",
@@ -596,6 +660,7 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
             get(telemetry_settings).post(set_telemetry_settings),
         )
         .route("/api/telemetry/event", post(record_ui_event))
+        .route("/api/telemetry/locale", post(set_dashboard_locale))
         .route(
             "/api/settings/profile",
             get(profile_settings).post(set_profile_settings),
@@ -657,6 +722,7 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
             get(lit_sources_settings).post(set_lit_sources_settings),
         )
         .route("/api/harnesses", get(list_harnesses))
+        .route("/api/harnesses/{id}/snapshot", get(harness_snapshot))
         .route(
             "/api/harnesses/setup/commands",
             get(harness_setup::commands),
@@ -708,6 +774,7 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
             "/api/chat/sessions/{id}/turns/{turnId}/recover",
             post(recover_chat_turn),
         )
+        .route("/api/chat/sessions/{id}/side", post(open_side_chat))
         .route("/api/chat/sessions/{id}/fork", post(fork_chat_turn))
         .route("/api/chat/sessions/{id}/branch", post(select_chat_branch))
         .route("/api/chat/sessions/{id}/interrupt", post(interrupt_chat))
@@ -728,9 +795,11 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
         // above the client-side per-file limit so a full message still fits.
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state);
-    let app = app.layer(middleware::from_fn(
-        crate::commands::up_remote::loopback_guard,
-    ));
+    let app = app
+        .layer(middleware::from_fn(track_active))
+        .layer(middleware::from_fn(
+            crate::commands::up_remote::loopback_guard,
+        ));
     match remote_auth {
         Some(auth) => app.layer(middleware::from_fn_with_state(auth, require_remote_auth)),
         None => app,
@@ -781,6 +850,7 @@ fn remote_route_forbidden(path: &str) -> bool {
     matches!(
         path,
         "/api/project-path/pick"
+            | "/api/git/install"
             | "/api/update"
             | "/api/update/apply"
             | "/api/update/restart"
@@ -788,9 +858,6 @@ fn remote_route_forbidden(path: &str) -> bool {
             | "/api/update/install-cli"
             | "/api/settings/data-dir"
             | "/api/settings/data-dir/move"
-            | "/api/settings/ssh/master"
-            | "/api/settings/ssh/preflight"
-            | "/api/settings/ssh/connect"
             | "/api/settings/openresearch/ssh-key"
             | "/api/settings/openresearch/login"
             | "/api/settings/commands/run"
@@ -801,6 +868,13 @@ fn remote_route_forbidden(path: &str) -> bool {
 }
 
 fn is_remote_callback_route(method: &Method, path: &str) -> bool {
+    if method == Method::GET {
+        // `orx agent spawn`'s install preflight (read-only).
+        return path
+            .strip_prefix("/api/harnesses/")
+            .and_then(|path| path.strip_suffix("/snapshot"))
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'));
+    }
     if method != Method::POST {
         return false;
     }
@@ -887,22 +961,6 @@ impl From<&StoredRun> for ApiRun {
 }
 
 // --- basic routes ---------------------------------------------------------
-
-/// Whether a dashboard this build can talk to, not some other server, holds `port`.
-async fn dashboard_is_serving(port: u16) -> bool {
-    let Ok(response) = reqwest::Client::new()
-        .get(format!("http://127.0.0.1:{port}/api/health"))
-        .timeout(std::time::Duration::from_secs(2))
-        .send()
-        .await
-    else {
-        return false;
-    };
-    response.json::<Value>().await.is_ok_and(|body| {
-        body.get("dashboardProtocol").and_then(Value::as_u64)
-            == Some(u64::from(crate::commands::up_remote::DASHBOARD_PROTOCOL))
-    })
-}
 
 async fn health(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
@@ -1045,11 +1103,23 @@ struct SkillsQ {
 }
 
 /// Slash-skills the composer's `/` dropdown offers (expanded server-side): the
-/// built-in catalog plus the user's own — uploaded here or mirrored from a
-/// coding agent.
+/// built-in catalog, personal skills, and skills in the open project.
 async fn list_skills(Query(q): Query<SkillsQ>) -> ApiResult {
     tokio::task::spawn_blocking(move || {
         let importing = crate::local::user_skills::refresh_imports();
+        let project = q.project.as_deref().and_then(|id| {
+            Store::open().ok()?.get_local_project(id).ok().flatten()
+        });
+        let project_skills = project
+            .as_ref()
+            .map(|project| {
+                crate::local::user_skills::list_project_skills(
+                    std::path::Path::new(&project.repo_path),
+                    q.harness.as_deref(),
+                )
+            })
+            .unwrap_or_default();
+        let project_names: HashSet<_> = project_skills.iter().map(|skill| &skill.name).collect();
         let mut skills: Vec<Value> = crate::local::skills::CATALOG
             .iter()
             .map(|s| {
@@ -1062,10 +1132,18 @@ async fn list_skills(Query(q): Query<SkillsQ>) -> ApiResult {
             .collect();
         for s in crate::local::user_skills::list_for_harness(q.harness.as_deref()) {
             skills.push(json!({
-                "name": s.name,
+                "name": if project_names.contains(&s.name) { format!("{}@u", s.name) } else { s.name },
                 "description": s.description,
                 "source": "user",
                 "plugin": s.plugin,
+                "harness": q.harness,
+            }));
+        }
+        for s in project_skills {
+            skills.push(json!({
+                "name": format!("{}@p", s.name),
+                "description": s.description,
+                "source": "project",
                 "harness": q.harness,
             }));
         }
@@ -1076,7 +1154,7 @@ async fn list_skills(Query(q): Query<SkillsQ>) -> ApiResult {
 }
 
 async fn get_skill(Path(name): Path<String>, Query(q): Query<SkillsQ>) -> ApiResult {
-    if !crate::local::user_skills::is_valid_slug(&name) {
+    if crate::local::user_skills::parse_selection(&name).is_none() {
         return Err(bad_request("invalid skill name"));
     }
     let github_enabled = if let Some(project_id) = q.project.as_deref() {
@@ -1091,8 +1169,17 @@ async fn get_skill(Path(name): Path<String>, Query(q): Query<SkillsQ>) -> ApiRes
         return Ok(Json(json!({ "name": name, "content": content })));
     }
     let skill_name = name.clone();
+    let project_repo = q
+        .project
+        .as_deref()
+        .and_then(|id| Store::open().ok()?.get_local_project(id).ok().flatten())
+        .map(|project| project.repo_path);
     let content = tokio::task::spawn_blocking(move || {
-        crate::local::user_skills::content(&skill_name, q.harness.as_deref())
+        crate::local::user_skills::content(
+            &skill_name,
+            q.harness.as_deref(),
+            project_repo.as_deref().map(std::path::Path::new),
+        )
     })
     .await
     .map_err(|e| ApiError::from(anyhow!(e)))?
@@ -1231,7 +1318,12 @@ async fn list_project_activity(State(state): State<AppState>) -> ApiResult {
         let store = Store::open()?;
         let mut active_agents = HashMap::<String, usize>::new();
         for (session_id, project_id) in store.list_chat_session_project_ids()? {
-            if busy.contains(&session_id) {
+            // Side chats stay out of project agent counts.
+            if busy.contains(&session_id)
+                && store
+                    .get_chat_session(&session_id)?
+                    .is_some_and(|session| session.side_parent_session_id.is_none())
+            {
                 *active_agents.entry(project_id).or_default() += 1;
             }
         }
@@ -1247,6 +1339,7 @@ async fn list_project_activity(State(state): State<AppState>) -> ApiResult {
                     "runningExperiments": summary.running_experiments,
                     "totalExperiments": summary.total_experiments,
                     "lastMessageAt": summary.last_message_at,
+                    "lastActivityAt": summary.last_activity_at,
                 })
             })
             .collect::<Vec<_>>();
@@ -1262,12 +1355,26 @@ struct ProjectPathStatusQ {
     path: Option<String>,
 }
 
+async fn install_git() -> ApiResult {
+    // Spawned, so a page reload mid-install cannot orphan the extractor.
+    tokio::spawn(local::portable_git::install())
+        .await
+        .map_err(|error| ApiError::from(anyhow!("Git install task failed: {error}")))?
+        // `:#` keeps the cause (DNS, TLS, proxy) behind the outer context.
+        .map_err(|error| {
+            eprintln!("orx up: Git install failed: {error:#}");
+            ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("{error:#}"))
+        })?;
+    Ok(Json(json!({})))
+}
+
 async fn project_path_status(Query(q): Query<ProjectPathStatusQ>) -> ApiResult {
     tokio::task::spawn_blocking(move || -> Result<Json<Value>> {
         let git_version = local::git::version();
         let Some(path) = q.path.filter(|path| !path.trim().is_empty()) else {
             return Ok(Json(json!({
                 "gitVersion": git_version,
+                "gitInstallable": cfg!(windows) && git_version.is_none(),
                 "resolvedPath": null,
                 "exists": null,
                 "directory": null,
@@ -1549,8 +1656,13 @@ fn deep_literature_origin(value: &str, label: &str) -> std::result::Result<reqwe
     Ok(url)
 }
 
-fn deep_literature_client() -> std::result::Result<reqwest::Client, ApiError> {
-    reqwest::Client::builder()
+fn deep_literature_client(base: &reqwest::Url) -> std::result::Result<reqwest::Client, ApiError> {
+    let builder = if matches!(base.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")) {
+        crate::net::loopback_client()
+    } else {
+        crate::net::remote_client()
+    };
+    builder
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(2))
         .timeout(std::time::Duration::from_secs(8))
@@ -1589,7 +1701,7 @@ async fn fetch_deep_literature_papers(
         .append_pair("limit", &limit.to_string())
         .append_pair("offset", &offset.to_string())
         .append_pair("paginated", "1");
-    let mut response = deep_literature_client()
+    let mut response = deep_literature_client(&base)
         .map_err(|error| error.1)?
         .get(url)
         .send()
@@ -1793,7 +1905,7 @@ async fn create_project(
         .ok_or_else(|| bad_request("project deletion is in progress"))?;
     drop(create_admission);
     let (project, github_publication_error) = if github_sync_enabled {
-        match push_project_for_sync(project.clone()).await {
+        match push_project_for_sync(project.clone(), &state.chat).await {
             Ok((project, _)) => (project, None),
             Err(error) => {
                 let project = Store::open()?
@@ -1950,14 +2062,23 @@ fn github_push_was_rejected(error: &str) -> bool {
 
 async fn create_independent_project_repository(
     mut project: local::model::LocalProject,
+    chat: &ChatHost,
 ) -> Result<local::model::LocalProject> {
     let store = Store::open()?;
-    let session_ids = store
+    let legacy = store
         .list_chat_sessions_by_project(&project.id)?
         .into_iter()
         .map(|session| session.id)
+        .filter(|id| {
+            local::git::existing_session_worktree_path(&project, id)
+                != local::git::session_worktree_path(&project.id, id)
+        })
         .collect::<Vec<_>>();
-    local::git::migrate_legacy_project_worktrees(&project, &session_ids)?;
+    // `git worktree move` would pull a running turn's checkout out from under it.
+    chat.while_idle(&legacy, || {
+        local::git::migrate_legacy_project_worktrees(&project, &legacy)
+    })
+    .await?;
     let source_repository = project
         .has_github_repository()
         .then(|| (project.github_owner.clone(), project.github_repo.clone()));
@@ -1981,6 +2102,7 @@ async fn create_independent_project_repository(
 
 async fn push_project_for_sync(
     mut project: local::model::LocalProject,
+    chat: &ChatHost,
 ) -> Result<(local::model::LocalProject, local::github::Status)> {
     let github_status = local::github::status().await;
     if !github_status.installed {
@@ -1998,11 +2120,11 @@ async fn push_project_for_sync(
             .await?
             .is_some_and(|meta| meta.can_push && !meta.archived);
         if !can_push {
-            project = create_independent_project_repository(project).await?;
+            project = create_independent_project_repository(project, chat).await?;
             using_existing_repository = false;
         }
     } else {
-        project = create_independent_project_repository(project).await?;
+        project = create_independent_project_repository(project, chat).await?;
         using_existing_repository = false;
     }
 
@@ -2018,7 +2140,7 @@ async fn push_project_for_sync(
         if !using_existing_repository || !github_push_was_rejected(&error.to_string()) {
             return Err(error);
         }
-        project = create_independent_project_repository(project).await?;
+        project = create_independent_project_repository(project, chat).await?;
         push_once(&project)
             .await
             .map_err(|error| anyhow!("Git push task failed: {error}"))??;
@@ -2041,7 +2163,9 @@ async fn enable_project_github(State(state): State<AppState>, Path(id): Path<Str
     let project = store
         .get_local_project(&id)?
         .ok_or_else(|| not_found("project"))?;
-    let (project, github_status) = push_project_for_sync(project).await.map_err(bad_request)?;
+    let (project, github_status) = push_project_for_sync(project, &state.chat)
+        .await
+        .map_err(bad_request)?;
     let git_status = project_git_json(&project, github_status);
     Ok(Json(
         json!({ "project": project_json(&project), "git": git_status }),
@@ -2276,6 +2400,37 @@ async fn list_experiments(Path(id): Path<String>) -> ApiResult {
     Ok(Json(json!({ "experiments": experiments })))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchiveExperimentRequest {
+    direction: String,
+    archived: bool,
+}
+
+async fn set_experiment_archive(
+    Path(id): Path<String>,
+    Json(request): Json<ArchiveExperimentRequest>,
+) -> ApiResult {
+    let direction = match request.direction.as_str() {
+        "ancestors" => local::experiments::ArchiveDirection::Ancestors,
+        "descendants" => local::experiments::ArchiveDirection::Descendants,
+        "only" => local::experiments::ArchiveDirection::Only,
+        "region" => local::experiments::ArchiveDirection::Region,
+        "taskRegion" => local::experiments::ArchiveDirection::TaskRegion,
+        _ => {
+            return Err(bad_request(
+                "direction must be ancestors, descendants, only, region, or taskRegion",
+            ))
+        }
+    };
+    let mut store = Store::open()?;
+    if store.get_local_experiment(&id)?.is_none() {
+        return Err(not_found("experiment"));
+    }
+    let ids = local::experiments::set_archived(&mut store, &id, direction, request.archived)?;
+    Ok(Json(json!({ "ids": ids })))
+}
+
 async fn list_project_runs(Path(id): Path<String>) -> ApiResult {
     let store = Store::open()?;
     store
@@ -2298,6 +2453,9 @@ async fn compute_backends() -> Json<Value> {
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateRunReq {
+    invocation_context: Option<String>,
+    #[serde(default)]
+    telemetry_suppressed: bool,
     experiment_id: String,
     backend: Option<String>,
     flavor: Option<String>,
@@ -2314,6 +2472,7 @@ struct CreateRunReq {
     #[serde(default)]
     force: bool,
     chat_session_id: Option<String>,
+    agent_origin: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2346,6 +2505,11 @@ async fn decode_local_response<T: serde::de::DeserializeOwned>(
                     .map(str::to_string)
             })
             .unwrap_or_else(|| String::from_utf8_lossy(&body).trim().to_string());
+        let detail = if detail.is_empty() {
+            format!("HTTP {status}")
+        } else {
+            detail
+        };
         if status.is_client_error() {
             return Err(anyhow!("{detail}"));
         }
@@ -2356,7 +2520,7 @@ async fn decode_local_response<T: serde::de::DeserializeOwned>(
 }
 
 fn local_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    crate::net::loopback_client()
         .connect_timeout(Duration::from_secs(3))
         .build()
         .map_err(|error| anyhow!("Could not create the orx up client: {error}"))
@@ -2378,6 +2542,12 @@ pub(crate) async fn submit_run_via_up(
     args: &crate::ExpRunArgs,
 ) -> Result<RunLaunchSummary> {
     let request = CreateRunReq {
+        telemetry_suppressed: args.telemetry_suppressed
+            || !crate::telemetry::accounting_reports_enabled(),
+        invocation_context: args
+            .invocation_identity()?
+            .map(|identity| serde_json::to_string(&identity))
+            .transpose()?,
         experiment_id: args.exp_id.clone(),
         backend: args.backend.clone(),
         flavor: args.flavor.clone(),
@@ -2392,6 +2562,7 @@ pub(crate) async fn submit_run_via_up(
         disk: args.disk,
         force: args.force,
         chat_session_id: args.launching_chat_session(),
+        agent_origin: args.agent_origin.clone(),
     };
     let response =
         authenticate_up_request(local_client()?.post(format!("http://127.0.0.1:{port}/api/runs")))
@@ -2412,6 +2583,24 @@ pub(crate) async fn submit_run_via_up(
         experiment_id: args.exp_id.clone(),
         job_id,
     })
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct HarnessInstall {
+    pub name: String,
+    pub installed: bool,
+}
+
+/// `orx up`'s install evidence for `harness`, from its own PATH rather than the caller's.
+pub(crate) async fn harness_install_via_up(port: u16, harness: &str) -> Result<HarnessInstall> {
+    let response = authenticate_up_request(local_client()?.get(format!(
+        "http://127.0.0.1:{port}/api/harnesses/{harness}/snapshot"
+    )))
+    .timeout(Duration::from_secs(10))
+    .send()
+    .await
+    .map_err(|error| anyhow!("Could not reach the trusted orx up process: {error}"))?;
+    decode_local_response(response, "check the harness").await
 }
 
 pub(crate) async fn cancel_run_via_up(port: u16, run_id: &str) -> Result<()> {
@@ -2441,6 +2630,8 @@ async fn create_run(State(state): State<AppState>, Json(req): Json<CreateRunReq>
     // Dashboard callers may omit these; forwarded CLI requests arrive resolved.
     local::apply_compute_default(&mut backend, &mut flavor);
     let args = crate::ExpRunArgs {
+        invocation_context: req.invocation_context,
+        telemetry_suppressed: req.telemetry_suppressed,
         exp_id: req.experiment_id,
         disk: req.disk,
         provider: req.provider,
@@ -2455,6 +2646,8 @@ async fn create_run(State(state): State<AppState>, Json(req): Json<CreateRunReq>
         timeout: req.timeout,
         force: req.force,
         chat_session_id: req.chat_session_id,
+        agent_origin: req.agent_origin,
+        forwarded: true,
     };
     crate::compute::validate_run_args(&args).map_err(bad_request)?;
     let run = crate::compute::submit(&args).await.map_err(bad_request)?;
@@ -3614,7 +3807,15 @@ async fn reveal_project_file(
     Json(req): Json<OpenProjectFileReq>,
 ) -> ApiResult {
     blocking_api(move || {
-        let full = confined_checkout_file(&id, &req, "reveal")?;
+        let full = if req.path == "." {
+            let store = Store::open()?;
+            let project = store
+                .get_local_project(&id)?
+                .ok_or_else(|| not_found("project"))?;
+            resolve_checkout_root(&store, &project, req.session_id.as_deref())?.0
+        } else {
+            confined_checkout_file(&id, &req, "reveal")?
+        };
         crate::editors::reveal_in_file_manager(&full)
             .map_err(|e| ApiError::from(anyhow!("could not reveal file: {e}")))?;
         Ok(Json(json!({ "ok": true })))
@@ -4487,167 +4688,6 @@ async fn serve_artifact(
     .map_err(ApiError::from)
 }
 
-// --- HF token settings ------------------------------------------------------
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HfSettings {
-    configured: bool,
-    source: Option<&'static str>,
-    masked_token: Option<String>,
-    validation_status: &'static str,
-    validation_error: Option<String>,
-    username: Option<String>,
-    jobs_write: Option<bool>,
-}
-
-/// Never the full token: first 3 chars + ellipsis + last 4.
-fn mask_token(token: &str) -> String {
-    let chars: Vec<char> = token.chars().collect();
-    if chars.len() < 8 {
-        return "…".to_string();
-    }
-    format!(
-        "{}…{}",
-        chars[..3].iter().collect::<String>(),
-        chars[chars.len() - 4..].iter().collect::<String>()
-    )
-}
-
-/// Re-resolve the token and check it against whoami-v2. Uncached — cheap, and
-/// the UI calls it rarely.
-async fn hf_token_status() -> HfSettings {
-    use crate::jobs::huggingface::{self, TokenSource};
-    let Ok((token, source)) = huggingface::resolve_token_with_source() else {
-        return HfSettings {
-            configured: false,
-            source: None,
-            masked_token: None,
-            validation_status: "missing",
-            validation_error: None,
-            username: None,
-            jobs_write: None,
-        };
-    };
-    let source = match source {
-        TokenSource::Env => "env",
-        TokenSource::OpenresearchEnv => "openresearchEnv",
-        TokenSource::HfCache => "hfCache",
-    };
-    match huggingface::whoami_details(&token).await {
-        Ok(details) => HfSettings {
-            configured: true,
-            source: Some(source),
-            masked_token: Some(mask_token(&token)),
-            validation_status: "valid",
-            validation_error: None,
-            username: Some(details.name),
-            jobs_write: details.jobs_write,
-        },
-        Err(error) => {
-            let validation_status = if error
-                .downcast_ref::<reqwest::Error>()
-                .is_some_and(|error| error.status() == Some(reqwest::StatusCode::UNAUTHORIZED))
-            {
-                "invalid"
-            } else {
-                "unreachable"
-            };
-            HfSettings {
-                configured: true,
-                source: Some(source),
-                masked_token: Some(mask_token(&token)),
-                validation_status,
-                validation_error: Some(error.to_string()),
-                username: None,
-                jobs_write: None,
-            }
-        }
-    }
-}
-
-async fn hf_settings() -> Json<Value> {
-    Json(json!(hf_token_status().await))
-}
-
-async fn tinker_settings() -> ApiResult {
-    use crate::jobs::tinker;
-    let Ok((key, source)) = tinker::resolve_api_key_with_source() else {
-        return Ok(Json(
-            json!({ "validationStatus": tinker::KeyStatus::Missing, "processEnv": false, "maskedKey": null }),
-        ));
-    };
-    let status = tinker::validate_api_key(&key).await.map_err(bad_request)?;
-    Ok(Json(json!({
-        "validationStatus": status,
-        "processEnv": source == tinker::ApiKeySource::Env,
-        "maskedKey": mask_token(&key),
-    })))
-}
-
-#[derive(Deserialize)]
-struct SetTinkerKeyReq {
-    key: String,
-}
-
-async fn set_tinker_key(Json(req): Json<SetTinkerKeyReq>) -> ApiResult {
-    use crate::jobs::tinker;
-    let key = req.key.trim().to_string();
-    if key.is_empty() {
-        return Err(bad_request("API key is required"));
-    }
-    let status = tinker::validate_api_key(&key).await.map_err(bad_request)?;
-    if status == tinker::KeyStatus::Invalid {
-        return Err(bad_request(
-            "Invalid Tinker API key. The existing key was not changed.",
-        ));
-    }
-    let process_key = std::env::var(tinker::API_KEY_ENV)
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    let effective_status = if let Some(ref process_key) = process_key {
-        if process_key.trim() == key {
-            status
-        } else {
-            tinker::validate_api_key(process_key.trim())
-                .await
-                .map_err(bad_request)?
-        }
-    } else {
-        status
-    };
-    let masked_key = mask_token(process_key.as_deref().map(str::trim).unwrap_or(&key));
-    tokio::task::spawn_blocking(move || {
-        crate::config::write_synced_env_var(tinker::API_KEY_ENV, &key)
-    })
-    .await
-    .map_err(|e| anyhow!("env write task failed: {e}"))??;
-    Ok(Json(
-        json!({ "validationStatus": effective_status, "processEnv": process_key.is_some(), "maskedKey": masked_key }),
-    ))
-}
-
-#[derive(Deserialize)]
-struct SetHfTokenReq {
-    token: String,
-}
-
-async fn set_hf_token(Json(req): Json<SetHfTokenReq>) -> ApiResult {
-    let token = req.token.trim().to_string();
-    if token.is_empty() {
-        return Err(bad_request("token is required"));
-    }
-    crate::jobs::huggingface::whoami_details(&token)
-        .await
-        .map_err(bad_request)?;
-    tokio::task::spawn_blocking(move || crate::config::write_synced_env_var("HF_TOKEN", &token))
-        .await
-        .map_err(|e| anyhow!("env write task failed: {e}"))??;
-    // Freshly re-resolved: if HF_TOKEN is set in this process env, env still
-    // wins over the file — source says "env" and the UI explains it.
-    Ok(Json(json!(hf_token_status().await)))
-}
-
 /// Keep update checks and telemetry delivery running for long-lived dashboards.
 fn spawn_background_tasks(check_updates: bool) {
     if check_updates {
@@ -4664,6 +4704,128 @@ fn spawn_background_tasks(check_updates: bool) {
             crate::telemetry::retry_outbox();
         }
     });
+}
+
+/// Requests and terminals in flight, which an automatic restart would cut off.
+static ACTIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// An automatic restart is checking for idleness; new requests wait it out.
+static DRAINING: AtomicBool = AtomicBool::new(false);
+
+struct Active;
+
+impl Active {
+    fn new() -> Self {
+        ACTIVE.fetch_add(1, Ordering::SeqCst);
+        Active
+    }
+}
+
+impl Drop for Active {
+    fn drop(&mut self) {
+        ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+pub(crate) async fn track_active(request: axum::extract::Request, next: Next) -> Response {
+    // The dashboard holds its event stream open for as long as it is open.
+    if request.uri().path() == "/api/events" {
+        return next.run(request).await;
+    }
+    // Count first, then check: paired with the drain's set-then-count, one side always sees the other.
+    let active = loop {
+        let active = Active::new();
+        if !DRAINING.load(Ordering::SeqCst) {
+            break active;
+        }
+        drop(active);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    next.run(request).await.map(|body| {
+        axum::body::Body::new(ActiveBody {
+            body,
+            _active: active,
+        })
+    })
+}
+
+/// A response body that stays `Active` until hyper has sent or dropped it, so a
+/// file still streaming after its handler returned isn't cut off by a restart.
+struct ActiveBody {
+    body: axum::body::Body,
+    _active: Active,
+}
+
+impl axum::body::HttpBody for ActiveBody {
+    type Data = axum::body::Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<std::result::Result<hyper::body::Frame<Self::Data>, Self::Error>>>
+    {
+        std::pin::Pin::new(&mut self.body).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.body.size_hint()
+    }
+}
+
+/// Relaunch into an update installed underneath this server once that interrupts nothing,
+/// so a long-lived `orx up` stops launching runs and building sandboxes with old code.
+fn spawn_restart_when_idle(state: AppState) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(UPDATE_SAMPLE_INTERVAL).await;
+            let status = updates::status();
+            // The cache can claim an install the exec target doesn't have; never restart in a loop.
+            if !(status.auto_update
+                && status.restart_required
+                && (updates::deferred_update_due() || updates::newer_exe_on_disk().await))
+            {
+                continue;
+            }
+            if begin_restart(&state, 0).await {
+                state.restart.notify_one();
+                return;
+            }
+        }
+    });
+}
+
+/// Serializes restart attempts; true once one committed, after which nothing reopens admission.
+static RESTART_COMMITTED: tokio::sync::Mutex<bool> = tokio::sync::Mutex::const_new(false);
+
+/// Stop admitting work and commit to a restart if nothing is in flight beyond
+/// `own_requests` (the caller's). Returns false, and admits again, otherwise.
+async fn begin_restart(state: &AppState, own_requests: usize) -> bool {
+    let mut committed = RESTART_COMMITTED.lock().await;
+    if *committed {
+        return true;
+    }
+    DRAINING.store(true, Ordering::SeqCst);
+    if ACTIVE.load(Ordering::SeqCst) <= own_requests
+        && !state.data_dir_move_in_progress.load(Ordering::SeqCst)
+        && state.remote_sessions.list().await.iter().all(|session| {
+            matches!(
+                session.status,
+                RemoteSessionStatus::Disconnected
+                    | RemoteSessionStatus::NeedsInstall
+                    | RemoteSessionStatus::NeedsUpdate
+            )
+        })
+        && state.chat.stop_admitting_if_idle().await
+    {
+        *committed = true;
+        return true;
+    }
+    DRAINING.store(false, Ordering::SeqCst);
+    false
 }
 
 /// Startup summary of detected coding agents. Never blocks. It goes through
@@ -4728,7 +4890,11 @@ fn spawn_agent_preflight(state: AppState) {
 /// alone: served payloads get the live auth snapshot overlaid on the way out,
 /// the ready-claude gate re-detects a promoted login, and a wholesale clear
 /// here used to discard in-flight catalog fills on every flap.
-fn spawn_claude_auth_monitor(chat: Arc<ChatHost>, claude: Arc<local::claude::ClaudeHost>) {
+fn spawn_claude_auth_monitor(
+    chat: Arc<ChatHost>,
+    claude: Arc<local::claude::ClaudeHost>,
+    fill_in_flight: Arc<std::sync::atomic::AtomicBool>,
+) {
     tokio::spawn(async move {
         let mut delay = Duration::from_secs(5);
         let mut observed_generation = claude.auth_snapshot().generation;
@@ -4744,18 +4910,19 @@ fn spawn_claude_auth_monitor(chat: Arc<ChatHost>, claude: Arc<local::claude::Cla
                     );
                 }
             }
-            if before.runtime_rejected
+            if fill_in_flight.load(std::sync::atomic::Ordering::Acquire)
+                || before.runtime_rejected
                 || matches!(
                     before.state,
                     local::harness::HarnessAuthState::Ready
                         | local::harness::HarnessAuthState::Unsupported
-                )
+                ) && !before.auth_check_failed
             {
                 delay = Duration::from_secs(5);
                 continue;
             }
-            let state = local::harness::claude::current_auth_state().await;
-            claude.observe_auth_state(state, before.generation);
+            let probe = local::harness::claude::current_auth_state().await;
+            let changed = claude.observe_auth_probe(&probe);
             let after = claude.auth_snapshot();
             if after.generation != observed_generation {
                 observed_generation = after.generation;
@@ -4765,123 +4932,16 @@ fn spawn_claude_auth_monitor(chat: Arc<ChatHost>, claude: Arc<local::claude::Cla
                         json!({ "harness": "claude-code", "authState": after.state }),
                     );
                 }
+            } else if changed {
+                chat.emit_event("harness.catalog", json!({}));
             }
-            delay = if state == local::harness::HarnessAuthState::Unknown {
+            delay = if after.auth_check_failed {
                 (delay * 2).min(Duration::from_secs(60))
             } else {
                 Duration::from_secs(5)
             };
         }
     });
-}
-
-// --- modal settings -----------------------------------------------------------
-
-use crate::jobs::modal;
-
-fn modal_settings_json() -> crate::error::Result<Value> {
-    let token = modal::resolve_token()?;
-    Ok(json!({
-        "tokenConfigured": token.is_some(),
-        "tokenSource": token.as_ref().map(|token| token.source),
-        "maskedTokenId": token.as_ref().map(|token| mask_token(&token.id)),
-        "maskedTokenSecret": token.as_ref().map(|token| mask_token(&token.secret)),
-        "processEnv": std::env::var_os("MODAL_TOKEN_ID").is_some() || std::env::var_os("MODAL_TOKEN_SECRET").is_some(),
-    }))
-}
-
-async fn modal_settings() -> ApiResult {
-    Ok(Json(modal_settings_json().map_err(bad_request)?))
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SetModalTokenReq {
-    token_id: String,
-    token_secret: String,
-}
-
-async fn set_modal_token(Json(req): Json<SetModalTokenReq>) -> ApiResult {
-    let id = req.token_id.trim().to_string();
-    let secret = req.token_secret.trim().to_string();
-    if id.is_empty() || secret.is_empty() {
-        return Err(bad_request(
-            "Both the Modal token ID and secret are required.",
-        ));
-    }
-    if std::env::var_os("MODAL_TOKEN_ID").is_some()
-        || std::env::var_os("MODAL_TOKEN_SECRET").is_some()
-    {
-        return Err(bad_request("Modal credentials are overridden by the process environment. Remove those overrides before replacing the token here."));
-    }
-    // Modal loads and validates its profile file even when credentials come from env.
-    modal::resolve_token().map_err(bad_request)?;
-    let masked_id = mask_token(&id);
-    let masked_secret = mask_token(&secret);
-    tokio::task::spawn_blocking(move || {
-        crate::config::write_synced_env_vars(&[
-            ("MODAL_TOKEN_ID", &id),
-            ("MODAL_TOKEN_SECRET", &secret),
-        ])
-    })
-    .await
-    .map_err(|e| anyhow!("env write task failed: {e}"))??;
-    Ok(Json(json!({
-        "tokenConfigured": true, "tokenSource": "syncedEnv", "processEnv": false,
-        "maskedTokenId": masked_id, "maskedTokenSecret": masked_secret,
-    })))
-}
-
-// --- kubernetes settings ------------------------------------------------------
-
-use crate::jobs::kubernetes as k8s;
-
-/// One payload powers the whole settings card: stored config plus live
-/// cluster health. Contexts come from the local kubeconfig. Resource shapes
-/// live in each experiment's committed manifest, not in settings.
-async fn k8s_settings_json() -> Value {
-    let settings = k8s::load_settings().ok().flatten();
-    let configured = settings.is_some();
-    let settings = settings.unwrap_or_default();
-    let (contexts, current) = k8s::list_contexts().await.unwrap_or((Vec::new(), None));
-    let preflight = k8s::preflight(settings.context.as_deref(), &settings.namespace).await;
-    json!({
-        "configured": configured,
-        "contexts": contexts,
-        "currentContext": current,
-        "context": settings.context,
-        "namespace": settings.namespace,
-        "preflight": preflight,
-    })
-}
-
-async fn k8s_settings() -> ApiResult {
-    Ok(Json(k8s_settings_json().await))
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SetK8sSettingsReq {
-    /// `None` leaves the field alone; `Some("")` clears it (kubectl default).
-    context: Option<String>,
-    namespace: Option<String>,
-}
-
-async fn set_k8s_settings(Json(req): Json<SetK8sSettingsReq>) -> ApiResult {
-    let mut settings = k8s::load_settings()?.unwrap_or_default();
-    if let Some(ctx) = req.context {
-        settings.context = Some(ctx.trim().to_string()).filter(|c| !c.is_empty());
-    }
-    if let Some(ns) = req.namespace {
-        let ns = ns.trim().to_string();
-        settings.namespace = if ns.is_empty() {
-            "default".to_string()
-        } else {
-            ns
-        };
-    }
-    k8s::save_settings(&settings)?;
-    Ok(Json(k8s_settings_json().await))
 }
 
 // --- env var settings -------------------------------------------------------
@@ -5327,7 +5387,7 @@ fn reject_if_stopping(state: &AppState) -> std::result::Result<(), ApiError> {
 // --- git settings -----------------------------------------------------------
 
 fn git_out(args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new("git").args(args).output().ok()?;
+    let out = local::git::git_command().args(args).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -5406,7 +5466,7 @@ async fn set_git_settings(Json(req): Json<SetGitSettingsReq>) -> ApiResult {
     tokio::task::spawn_blocking(move || {
         for (key, value) in [("user.name", name), ("user.email", email)] {
             if let Some(v) = value.filter(|v| !v.is_empty()) {
-                let ok = std::process::Command::new("git")
+                let ok = local::git::git_command()
                     .args(["config", "--global", key, &v])
                     .status()
                     .map(|s| s.success())
@@ -5518,6 +5578,29 @@ async fn set_telemetry_settings(Json(req): Json<SetTelemetryReq>) -> ApiResult {
     .map_err(|e| ApiError::from(anyhow!("telemetry task failed: {e}")))?
 }
 
+#[derive(Deserialize)]
+struct SetLocaleReq {
+    locale: String,
+}
+
+async fn set_dashboard_locale(Json(SetLocaleReq { locale }): Json<SetLocaleReq>) -> ApiResult {
+    // Attached to every later batch, so a value the server rejects would drop them all.
+    let valid = (2..=16).contains(&locale.len())
+        && locale
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-');
+    if !valid {
+        return Err(bad_request(format!("invalid locale: {locale:?}")));
+    }
+    tokio::task::spawn_blocking(move || {
+        crate::telemetry::set_dashboard_locale(&locale)
+            .map_err(|e| ApiError::from(anyhow!("could not save the dashboard locale: {e}")))?;
+        Ok(Json(json!({ "locale": locale })))
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow!("locale task failed: {e}")))?
+}
+
 // --- updates -----------------------------------------------------------------
 
 async fn update_status() -> ApiResult {
@@ -5563,6 +5646,23 @@ async fn restart_after_update(State(state): State<AppState>) -> ApiResult {
             "no newer orx is installed to restart into".into(),
         ));
     };
+    // A dashboard poll landing alongside the click is not work worth refusing over.
+    let mut began = false;
+    for _ in 0..10 {
+        began = begin_restart(&state, 1).await;
+        if began {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    if !began {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "OpenResearch is busy: a chat turn, queued message, approval, open terminal, \
+             remote session, or request is still in progress. Try again once it finishes."
+                .into(),
+        ));
+    }
     let restart = state.restart.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -5693,6 +5793,7 @@ struct SetUiStateReq {
     #[serde(default)]
     preferred_agent: Option<StoredAgentSelectionReq>,
     workspace: Option<GlobalWorkspaceState>,
+    preferred_autonomy: Option<Autonomy>,
 }
 
 #[derive(Deserialize)]
@@ -5744,6 +5845,9 @@ async fn set_ui_state(Json(req): Json<SetUiStateReq>) -> ApiResult {
         }
         if let Some(selection) = selection {
             store.set_preferred_agent(&selection)?;
+        }
+        if let Some(autonomy) = req.preferred_autonomy {
+            store.set_preferred_autonomy(autonomy)?;
         }
         if let Some(workspace) = req.workspace {
             store.set_global_workspace_state(&workspace)?;
@@ -5917,7 +6021,11 @@ pub(crate) async fn ssh_connect_to_target(
     if host.is_empty() {
         return bad_request("host is required").into_response();
     }
-    ws.on_upgrade(move |socket| ssh_connect_socket(socket, host, req.backend, target))
+    let active = Active::new();
+    ws.on_upgrade(move |socket| async move {
+        let _active = active;
+        ssh_connect_socket(socket, host, req.backend, target).await
+    })
 }
 
 const DEFAULT_PTY_SIZE: PtySize = PtySize {
@@ -5949,6 +6057,12 @@ fn start_pty_with_env(
         command.env("PATH", path);
     }
     local::shell_env::export_to(|key, value| command.env(key, value));
+    for (key, value) in local::shell_env::host_gui_env() {
+        match value {
+            Some(value) => command.env(key, value),
+            None => command.env_remove(key),
+        }
+    }
     command.env("TERM", "xterm-256color");
     command.env_remove("NO_COLOR");
     command.env_remove("FORCE_COLOR");
@@ -5957,6 +6071,9 @@ fn start_pty_with_env(
     }
     for (key, value) in env {
         command.env(key, value);
+    }
+    if program == "ssh" {
+        command.env("ORX_SSH_PROBE", "1");
     }
     let mut child = pair.slave.spawn_command(command)?;
     drop(pair.slave);
@@ -6036,13 +6153,14 @@ async fn ssh_connect_socket(
     backend: SshConnectBackend,
     target: crate::jobs::ssh::SshTarget,
 ) {
-    let args = match crate::jobs::ssh::interactive_args(&target) {
-        Ok(args) => args,
+    let connection = match crate::jobs::ssh::interactive_args(&target, None).await {
+        Ok(connection) => connection,
         Err(error) => {
             send_ssh_connect_error(&mut socket, &host, backend, error.to_string()).await;
             return;
         }
     };
+    let args = connection.args.clone();
     let session = match tokio::task::spawn_blocking(move || start_pty("ssh", args)).await {
         Ok(Ok(session)) => session,
         Ok(Err(error)) => {
@@ -6066,7 +6184,17 @@ async fn ssh_connect_socket(
     };
 
     match status {
-        Ok(status) if status.success() => {}
+        Ok(status) if status.success() => {
+            if let Some(warning) = crate::jobs::ssh::setup_connection_sharing(&target).await {
+                let _ = socket
+                    .send(Message::Binary(
+                        format!("\r\norx: warning: {warning}\r\n")
+                            .into_bytes()
+                            .into(),
+                    ))
+                    .await;
+            }
+        }
         Ok(status) => {
             send_ssh_connect_error(
                 &mut socket,
@@ -6083,6 +6211,7 @@ async fn ssh_connect_socket(
         }
     }
 
+    drop(connection);
     let (backend_name, result, ssh_test) = match backend {
         SshConnectBackend::Ssh => {
             let test = probe_ssh_host_preflight(host.clone()).await;
@@ -6214,7 +6343,9 @@ async fn project_terminal(
     if let Some(rejected) = reject_cross_origin(&headers) {
         return rejected;
     }
+    let active = Active::new();
     ws.on_upgrade(move |mut socket| async move {
+        let _active = active;
         let mut size = DEFAULT_PTY_SIZE;
         let started = tokio::task::spawn_blocking(move || {
             let root = project_terminal_root(&id, req.session_id.as_deref())?;
@@ -6293,7 +6424,7 @@ async fn openresearch_terminal(
     ws: WebSocketUpgrade,
     args: Vec<String>,
 ) -> Response {
-    let program = std::env::current_exe()
+    let program = crate::paths::spawnable_exe()
         .map(|exe| exe.to_string_lossy().into_owned())
         .map_err(anyhow::Error::from);
     command_terminal(&headers, ws, program, args, false).await
@@ -6369,7 +6500,9 @@ async fn command_terminal(
     if let Some(rejected) = reject_cross_origin(headers) {
         return rejected;
     }
+    let active = Active::new();
     ws.on_upgrade(move |mut socket| async move {
+        let _active = active;
         let mut size = DEFAULT_PTY_SIZE;
         let started = match program {
             Ok(program) => spawn_pty(program, args, Vec::new(), size).await,
@@ -6448,272 +6581,6 @@ async fn send_terminal_error(socket: &mut WebSocket, error: anyhow::Error) {
         .await;
 }
 
-/// Concrete Host entries from `~/.ssh/config` (wildcard patterns skipped) —
-/// read-only groundwork for an SSH compute backend. No keys are read.
-fn list_ssh_hosts() -> Vec<Value> {
-    let Some(path) = dirs::home_dir().map(|h| h.join(".ssh").join("config")) else {
-        return Vec::new();
-    };
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let mut hosts: Vec<Value> = Vec::new();
-    // Indices into `hosts` for the Host block currently being filled.
-    let mut current: Vec<usize> = Vec::new();
-    for line in raw.lines() {
-        let line = line.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (key, value) = match line.split_once([' ', '\t', '=']) {
-            Some((k, v)) => (k.trim().to_ascii_lowercase(), v.trim().trim_matches('"')),
-            None => continue,
-        };
-        if key == "host" {
-            current = value
-                .split_whitespace()
-                .filter(|name| !name.contains(['*', '?', '!']))
-                .map(|name| {
-                    hosts.push(json!({ "host": name }));
-                    hosts.len() - 1
-                })
-                .collect();
-            continue;
-        }
-        let field = match key.as_str() {
-            "hostname" => "hostname",
-            "user" => "user",
-            "port" => "port",
-            "identityfile" => "identityFile",
-            _ => continue,
-        };
-        for &i in &current {
-            // First value wins, like ssh itself.
-            if hosts[i].get(field).is_none() {
-                hosts[i][field] = json!(value);
-            }
-        }
-    }
-    hosts
-}
-
-async fn ssh_settings() -> ApiResult {
-    tokio::task::spawn_blocking(|| {
-        let mut hosts = list_ssh_hosts();
-        let settings = crate::config::ssh_settings()?;
-        for host in &mut hosts {
-            let options = host
-                .get("host")
-                .and_then(Value::as_str)
-                .and_then(|host| settings.hosts.get(host))
-                .cloned()
-                .unwrap_or_default();
-            host["container"] = json!(options.container);
-        }
-        // Best-effort, like the preflight write: a store hiccup shouldn't take
-        // out the host listing — hosts just render as never tested.
-        let tests: HashMap<String, SshHostTest> = Store::open()
-            .and_then(|s| s.list_ssh_host_tests())
-            .unwrap_or_else(|e| {
-                eprintln!("orx up: could not load ssh test history: {e}");
-                Vec::new()
-            })
-            .into_iter()
-            .map(|t| (t.host.clone(), t))
-            .collect();
-        for h in &mut hosts {
-            let Some(t) = h
-                .get("host")
-                .and_then(Value::as_str)
-                .and_then(|a| tests.get(a))
-            else {
-                continue;
-            };
-            h["lastTest"] = json!(t);
-        }
-        Ok(Json(
-            json!({ "hosts": hosts, "defaultHost": settings.default_host }),
-        ))
-    })
-    .await
-    .map_err(|e| ApiError::from(anyhow!("ssh task failed: {e}")))?
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SaveSshSettingsReq {
-    host: String,
-    container: Option<String>,
-}
-
-async fn save_ssh_settings(Json(req): Json<SaveSshSettingsReq>) -> ApiResult {
-    let host = req.host.trim().to_string();
-    require_configured_ssh_host(&host)?;
-    let options = crate::config::SshHostSettings {
-        container: req.container,
-    };
-    crate::jobs::ssh::validate_host_options(&options).map_err(bad_request)?;
-    blocking_api(move || {
-        crate::config::set_ssh_host(host, options)?;
-        Ok(Json(json!({"ok": true})))
-    })
-    .await
-}
-
-#[derive(Deserialize)]
-struct SaveSshDefaultReq {
-    host: Option<String>,
-}
-
-async fn save_ssh_default(Json(req): Json<SaveSshDefaultReq>) -> ApiResult {
-    let host = req.host.map(|host| host.trim().to_string());
-    if let Some(host) = &host {
-        require_configured_ssh_host(host)?;
-    }
-    blocking_api(move || {
-        crate::config::set_ssh_default(host)?;
-        Ok(Json(json!({"ok": true})))
-    })
-    .await
-}
-
-fn ssh_config_path() -> Result<std::path::PathBuf> {
-    Ok(dirs::home_dir()
-        .ok_or_else(|| anyhow!("no home directory"))?
-        .join(".ssh")
-        .join("config"))
-}
-
-async fn ssh_config() -> ApiResult {
-    blocking_api(move || {
-        let path = ssh_config_path()?;
-        let content = match std::fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(error) => {
-                return Err(ApiError::from(anyhow!(
-                    "could not read SSH config: {error}"
-                )))
-            }
-        };
-        Ok(Json(json!({ "path": "~/.ssh/config", "content": content })))
-    })
-    .await
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SaveSshConfigReq {
-    content: String,
-    previous_content: String,
-}
-
-async fn save_ssh_config(Json(req): Json<SaveSshConfigReq>) -> ApiResult {
-    blocking_api(move || {
-        if req.content.len() as u64 > FILE_WRITE_LIMIT {
-            return Err(bad_request("SSH config is too large to save"));
-        }
-        let path = ssh_config_path()?;
-        let current = match std::fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(error) => {
-                return Err(ApiError::from(anyhow!(
-                    "could not read SSH config: {error}"
-                )))
-            }
-        };
-        if current != req.previous_content {
-            return Err(ApiError(
-                StatusCode::CONFLICT,
-                "SSH config changed on disk. Reload it before saving.".into(),
-            ));
-        }
-
-        let parent = path
-            .parent()
-            .ok_or_else(|| anyhow!("SSH config has no parent directory"))?;
-        #[cfg(unix)]
-        let parent_existed = parent.exists();
-        std::fs::create_dir_all(parent)
-            .map_err(|error| ApiError::from(anyhow!("could not create ~/.ssh: {error}")))?;
-        #[cfg(unix)]
-        {
-            if !parent_existed {
-                use std::os::unix::fs::PermissionsExt as _;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-                    .map_err(|error| ApiError::from(anyhow!("could not secure ~/.ssh: {error}")))?;
-            }
-        }
-        crate::local::git::atomic_write_with_mode(&path, req.content.as_bytes(), Some(0o600))
-            .map_err(|error| ApiError::from(anyhow!("could not save SSH config: {error}")))?;
-        Ok(Json(json!({ "ok": true })))
-    })
-    .await
-}
-
-#[derive(Deserialize)]
-struct SshPreflightReq {
-    host: String,
-    container: Option<String>,
-}
-
-async fn ssh_master_status(Query(req): Query<SshPreflightReq>) -> ApiResult {
-    let host = req.host.trim();
-    if host.is_empty() {
-        return Err(bad_request("host is required"));
-    }
-    // A missing master is meaningful only on platforms that support multiplexing.
-    // Windows opens a new SSH connection for each command; reporting false here
-    // makes a successful preflight immediately look disconnected in the dashboard.
-    let running = if cfg!(unix) {
-        Some(crate::jobs::ssh::master_is_running(&crate::jobs::ssh::SshTarget::alias(host)).await?)
-    } else {
-        None
-    };
-    Ok(Json(json!({ "running": running })))
-}
-
-/// Live check for one host: can we reach it and run bash/tar snapshots?
-async fn ssh_preflight(Json(req): Json<SshPreflightReq>) -> ApiResult {
-    let host = req.host.trim().to_string();
-    if host.is_empty() {
-        return Err(bad_request("host is required"));
-    }
-    require_configured_ssh_host(&host)?;
-    if let Some(reference) = &req.container {
-        crate::jobs::ssh::validate_container_reference(reference).map_err(bad_request)?;
-    }
-    let test = run_ssh_host_preflight(host.clone()).await;
-    let container = if let Some(reference) = req.container {
-        let result = crate::jobs::ssh::resolve_container(
-            &crate::jobs::ssh::SshTarget::alias(&host),
-            &reference,
-        )
-        .await;
-        Some(
-            json!({"reference": reference, "ready": result.is_ok(), "error": result.err().map(|error| error.to_string())}),
-        )
-    } else {
-        None
-    };
-    let mut result =
-        serde_json::to_value(test).map_err(|error| ApiError::from(anyhow!("{error}")))?;
-    result["container"] = json!(container);
-    Ok(Json(result))
-}
-
-fn require_configured_ssh_host(host: &str) -> Result<(), ApiError> {
-    if list_ssh_hosts()
-        .iter()
-        .any(|candidate| candidate.get("host").and_then(Value::as_str) == Some(host))
-    {
-        Ok(())
-    } else {
-        Err(bad_request("Choose a host from ~/.ssh/config."))
-    }
-}
-
 async fn remote_sessions(State(state): State<AppState>) -> Json<Value> {
     Json(json!({ "sessions": state.remote_sessions.list().await }))
 }
@@ -6783,536 +6650,6 @@ async fn local_runtime() -> Json<Value> {
     }))
 }
 
-async fn run_ssh_host_preflight(host: String) -> SshHostTest {
-    let test = probe_ssh_host_preflight(host).await;
-    record_ssh_host_test(&test).await;
-    test
-}
-
-async fn probe_ssh_host_preflight(host: String) -> SshHostTest {
-    let p = crate::jobs::ssh::preflight(&crate::jobs::ssh::SshTarget::alias(&host)).await;
-    SshHostTest {
-        host,
-        reachable: p.reachable,
-        tools_found: p.tools_found,
-        missing_tools: p.missing_tools,
-        error: p.error,
-        tested_at: now_ms(),
-    }
-}
-
-async fn record_ssh_host_test(test: &SshHostTest) {
-    // Best-effort persistence — the UI shows "last tested" across restarts,
-    // but a store hiccup shouldn't hide a test result that already ran.
-    let record = test.clone();
-    if let Err(e) =
-        tokio::task::spawn_blocking(move || Store::open()?.upsert_ssh_host_test(&record))
-            .await
-            .map_err(|e| anyhow!("ssh task failed: {e}"))
-            .and_then(|r| r)
-    {
-        eprintln!("orx up: could not record ssh test for {}: {e}", test.host);
-    }
-}
-
-// --- slurm --------------------------------------------------------------------
-
-use crate::jobs::slurm;
-
-/// One payload powers the whole settings card: stored cluster defaults plus
-/// the ssh hosts to pick a login node from (same `~/.ssh/config` source as
-/// the ssh backend — a Slurm login node is just an ssh host).
-fn slurm_settings_json() -> Value {
-    let settings = slurm::load_settings().ok().flatten().unwrap_or_default();
-    json!({
-        "host": settings.host,
-        "partition": settings.partition,
-        "account": settings.account,
-        "timeLimit": settings.time_limit,
-        "hosts": list_ssh_hosts(),
-    })
-}
-
-async fn slurm_settings() -> ApiResult {
-    tokio::task::spawn_blocking(|| Ok(Json(slurm_settings_json())))
-        .await
-        .map_err(|e| ApiError::from(anyhow!("slurm task failed: {e}")))?
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SetSlurmSettingsReq {
-    /// `None` leaves the field alone; `Some("")` clears it (cluster default).
-    host: Option<String>,
-    partition: Option<String>,
-    account: Option<String>,
-    time_limit: Option<String>,
-}
-
-async fn set_slurm_settings(Json(req): Json<SetSlurmSettingsReq>) -> ApiResult {
-    // One spawn_blocking around the whole load→mutate→save→respond body
-    // (settings + ~/.ssh/config are sync fs I/O), like the git handlers.
-    tokio::task::spawn_blocking(move || {
-        let mut settings = slurm::load_settings()?.unwrap_or_default();
-        let norm = |v: String| Some(v.trim().to_string()).filter(|s| !s.is_empty());
-        if let Some(h) = req.host {
-            settings.host = norm(h);
-        }
-        if let Some(p) = req.partition {
-            settings.partition = norm(p);
-        }
-        if let Some(a) = req.account {
-            settings.account = norm(a);
-        }
-        if let Some(t) = req.time_limit {
-            // Reject a default that would fail every later launch.
-            let t = norm(t);
-            if let Some(t) = &t {
-                crate::jobs::huggingface::parse_timeout(t).map_err(bad_request)?;
-            }
-            settings.time_limit = t;
-        }
-        slurm::save_settings(&settings)?;
-        Ok(Json(slurm_settings_json()))
-    })
-    .await
-    .map_err(|e| ApiError::from(anyhow!("slurm task failed: {e}")))?
-}
-
-#[derive(Deserialize)]
-struct SlurmPreflightReq {
-    host: String,
-}
-
-/// Live check for one login node: reachable, Slurm CLI + snapshot tools, and
-/// which partitions exist (feeds the partition picker).
-async fn slurm_preflight(Json(req): Json<SlurmPreflightReq>) -> ApiResult {
-    let host = req.host.trim().to_string();
-    if host.is_empty() {
-        return Err(bad_request("host is required"));
-    }
-    let p = slurm::preflight(&host).await;
-    Ok(Json(slurm_preflight_value(&p)))
-}
-
-fn slurm_preflight_value(p: &slurm::SlurmPreflight) -> Value {
-    json!({
-        "reachable": p.reachable,
-        "slurmFound": p.slurm_found,
-        "toolsFound": p.tools_found,
-        "partitions": p.partitions,
-        "error": p.error,
-    })
-}
-
-// --- ray --------------------------------------------------------------------
-
-use crate::jobs::ray;
-
-fn ray_settings_json() -> Value {
-    let settings = ray::load_settings().ok().flatten().unwrap_or_default();
-    let (resolved, source) = ray::resolve_address_with_source();
-    let source_label = match source {
-        ray::AddressSource::Settings => "settings",
-        ray::AddressSource::AstroaiEnv => "ASTROAI_RAY_JOBS_ADDRESS",
-        ray::AddressSource::RayEnv => "RAY_DASHBOARD_URL",
-        ray::AddressSource::Default => "default",
-    };
-    json!({
-        "address": settings.address,
-        "resolvedAddress": resolved,
-        "source": source_label,
-    })
-}
-
-async fn ray_settings() -> ApiResult {
-    tokio::task::spawn_blocking(|| Ok(Json(ray_settings_json())))
-        .await
-        .map_err(|e| ApiError::from(anyhow!("ray task failed: {e}")))?
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SetRaySettingsReq {
-    /// `None` leaves alone; `Some("")` clears (fall back to env / default).
-    address: Option<String>,
-}
-
-async fn set_ray_settings(Json(req): Json<SetRaySettingsReq>) -> ApiResult {
-    tokio::task::spawn_blocking(move || {
-        let mut settings = ray::load_settings()?.unwrap_or_default();
-        if let Some(a) = req.address {
-            let a = Some(a.trim().to_string()).filter(|s| !s.is_empty());
-            if let Some(a) = &a {
-                // Reject a default that would fail every later launch.
-                let url = reqwest::Url::parse(a)
-                    .map_err(|e| bad_request(anyhow!("Invalid Jobs URL {a:?}: {e}")))?;
-                if !matches!(url.scheme(), "http" | "https") {
-                    return Err(bad_request(anyhow!(
-                        "The Jobs URL must be http(s), e.g. http://127.0.0.1:8265 (got {a:?})."
-                    )));
-                }
-            }
-            settings.address = a;
-        }
-        ray::save_settings(&settings)?;
-        Ok(Json(ray_settings_json()))
-    })
-    .await
-    .map_err(|e| ApiError::from(anyhow!("ray task failed: {e}")))?
-}
-
-#[derive(Deserialize)]
-struct RayPreflightReq {
-    address: Option<String>,
-}
-
-/// Live check for a Ray Jobs / Dashboard endpoint.
-async fn ray_preflight(Json(req): Json<RayPreflightReq>) -> ApiResult {
-    let address = ray::resolve_address(req.address.as_deref());
-    match ray::preflight(&address).await {
-        Ok(ray_version) => Ok(Json(json!({
-            "reachable": true,
-            "address": address,
-            "rayVersion": ray_version,
-            "error": null,
-        }))),
-        Err(e) => Ok(Json(json!({
-            "reachable": false,
-            "address": address,
-            "rayVersion": null,
-            "error": e.to_string(),
-        }))),
-    }
-}
-
-// --- compute targets (unified settings list + default) --------------------------
-
-/// The whole payload for the Compute tab's collapsed list, in one round trip.
-/// CHEAP probes only — env vars and file reads, never a network call, kubectl,
-/// or the modal python import. `configured` means "worth trying", not
-/// "healthy"; deep health stays in each backend's own settings endpoint,
-/// fetched when a row is expanded.
-/// Whether a box would accept this machine. Three-valued on purpose: the check
-/// needs the api, so "we couldn't ask" is a different answer from "no" and the
-/// badge shouldn't have to pick one of the two. Each arm carries what the row
-/// needs to say — guessing a key path would send the user to a file that may
-/// not exist.
-#[derive(Clone, PartialEq)]
-enum SshReadiness {
-    Ready,
-    /// The `.pub` on this machine worth registering, if there is one.
-    NoUsableKey {
-        pub_path: Option<String>,
-    },
-    Unverified {
-        reason: String,
-    },
-}
-
-async fn openresearch_ssh_readiness() -> SshReadiness {
-    use crate::local::ssh_identity::{preferred_local, tilde, KeyStatus};
-    let Ok(Some(creds)) = crate::config::load_credentials().await else {
-        // Signed-out is reported by the row's own `or_logged_in`.
-        return SshReadiness::NoUsableKey { pub_path: None };
-    };
-    let named = |local: &[crate::local::ssh_identity::LocalKey]| SshReadiness::NoUsableKey {
-        pub_path: preferred_local(local)
-            .and_then(|k| k.path.as_deref())
-            .map(tilde),
-    };
-    match crate::local::ssh_identity::check(&creds).await {
-        KeyStatus::Matched => SshReadiness::Ready,
-        KeyStatus::NoLocalMatch { local, .. } | KeyStatus::NoneRegistered { local } => {
-            named(&local)
-        }
-        KeyStatus::Unknown { reason } => SshReadiness::Unverified { reason },
-    }
-}
-
-/// The openresearch row's one-line status. Every branch that tells the user to
-/// run something names a path we actually found — never a guessed one.
-fn openresearch_summary(logged_in: bool, ssh: &SshReadiness) -> String {
-    if !logged_in {
-        return "Not signed in — run orx login".to_string();
-    }
-    match ssh {
-        SshReadiness::Ready => "Signed in — ephemeral boxes billed to your org".to_string(),
-        SshReadiness::NoUsableKey {
-            pub_path: Some(path),
-        } => format!("No usable SSH key — run orx ssh-key add {path}"),
-        SshReadiness::NoUsableKey { pub_path: None } => {
-            "No SSH key on this computer — run ssh-keygen -t ed25519, then orx ssh-key add"
-                .to_string()
-        }
-        SshReadiness::Unverified { reason } => {
-            format!("Signed in — couldn't check your SSH key ({reason})")
-        }
-    }
-}
-
-fn compute_settings_json(ssh: SshReadiness) -> Value {
-    let default = crate::config::compute_default();
-    let (default_backend, default_flavor) = match &default {
-        Some((b, f)) => (Some(b.as_str()), f.as_deref()),
-        None => (None, None),
-    };
-
-    let hf = crate::jobs::huggingface::resolve_token_with_source().ok();
-    let tinker = crate::jobs::tinker::resolve_api_key_with_source().ok();
-    let modal_source = crate::jobs::modal::token_source();
-    let k8s_settings = k8s::load_settings().ok().flatten();
-    let ssh_hosts = list_ssh_hosts().len();
-    let slurm_settings = crate::jobs::slurm::load_settings().ok().flatten();
-    let slurm_host = slurm_settings.as_ref().and_then(|s| s.host.clone());
-    let (ray_resolved, ray_source) = crate::jobs::ray::resolve_address_with_source();
-    let ray_configured = !matches!(ray_source, crate::jobs::ray::AddressSource::Default);
-    let ray_source_label = match ray_source {
-        crate::jobs::ray::AddressSource::Settings => "Saved address",
-        crate::jobs::ray::AddressSource::AstroaiEnv => "ASTROAI_RAY_JOBS_ADDRESS",
-        crate::jobs::ray::AddressSource::RayEnv => "RAY_DASHBOARD_URL",
-        crate::jobs::ray::AddressSource::Default => "Default localhost:8265",
-    };
-    // Presence of the credentials file only — whether the token still works is
-    // the expanded row's (network) question.
-    let or_logged_in = crate::config::credentials_present();
-
-    // Same spellings as the expanded rows' SOURCE_LABELS/MODAL_TOKEN_LABELS
-    // in the UI — the collapsed head stays visible above the open row, so the
-    // same fact must not read two different ways.
-    let source_label = |s: &crate::jobs::huggingface::TokenSource| match s {
-        crate::jobs::huggingface::TokenSource::Env => "HF_TOKEN env var",
-        crate::jobs::huggingface::TokenSource::OpenresearchEnv => "Token from Environment tab",
-        crate::jobs::huggingface::TokenSource::HfCache => "Token from ~/.cache/huggingface/token",
-    };
-    let mut targets = json!([
-        {
-            "id": "local",
-            "configured": true,
-            "summary": "Runs as a detached process on this machine",
-        },
-        {
-            "id": "ssh",
-            "configured": ssh_hosts > 0,
-            "summary": match ssh_hosts {
-                0 => "No hosts in ~/.ssh/config".to_string(),
-                1 => "1 host in ~/.ssh/config".to_string(),
-                n => format!("{n} hosts in ~/.ssh/config"),
-            },
-        },
-        {
-            "id": "tinker",
-            "configured": tinker.is_some(),
-            "fromEnvironmentTab": matches!(tinker.as_ref().map(|(_, source)| source), Some(crate::jobs::tinker::ApiKeySource::OpenresearchEnv)),
-            "summary": match tinker.map(|(_, source)| source) {
-                Some(crate::jobs::tinker::ApiKeySource::Env) => "TINKER_API_KEY env var",
-                Some(crate::jobs::tinker::ApiKeySource::OpenresearchEnv) => "Key from Environment tab",
-                None => "No API key",
-            },
-        },
-        {
-            "id": "hf",
-            "configured": hf.is_some(),
-            "fromEnvironmentTab": matches!(hf.as_ref().map(|(_, source)| source), Some(crate::jobs::huggingface::TokenSource::OpenresearchEnv)),
-            "summary": hf.as_ref().map_or_else(
-                || "No token".to_string(),
-                |(_, s)| source_label(s).to_string(),
-            ),
-        },
-        {
-            "id": "modal",
-            "configured": modal_source.is_some(),
-            "fromEnvironmentTab": modal_source == Some("syncedEnv"),
-            "summary": match modal_source {
-                Some("env") => "MODAL_TOKEN_ID + MODAL_TOKEN_SECRET env vars",
-                Some("syncedEnv") => "Token from Environment tab",
-                Some("modalToml") => "Token from ~/.modal.toml",
-                _ => "No token",
-            },
-        },
-        {
-            "id": "k8s",
-            "configured": k8s_settings.is_some(),
-            "summary": k8s_settings.as_ref().map_or_else(
-                || "No context selected".to_string(),
-                |s| format!(
-                    "Context {} / namespace {}",
-                    s.context.as_deref().unwrap_or("(kubectl default)"),
-                    s.namespace,
-                ),
-            ),
-        },
-        {
-            "id": "slurm",
-            "configured": slurm_host.is_some(),
-            "summary": slurm_host.as_ref().map_or_else(
-                || "No login node configured".to_string(),
-                |h| match slurm_settings.as_ref().and_then(|s| s.partition.as_deref()) {
-                    Some(partition) => format!("Login node {h} / partition {partition}"),
-                    None => format!("Login node {h}"),
-                },
-            ),
-        },
-        {
-            "id": "ray",
-            "configured": ray_configured,
-            "summary": if ray_configured {
-                format!("{ray_source_label} ({ray_resolved})")
-            } else {
-                ray_source_label.to_string()
-            },
-        },
-        {
-            "id": "openresearch",
-            // Signed in alone would be a green light on a backend that can't
-            // connect — the box authorizes your *registered* keys, so one of
-            // them has to be on this machine too.
-            "configured": or_logged_in && ssh == SshReadiness::Ready,
-            "unverified": or_logged_in && matches!(ssh, SshReadiness::Unverified { .. }),
-            "summary": openresearch_summary(or_logged_in, &ssh),
-        },
-    ]);
-    if let Some(targets) = targets.as_array_mut() {
-        for target in targets {
-            if let Some(target) = target.as_object_mut() {
-                target.insert("enabled".to_string(), Value::Bool(true));
-                target.insert("disabledReason".to_string(), Value::Null);
-            }
-        }
-    }
-    json!({
-        "defaultBackend": default_backend.unwrap_or("local"),
-        "defaultFlavor": default_flavor,
-        "configuredDefaultBackend": default_backend,
-        "configuredDefaultFlavor": default_flavor,
-        "targets": targets,
-    })
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ComputeSettingsQuery {
-    project_id: Option<String>,
-}
-
-async fn compute_settings(Query(query): Query<ComputeSettingsQuery>) -> ApiResult {
-    let ssh = openresearch_ssh_readiness().await;
-    let _project_id = query.project_id;
-    // fs/env probes only, but keep them off the async runtime anyway.
-    let payload =
-        tokio::task::spawn_blocking(move || -> Result<Value> { Ok(compute_settings_json(ssh)) })
-            .await
-            .map_err(|e| ApiError::from(anyhow!("compute settings task failed: {e}")))??;
-    Ok(Json(payload))
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SetComputeDefaultReq {
-    /// `None`/absent clears the default (and its flavor with it).
-    backend: Option<String>,
-    flavor: Option<String>,
-    project_id: Option<String>,
-}
-
-/// Persist the default compute target. An *unconfigured* backend is allowed
-/// (config state fluctuates outside orx; the UI warns instead) — only unknown
-/// backends and meaningless flavors are rejected.
-async fn set_compute_default(Json(req): Json<SetComputeDefaultReq>) -> ApiResult {
-    let _project_id = req.project_id;
-    let backend = req
-        .backend
-        .map(|b| b.trim().to_string())
-        .filter(|b| !b.is_empty());
-    let flavor = req
-        .flavor
-        .map(|f| f.trim().to_string())
-        .filter(|f| !f.is_empty());
-    if let Some(b) = &backend {
-        local::validate_compute_default(b, flavor.as_deref()).map_err(bad_request)?;
-    }
-    // Picking openresearch as the default is the moment to answer "will this
-    // actually work?", so the row that comes back is honest about the SSH key.
-    let ssh = openresearch_ssh_readiness().await;
-    // Validation already ran above, so a failure in here is a server-side
-    // fault (io error, corrupt settings.json refusal) — surface it as 500 via
-    // the plain ApiError conversion, not as a 400 blaming the request.
-    let payload = tokio::task::spawn_blocking(move || -> Result<Value> {
-        crate::config::set_compute_default(backend, flavor)?;
-        Ok(compute_settings_json(ssh))
-    })
-    .await
-    .map_err(|e| ApiError::from(anyhow!("compute default task failed: {e}")))??;
-    Ok(Json(payload))
-}
-
-/// The "This machine" row's expanded detail: detected hardware. Subprocess
-/// probes (hostname, sysctl, nvidia-smi) — blocking, so spawned.
-async fn local_machine_settings() -> ApiResult {
-    let hw = tokio::task::spawn_blocking(crate::jobs::localbox::hardware_info)
-        .await
-        .map_err(|e| ApiError::from(anyhow!("hardware probe task failed: {e}")))?;
-    Ok(Json(json!(hw)))
-}
-
-/// The OpenResearch row's expanded detail. Network calls are fine here (the
-/// row is open) but each is individually best-effort — an offline machine
-/// still renders "signed in, status unknown" instead of an error page.
-async fn openresearch_settings() -> ApiResult {
-    let Some(creds) = crate::config::load_credentials().await? else {
-        return Ok(Json(json!({
-            "loggedIn": false,
-            "apiUrl": null,
-            "orgs": [],
-            "sshKeyStatus": "unknown",
-            "error": null,
-        })));
-    };
-    let mut error: Option<String> = None;
-    let orgs = match crate::client::list_orgs(&creds).await {
-        Ok(o) => o.orgs.into_iter().map(|o| o.name).collect::<Vec<_>>(),
-        Err(e) => {
-            error = Some(e.to_string());
-            Vec::new()
-        }
-    };
-    // "Registered" alone is a misleading green: a key registered from another
-    // laptop leaves this machine unable to reach any box. Report whether the
-    // private half is actually here.
-    use crate::local::ssh_identity::{preferred_local, tilde, KeyStatus};
-    // Hand back the .pub we actually found so the note can name a real file
-    // rather than guessing at ~/.ssh/id_ed25519.pub.
-    let mut ssh_key_path: Option<String> = None;
-    let mut note_key = |local: &[crate::local::ssh_identity::LocalKey]| {
-        ssh_key_path = preferred_local(local)
-            .and_then(|k| k.path.as_deref())
-            .map(tilde);
-    };
-    let ssh_key_status = match crate::local::ssh_identity::check(&creds).await {
-        KeyStatus::Matched => "matched",
-        KeyStatus::NoLocalMatch { local, .. } => {
-            note_key(&local);
-            "no_local_match"
-        }
-        KeyStatus::NoneRegistered { local } => {
-            note_key(&local);
-            "none_registered"
-        }
-        KeyStatus::Unknown { reason } => {
-            error.get_or_insert(reason);
-            "unknown"
-        }
-    };
-    Ok(Json(json!({
-        "loggedIn": true,
-        "apiUrl": creds.api_url,
-        "orgs": orgs,
-        "sshKeyStatus": ssh_key_status,
-        "sshKeyPath": ssh_key_path,
-        "error": error,
-    })))
-}
-
 async fn list_local_models() -> ApiResult {
     Ok(Json(local::local_models::list()?))
 }
@@ -7368,7 +6705,8 @@ struct HarnessQuery {
     retry: Option<u8>,
 }
 
-fn overlay_claude_auth(payload: &mut Value, snapshot: local::claude::AuthSnapshot) {
+fn overlay_claude_auth(payload: &mut Value, snapshot: &local::claude::AuthSnapshot) {
+    const FAILED_RECHECK_NOTE: &str = "Could not re-check Claude Code. The last verified configuration is still in use; re-check this harness.";
     let Some(harnesses) = payload.get_mut("harnesses").and_then(Value::as_array_mut) else {
         return;
     };
@@ -7389,35 +6727,86 @@ fn overlay_claude_auth(payload: &mut Value, snapshot: local::claude::AuthSnapsho
     if claude.get("catalogPending").and_then(Value::as_bool) == Some(true) {
         return;
     }
-    // The snapshot only carries a state, so its generic note would overwrite the
-    // credential-conflict diagnosis with "run `claude auth status`" — advice for
-    // a state the conflict already explains, and the repair the user needs.
-    let needs_config_repair = claude
-        .get("needsConfigRepair")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let entry_was_ready = claude.get("authState").and_then(Value::as_str) == Some("ready");
     claude["authState"] = json!(snapshot.state);
+    claude["needsConfigRepair"] = json!(snapshot.credential_conflict);
+    claude["authCheckFailed"] = json!(snapshot.auth_check_failed);
+    claude["loginEligible"] = json!(
+        !snapshot.auth_check_failed
+            && !snapshot.runtime_rejected
+            && local::harness::claude::login_eligible_state(
+                snapshot.state,
+                snapshot.method,
+                snapshot.provider.as_deref(),
+                snapshot.credential_conflict,
+            )
+    );
+    if let Some(object) = claude.as_object_mut() {
+        match snapshot.method {
+            Some(method) => {
+                object.insert("authMethod".into(), json!(method));
+            }
+            None => {
+                object.remove("authMethod");
+            }
+        }
+        match &snapshot.provider {
+            Some(provider) => {
+                object.insert("authProvider".into(), json!(provider));
+            }
+            None => {
+                object.remove("authProvider");
+            }
+        }
+        if snapshot.state != local::harness::HarnessAuthState::Ready
+            || snapshot.method != Some("oauth")
+            || snapshot
+                .provider
+                .as_deref()
+                .is_some_and(|provider| provider != "firstParty")
+            || !entry_was_ready
+        {
+            object.remove("account");
+            object.remove("org");
+            object.remove("plan");
+        }
+    }
     if snapshot.state == local::harness::HarnessAuthState::Ready {
+        claude["authenticated"] = json!(true);
+        claude["agentReady"] = json!(true);
+        if snapshot.auth_check_failed {
+            claude["agentNote"] = json!(FAILED_RECHECK_NOTE);
+        } else if !entry_was_ready
+            || claude.get("agentNote").and_then(Value::as_str) == Some(FAILED_RECHECK_NOTE)
+        {
+            if let Some(object) = claude.as_object_mut() {
+                object.remove("agentNote");
+            }
+        }
         return;
     }
     claude["authenticated"] = json!(false);
     claude["agentReady"] = json!(false);
     claude["models"] = json!([]);
-    if let Some(object) = claude.as_object_mut() {
-        object.remove("authMethod");
-        object.remove("account");
-        object.remove("org");
-        object.remove("plan");
-    }
-    if needs_config_repair {
+    if snapshot.credential_conflict {
+        claude["agentNote"] = json!("Claude Code reports a subscription login while an Anthropic environment credential is set. Fix or unset that credential, then re-check this harness.");
         return;
     }
     claude["agentNote"] = json!(if snapshot.runtime_rejected {
-        local::harness::claude::auth_recovery_note()
+        local::harness::claude::auth_recovery_note(snapshot.method, snapshot.provider.as_deref())
     } else {
         match snapshot.state {
             local::harness::HarnessAuthState::NeedsLogin => {
-                "Sign in with `claude auth login`, then re-check this harness."
+                if local::harness::claude::login_eligible_state(
+                    snapshot.state,
+                    snapshot.method,
+                    snapshot.provider.as_deref(),
+                    false,
+                ) {
+                    "Sign in with `claude auth login`, then re-check this harness."
+                } else {
+                    "Check the configured Claude Code provider with `claude auth status`, then re-check this harness."
+                }
             }
             local::harness::HarnessAuthState::Unknown => {
                 "Open a terminal and run `claude auth status`, then re-check this harness."
@@ -7426,6 +6815,101 @@ fn overlay_claude_auth(payload: &mut Value, snapshot: local::claude::AuthSnapsho
                 "Update Claude Code to 2.1.211 or newer, then re-check this harness."
             }
             local::harness::HarnessAuthState::Ready => unreachable!(),
+        }
+    });
+}
+
+struct ClaudeCatalogRequest {
+    bin: std::path::PathBuf,
+    ultracode: bool,
+    method: Option<&'static str>,
+    provider: Option<String>,
+}
+
+#[derive(Default)]
+struct ClaudeCatalogQueue {
+    running: bool,
+    latest: Option<(std::time::Instant, ClaudeCatalogRequest)>,
+}
+
+fn claude_catalog_request(
+    harnesses: &[local::harness::HarnessInfo],
+) -> Option<ClaudeCatalogRequest> {
+    let claude = harnesses
+        .iter()
+        .find(|h| h.id == "claude-code" && h.agent_ready)?;
+    if !local::harness::claude::external_provider(
+        claude.auth_method,
+        claude.auth_provider.as_deref(),
+    ) {
+        return None;
+    }
+    Some(ClaudeCatalogRequest {
+        bin: claude.bin_path.as_ref()?.into(),
+        ultracode: claude.claude_ultracode,
+        method: claude.auth_method,
+        provider: claude.auth_provider.clone(),
+    })
+}
+
+fn enqueue_claude_catalog(
+    state: AppState,
+    cached_at: std::time::Instant,
+    request: ClaudeCatalogRequest,
+) {
+    let mut queue = state.claude_catalog_queue.lock().unwrap();
+    queue.latest = Some((cached_at, request));
+    if queue.running {
+        return;
+    }
+    queue.running = true;
+    drop(queue);
+    tokio::spawn(async move {
+        loop {
+            let next = {
+                let mut queue = state.claude_catalog_queue.lock().unwrap();
+                match queue.latest.take() {
+                    Some(next) => next,
+                    None => {
+                        queue.running = false;
+                        return;
+                    }
+                }
+            };
+            let (cached_at, request) = next;
+            let models =
+                local::harness::claude::external_model_catalog(request.bin, request.ultracode)
+                    .await;
+            let empty = models.is_empty();
+            let mut cache = state.harnesses.lock().await;
+            let Some((at, payload)) = cache.as_mut() else {
+                continue;
+            };
+            if *at != cached_at {
+                continue;
+            }
+            let auth = state.claude.auth_snapshot();
+            if auth.state != local::harness::HarnessAuthState::Ready
+                || auth.runtime_rejected
+                || auth.method != request.method
+                || auth.provider != request.provider
+            {
+                continue;
+            }
+            let Some(claude) = payload["harnesses"].as_array_mut().and_then(|all| {
+                all.iter_mut()
+                    .find(|h| h["id"] == "claude-code" && h["agentReady"] == true)
+            }) else {
+                continue;
+            };
+            claude["models"] = json!(models);
+            if empty {
+                claude["agentNote"] = json!("Could not load Claude Code models. Re-check this harness or update Claude Code; the CLI default model is still available.");
+            } else if let Some(object) = claude.as_object_mut() {
+                object.remove("agentNote");
+            }
+            drop(cache);
+            state.chat.emit_event("harness.catalog", json!({}));
         }
     });
 }
@@ -7459,6 +6943,7 @@ fn payload_has_ready_claude(payload: &Value) -> bool {
         == Some(true)
 }
 
+#[cfg(test)]
 fn claude_entry_pending(payload: &Value) -> bool {
     claude_entry(payload)
         .and_then(|claude| claude.get("catalogPending"))
@@ -7466,16 +6951,11 @@ fn claude_entry_pending(payload: &Value) -> bool {
         == Some(true)
 }
 
-fn replace_claude_entry(payload: &mut Value, replacement: Value) {
-    let Some(harnesses) = payload.get_mut("harnesses").and_then(Value::as_array_mut) else {
-        return;
-    };
-    if let Some(claude) = harnesses
-        .iter_mut()
-        .find(|h| h.get("id").and_then(Value::as_str) == Some("claude-code"))
-    {
-        *claude = replacement;
-    }
+async fn harness_snapshot(Path(id): Path<String>) -> ApiResult {
+    let info = local::harness::detect_harness_snapshot(&id)
+        .await
+        .ok_or_else(|| not_found("harness"))?;
+    Ok(Json(json!(info)))
 }
 
 async fn list_harnesses(
@@ -7504,13 +6984,16 @@ async fn harnesses_payload(state: &AppState, q: &HarnessQuery) -> Value {
         // An explicit re-check detects outside the cache lock: a full sweep
         // takes seconds and must not stall every ordinary read queued behind
         // it. Last writer wins — concurrent refreshes may duplicate a sweep.
-        let probe_generation = state.claude.auth_snapshot().generation;
+        state.claude.reserve_auth_check();
         let harnesses = local::harness::detect_harnesses().await;
-        let (mut payload, announce) =
-            finish_harnesses_payload(state, harnesses, probe_generation, false).await;
+        let catalog = claude_catalog_request(&harnesses);
+        let (mut payload, announce) = finish_harnesses_payload(state, harnesses, false).await;
         let cached_at = std::time::Instant::now();
         spawn_cursor_account_details(state, &mut payload, cached_at);
         *state.harnesses.lock().await = Some((cached_at, payload.clone()));
+        if let Some(catalog) = catalog {
+            enqueue_claude_catalog(state.clone(), cached_at, catalog);
+        }
         emit_auth_announcement(state, announce);
         return payload;
     }
@@ -7535,7 +7018,7 @@ async fn harnesses_payload(state: &AppState, q: &HarnessQuery) -> Value {
             spawn_catalog_fill(state.clone(), *at, uuid::Uuid::new_v4());
         }
         let mut out = payload.clone();
-        overlay_claude_auth(&mut out, auth);
+        overlay_claude_auth(&mut out, &auth);
         return out;
     }
     seed_harnesses_locked(state, &mut cache).await
@@ -7551,7 +7034,6 @@ async fn seed_harnesses_locked(
     state: &AppState,
     cache: &mut Option<(std::time::Instant, Value)>,
 ) -> Value {
-    let probe_generation = state.claude.auth_snapshot().generation;
     let started = std::time::Instant::now();
     let harnesses = local::harness::detect_harnesses_snapshot().await;
     let installed = harnesses.iter().filter(|h| h.installed).count();
@@ -7559,7 +7041,7 @@ async fn seed_harnesses_locked(
     // passes join on it.
     let fill_id = uuid::Uuid::new_v4();
     let snapshot_ms = started.elapsed().as_millis() as u64;
-    let (mut payload, _) = finish_harnesses_payload(state, harnesses, probe_generation, true).await;
+    let (mut payload, _) = finish_harnesses_payload(state, harnesses, true).await;
     let cached_at = std::time::Instant::now();
     spawn_cursor_account_details(state, &mut payload, cached_at);
     *cache = Some((cached_at, payload.clone()));
@@ -7585,31 +7067,23 @@ async fn seed_harnesses_locked(
 /// the ClaudeHost's tracked auth state, then overlay and report. Shared by
 /// the snapshot and full passes, and by the background catalog fill.
 ///
-/// `provisional` marks a snapshot answer. A snapshot's claude auth is still
-/// worth adopting when it is conclusive — a signed-out credential store, or
-/// the fallback probe's live verdict — so shared state does not lag what the
-/// file evidence already proved. Two outcomes are not conclusive: `Unknown`
-/// is a guess, and an oauth-method `Ready` skipped the minimum-version gate
-/// (the snapshot never ran `--version`), so both wait for the fill. The
-/// first-install telemetry capture is likewise restricted to completed
-/// answers.
+/// `provisional` marks a discovery-only snapshot. Only full passes publish
+/// live Claude auth observations and first-install telemetry.
 /// The returned `Option` is a claimed auth announcement: the caller emits it
 /// only after committing the payload, so a discarded pass never sends the
 /// dashboard on a `refresh=1` sweep for results nobody will see.
 async fn finish_harnesses_payload(
     state: &AppState,
     harnesses: Vec<local::harness::HarnessInfo>,
-    probe_generation: u64,
     provisional: bool,
 ) -> (Value, Option<local::claude::AuthSnapshot>) {
-    if let Some(claude) = harnesses.iter().find(|h| h.id == "claude-code") {
-        let adoptable = claude.auth_state != local::harness::HarnessAuthState::Unknown
-            && !(claude.auth_state == local::harness::HarnessAuthState::Ready
-                && claude.auth_method == Some("oauth"));
-        if !provisional || adoptable {
-            state
-                .claude
-                .observe_auth_state(claude.auth_state, probe_generation);
+    if !provisional {
+        if let Some(probe) = harnesses
+            .iter()
+            .find(|h| h.id == "claude-code")
+            .and_then(|h| h.auth_observation.as_ref())
+        {
+            state.claude.observe_auth_probe(probe);
         }
     }
     let mut payload = json!({ "harnesses": harnesses });
@@ -7622,38 +7096,14 @@ async fn finish_harnesses_payload(
         state.claude.defer_auth_verification(snapshot.generation);
         snapshot = state.claude.auth_snapshot();
     }
-    // The pending check keeps this off a snapshot's card: the in-flight fill
-    // answers definitively, so an inline re-probe would just repeat its work.
-    // (A snapshot claude can be Ready-but-not-ready here because `detect_one`
-    // clamps `agent_ready` on every provisional entry.)
-    if snapshot.state == local::harness::HarnessAuthState::Ready
-        && !payload_has_ready_claude(&payload)
-        && !claude_entry_pending(&payload)
-    {
-        if let Some(retry) = local::harness::detect_harness("claude-code").await {
-            state
-                .claude
-                .observe_auth_state(retry.auth_state, snapshot.generation);
-            if retry.agent_ready {
-                replace_claude_entry(&mut payload, json!(retry));
-            }
-            snapshot = state.claude.auth_snapshot();
-        }
-        if snapshot.state == local::harness::HarnessAuthState::Ready
-            && !payload_has_ready_claude(&payload)
-        {
-            state.claude.defer_auth_verification(snapshot.generation);
-            snapshot = state.claude.auth_snapshot();
-        }
-    }
     // A provisional pass must not announce: `harness.auth` makes the dashboard
     // call `refreshHarnesses(true)`, an inline full sweep — the stall this
     // whole design exists to remove — fired by the snapshot's own adoption.
     // A real pass hands its auth snapshot back unclaimed; the caller claims at
     // emit time, after the payload commits, so a pass that loses the cache
     // race never burns a generation it can't announce.
-    let announce = (!provisional).then_some(snapshot);
-    overlay_claude_auth(&mut payload, snapshot);
+    let announce = (!provisional).then_some(snapshot.clone());
+    overlay_claude_auth(&mut payload, &snapshot);
     if !provisional {
         crate::telemetry::harness::capture_initial(&payload);
     }
@@ -7749,12 +7199,12 @@ fn spawn_catalog_fill(state: AppState, snapshot_at: std::time::Instant, fill_id:
     {
         return;
     }
+    state.claude.reserve_auth_check();
     let probe_timings = local::harness::ProbeTimingSink::default();
     tokio::spawn(local::harness::probe_timing_scope(
         probe_timings.clone(),
         async move {
             let _fill = FillGuard(state.harness_fill_in_flight.clone());
-            let probe_generation = state.claude.auth_snapshot().generation;
             let started = std::time::Instant::now();
             // Commit each harness as its probes land: the onboarding gate is
             // per-entry (`agentReady && !catalogPending`), so a ready agent must
@@ -7772,9 +7222,9 @@ fn spawn_catalog_fill(state: AppState, snapshot_at: std::time::Instant, fill_id:
                 // probe left unobserved until fill end would be stamped back to
                 // Unknown on each answer — the stall this loop exists to remove.
                 if info.id == "claude-code" {
-                    state
-                        .claude
-                        .observe_auth_state(info.auth_state, probe_generation);
+                    if let Some(probe) = info.auth_observation.as_ref() {
+                        state.claude.observe_auth_probe(probe);
+                    }
                 }
                 let mut published = false;
                 {
@@ -7817,11 +7267,11 @@ fn spawn_catalog_fill(state: AppState, snapshot_at: std::time::Instant, fill_id:
             ordered.sort_by_key(|(index, _)| *index);
             let harnesses: Vec<local::harness::HarnessInfo> =
                 ordered.into_iter().map(|(_, info)| info).collect();
+            let catalog = claude_catalog_request(&harnesses);
             // Finish before touching the cache: the Claude re-probe inside can
             // cost a child process, and holding the lock across it stalls every
             // reader the snapshot was meant to unblock.
-            let (mut payload, announce) =
-                finish_harnesses_payload(&state, harnesses, probe_generation, false).await;
+            let (mut payload, announce) = finish_harnesses_payload(&state, harnesses, false).await;
             // The reconciled payload is authoritative — overlay applied — so
             // readiness is counted from it, not the raw probes.
             let installed = payload["harnesses"]
@@ -7836,6 +7286,7 @@ fn spawn_catalog_fill(state: AppState, snapshot_at: std::time::Instant, fill_id:
                         .count()
                 })
                 .unwrap_or(0);
+            let mut catalog_at = None;
             let committed = {
                 let mut cache = state.harnesses.lock().await;
                 // A refresh or retry that landed in between owns the cache. No
@@ -7855,6 +7306,7 @@ fn spawn_catalog_fill(state: AppState, snapshot_at: std::time::Instant, fill_id:
                     let filled_at = std::time::Instant::now();
                     spawn_cursor_account_details(&state, &mut payload, filled_at);
                     *cache = Some((filled_at, payload));
+                    catalog_at = Some(filled_at);
                     true
                 }
             };
@@ -7880,6 +7332,9 @@ fn spawn_catalog_fill(state: AppState, snapshot_at: std::time::Instant, fill_id:
             });
             if !committed {
                 return;
+            }
+            if let (Some(catalog), Some(at)) = (catalog, catalog_at) {
+                enqueue_claude_catalog(state.clone(), at, catalog);
             }
             state.chat.emit_event("harness.catalog", json!({}));
             emit_auth_announcement(&state, announce);
@@ -7908,6 +7363,9 @@ struct SessionsQuery {
     /// `all` is the composer's `/resume` picker, which spans every project.
     /// Spelled out so a dropped `projectId` cannot silently widen the scope.
     scope: Option<String>,
+    archived: Option<bool>,
+    before_updated_at: Option<i64>,
+    before_id: Option<String>,
 }
 
 async fn list_chat_sessions(
@@ -7915,6 +7373,26 @@ async fn list_chat_sessions(
     Query(q): Query<SessionsQuery>,
 ) -> ApiResult {
     let store = Store::open()?;
+    if q.scope.as_deref() == Some("sidebar") {
+        let before = match (q.before_updated_at, q.before_id.as_deref()) {
+            (Some(at), Some(id)) => Some((at, id)),
+            (None, None) => None,
+            _ => return Err(bad_request("both cursor fields are required")),
+        };
+        let mut sessions = store.list_sidebar_chat_sessions(q.archived, before)?;
+        let has_more = sessions.len() > 50;
+        sessions.truncate(50);
+        let next = sessions
+            .last()
+            .filter(|_| has_more)
+            .map(|session| json!({ "updatedAt": session.updated_at, "id": session.id }));
+        let busy = state.chat.busy_sessions().await;
+        let sessions: Vec<Value> = sessions
+            .iter()
+            .map(|session| local::chat::session_json(session, busy.contains(&session.id)))
+            .collect();
+        return Ok(Json(json!({ "sessions": sessions, "next": next })));
+    }
     let sessions = match (q.project_id.as_deref(), q.scope.as_deref()) {
         (Some(project_id), _) => store.list_chat_sessions_by_project(project_id)?,
         (None, Some("all")) => store.list_all_chat_sessions()?,
@@ -7939,6 +7417,7 @@ struct CreateChatSessionReq {
     #[serde(default)]
     plan_mode: bool,
     reasoning_level: Option<String>,
+    autonomy: Option<Autonomy>,
 }
 
 async fn create_chat_session(
@@ -7994,8 +7473,10 @@ async fn create_chat_session(
         context_usage_json: None,
         bootstrap_context: None,
         goal: None,
+        autonomy: req.autonomy.map(|autonomy| autonomy.id().to_string()),
         active_leaf_id: None,
         parent_session_id: None,
+        side_parent_session_id: None,
         created_at: now_ms(),
         updated_at: now_ms(),
     };
@@ -8078,6 +7559,24 @@ async fn import_native_chat(
     ))
 }
 
+async fn open_side_chat(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
+    reject_if_moving(&state)?;
+    let parent = Store::open()?
+        .get_chat_session(&id)?
+        .ok_or_else(|| not_found("chat session"))?;
+    if parent.side_parent_session_id.is_some() {
+        return Err(bad_request("a side chat cannot open its own side chat"));
+    }
+    let _admission = state
+        .project_lifecycle
+        .admit(&parent.project_id)
+        .ok_or_else(|| bad_request("project deletion is in progress"))?;
+    let session = state.chat.open_side_chat(&parent).await?;
+    Ok(Json(
+        json!({ "session": local::chat::session_json(&session, false) }),
+    ))
+}
+
 async fn delete_chat_session(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
     reject_if_moving(&state)?;
     state.chat.delete_session(&id).await?;
@@ -8094,6 +7593,7 @@ struct UpdateChatSessionReq {
     /// Present-and-null clears the goal, which is why it is doubly wrapped.
     #[serde(default, deserialize_with = "present_nullable_string")]
     goal: Option<Option<String>>,
+    autonomy: Option<Autonomy>,
 }
 
 async fn update_chat_session(
@@ -8139,6 +7639,12 @@ async fn update_chat_session(
             .set_permission_mode(&id, &permission_mode)
             .await?
             .ok_or_else(|| not_found("chat session"))?
+    } else if let Some(autonomy) = req.autonomy {
+        state
+            .chat
+            .set_autonomy(&id, autonomy)
+            .await?
+            .ok_or_else(|| not_found("chat session"))?
     } else {
         return Err(bad_request("nothing to update"));
     };
@@ -8171,7 +7677,8 @@ async fn chat_messages(State(state): State<AppState>, Path(id): Path<String>) ->
 struct SendChatReq {
     text: String,
     client_turn_id: Option<String>,
-    model: Option<String>,
+    #[serde(default, deserialize_with = "present_nullable_string")]
+    model: Option<Option<String>>,
     service_tier: Option<String>,
     permission_mode: Option<String>,
     plan_mode: Option<bool>,
@@ -8283,7 +7790,8 @@ async fn send_chat_message(
         return Err(bad_request("text is required"));
     }
     let overrides = local::chat::TurnOverrides {
-        model: req.model,
+        clear_model: req.model == Some(None),
+        model: req.model.flatten(),
         service_tier: req.service_tier,
         permission_mode: req.permission_mode,
         permission_revision: None,
@@ -8637,11 +8145,8 @@ async fn events(
     tokio::spawn(event_loop(tx.clone()));
     // Chat events ride the same stream: chat.session / chat.message / chat.busy.
     tokio::spawn(forward_chat_events(state.chat.subscribe(), tx));
-    // The guard rides the stream state, so the count drops when the response
-    // body is dropped — i.e. when the tab closes or navigates away.
-    let guard = DashboardClientGuard::new();
-    let stream = futures::stream::unfold((rx, guard), |(mut rx, guard)| async move {
-        rx.recv().await.map(|ev| (Ok(ev), (rx, guard)))
+    let stream = futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|ev| (Ok(ev), rx))
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
@@ -8674,33 +8179,6 @@ async fn forward_chat_events(
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
         }
-    }
-}
-
-/// Whether a dashboard is open somewhere — macOS app mode asks on a Dock click,
-/// where a live tab means "raise the browser" rather than "open the URL again".
-/// Any `/api/events` consumer counts, and a connection that vanished without a
-/// FIN lingers until a keep-alive write fails.
-// Un-gated so CI's Linux runner still type-checks it; only macOS has a caller.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn has_live_dashboard_clients() -> bool {
-    LIVE_DASHBOARD_CLIENTS.load(std::sync::atomic::Ordering::Relaxed) > 0
-}
-
-static LIVE_DASHBOARD_CLIENTS: AtomicUsize = AtomicUsize::new(0);
-
-struct DashboardClientGuard;
-
-impl DashboardClientGuard {
-    fn new() -> Self {
-        LIVE_DASHBOARD_CLIENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Self
-    }
-}
-
-impl Drop for DashboardClientGuard {
-    fn drop(&mut self) {
-        LIVE_DASHBOARD_CLIENTS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -8972,6 +8450,65 @@ pub(crate) async fn spa(uri: Uri) -> Response {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn empty_local_error_reports_the_http_status() {
+        let response = axum::http::Response::builder()
+            .status(StatusCode::BAD_GATEWAY)
+            .body(String::new())
+            .unwrap();
+        let error = decode_local_response::<Value>(response.into(), "start the run")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "orx up could not start the run: HTTP 502 Bad Gateway"
+        );
+    }
+
+    #[test]
+    fn successful_recheck_clears_stale_claude_warning() {
+        let host = local::claude::ClaudeHost::new();
+        let ready = local::harness::claude::parse_auth_status(
+            Some(0),
+            br#"{"loggedIn":true,"authMethod":"third_party","apiProvider":"bedrock"}"#,
+            local::harness::claude::auth_barrier_sequence(),
+        );
+        host.observe_auth_probe(&ready);
+        let failed = local::harness::claude::parse_auth_status(
+            Some(2),
+            b"bad status",
+            local::harness::claude::auth_barrier_sequence(),
+        );
+        host.observe_auth_probe(&failed);
+        let mut payload =
+            json!({"harnesses": [{"id": "claude-code", "authState": "ready", "agentReady": true}]});
+        overlay_claude_auth(&mut payload, &host.auth_snapshot());
+        assert_eq!(payload["harnesses"][0]["authCheckFailed"], true);
+        assert!(payload["harnesses"][0]["agentNote"]
+            .as_str()
+            .unwrap()
+            .contains("Could not re-check"));
+
+        let recovered = local::harness::claude::parse_auth_status(
+            Some(0),
+            br#"{"loggedIn":true,"authMethod":"third_party","apiProvider":"bedrock"}"#,
+            local::harness::claude::auth_barrier_sequence(),
+        );
+        host.observe_auth_probe(&recovered);
+        overlay_claude_auth(&mut payload, &host.auth_snapshot());
+        assert_eq!(payload["harnesses"][0]["authCheckFailed"], false);
+        assert!(payload["harnesses"][0].get("agentNote").is_none());
+    }
+
+    #[test]
+    fn send_model_distinguishes_cli_default_from_no_override() {
+        let omitted: SendChatReq = serde_json::from_value(json!({ "text": "hello" })).unwrap();
+        let default: SendChatReq =
+            serde_json::from_value(json!({ "text": "hello", "model": null })).unwrap();
+        assert_eq!(omitted.model, None);
+        assert_eq!(default.model, Some(None));
+    }
+
     #[test]
     fn literature_query_bounds_support_single_character_and_unicode() {
         assert!(validate_literature_query("", 0).is_ok());
@@ -9063,6 +8600,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_streaming_response_stays_active_until_its_body_is_sent() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let release = gate.clone();
+        let app = Router::new()
+            .route(
+                "/file",
+                get(move || async move {
+                    axum::body::Body::from_stream(futures::stream::once(async move {
+                        gate.notified().await;
+                        Ok::<_, Infallible>("done")
+                    }))
+                }),
+            )
+            .layer(middleware::from_fn(track_active));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/file", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let response = crate::net::loopback_client()
+            .build()
+            .unwrap()
+            .get(url)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ACTIVE.load(Ordering::SeqCst), 1);
+        release.notify_one();
+        assert_eq!(response.text().await.unwrap(), "done");
+        for _ in 0..100 {
+            if ACTIVE.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("a sent response body stayed active");
+    }
+
+    #[tokio::test]
     async fn lagged_chat_stream_requests_resync_and_continues() {
         use axum::response::IntoResponse;
         let (sender, receiver) = tokio::sync::broadcast::channel(1);
@@ -9111,6 +8686,7 @@ mod tests {
             tour_completed: Some(true),
             preferred_agent: None,
             workspace: Some(invalid),
+            preferred_autonomy: None,
         }))
         .await;
         assert_eq!(result.err().unwrap().0, StatusCode::BAD_REQUEST);
@@ -9131,9 +8707,6 @@ mod tests {
             "/api/update/restart",
             "/api/settings/data-dir",
             "/api/settings/data-dir/move",
-            "/api/settings/ssh/master",
-            "/api/settings/ssh/preflight",
-            "/api/settings/ssh/connect",
             "/api/settings/openresearch/login",
             "/api/settings/openresearch/ssh-key",
             "/api/settings/commands/run",
@@ -9144,11 +8717,14 @@ mod tests {
             assert!(remote_route_forbidden(path), "{path}");
         }
         assert!(!remote_route_forbidden("/api/settings/ssh/config"));
+        assert!(!remote_route_forbidden("/api/settings/ssh/master"));
+        assert!(!remote_route_forbidden("/api/settings/ssh/preflight"));
+        assert!(!remote_route_forbidden("/api/settings/ssh/connect"));
         assert!(!remote_route_forbidden("/api/projects/p1/file"));
     }
 
     #[test]
-    fn remote_callback_token_is_limited_to_run_submission_and_cancellation() {
+    fn remote_callback_token_is_limited_to_runs_and_the_spawn_preflight() {
         assert!(is_remote_callback_route(&Method::POST, "/api/runs"));
         assert!(is_remote_callback_route(
             &Method::POST,
@@ -9162,6 +8738,19 @@ mod tests {
         assert!(!is_remote_callback_route(
             &Method::POST,
             "/api/chat/sessions/s1/message"
+        ));
+        assert!(is_remote_callback_route(
+            &Method::GET,
+            "/api/harnesses/codex/snapshot"
+        ));
+        assert!(!is_remote_callback_route(
+            &Method::POST,
+            "/api/harnesses/codex/snapshot"
+        ));
+        assert!(!is_remote_callback_route(&Method::GET, "/api/harnesses"));
+        assert!(!is_remote_callback_route(
+            &Method::GET,
+            "/api/harnesses/setup/commands"
         ));
     }
 
@@ -9442,6 +9031,8 @@ mod tests {
     #[test]
     fn create_run_request_round_trips_agent_attribution_and_force() {
         let request = CreateRunReq {
+            invocation_context: None,
+            telemetry_suppressed: true,
             experiment_id: "experiment-1".into(),
             backend: Some("local".into()),
             flavor: None,
@@ -9456,6 +9047,7 @@ mod tests {
             disk: None,
             force: true,
             chat_session_id: Some("session-1".into()),
+            agent_origin: None,
         };
 
         let value = serde_json::to_value(&request).unwrap();

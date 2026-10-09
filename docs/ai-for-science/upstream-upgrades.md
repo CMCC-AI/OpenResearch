@@ -2,9 +2,24 @@
 
 ## 当前基线
 
-本产品源码已合并官方 [OpenResearch v0.2.9](https://github.com/alphaXiv/OpenResearch/releases/tag/v0.2.9)，固定提交为 `678f47798231de3db6afe3dc19e3ed128b6799a0`。`product-upstream.json` 记录该基线，`scripts/check-upstream-base.mjs` 在 CI 中核对 Cargo 版本、提交祖先关系和更新通道状态。
+本产品源码已合并官方 [OpenResearch v0.2.17](https://github.com/alphaXiv/OpenResearch/releases/tag/v0.2.17)，固定提交为 `b9ce4f3c0cbd5bf006330fbb7ed1cacfaefb5d21`。`product-upstream.json` 记录该基线，`scripts/check-upstream-base.mjs` 在 CI 中核对 Cargo 版本、提交祖先关系和更新通道状态。
 
 产品仍由三部分组成：本地 `orx`（内嵌 `ui/dist`）、独立账号服务、Deep Literature。官方升级只提供第一部分的上游源码；统一登录、产品页面、文献服务、部署配置与跨系统数据契约仍由本项目维护。不能把官方安装包覆盖在产品安装目录上。
+
+## 2026-10-09 升级记录
+
+从官方 v0.2.9 升级到 v0.2.17；升级前产品提交为 `aa9aa36`，本地备份分支为 `codex/backup-before-v0.2.17`。本次合并包括原生桌面窗口、PDF 预览、Agent 协议与使用量、SSH 执行恢复、日志完整性和韩日语支持。
+
+产品兼容处理：
+
+- 保留 AI for Science 首页、新建项目及论文参数、统一账号、私人服务器空间和 Deep Literature 公开接口；产品项目首页继续使用研究入口，不改为上游的全局会话自动恢复页。
+- 保留 OpenAlex 服务端密钥、请求超时和页大小限制，并采用上游的公共请求重试机制。文献服务使用上游统一 HTTP 客户端入口，回环请求绕过代理。
+- 适配更新状态新增的 release tag 字段，保持 `product-disabled`；自动重启集成测试验证官方更新记录不能替换产品后端。
+- 服务器网关拒绝新增的 Git 安装管理接口；执行器构建上下文包含新的 Linux 桌面资源。开发脚本在已登记的 main 工作树目录缺失时使用当前检出的启动注册文件。
+
+本机验证：Rust 1,055 项单元测试和 18 项 CLI 集成测试通过，3 项单元测试按上游设置忽略；Clippy、Rust 和 Windows launcher 格式检查通过。UI 219 项测试、启动脚本 12 项测试、平台 9 项单元测试和独立 PostgreSQL 的 16 项集成测试通过；平台生产依赖审计无漏洞。UI 类型检查、国际化和样式检查、完整构建与重复打包一致性检查通过，`ui/dist` 已重新生成。macOS 调试和 release 构建的 telemetry channel 均为 development。
+
+通过 `scripts/dev-slot.mjs --db empty` 启动隔离实例，确认介绍页以及文献连接、分页、单字搜索、隐私字段和输入边界。临时开发实例与测试数据库在验收后清理；没有迁移现有研究数据、调用付费模型或替换运行中的账号/文献服务。Linux ARM64 执行器的 Rust release 阶段构建通过；将新版二进制与平台源码叠加到现有 hosted 基础镜像后，版本、健康接口、空数据库和产品更新策略验收通过。完整执行器从 Node 基础镜像重新构建时，Debian 包下载两次返回 HTTP 500，尚未完成全新运行镜像验收。Windows 安装包、Linux 桌面 AppImage、签名发行与真实升级回滚仍需对应环境验收。
 
 ## 当前发行策略
 
@@ -12,7 +27,7 @@
 
 发布自己的安装包之前，需完成以下工作：
 
-1. 独立的产品版本号和发布源。推荐区分“上游基线 v0.2.9”和“产品发行号”；不能仅用上游版本判断产品构建的新旧。
+1. 独立的产品版本号和发布源。推荐区分“上游基线 v0.2.17”和“产品发行号”；不能仅用上游版本判断产品构建的新旧。
 2. 自有 CI 构建 macOS/Windows/Linux 包，生成带平台、架构、SHA-256、产品版本、上游基线和最低兼容协议版本的更新清单。
 3. 使用自己的签名与校验策略；macOS App 更新代码目前校验官方 Apple Team ID，启用自有自动更新前必须替换并验证完整签名链。
 4. 确认安装路径、升级锁、原子替换、失败回滚、重启恢复和发布灰度。账号服务与 Deep Literature 分别版本化，不随本地客户端二进制无条件替换。

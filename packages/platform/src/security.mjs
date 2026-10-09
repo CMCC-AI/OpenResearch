@@ -115,6 +115,7 @@ export function permitted(role, method, path) {
     return false;
   if (
     path === "/api/project-path/pick" ||
+    path === "/api/git/install" ||
     path === "/api/harnesses/setup" ||
     path.endsWith("/file/open")
   )

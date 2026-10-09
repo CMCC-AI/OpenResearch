@@ -1,5 +1,6 @@
-import { setScopedQueryData } from "./queries/client";
 import { isCancelledError, useQuery } from "@tanstack/react-query";
+import { ProjectsHome } from "./components/ProjectsHome";
+import { setScopedQueryData } from "./queries/client";
 import { listProjectsQuery, getUiStateQuery } from "./queries/projects";
 import { isCloudWorkspace } from "./product/CloudWorkspace";
 import { useRouteContext, Link, useNavigate, useSearch, type ErrorComponentProps } from "@tanstack/react-router";
@@ -9,11 +10,8 @@ import { useRuntime } from "./RemoteRuntime";
 
 import { clearReadDemoSessions } from "./demoSessionState";
 import { globalResumeLocation, projectResumeLocation } from "./routeResume";
-import { getRememberedGlobalWorkspace, globalWorkspaceWriter } from "./workspacePersistence";
-import { initialPanelWidth } from "./panelLayout";
 import { m } from "./paraglide/messages.js";
 import { Onboarding } from "./components/Onboarding";
-import { ProjectsHome } from "./components/ProjectsHome";
 import { OfflineBanner } from "./components/OfflineBanner";
 import { WorkspaceConnection } from "./components/WorkspaceConnection";
 import { UpdateBanner, useUpdateStatus } from "./components/UpdateBanner";
@@ -76,18 +74,13 @@ export function ProjectsPage() {
   const stateQuery = useQuery(getUiStateQuery());
   const projects = projectsQuery.data;
   const state = stateQuery.data;
-  const onboarding = projects?.length === 0 && state?.onboardingCompleted === false;
+  const onboarding = projects?.length === 0;
   const error = projectsQuery.error ?? stateQuery.error;
   const retry = () => { void projectsQuery.refetch(); void stateQuery.refetch(); };
   const { status } = useUpdateStatus(runtime.kind === "local" && !isCloudWorkspace());
   useEffect(() => {
     document.title = "OpenResearch";
-    if (!state) return;
-    globalWorkspaceWriter.queue({
-      ...(getRememberedGlobalWorkspace() ?? state.workspace ?? { railOpen: true, panelWidth: initialPanelWidth(), experimentsView: "table" }),
-      lastLocation: "/projects",
-    });
-  }, [state]);
+  }, []);
   const openProject = (projectId: string) => void navigate({ to: "/projects/$projectId", params: { projectId } });
 
   return (

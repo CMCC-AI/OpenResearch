@@ -2,6 +2,7 @@ FROM rust:1.93-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
+COPY linux ./linux
 COPY ui/dist ./ui/dist
 COPY agent-skills ./agent-skills
 COPY demo ./demo

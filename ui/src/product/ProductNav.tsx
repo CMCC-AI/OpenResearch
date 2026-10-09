@@ -36,7 +36,7 @@ export function ProductSidebar() {
     {user && <div className="mt-auto rounded-lg border border-border-variant bg-canvas p-3 [@media((max-width:_820px))]:hidden">
       <div className="flex min-w-0 items-center gap-2.5">
         <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary-subtle text-primary"><UserRound size={16} /></span>
-        <span className="min-w-0 flex-1"><strong className="block truncate text-xs font-medium text-text">{user.name}</strong><span className="block truncate text-[11px] text-muted">{user.email}</span></span>
+        <span className="min-w-0 flex-1"><strong className="block truncate text-xs font-medium text-text">{user.name}</strong><span className="block truncate text-xs text-muted">{user.email}</span></span>
         <button type="button" onClick={() => void logout()} title="退出登录" aria-label="退出登录" className="grid h-8 w-8 shrink-0 place-items-center rounded-md border-0 bg-transparent text-muted hover:bg-background hover:text-text"><LogOut size={15} /></button>
       </div>
     </div>}

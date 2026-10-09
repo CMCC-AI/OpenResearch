@@ -24,6 +24,8 @@ use crate::store::{log_path, now_ms, RunStatus, Store};
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// How long a silent log stream is held before re-checking job state.
 const LOG_IDLE: Duration = Duration::from_secs(30);
+/// How long monitoring must keep failing before it is reported on the run.
+const MONITORING_GRACE: Duration = Duration::from_secs(60);
 
 fn open_supervisor_lock(path: &std::path::Path) -> Result<fd_lock::RwLock<std::fs::File>> {
     let file = std::fs::OpenOptions::new()
@@ -32,6 +34,51 @@ fn open_supervisor_lock(path: &std::path::Path) -> Result<fd_lock::RwLock<std::f
         .write(true)
         .open(path)?;
     Ok(fd_lock::RwLock::new(file))
+}
+
+/// One streaming log pass, cut short (`None`) when the job ends so the final
+/// pass starts at once. That pass's only deadline is the watcher's drain bound.
+async fn log_pass<T>(
+    done: &mut tokio::sync::watch::Receiver<bool>,
+    draining: bool,
+    pass: impl std::future::Future<Output = Result<T>>,
+) -> Option<Result<T>> {
+    if draining {
+        return Some(pass.await);
+    }
+    tokio::select! {
+        result = pass => Some(result),
+        Ok(()) = done.changed() => None,
+    }
+}
+
+/// The run's local log, rewritten from each supervisor's replay of the backend
+/// log. Truncated at the first replayed line rather than on open, so a
+/// supervisor respawned while the backend is unreachable keeps what it has.
+struct RunLog {
+    file: std::fs::File,
+    replaying: bool,
+}
+
+impl RunLog {
+    fn open(path: &std::path::Path) -> std::io::Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)?;
+        Ok(Self {
+            file,
+            replaying: false,
+        })
+    }
+
+    fn line(&mut self, line: &str) {
+        if !std::mem::replace(&mut self.replaying, true) {
+            let _ = self.file.set_len(0);
+        }
+        let _ = writeln!(self.file, "{line}");
+    }
 }
 
 pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
@@ -140,6 +187,13 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
         // Drain the tail before the status flip so terminal readers see the
         // complete local log.
         if is_terminal_stage(stage) {
+            let _ = done_tx.send(true);
+            if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
+                .await
+                .is_err()
+            {
+                log_task.abort();
+            }
             let applied = store.update_status(&run_id, status, Some(now_ms()), None)?;
             if applied && status == RunStatus::Failed {
                 if let Some(msg) = &job.status.message {
@@ -149,13 +203,6 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
                         eprintln!("supervise {run_id}: could not record failure reason: {err}");
                     }
                 }
-            }
-            let _ = done_tx.send(true);
-            if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
-                .await
-                .is_err()
-            {
-                log_task.abort();
             }
             eprintln!("supervise {run_id}: finished ({status})");
             return Ok(());
@@ -211,8 +258,8 @@ fn status_of(stored: &crate::store::StoredRun) -> Result<RunStatus> {
 
 /// Tail the job's log stream into the run's log file until told we're done.
 /// Reconnects forever (HF replays from the start; `seen` dedups), so a network
-/// blip or the stream's own idle-close never loses the tail. Truncates on
-/// open: a restarted supervisor rewrites the file from event zero rather than
+/// blip or the stream's own idle-close never loses the tail. A restarted
+/// supervisor rewrites the file from event zero (see `RunLog`) rather than
 /// appending a duplicate history.
 async fn tail_logs(
     token: String,
@@ -220,15 +267,10 @@ async fn tail_logs(
     job_id: String,
     path: std::path::PathBuf,
     run_id: String,
-    done: tokio::sync::watch::Receiver<bool>,
+    mut done: tokio::sync::watch::Receiver<bool>,
 ) {
-    let mut log_file = match std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&path)
-    {
-        Ok(f) => f,
+    let mut log = match RunLog::open(&path) {
+        Ok(log) => log,
         Err(err) => {
             eprintln!(
                 "supervise {run_id}: could not open {}: {err}",
@@ -239,17 +281,23 @@ async fn tail_logs(
     };
     let mut seen = 0u64;
     loop {
+        // Only a pass that began after the job ended is known to hold its last lines.
+        let draining = *done.borrow();
+        let skip = seen;
+        // Counted here so a pass that fails partway still dedups what it wrote.
         let mut sink = |line: &str| {
-            let _ = writeln!(log_file, "{line}");
+            seen += 1;
+            log.line(line);
         };
-        match hf::stream_logs(&token, &namespace, &job_id, seen, LOG_IDLE, &mut sink).await {
-            Ok(s) => seen = s,
-            Err(err) => eprintln!("supervise {run_id}: log stream error (will retry): {err}"),
+        let pass = hf::stream_logs(&token, &namespace, &job_id, skip, LOG_IDLE, &mut sink);
+        let Some(result) = log_pass(&mut done, draining, pass).await else {
+            continue;
+        };
+        if let Err(err) = &result {
+            eprintln!("supervise {run_id}: log stream error (will retry): {err}");
         }
-        let _ = log_file.flush();
-        // Between passes: exit once the job is terminal (the closed stream has
-        // been fully drained by the pass above); otherwise breathe and retry.
-        if *done.borrow() {
+        let _ = log.file.flush();
+        if draining && result.is_ok() {
             return;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -322,6 +370,13 @@ async fn run_k8s(
         let status = run_status_for_stage(&store, &run_id, cancel_sent, stage);
 
         if is_terminal_stage(stage) {
+            let _ = done_tx.send(true);
+            if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
+                .await
+                .is_err()
+            {
+                log_task.abort();
+            }
             let applied = store.update_status(&run_id, status, Some(now_ms()), None)?;
             if applied && status == RunStatus::Failed {
                 if let Some(msg) = &job.message {
@@ -331,13 +386,6 @@ async fn run_k8s(
                         eprintln!("supervise {run_id}: could not record failure reason: {err}");
                     }
                 }
-            }
-            let _ = done_tx.send(true);
-            if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
-                .await
-                .is_err()
-            {
-                log_task.abort();
             }
             eprintln!("supervise {run_id}: finished ({status})");
             return Ok(());
@@ -372,24 +420,18 @@ async fn run_k8s(
     }
 }
 
-/// k8s twin of `tail_logs` — `kubectl logs -f` replays from the pod's start on
-/// each reconnect, so the same truncate-and-dedup contract applies. Tails the
-/// primary Job's leader pod (index 0 for Indexed jobs).
+/// k8s twin of `tail_logs`, resuming each reconnect from the last timestamp.
+/// Tails the primary Job's leader pod (index 0 for Indexed jobs).
 async fn tail_logs_k8s(
     context: Option<String>,
     namespace: String,
     job_name: String,
     path: std::path::PathBuf,
     run_id: String,
-    done: tokio::sync::watch::Receiver<bool>,
+    mut done: tokio::sync::watch::Receiver<bool>,
 ) {
-    let mut log_file = match std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&path)
-    {
-        Ok(f) => f,
+    let mut log = match RunLog::open(&path) {
+        Ok(log) => log,
         Err(err) => {
             eprintln!(
                 "supervise {run_id}: could not open {}: {err}",
@@ -398,26 +440,26 @@ async fn tail_logs_k8s(
             return;
         }
     };
-    let mut seen = 0u64;
+    let mut resume = k8s::LogResume::default();
     loop {
-        let mut sink = |line: &str| {
-            let _ = writeln!(log_file, "{line}");
-        };
-        match k8s::stream_logs(
+        let draining = *done.borrow();
+        let mut sink = |line: &str| log.line(line);
+        let pass = k8s::stream_logs(
             context.as_deref(),
             &namespace,
             &job_name,
-            seen,
+            &mut resume,
             LOG_IDLE,
             &mut sink,
-        )
-        .await
-        {
-            Ok(s) => seen = s,
-            Err(err) => eprintln!("supervise {run_id}: log stream error (will retry): {err}"),
+        );
+        let Some(streamed) = log_pass(&mut done, draining, pass).await else {
+            continue;
+        };
+        if let Err(err) = &streamed {
+            eprintln!("supervise {run_id}: log stream error (will retry): {err}");
         }
-        let _ = log_file.flush();
-        if *done.borrow() {
+        let _ = log.file.flush();
+        if draining && streamed.is_ok() {
             return;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -483,6 +525,13 @@ async fn run_modal(
         let status = run_status_for_stage(&store, &run_id, cancel_sent, stage);
 
         if is_terminal_stage(stage) {
+            let _ = done_tx.send(true);
+            if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
+                .await
+                .is_err()
+            {
+                log_task.abort();
+            }
             let applied = store.update_status(&run_id, status, Some(now_ms()), None)?;
             if applied && status == RunStatus::Failed {
                 if let Some(msg) = &job.message {
@@ -492,13 +541,6 @@ async fn run_modal(
                         eprintln!("supervise {run_id}: could not record failure reason: {err}");
                     }
                 }
-            }
-            let _ = done_tx.send(true);
-            if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
-                .await
-                .is_err()
-            {
-                log_task.abort();
             }
             eprintln!("supervise {run_id}: finished ({status})");
             return Ok(());
@@ -520,20 +562,15 @@ async fn run_modal(
 }
 
 /// Modal twin of `tail_logs` — the launcher replays the sandbox's stdout from
-/// the start on each connect, so the same truncate-and-dedup contract applies.
+/// the start on each connect, so the same replay-and-dedup contract applies.
 async fn tail_logs_modal(
     sandbox_id: String,
     path: std::path::PathBuf,
     run_id: String,
-    done: tokio::sync::watch::Receiver<bool>,
+    mut done: tokio::sync::watch::Receiver<bool>,
 ) {
-    let mut log_file = match std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&path)
-    {
-        Ok(f) => f,
+    let mut log = match RunLog::open(&path) {
+        Ok(log) => log,
         Err(err) => {
             eprintln!(
                 "supervise {run_id}: could not open {}: {err}",
@@ -544,15 +581,21 @@ async fn tail_logs_modal(
     };
     let mut seen = 0u64;
     loop {
+        let draining = *done.borrow();
+        let skip = seen;
         let mut sink = |line: &str| {
-            let _ = writeln!(log_file, "{line}");
+            seen += 1;
+            log.line(line);
         };
-        match modal::stream_logs(&sandbox_id, seen, LOG_IDLE, &mut sink).await {
-            Ok(s) => seen = s,
-            Err(err) => eprintln!("supervise {run_id}: log stream error (will retry): {err}"),
+        let pass = modal::stream_logs(&sandbox_id, skip, LOG_IDLE, &mut sink);
+        let Some(result) = log_pass(&mut done, draining, pass).await else {
+            continue;
+        };
+        if let Err(err) = &result {
+            eprintln!("supervise {run_id}: log stream error (will retry): {err}");
         }
-        let _ = log_file.flush();
-        if *done.borrow() {
+        let _ = log.file.flush();
+        if draining && result.is_ok() {
             return;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -577,7 +620,7 @@ async fn cancel_modal(sandbox_id: &str, run_id: &str, cancel_sent: &mut bool) {
 async fn run_ssh(
     store: Store,
     stored: crate::store::StoredRun,
-    descriptor: BackendDescriptor,
+    mut descriptor: BackendDescriptor,
     run_id: String,
 ) -> Result<()> {
     let (host, dir) = descriptor.ssh_ref()?;
@@ -589,8 +632,9 @@ async fn run_ssh(
         status_of(&stored)?,
         target,
         dir,
-        descriptor.ssh_container,
+        descriptor.ssh_container.clone(),
         &run_id,
+        &mut descriptor,
     )
     .await?;
     Ok(())
@@ -606,26 +650,78 @@ async fn watch_ssh_job(
     dir: String,
     container: Option<ssh::ContainerRun>,
     run_id: &str,
+    descriptor: &mut BackendDescriptor,
 ) -> Result<RunStatus> {
     let path = log_path(run_id);
     let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+    let (log_error_tx, log_error_rx) = tokio::sync::watch::channel(None);
     let mut log_task = tokio::spawn(tail_logs_ssh(
         target.clone(),
         dir.clone(),
         path.clone(),
         run_id.to_string(),
         done_rx,
+        Some(log_error_tx),
     ));
 
     let mut last_status = initial_status;
-    let mut cancel_sent = false;
+    let mut cancel_sent = descriptor.cancellation_accepted;
     let mut last_message = None;
+    let mut failing_since = None;
+    let mut last_error = None;
 
     loop {
-        let job = match ssh::inspect_job(&target, &dir, container.as_ref()).await {
-            Ok(j) => j,
-            Err(err) => {
-                eprintln!("supervise {run_id}: inspect failed (will retry): {err}");
+        if !cancel_sent && local_cancel_requested(store, run_id) {
+            cancel_ssh(&target, &dir, container.as_ref(), run_id, &mut cancel_sent).await;
+        }
+        let observed = ssh::inspect_job(&target, &dir, container.as_ref()).await;
+        let polling_error = observed
+            .as_ref()
+            .err()
+            .map(ToString::to_string)
+            .or_else(|| log_error_rx.borrow().clone());
+        let error = polling_error.map(|err| {
+            let recovery = if descriptor.kind == "ssh_job" {
+                format!(
+                    "Reconnect with orx compute connect ssh --host {}.",
+                    ssh::sh_quote(&target.dest)
+                )
+            } else {
+                "Check the instance's SSH connection; monitoring will retry.".into()
+            };
+            format!(
+                "Monitoring unavailable: {err}. {recovery} The job has not been declared stopped."
+            )
+        });
+        match (&error, &last_error) {
+            (Some(message), last) if last.as_ref() != Some(message) => {
+                eprintln!("supervise {run_id}: {message}");
+            }
+            (None, Some(_)) => eprintln!("supervise {run_id}: monitoring restored"),
+            _ => {}
+        }
+        last_error = error.clone();
+        failing_since = error
+            .as_ref()
+            .map(|_| failing_since.unwrap_or_else(std::time::Instant::now));
+        let reported = error.clone().filter(|_| {
+            descriptor.monitoring_error.is_some()
+                || failing_since.is_some_and(|since| since.elapsed() >= MONITORING_GRACE)
+        });
+        if reported != descriptor.monitoring_error
+            || cancel_sent != descriptor.cancellation_accepted
+        {
+            let mut updated = descriptor.clone();
+            updated.monitoring_error = reported;
+            updated.cancellation_accepted = cancel_sent;
+            match store.set_backend_json(run_id, &updated.to_json()) {
+                Ok(()) => *descriptor = updated,
+                Err(err) => eprintln!("supervise {run_id}: could not save monitoring state: {err}"),
+            }
+        }
+        let job = match observed {
+            Ok(job) => job,
+            Err(_) => {
                 tokio::time::sleep(POLL_INTERVAL).await;
                 continue;
             }
@@ -634,6 +730,13 @@ async fn watch_ssh_job(
         let status = run_status_for_stage(store, run_id, cancel_sent, stage);
 
         if is_terminal_stage(stage) {
+            let _ = done_tx.send(true);
+            if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
+                .await
+                .is_err()
+            {
+                log_task.abort();
+            }
             let applied = store.update_status(run_id, status, Some(now_ms()), None)?;
             if applied && status == RunStatus::Failed {
                 if let Some(msg) = &job.message {
@@ -643,13 +746,6 @@ async fn watch_ssh_job(
                         eprintln!("supervise {run_id}: could not record failure reason: {err}");
                     }
                 }
-            }
-            let _ = done_tx.send(true);
-            if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
-                .await
-                .is_err()
-            {
-                log_task.abort();
             }
             eprintln!("supervise {run_id}: finished ({status})");
             return Ok(status);
@@ -688,22 +784,21 @@ async fn watch_ssh_job(
 }
 
 /// SSH twin of `tail_logs` — each pass reads the remote log past the lines
-/// already consumed, so the same truncate-and-dedup contract applies.
+/// already consumed, so the same replay-and-dedup contract applies.
 async fn tail_logs_ssh(
     target: ssh::SshTarget,
     dir: String,
     path: std::path::PathBuf,
     run_id: String,
     done: tokio::sync::watch::Receiver<bool>,
+    errors: Option<tokio::sync::watch::Sender<Option<String>>>,
 ) {
-    let mut log_file = match std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&path)
-    {
-        Ok(f) => f,
+    let mut log = match RunLog::open(&path) {
+        Ok(log) => log,
         Err(err) => {
+            if let Some(errors) = &errors {
+                errors.send_replace(Some(format!("could not open local run log: {err}")));
+            }
             eprintln!(
                 "supervise {run_id}: could not open {}: {err}",
                 path.display()
@@ -712,16 +807,29 @@ async fn tail_logs_ssh(
         }
     };
     let mut seen = 0u64;
+    let mut last_error = None;
     loop {
-        let mut sink = |line: &str| {
-            let _ = writeln!(log_file, "{line}");
-        };
-        match ssh::stream_logs(&target, &dir, seen, LOG_IDLE, &mut sink).await {
-            Ok(s) => seen = s,
-            Err(err) => eprintln!("supervise {run_id}: log stream error (will retry): {err}"),
+        let draining = *done.borrow();
+        let mut sink = |line: &str| log.line(line);
+        match ssh::stream_logs(&target, &dir, seen, LOG_IDLE, draining, &mut sink).await {
+            Ok(s) => {
+                seen = s;
+                last_error = None;
+            }
+            // Retries every 2s through an outage; log each distinct failure once.
+            Err(err) => {
+                let err = err.to_string();
+                if last_error.as_ref() != Some(&err) {
+                    eprintln!("supervise {run_id}: log stream error (will retry): {err}");
+                    last_error = Some(err);
+                }
+            }
         }
-        let _ = log_file.flush();
-        if *done.borrow() {
+        if let Some(errors) = &errors {
+            errors.send_replace(last_error.clone());
+        }
+        let _ = log.file.flush();
+        if draining && last_error.is_none() {
             return;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -920,7 +1028,16 @@ async fn run_openresearch(
     // The shared ssh loop owns status and logs; the box is deleted after
     // it returns (logs are drained from the box BEFORE teardown), and even
     // when it errors.
-    let watch = watch_ssh_job(&store, status_of(&stored)?, target, dir, None, &run_id).await;
+    let watch = watch_ssh_job(
+        &store,
+        status_of(&stored)?,
+        target,
+        dir,
+        None,
+        &run_id,
+        &mut descriptor,
+    )
+    .await;
     teardown_box(&store, &lifecycle, &sandbox_id, &run_id).await;
     watch?;
     Ok(())
@@ -984,6 +1101,13 @@ async fn run_local(
         let status = run_status_for_stage(&store, &run_id, cancel_sent, stage);
 
         if is_terminal_stage(stage) {
+            let _ = done_tx.send(true);
+            if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
+                .await
+                .is_err()
+            {
+                log_task.abort();
+            }
             let applied = store.update_status(&run_id, status, Some(now_ms()), None)?;
             if applied && status == RunStatus::Failed {
                 if let Some(msg) = &job.message {
@@ -993,13 +1117,6 @@ async fn run_local(
                         eprintln!("supervise {run_id}: could not record failure reason: {err}");
                     }
                 }
-            }
-            let _ = done_tx.send(true);
-            if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
-                .await
-                .is_err()
-            {
-                log_task.abort();
             }
             eprintln!("supervise {run_id}: finished ({status})");
             return Ok(());
@@ -1028,13 +1145,8 @@ async fn tail_logs_local(
     run_id: String,
     done: tokio::sync::watch::Receiver<bool>,
 ) {
-    let mut log_file = match std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&path)
-    {
-        Ok(f) => f,
+    let mut log = match RunLog::open(&path) {
+        Ok(log) => log,
         Err(err) => {
             eprintln!(
                 "supervise {run_id}: could not open {}: {err}",
@@ -1045,15 +1157,20 @@ async fn tail_logs_local(
     };
     let mut seen = 0u64;
     loop {
-        let mut sink = |line: &str| {
-            let _ = writeln!(log_file, "{line}");
+        let draining = *done.borrow();
+        let mut sink = |line: &str| log.line(line);
+        let drained = match localbox::stream_logs(&dir, seen, draining, &mut sink) {
+            Ok(s) => {
+                seen = s;
+                true
+            }
+            Err(err) => {
+                eprintln!("supervise {run_id}: log stream error (will retry): {err}");
+                false
+            }
         };
-        match localbox::stream_logs(&dir, seen, &mut sink) {
-            Ok(s) => seen = s,
-            Err(err) => eprintln!("supervise {run_id}: log stream error (will retry): {err}"),
-        }
-        let _ = log_file.flush();
-        if *done.borrow() {
+        let _ = log.file.flush();
+        if draining && drained {
             return;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1073,14 +1190,13 @@ fn cancel_local(dir: &std::path::Path, run_id: &str, cancel_sent: &mut bool) {
 // The ssh loop with a scheduler: state comes from the run dir's exit_code file
 // first, then squeue/sacct; cancel is `scancel`. Logs reuse `tail_logs_ssh` —
 // Slurm appends the job's output to the same `<run dir>/log` file the ssh
-// backend uses. A scancel'd job leaves the queue without an exit_code, which
-// inspect reports as CANCELED (or ERROR via the GONE fallback) — either way,
-// once cancel is sent the terminal state maps to `cancelled`.
+// backend uses. Accepted cancellation also finishes when the controller
+// confirms the job is absent, even without accounting or an exit_code.
 
 async fn run_slurm(
     store: Store,
     stored: crate::store::StoredRun,
-    descriptor: BackendDescriptor,
+    mut descriptor: BackendDescriptor,
     run_id: String,
 ) -> Result<()> {
     let (host, job_id) = descriptor.slurm_ref()?;
@@ -1098,45 +1214,72 @@ async fn run_slurm(
         path.clone(),
         run_id.clone(),
         done_rx,
+        None,
     ));
 
     let mut last_status = status_of(&stored)?;
-    let mut cancel_sent = false;
-    // "GONE" (scheduler doesn't know the job, no exit_code) must persist for
-    // a full minute before it's believed: it also fires during slurmctld
-    // restarts and while the exit_code write is NFS-lagged behind the compute
-    // node. Any other observation resets the count.
-    const GONE_POLLS_TO_FAIL: u32 = (60 / POLL_INTERVAL.as_secs()) as u32;
-    let mut gone_polls = 0u32;
+    let mut cancel_sent = descriptor.cancellation_accepted;
+    let mut failing_since = None;
+    let mut last_error = None;
 
     loop {
-        let mut job = match slurm::inspect_job(&host, &run_id, &job_id).await {
-            Ok(j) => j,
-            Err(err) => {
-                eprintln!("supervise {run_id}: inspect failed (will retry): {err}");
-                tokio::time::sleep(POLL_INTERVAL).await;
-                continue;
-            }
-        };
-        if job.stage == "GONE" {
-            gone_polls += 1;
-            if gone_polls < GONE_POLLS_TO_FAIL {
-                tokio::time::sleep(POLL_INTERVAL).await;
-                continue;
-            }
-            job = slurm::JobState {
-                stage: "ERROR".to_string(),
-                message: Some(
-                    "job left the queue without an exit code (killed or node lost?)".to_string(),
-                ),
-            };
-        } else {
-            gone_polls = 0;
+        if !cancel_sent && local_cancel_requested(&store, &run_id) {
+            cancel_slurm(&host, &job_id, &run_id, &mut cancel_sent).await;
         }
+        let mut observed = slurm::inspect_job(&host, &run_id, &job_id).await;
+        if let Ok(job) = &mut observed {
+            if cancel_sent && job.stage == "GONE" {
+                job.stage = "CANCELED".into();
+            }
+        }
+        let error = match &observed {
+            Err(err) => Some(format!("Monitoring unavailable: {err}. Reconnect with orx compute connect slurm --host {}. The job has not been declared stopped.", ssh::sh_quote(&host))),
+            Ok(job) if matches!(job.stage.as_str(), "GONE" | "UNAVAILABLE") => Some("Monitoring unavailable: no exit status or scheduler record. Check cluster/accounting availability; the job has not been declared stopped.".into()),
+            _ => None,
+        };
+        match (&error, &last_error) {
+            (Some(message), last) if last.as_ref() != Some(message) => {
+                eprintln!("supervise {run_id}: {message}");
+            }
+            (None, Some(_)) => eprintln!("supervise {run_id}: monitoring restored"),
+            _ => {}
+        }
+        last_error = error.clone();
+        failing_since = error
+            .as_ref()
+            .map(|_| failing_since.unwrap_or_else(std::time::Instant::now));
+        // Brief outages recover on their own; a restarted supervisor keeps an existing report.
+        let reported = error.clone().filter(|_| {
+            descriptor.monitoring_error.is_some()
+                || failing_since.is_some_and(|since| since.elapsed() >= MONITORING_GRACE)
+        });
+        if reported != descriptor.monitoring_error
+            || cancel_sent != descriptor.cancellation_accepted
+        {
+            let mut updated = descriptor.clone();
+            updated.monitoring_error = reported;
+            updated.cancellation_accepted = cancel_sent;
+            match store.set_backend_json(&run_id, &updated.to_json()) {
+                Ok(()) => descriptor = updated,
+                Err(err) => eprintln!("supervise {run_id}: could not save monitoring state: {err}"),
+            }
+        }
+        if error.is_some() {
+            tokio::time::sleep(POLL_INTERVAL).await;
+            continue;
+        }
+        let job = observed?;
         let stage = job.stage.as_str();
         let status = run_status_for_stage(&store, &run_id, cancel_sent, stage);
 
         if is_terminal_stage(stage) {
+            let _ = done_tx.send(true);
+            if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
+                .await
+                .is_err()
+            {
+                log_task.abort();
+            }
             let applied = store.update_status(&run_id, status, Some(now_ms()), None)?;
             if applied && status == RunStatus::Failed {
                 if let Some(msg) = &job.message {
@@ -1147,26 +1290,13 @@ async fn run_slurm(
                     }
                 }
             }
-            let _ = done_tx.send(true);
-            if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
-                .await
-                .is_err()
-            {
-                log_task.abort();
-            }
             eprintln!("supervise {run_id}: finished ({status})");
             return Ok(());
         }
 
         if status != last_status && store.update_status(&run_id, status, None, None)? {
-            let cancel_requested = local_cancel_requested(&store, &run_id);
             eprintln!("supervise {run_id}: {last_status} -> {status} (stage {stage})");
             last_status = status;
-            if cancel_requested && !cancel_sent {
-                cancel_slurm(&host, &job_id, &run_id, &mut cancel_sent).await;
-            }
-        } else if !cancel_sent && local_cancel_requested(&store, &run_id) {
-            cancel_slurm(&host, &job_id, &run_id, &mut cancel_sent).await;
         }
 
         tokio::time::sleep(POLL_INTERVAL).await;
@@ -1244,6 +1374,13 @@ async fn run_ray(
         let status = run_status_for_stage(&store, &run_id, cancel_sent, stage);
 
         if is_terminal_stage(stage) {
+            let _ = done_tx.send(true);
+            if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
+                .await
+                .is_err()
+            {
+                log_task.abort();
+            }
             let applied = store.update_status(&run_id, status, Some(now_ms()), None)?;
             if applied && status == RunStatus::Failed {
                 if let Some(msg) = &job.message {
@@ -1253,13 +1390,6 @@ async fn run_ray(
                         eprintln!("supervise {run_id}: could not record failure reason: {err}");
                     }
                 }
-            }
-            let _ = done_tx.send(true);
-            if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
-                .await
-                .is_err()
-            {
-                log_task.abort();
             }
             eprintln!("supervise {run_id}: finished ({status})");
             return Ok(());
@@ -1292,13 +1422,8 @@ async fn tail_logs_ray(
     run_id: String,
     done: tokio::sync::watch::Receiver<bool>,
 ) {
-    let mut log_file = match std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&path)
-    {
-        Ok(f) => f,
+    let mut log_file = match RunLog::open(&path) {
+        Ok(log) => log.file,
         Err(err) => {
             eprintln!(
                 "supervise {run_id}: could not open {}: {err}",
@@ -1308,10 +1433,12 @@ async fn tail_logs_ray(
         }
     };
     let mut last = String::new();
-    // Set when a write failed, so the file may not match `last`: forces a
-    // wholesale rewrite until one fully succeeds.
-    let mut dirty = false;
+    // Set when the file may not match `last` (a previous supervisor's copy, or
+    // a failed write): forces a wholesale rewrite until one fully succeeds.
+    let mut dirty = true;
     loop {
+        let draining = *done.borrow();
+        let mut drained = false;
         match ray::fetch_logs(&address, &submission_id).await {
             Ok(full) => {
                 // Snapshots normally only grow; append the delta. Anything
@@ -1336,6 +1463,7 @@ async fn tail_logs_ray(
                     }
                 };
                 dirty = !ok;
+                drained = ok;
                 if ok {
                     last = full;
                 } else {
@@ -1349,7 +1477,7 @@ async fn tail_logs_ray(
                 eprintln!("supervise {run_id}: ray log fetch error (will retry): {err}");
             }
         }
-        if *done.borrow() {
+        if draining && drained {
             return;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1410,6 +1538,53 @@ mod tests {
 
         drop(store);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn local_tail_keeps_its_log_until_replayed_and_finishes_partial_lines() {
+        let temp = crate::local::git::TemporaryDirectory::new("orx-tail-test").unwrap();
+        let (source, path) = (temp.path().join("run"), temp.path().join("run.log"));
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(&path, "kept\n").unwrap();
+
+        // A respawned supervisor with nothing to replay leaves the log alone.
+        let (_tx, rx) = tokio::sync::watch::channel(true);
+        tail_logs_local(source.clone(), path.clone(), "run".into(), rx).await;
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "kept\n");
+
+        // A record flushed mid-line stays whole, and the final drain keeps
+        // an unterminated last line.
+        std::fs::write(source.join("log"), "a\n{\"big\": ").unwrap();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let running = tokio::spawn(tail_logs_local(
+            source.clone(),
+            path.clone(),
+            "run".into(),
+            rx,
+        ));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\n");
+        std::fs::write(source.join("log"), "a\n{\"big\": 1}\nlast").unwrap();
+        tx.send(true).unwrap();
+        running.await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "a\n{\"big\": 1}\nlast\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stalled_stream_pass_yields_to_the_final_drain() {
+        let (tx, mut rx) = tokio::sync::watch::channel(false);
+        let stalled = std::future::pending::<Result<()>>();
+        let flip = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            tx.send(true).unwrap();
+        };
+        let (interrupted, ()) = tokio::join!(log_pass(&mut rx, false, stalled), flip);
+        assert!(interrupted.is_none());
+        let drained = log_pass(&mut rx, true, async { Ok(7) }).await;
+        assert_eq!(drained.unwrap().unwrap(), 7);
     }
 
     #[test]

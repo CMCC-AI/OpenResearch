@@ -50,11 +50,14 @@ test("gateway blocks administration and path confusion for all roles", () => {
       "/api/remote/sessions",
       "/api/update",
       "/api/settings/data-dir",
+      "/api/git/install",
       "/api/projects/%2e%2e/settings/env",
       "//api/projects",
       "/api/projects\\foo",
     ])
       assert.equal(permitted(role, "GET", path), false);
+  for (const role of ["owner", "editor", "viewer"])
+    assert.equal(permitted(role, "POST", "/api/git/install"), false);
   assert.equal(
     permitted("editor", "POST", "/api/chat/sessions/x/message"),
     true,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -14,7 +14,27 @@ import {
   slotEnvironment,
   sqliteBackupCommand,
   supervisorCommandMatches,
+  worktreeInfo,
 } from './dev-slot.mjs'
+
+test('a missing registered main checkout does not block isolated development', () => {
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'orx-dev-slot-main-')))
+  const repository = path.join(root, 'repository')
+  const main = path.join(root, 'main')
+  mkdirSync(repository)
+  const git = (...args) => execFileSync('git', ['-C', repository, ...args], { stdio: 'pipe' })
+  try {
+    git('init', '-b', 'feature')
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'initial')
+    git('worktree', 'add', '-b', 'main', main)
+    writeFileSync(path.join(repository, 'Cargo.toml'), '[package]\n')
+    assert.equal(worktreeInfo(repository).mainCheckout, main)
+    rmSync(main, { recursive: true })
+    assert.equal(worktreeInfo(repository).mainCheckout, repository)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test('requires an explicit database mode when starting', () => {
   assert.throws(() => parseArgs(['start']), /requires --db empty or --db copy/)

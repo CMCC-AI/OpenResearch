@@ -113,7 +113,7 @@ import {
   type InstalledCli,
 } from "../api";
 import { onDataDirMove } from "../events";
-import { useRestartApp, useUpdateStatus } from "./UpdateBanner";
+import { releaseNotesUrl, useRestartApp, useUpdateStatus } from "./UpdateBanner";
 import { useThemePreference, type ThemePreference } from "../theme";
 import { m } from "../paraglide/messages.js";
 import { ltr } from "../i18n";
@@ -121,6 +121,7 @@ import { setLocale, useLocale } from "../locale";
 import { getLocale, isLocale, type Locale } from "../paraglide/runtime.js";
 import { TokenForm } from "./GitTokenForm";
 import { renderNote } from "./agentNote";
+import { claudeProviderLabel } from "./claudeProvider";
 import { BackendBadge, BackendLogo } from "./BackendLogos";
 import { ProgressBar } from "./ProgressBar";
 import { OptionPicker } from "./ModelPicker";
@@ -354,8 +355,9 @@ function CommandRunTerminal({ run, onComplete, onClose }: {
 
 function harnessStatus(h: Harness): { cls: string; variant: BadgeVariant; label: string } {
   if (h.catalogPending) return { cls: "warn", variant: "warning", label: m.onboarding_checking() };
+  if (h.authCheckFailed) return { cls: "warn", variant: "warning", label: m.settings_page_unable_to_verify() };
   if (h.agentReady && !h.authenticated && h.authMethod !== "local") return { cls: "warn", variant: "warning", label: m.onboarding_not_signed_in() };
-  if (h.agentReady) return { cls: "ok", variant: "success", label: h.authMethod === "local" ? m.onboarding_ready() : m.settings_page_signed_in() };
+  if (h.agentReady) return { cls: "ok", variant: "success", label: h.authMethod === "thirdParty" || claudeProviderLabel(h) ? m.settings_page_ready_to_use() : h.authMethod === "local" ? m.onboarding_ready() : m.settings_page_signed_in() };
   // Not installed — the same blocker whether or not there's saved auth: the
   // CLI has to be installed before anything can run. Amber "action needed".
   if (!h.installed) return { cls: "warn", variant: "warning", label: m.settings_page_not_installed() };
@@ -370,8 +372,11 @@ function harnessStatus(h: Harness): { cls: string; variant: BadgeVariant; label:
 
 function AuthLabel({ h }: { h: Harness }) {
   if (h.id === "opencode" && h.agentReady && !h.authenticated && !h.authMethod) return <>{m.settings_free_models_no_sign_in()}</>;
+  const provider = claudeProviderLabel(h);
+  if (provider) return <>{provider}</>;
   if (!h.authMethod) return <>—</>;
   if (h.authMethod === "local") return <>{m.projects_local()}</>;
+  if (h.authMethod === "thirdParty") return <>{m.settings_providers()}</>;
   return <>{h.authMethod === "oauth" ? m.settings_oauth_login() : m.onboarding_api_key()}</>;
 }
 
@@ -462,7 +467,7 @@ function HarnessesTab({ remote }: { remote: boolean }) {
           <div className="settings-card-head flex items-center gap-2.5 mb-3">
             <Badge variant={harnessStatus(h).variant}>{harnessStatus(h).label}</Badge>
             <div className="spacer flex-1" />
-            {!remote && !h.catalogPending && h.installed && !h.installBroken && !h.authenticated && !h.needsConfigRepair && h.authMethod !== "local" && h.authMethod !== "apiKey" && h.authState !== "unsupported" && (
+            {!remote && !h.catalogPending && h.installed && !h.installBroken && !h.authenticated && !h.needsConfigRepair && (h.id === "claude-code" ? h.loginEligible : h.authMethod !== "local" && h.authMethod !== "apiKey" && h.authState !== "unsupported") && (
               <Button size="small" onClick={() => setSetupHarness(h)} disabled={!setupCommands.data} aria-haspopup="dialog">
                 <SquareTerminal size={14} /> {m.harness_setup_login()}
               </Button>
@@ -504,7 +509,7 @@ function HarnessesTab({ remote }: { remote: boolean }) {
                 ? m.onboarding_checking()
                 : h.models.length > 0
                 ? m.settings_models_available({ count: fmtNumber(h.models.length), models: new Intl.ListFormat(getLocale()).format(h.models.slice(0, 4).map((model) => ltr(harnessModelLabel(model)))) })
-                : m.settings_none()}
+                : h.agentReady ? m.model_picker_default_model() : m.settings_none()}
             </span>
           </div>
           <RunnableNote
@@ -827,7 +832,7 @@ function HostTestCell({ test, connecting, masterRunning, containerFailed = false
   );
 }
 
-function SshSection({ remote = false }: { remote?: boolean }) {
+function SshSection() {
   const hostsOptions = getSshSettingsQuery();
   const hostsQuery = useQuery(hostsOptions);
   const hosts = hostsQuery.data?.hosts ?? (hostsQuery.isError ? [] : null);
@@ -840,7 +845,7 @@ function SshSection({ remote = false }: { remote?: boolean }) {
   const [connectingHost, setConnectingHost] = useState<string | null>(null);
   const [connectionFailed, setConnectionFailed] = useState(false);
   const [connectionAttempt, setConnectionAttempt] = useState(0);
-  const checkedHosts = remote ? [] : hosts
+  const checkedHosts = hosts
     ?.filter((host) => {
       const test = tests[host.host] ?? host.lastTest;
       return test?.reachable && test.toolsFound;
@@ -872,7 +877,7 @@ function SshSection({ remote = false }: { remote?: boolean }) {
     <>
       {hostsQuery.error && <p className="text-sm text-accent-red">{hostsQuery.error.message}</p>}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        {!remote && hostsQuery.data && <SshDefaultHost settings={hostsQuery.data} />}
+        {hostsQuery.data && <SshDefaultHost settings={hostsQuery.data} />}
         <Button variant="ghost" className="ms-auto" onClick={() => setConfigOpen(true)}>
           <Settings size={14} /> {m.ssh_configure_hosts()}
         </Button>
@@ -898,7 +903,7 @@ function SshSection({ remote = false }: { remote?: boolean }) {
             const connectionError = hostTest?.error || containerError;
             const connecting = connectingHost === h.host;
             const open = expandedHosts[h.host] ?? false;
-            const hasTerminal = !remote && (connecting || Boolean(connectionError));
+            const hasTerminal = connecting || Boolean(connectionError);
             const address =
               `${h.user ? `${h.user}@` : ""}${h.hostname ?? h.host}${h.port ? `:${h.port}` : ""}`;
             return (
@@ -912,7 +917,7 @@ function SshSection({ remote = false }: { remote?: boolean }) {
                       <div className="mt-1 truncate text-sm text-subtext" title={address}>{address}</div>
                     </div>
                   </div>
-                  {!remote && <div className="grid flex-none grid-cols-[8.5rem_5rem] items-center gap-x-12">
+                  <div className="grid flex-none grid-cols-[8.5rem_5rem] items-center gap-x-12">
                     <div className="flex items-center gap-2 text-start">
                       <HostTestCell test={hostTest} connecting={connecting && !connectionFailed} masterRunning={masterRunning[h.host]} containerFailed={containerFailed} />
                       {hasTerminal && (
@@ -953,9 +958,9 @@ function SshSection({ remote = false }: { remote?: boolean }) {
                             ? m.settings_reconnect()
                             : m.settings_connect()}
                     </Button>
-                  </div>}
+                  </div>
                 </div>
-                {!remote && <SshExecutionSettings host={h} connecting={connecting && !connectionFailed} reference={reference}
+                <SshExecutionSettings host={h} connecting={connecting && !connectionFailed} reference={reference}
                   onChange={(value) => {
                     if (connecting) cancelConnect();
                     setDrafts((drafts) => ({ ...drafts, [h.host]: value }));
@@ -964,7 +969,7 @@ function SshSection({ remote = false }: { remote?: boolean }) {
                       delete next[h.host];
                       return next;
                     });
-                  }} />}
+                  }} />
                 {hasTerminal && (open || connecting) && (
                   <div className={`border-t border-t-border-variant py-3${open ? "" : " hidden"}`}>
                     {!connecting && connectionError && (
@@ -1051,7 +1056,7 @@ function SlurmTestBadge({ test, connecting, masterRunning }: { test: SlurmPrefli
   return <Badge className="rounded-sm" variant="success">{m.settings_page_ready()}</Badge>;
 }
 
-function SlurmSection({ remote = false }: { remote?: boolean }) {
+function SlurmSection() {
   const saveSlurmSettingsMutation = useMutation({ mutationFn: saveSlurmSettings });
 
   const settingsOptions = getSlurmSettingsQuery();
@@ -1071,7 +1076,7 @@ function SlurmSection({ remote = false }: { remote?: boolean }) {
   const [connecting, setConnecting] = useState(false);
   const [connectionFailed, setConnectionFailed] = useState(false);
   const [connectionAttempt, setConnectionAttempt] = useState(0);
-  const readyHost = !remote && host && test?.reachable && test.slurmFound && test.toolsFound ? [host] : [];
+  const readyHost = host && test?.reachable && test.slurmFound && test.toolsFound ? [host] : [];
   const [masterRunning, markMasterRunning] = useSshMasterStatuses(readyHost);
 
   function connect() {
@@ -1170,29 +1175,27 @@ function SlurmSection({ remote = false }: { remote?: boolean }) {
               </label>
             </div>
             <div className="actions">
-              {!remote && (
-                <Button
-                  type="button"
-                  onClick={() => {
-                    if (connecting && !connectionFailed) {
-                      setConnectionFailed(false);
-                      setConnecting(false);
-                    } else {
-                      connect();
-                    }
-                  }}
-                  disabled={!host}
-                  title={host ? undefined : m.settings_pick_login_node()}
-                >
-                  {connecting
-                    ? connectionFailed
-                      ? m.app_retry()
-                      : m.settings_page_cancel()
-                    : test
-                      ? m.settings_reconnect()
-                      : m.settings_connect()}
-                </Button>
-              )}
+              <Button
+                type="button"
+                onClick={() => {
+                  if (connecting && !connectionFailed) {
+                    setConnectionFailed(false);
+                    setConnecting(false);
+                  } else {
+                    connect();
+                  }
+                }}
+                disabled={!host}
+                title={host ? undefined : m.settings_pick_login_node()}
+              >
+                {connecting
+                  ? connectionFailed
+                    ? m.app_retry()
+                    : m.settings_page_cancel()
+                  : test
+                    ? m.settings_reconnect()
+                    : m.settings_connect()}
+              </Button>
               <span role="status">
                 <SlurmTestBadge
                   test={test}
@@ -1249,7 +1252,7 @@ function SlurmSection({ remote = false }: { remote?: boolean }) {
               </Button>
             </div>
           </form>
-          {!remote && connecting && (
+          {connecting && (
             <SshConnectTerminal
               key={connectionAttempt}
               host={host}
@@ -1883,8 +1886,8 @@ function BackendDetailPage({
         )}
       </div>
       <div className="mt-6 font-sans text-base text-text [&_.settings-card]:mb-0 [&_.settings-form]:mt-6 [&_.settings-form]:border-t-0 [&_.settings-form]:pt-0 [&>.settings-form:first-child]:mt-0 [&>div:first-child]:border-t-0">
-        {target.id === "ssh" && <SshSection remote={remote} />}
-        {target.id === "slurm" && <SlurmSection remote={remote} />}
+        {target.id === "ssh" && <SshSection />}
+        {target.id === "slurm" && <SlurmSection />}
         {target.id === "openresearch" && <OpenResearchSection remote={remote} />}
       </div>
     </>
@@ -2569,6 +2572,8 @@ const LOCALE_CHOICES: { id: Locale; label: string }[] = [
   { id: "ar", label: "العربية" },
   { id: "es", label: "Español" },
   { id: "hi", label: "हिन्दी" },
+  { id: "ko", label: "한국어" },
+  { id: "ja", label: "日本語" },
 ];
 
 function AppearanceTab() {
@@ -2650,6 +2655,7 @@ const CHANNEL_LABELS: Record<InstallChannel, () => string> = {
   product: () => "产品发行版",
   installer: m.updates_channel_installer,
   "app-bundle": m.updates_channel_app,
+  appimage: m.updates_channel_appimage,
   portable: m.updates_channel_portable,
   cargo: m.updates_channel_cargo,
   homebrew: m.updates_channel_homebrew,
@@ -2776,6 +2782,9 @@ function UpdatesTab() {
                   {status.updateAvailable
                     ? m.settings_install_release_now()
                     : m.settings_checks_automatically()}
+                  {status.updateAvailable && status.latestTag && (
+                    <> <a href={releaseNotesUrl(status.latestTag)} target="_blank" rel="noreferrer" className="underline">{m.settings_release_notes()}</a></>
+                  )}
                 </p>
               </div>
               <Button size="small"

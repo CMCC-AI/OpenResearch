@@ -69,7 +69,7 @@ function run(command, args, options = {}) {
   return execFileSync(command, args, { encoding: 'utf8', ...options }).trim()
 }
 
-function worktreeInfo(worktreeInput) {
+export function worktreeInfo(worktreeInput) {
   const worktreePath = realpathSync(worktreeInput)
   const manifestPath = path.join(worktreePath, 'Cargo.toml')
   if (!existsSync(manifestPath)) throw new Error(`Not an openresearch-cli worktree: ${worktreePath}`)
@@ -88,7 +88,9 @@ function worktreeInfo(worktreeInput) {
     manifestPath,
     worktreeKey: createHash('sha256').update(worktreePath).digest('hex').slice(0, 16),
     label: path.basename(worktreePath).replaceAll(/[^a-zA-Z0-9._-]/g, '-'),
-    mainCheckout: realpathSync(mainWorktrees[0].worktree),
+    mainCheckout: existsSync(mainWorktrees[0].worktree)
+      ? realpathSync(mainWorktrees[0].worktree)
+      : worktreePath,
   }
 }
 

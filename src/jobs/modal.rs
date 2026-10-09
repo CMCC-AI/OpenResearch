@@ -91,7 +91,7 @@ def logs(sid):
     modal = _modal()
     sb = modal.Sandbox.from_id(sid)
     # StreamReader replays from the start on each (re)connect, which matches
-    # supervise's skip/dedup contract (same as HF's SSE and `kubectl logs -f`).
+    # supervise's skip/dedup contract (same as HF's SSE).
     for line in sb.stdout:
         if not line.endswith("\n"):
             line += "\n"
@@ -475,9 +475,9 @@ pub async fn cancel_job(sandbox_id: &str) -> Result<()> {
 
 /// One pass over the sandbox's log stream, invoking `sink` per line past `skip`.
 ///
-/// Same replay/dedup contract as `hf::stream_logs` and `k8s::stream_logs`: the
-/// launcher replays the whole stdout from the start on each connect, so the
-/// caller passes how many lines it has consumed and gets the new total back.
+/// Same replay/dedup contract as `hf::stream_logs`: the launcher replays the
+/// whole stdout from the start on each connect, so the caller passes how many
+/// lines it has consumed and gets the new total back.
 /// Ends when the launcher exits (sandbox finished) or after `idle` silence.
 pub async fn stream_logs(
     sandbox_id: &str,
@@ -496,6 +496,7 @@ pub async fn stream_logs(
         .env(super::PYTHONUNBUFFERED, "1")
         .envs(modal_auth_env())
         .stdin(Stdio::null())
+        .kill_on_drop(true)
         .stdout(Stdio::piped())
         .stderr(Stdio::null()) // startup noise; state comes from inspect
         .spawn()
@@ -506,9 +507,20 @@ pub async fn stream_logs(
     let mut seen = 0u64;
     loop {
         match tokio::time::timeout(idle, lines.next_line()).await {
-            Err(_) => break,       // idle — let the caller re-check state
-            Ok(Err(_)) => break,   // read error
-            Ok(Ok(None)) => break, // launcher exited
+            Err(_) => break, // idle — let the caller re-check state
+            Ok(Err(e)) => {
+                return Err(anyhow!(
+                    "Could not read the Modal log launcher output: {}",
+                    e
+                ))
+            }
+            Ok(Ok(None)) => {
+                let status = child.wait().await?;
+                if !status.success() {
+                    return Err(anyhow!("the Modal log launcher exited with {}", status));
+                }
+                break;
+            }
             Ok(Ok(Some(line))) => {
                 seen += 1;
                 if seen > skip {

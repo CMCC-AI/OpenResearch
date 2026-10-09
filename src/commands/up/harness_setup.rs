@@ -82,6 +82,23 @@ fn windows_powershell() -> String {
     "powershell.exe".into()
 }
 
+/// `$LASTEXITCODE` persists from an earlier native call, so reset it or a
+/// failing cmdlet exits with its code.
+#[cfg(any(windows, test))]
+fn windows_install_script(install: &str) -> String {
+    format!(
+        "$LASTEXITCODE = 0\n{install}\nif (-not $?) {{ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }} else {{ exit 1 }} }}"
+    )
+}
+
+/// PowerShell's `-EncodedCommand` form: base64 of the script's UTF-16LE.
+#[cfg(any(windows, test))]
+fn encoded_command(script: &str) -> String {
+    use base64::Engine;
+    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
 fn login_command(harness: &str) -> Option<(&'static str, Vec<String>)> {
     match harness {
         "claude-code" => Some(("claude auth login", vec!["auth".into(), "login".into()])),
@@ -211,7 +228,7 @@ pub(super) async fn connect(
         )
         .await;
         // Login rejection caches must not mask a successful new login.
-        if request.harness == "claude-code" {
+        if request.harness == "claude-code" && result.is_ok() {
             state.claude.clear_runtime_rejection();
         }
         *state.harnesses.lock().await = None;
@@ -278,12 +295,10 @@ async fn run(
                     windows_powershell(),
                     vec![
                         "-NoProfile".into(),
-                        "-Command".into(),
-                        // `$LASTEXITCODE` persists from an earlier native call,
-                        // so reset it or a failing cmdlet exits with its code.
-                        format!(
-                            "$LASTEXITCODE = 0\n{install}\nif (-not $?) {{ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }} else {{ exit 1 }} }}"
-                        ),
+                        // Encoded: the console title echoes the command line into
+                        // the output, where the script's own phrases would be excerpted.
+                        "-EncodedCommand".into(),
+                        encoded_command(&windows_install_script(&install)),
                     ],
                 )
             }
@@ -298,10 +313,19 @@ async fn run(
                 )
             }
             Action::Login | Action::Update => {
-                let Some(bin) = crate::local::harness::detect_harness(&request.harness)
-                    .await
-                    .and_then(|h| h.bin_path)
+                let Some(harness) = crate::local::harness::detect_harness(&request.harness).await
                 else {
+                    attempt.record("failed", "detect", Some("not_installed"), None, None);
+                    return Err("Agent not found. Install it, then retry.".into());
+                };
+                if request.harness == "claude-code"
+                    && matches!(request.action, Action::Login)
+                    && (!harness.login_eligible || state.claude.auth_snapshot().runtime_rejected)
+                {
+                    attempt.record("interrupted", "detect", Some("not_eligible"), None, None);
+                    return Err("Claude Code account login is not applicable to the reported provider or auth state. Check its provider configuration and re-check the harness.".into());
+                }
+                let Some(bin) = harness.bin_path else {
                     attempt.record("failed", "detect", Some("not_installed"), None, None);
                     return Err("Agent not found. Install it, then retry.".into());
                 };
@@ -657,6 +681,11 @@ mod tests {
             authenticated: false,
             auth_state: crate::local::harness::HarnessAuthState::Unknown,
             auth_method: None,
+            auth_provider: None,
+            login_eligible: false,
+            auth_check_failed: false,
+            auth_observation: None,
+            claude_ultracode: false,
             account: None,
             org: None,
             plan: None,
@@ -762,6 +791,23 @@ mod tests {
         h.install_broken = true;
         assert!(!fresh_install(Action::Install, false, Some(&h)));
         assert!(!fresh_install(Action::Install, false, None));
+    }
+
+    #[test]
+    fn the_windows_install_command_line_carries_none_of_its_phrases() {
+        let script = windows_install_script(windows_install_command("opencode").unwrap());
+        assert!(script.contains("GitHub download failed"));
+        // Nothing the script prints on failure may quote its own text either.
+        assert!(!script.contains("Write-Error"));
+        let encoded = encoded_command(&script);
+        assert_eq!(crate::telemetry::harness::excerpt_for_test(&encoded), None);
+        assert_eq!(
+            encoded_command("exit 1"),
+            base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                b"e\0x\0i\0t\0 \x001\0"
+            )
+        );
     }
 
     #[test]
