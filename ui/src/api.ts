@@ -3,7 +3,7 @@
 import { workspaceScope, isCurrentScope, replaceWorkspace } from "./queries/client";
 import { invalidateWrite, removeSession, removeProject } from "./queries/invalidation";
 
-import type { GlobalWorkspace, ProjectWorkspace } from "./workspaceState";
+import { withoutResearchLocation, withoutResearchWorkspace, type GlobalWorkspace, type ProjectWorkspace } from "./workspaceState";
 import { m } from "./paraglide/messages.js";
 import { getLocale } from "./paraglide/runtime.js";
 import { fmtNumber } from "./i18n";
@@ -235,10 +235,22 @@ export const getUiState = (signal?: AbortSignal) => get<UiState>("/api/settings/
 export const getProjectUiState = (projectId: string, signal?: AbortSignal) =>
   get<ProjectWorkspace | null>(`/api/projects/${encodeURIComponent(projectId)}/ui-state`, signal);
 
-export const saveProjectUiState = (projectId: string, state: ProjectWorkspace, keepalive = false) =>
-  post<ProjectWorkspace>(`/api/projects/${encodeURIComponent(projectId)}/ui-state`, state, keepalive);
-export const saveGlobalWorkspace = (workspace: GlobalWorkspace, keepalive = false) =>
-  post<UiState>("/api/settings/ui-state", { workspace }, keepalive);
+export const saveProjectUiState = async (projectId: string, state: ProjectWorkspace, keepalive = false) => {
+  const url = `/api/projects/${encodeURIComponent(projectId)}/ui-state`;
+  try { return await post<ProjectWorkspace>(url, state, keepalive); }
+  catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("unknown variant `research`")) throw error;
+    return post<ProjectWorkspace>(url, withoutResearchWorkspace(state), keepalive);
+  }
+};
+export const saveGlobalWorkspace = async (workspace: GlobalWorkspace, keepalive = false) => {
+  try { return await post<UiState>("/api/settings/ui-state", { workspace }, keepalive); }
+  catch (error) {
+    const lastLocation = withoutResearchLocation(workspace.lastLocation);
+    if (!(error instanceof Error) || !error.message.includes("invalid global workspace state") || lastLocation === workspace.lastLocation) throw error;
+    return post<UiState>("/api/settings/ui-state", { workspace: { ...workspace, lastLocation } }, keepalive);
+  }
+};
 
 export const updateUiState = (body: {
   workspace?: GlobalWorkspace;

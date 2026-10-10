@@ -14,15 +14,16 @@ import { IconButton, MenuItem, StatusIndicator } from "./ui";
 import { ResearchPanel } from "./ResearchPanel";
 import { usePopover } from "./ModelPicker";
 
-export function WorkspaceTools({ expanded, experiments, runs, onOpenExperiment, rightOffset, activeView, projectId, onCompute, sessionId, busy, onChanges, onFiles, onTerminal, onArtifacts, onExperiments, onSideChat, onOpenSession }: {
+export function WorkspaceTools({ expanded, experiments, runs, onOpenExperiment, rightOffset, activeView, projectId, onCompute, sessionId, busy, onChanges, onFiles, onTerminal, onArtifacts, onExperiments, onSideChat, onOpenSession, onResearch }: {
   expanded: boolean;
   experiments: Experiment[];
   runs: Run[];
   onOpenExperiment: (id: string, runId: string) => void;
   rightOffset?: number;
-  activeView: "files" | "artifacts" | "experiments" | "terminal" | null;
+  activeView: "files" | "artifacts" | "experiments" | "terminal" | "research" | null;
   projectId: string;
   onCompute: () => void;
+  onResearch: () => void;
   sessionId: string | null;
   busy: boolean;
   onChanges: () => void;
@@ -49,7 +50,7 @@ export function WorkspaceTools({ expanded, experiments, runs, onOpenExperiment, 
     <div className={`workspace-tools absolute end-3.5 top-7 z-30 ${rightOffset === undefined ? "win-titlebar:top-10" : ""}`} style={{ insetInlineEnd: rightOffset }}>
       {!expanded ? (
         <nav aria-label={m.workspace_tools_heading()} className="flex items-center justify-end gap-3">
-          <ResearchPanel key={sessionId ?? "new"} placement="workspace" sessionId={sessionId} disabled={false} onOpenSession={onOpenSession} />
+          <ResearchPanel key={sessionId ?? "new"} onOpenResearch={onResearch} active={activeView === "research"} placement="workspace" sessionId={sessionId} disabled={false} onOpenSession={onOpenSession} />
           {items.map(({ id, label, Icon, onClick }) => (
             <IconButton key={id} active={activeView === id} className="text-text [&.active]:text-text" data-tip={label} data-tip-align={id === "experiments" ? "end" : undefined} aria-label={label} aria-pressed={activeView === id} onClick={onClick}>
               <Icon size={15} />
@@ -76,7 +77,7 @@ export function WorkspaceTools({ expanded, experiments, runs, onOpenExperiment, 
       ) : (
         <nav aria-label={m.workspace_tools_heading()} className="workspace-tools-card flex w-60 flex-col gap-0.5 rounded-xl border border-border bg-background px-1.5 py-2 shadow-elevated">
           <h2 className="m-0 px-2 pt-1 pb-2 text-sm font-normal text-subtext">{m.workspace_tools_heading()}</h2>
-          <ResearchPanel key={sessionId ?? "new"} placement="workspace" expanded sessionId={sessionId} disabled={false} onOpenSession={onOpenSession} />
+          <ResearchPanel key={sessionId ?? "new"} onOpenResearch={onResearch} active={activeView === "research"} placement="workspace" expanded sessionId={sessionId} disabled={false} onOpenSession={onOpenSession} />
           {items.filter((item) => item.id !== "files").map(({ id, label: itemLabel, Icon, onClick }) => (
             <MenuItem key={id} className="min-h-7 py-1"
               data-onboarding={id === "artifacts" ? "nav-artifacts" : undefined}

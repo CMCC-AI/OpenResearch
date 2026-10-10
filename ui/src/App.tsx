@@ -100,6 +100,7 @@ import {
   type ChatMessage,
   type UiState,
 } from "./api";
+import { ResearchPanel } from "./components/ResearchPanel";
 import { WorkspaceTools } from "./components/WorkspaceTools";
 import { ProjectTerminal } from "./components/ProjectTerminal";
 import { isWindowsDrivePath } from "./markdownTarget";
@@ -413,6 +414,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   const [experimentsTabOpen, setExperimentsTabOpen] = useState(false);
   const [filesTabOpen, setFilesTabOpen] = useState(false);
   const [artifactsTabOpen, setArtifactsTabOpen] = useState(false);
+  const [researchTabOpen, setResearchTabOpen] = useState(false);
   const [terminalTabOpen, setTerminalTabOpen] = useState(false);
   // Which checkout has a live shell; a restored-but-unselected tab spawns nothing until selected.
   const [terminalStartedFor, setTerminalStartedFor] = useState<string | null>(null);
@@ -618,6 +620,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     filesTabOpen,
     artifactsTabOpen,
     terminalTabOpen,
+    researchTabOpen,
     expTabs,
     fileTabs,
     planTabs,
@@ -633,7 +636,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     panelOpen,
     panelMax,
     treeViewport,
-  }), [rightTab, tabHistory, experimentsTabOpen, filesTabOpen, artifactsTabOpen, terminalTabOpen, expTabs, fileTabs, planTabs, subagentTabs, sideTabs, codeTabs, contentTabOrder, previewTab, filesView, filesToggled, selectedRunId, scope, panelOpen, panelMax, treeViewport]);
+  }), [rightTab, tabHistory, experimentsTabOpen, filesTabOpen, artifactsTabOpen, terminalTabOpen, researchTabOpen, expTabs, fileTabs, planTabs, subagentTabs, sideTabs, codeTabs, contentTabOrder, previewTab, filesView, filesToggled, selectedRunId, scope, panelOpen, panelMax, treeViewport]);
   currentRightPaneStateRef.current = rightPaneState;
   const getFileScroll = useCallback(() => Object.fromEntries(fileScrollPositionsRef.current), []);
   const scrollSaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -649,6 +652,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     setFilesTabOpen(state.filesTabOpen);
     setArtifactsTabOpen(state.artifactsTabOpen);
     setTerminalTabOpen(state.terminalTabOpen);
+    setResearchTabOpen(state.researchTabOpen ?? false);
     setExpTabs(state.expTabs);
     setFileTabs(state.fileTabs);
     setPlanTabs((current) => current === state.planTabs ? current : state.planTabs.map((tab) => ({ ...tab, plan: current.find((item) => item.sessionId === tab.sessionId && item.promptId === tab.promptId)?.plan ?? "" })));
@@ -910,6 +914,11 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     loadRunsBaseline(projectId);
     return () => { runsVisitRef.current++; };
   }, [loadRunsBaseline, projectId]);
+
+  const openResearchTab = useCallback(() => {
+    setResearchTabOpen(true);
+    selectRightTab("research");
+  }, [selectRightTab]);
 
   const openArtifactsTab = useCallback(() => {
     setArtifactsTabOpen(true);
@@ -1437,8 +1446,9 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   }, [selectRightTab]);
 
   const closeHomeTab = useCallback(
-    (tab: "experiments" | "files" | "artifacts" | "terminal") => {
-      if (tab === "experiments") setExperimentsTabOpen(false);
+    (tab: "experiments" | "files" | "artifacts" | "terminal" | "research") => {
+      if (tab === "research") setResearchTabOpen(false);
+      else if (tab === "experiments") setExperimentsTabOpen(false);
       else if (tab === "files") setFilesTabOpen(false);
       else if (tab === "terminal") {
         setTerminalTabOpen(false);
@@ -1742,6 +1752,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             runExperimentName={runExperimentName}
             onOpenExperiment={openExperimentNotes}
             experimentName={experimentName}
+            onOpenResearch={openResearchTab}
             onOpenPlan={openPlanTab}
             onOpenSubagent={openSubagentTab}
             onOpenSideChat={(parentSessionId, question) => void startSideChat(parentSessionId, question)}
@@ -1780,8 +1791,9 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             runs={runs}
             onOpenExperiment={(id, runId) => openExperimentTab(id, "overview", "preview", runId)}
             rightOffset={panelOpen ? panelWidth + 28 : undefined}
-            activeView={panelOpen && (rightTab === "files" || rightTab === "artifacts" || rightTab === "experiments" || rightTab === "terminal") ? rightTab : null}
+            activeView={panelOpen && (rightTab === "files" || rightTab === "artifacts" || rightTab === "experiments" || rightTab === "terminal" || rightTab === "research") ? rightTab : null}
             projectId={activeProject.id}
+            onResearch={openResearchTab}
             onCompute={() => selectMainView("compute")}
             onOpenSession={(id) => onActiveSessionChange(id)}
             sessionId={activeSessionId}
@@ -1807,6 +1819,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             />
             <div className="tabs flex items-end gap-0 pt-1 pe-1.5 pb-0 ps-2 h-10 border-b border-b-border bg-background shrink-0">
               <div className="tab-strip flex items-end gap-0.5 flex-1 min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                {researchTabOpen && <ClosableTab active={rightTab === "research"} label="科研专家团" onSelect={() => selectRightTab("research")} onClose={() => closeHomeTab("research")} />}
                 {leadingFileTabs.map(renderFileTab)}
                 {filesTabOpen && (
                   <ClosableTab
@@ -1873,6 +1886,8 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
               || (requestedCodeTab && !codeExperiment)
               || (pane && "sessionId" in pane && pane.sessionId && !sessions?.includes(pane.sessionId)) ? (
               <TabBody><div className="p-6 text-subtext">{m.model_picker_unavailable()}</div></TabBody>
+            ) : rightTab === "research" ? (
+              <TabBody><ResearchPanel key={activeSessionId ?? "preview"} placement="pane" sessionId={activeSessionId} disabled={false} onOpenSession={(id) => onActiveSessionChange(id)} /></TabBody>
             ) : rightTab === "artifacts" ? (
               <TabBody>
                 {activeProject && (

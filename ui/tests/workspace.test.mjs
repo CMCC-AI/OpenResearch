@@ -333,3 +333,18 @@ test("code destinations cannot silently substitute another experiment branch", (
   assert.equal(resolve({ experimentId: "exp", branch: "expected" }, [experiment]), experiment);
   assert.equal(resolve({ experimentId: "missing", branch: "expected" }, [experiment]), null);
 });
+
+
+test("research pane restores with file tabs and survives workspace serialization", () => {
+  const research = { kind: "home", view: "research" };
+  assert.deepEqual(workspace.parsePane(research), research);
+  const state = tabs.restoreWorkspace(undefined, research);
+  assert.equal(state.researchTabOpen, true);
+  assert.equal(state.rightTab, "research");
+  const withFiles = tabs.applyPane(state, { kind: "home", view: "files" });
+  const saved = tabs.rememberWorkspace(withFiles, {}, {});
+  const restored = tabs.restoreWorkspace(saved, research);
+  assert.equal(restored.researchTabOpen, true);
+  assert.equal(restored.filesTabOpen, true);
+  assert.deepEqual(tabs.rememberWorkspace(restored, {}, {}).tabs, [research, { kind: "home", view: "files" }]);
+});

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  withoutResearchWorkspace,
+  withoutResearchLocation,
   createWorkspaceWriter,
   emptyProjectWorkspace,
   parseDestination,
@@ -198,4 +200,19 @@ test("project writers remain independent and idle unload sends pending metadata 
   assert.deepEqual(calls, [["first", "project-one"], ["second", "project-two", true]]);
   slow.resolve();
   await flushing;
+});
+
+
+test("legacy research fallback preserves other tabs and does not mutate the current workspace", () => {
+  const research = { kind: "home", view: "research" };
+  const file = { kind: "file", path: "paper.tex" };
+  const location = taskLocation("project", "session", research);
+  const state = { ...emptyProjectWorkspace(), lastLocation: location, tasks: { session: { tabs: [research, file], active: research, previewKey: "home:research", history: ["home:research", "file:paper.tex"], expanded: {}, scroll: {}, sourceModes: {}, filesView: "files", scope: "agent", panelMax: false } } };
+  const legacy = withoutResearchWorkspace(state);
+  assert.equal(legacy.lastLocation, taskLocation("project", "session"));
+  assert.deepEqual(legacy.tasks.session.tabs, [file]);
+  assert.deepEqual(legacy.tasks.session.active, file);
+  assert.deepEqual(legacy.tasks.session.history, ["file:paper.tex"]);
+  assert.equal(state.tasks.session.tabs.length, 2);
+  assert.equal(withoutResearchLocation(taskLocation("project", "session", file)), taskLocation("project", "session", file));
 });

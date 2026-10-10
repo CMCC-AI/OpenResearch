@@ -4214,6 +4214,7 @@ export function deriveComposerSelection(
 }
 
 export function ChatPanel({
+  onOpenResearch,
   projectId,
   projectName,
   contentLoading = false,
@@ -4282,6 +4283,7 @@ export function ChatPanel({
   /** Resolve an experiment id to the name shown on tool activity links. */
   experimentName?: (experimentId: string) => string;
   /** Open a plan's markdown as a right-pane tab (plan strip / plan cards). */
+  onOpenResearch?: () => void;
   onOpenPlan?: (
     plan: string,
     sessionId: string,
@@ -6778,7 +6780,7 @@ export function ChatPanel({
               }}
             />
           )}
-          {!embedded && !isDemoProjectId(projectId) && (activeId ? <ResearchPanel key={activeId} onOpenSession={openSpawnedSession} sessionId={activeId} disabled={!composerSelection || busy} onConsult={async (mode) => {
+          {!embedded && !isDemoProjectId(projectId) && (activeId ? <ResearchPanel onOpenResearch={onOpenResearch} key={activeId} onOpenSession={openSpawnedSession} sessionId={activeId} disabled={!composerSelection || busy} onConsult={async (mode) => {
             if (!composerSelection) return;
             const objective = `${researchModes[mode]}：${draft.trim() || "请审计当前项目已有材料，并明确待审查的方案、日志或稿件；缺少材料时先澄清。"}`;
             const session = await openNewSession(composerSelection, false, objective, mode);

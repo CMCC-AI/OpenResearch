@@ -34,7 +34,8 @@ function ExpertTaskNode({ data, selected }: NodeProps<TaskNode>) {
 }
 const nodeTypes = { researchTask: ExpertTaskNode };
 
-export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, onClose, onOpenSession }: {
+export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, onClose, onOpenSession, embedded = false }: {
+  embedded?: boolean;
   study: ResearchStudy;
   runs: { id: string; status: string; cancelRequested?: boolean }[];
   decisionCards: ReactNode;
@@ -63,11 +64,10 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
     markerEnd: { type: MarkerType.ArrowClosed },
     style: { stroke: tasks.find((entry) => entry.id === id)?.state === "completed" ? "var(--primary)" : "var(--border)" },
   }))), [tasks, study.status]);
-  return createPortal(<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3 sm:p-6" onClick={onClose}>
-    <div ref={ref} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} className="flex max-h-full w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-border bg-background text-text shadow-elevated" onClick={(event) => event.stopPropagation()}>
+  const content = <div ref={embedded ? undefined : ref} role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-labelledby={titleId} tabIndex={-1} className={`flex min-h-0 w-full flex-col overflow-hidden bg-background text-text ${embedded ? "h-full" : "max-h-full max-w-6xl rounded-xl border border-border shadow-elevated"}`} onClick={(event) => event.stopPropagation()}>
       <header className="flex shrink-0 items-start justify-between gap-3 border-b border-border p-4">
         <div><div className="flex items-center gap-2"><Users size={20} className="text-primary" /><h2 id={titleId} className="font-semibold">{researchModes[study.mode]} · 研究流程</h2></div><p role="status" className="mt-1 text-sm text-subtext">{researchAttention(study)} · {progress.completed}/{progress.total} 个任务已验收{study.plans.length ? ` · 计划 v${study.plans.at(-1)?.version}` : ""}</p></div>
-        <IconButton data-initial-focus aria-label="关闭研究流程" onClick={onClose}><X size={18} /></IconButton>
+        <IconButton data-initial-focus aria-label={embedded ? "返回专家团流程图" : "关闭研究流程"} onClick={onClose}><X size={18} /></IconButton>
       </header>
       <div className="flex min-h-0 flex-col gap-5 overflow-y-auto p-4 sm:p-5">
         <p className="text-sm text-text">{study.objective}</p>
@@ -123,8 +123,8 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
         {layer === "execution" && study.plans.at(-1)?.summary && <details className="text-sm"><summary className="cursor-pointer text-subtext">查看研究计划说明</summary><p className="mt-2 whitespace-pre-wrap">{study.plans.at(-1)?.summary}</p></details>}
       </div>
       <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border p-3">{actions}</footer>
-    </div>
-  </div>, document.body);
+    </div>;
+  return embedded ? content : createPortal(<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3 sm:p-6" onClick={onClose}>{content}</div>, document.body);
 }
 export function TaskDetails({ study, task, runs, onOpenSession }: { study: ResearchStudy; task: ResearchTask; runs: { id: string; status: string; cancelRequested?: boolean }[]; onOpenSession?: (sessionId: string) => void }) {
   return <section className="mt-3 rounded-lg border border-primary bg-primary-subtle p-4 text-sm" aria-label={`任务详情 ${task.id}`}>

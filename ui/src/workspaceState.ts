@@ -1,5 +1,5 @@
 export type Pane =
-  | { kind: "home"; view: "experiments" | "files" | "artifacts" | "terminal" }
+  | { kind: "home"; view: "experiments" | "files" | "artifacts" | "terminal" | "research" }
   | { kind: "experiment"; experimentId: string; view: "overview" | "terminal"; runId?: string }
   | { kind: "file"; path: string; source?: "repo" | "artifacts" | "abs"; sessionId?: string; ref?: string; line?: number; branchLabel?: string }
   | { kind: "code"; experimentId: string; branch: string; view: "files" | "changes" }
@@ -55,7 +55,7 @@ export function parsePane(value: unknown): Pane | undefined {
   const only = (...fields: string[]) => Object.keys(value).every((field) => fields.includes(field));
   switch (value.kind) {
     case "home":
-      if (only("kind", "view") && (value.view === "experiments" || value.view === "files" || value.view === "artifacts" || value.view === "terminal"))
+      if (only("kind", "view") && (value.view === "experiments" || value.view === "files" || value.view === "artifacts" || value.view === "terminal" || value.view === "research"))
         return { kind: "home", view: value.view };
       break;
     case "experiment":
@@ -155,4 +155,26 @@ export function createWorkspaceWriter<T>(save: (value: T, unloading: boolean) =>
     flush,
     retry() { if (!running && pending === undefined) pending = failed; return flush(); },
   };
+}
+
+/** Older running backends reject the new view; keep their existing tabs saveable. */
+export function withoutResearchLocation(location: string | null): string | null {
+  if (!location) return location;
+  const delimiter = location.indexOf("?");
+  if (delimiter < 0) return location;
+  const params = new URLSearchParams(location.slice(delimiter + 1));
+  try {
+    const pane = JSON.parse(params.get("pane") ?? "null");
+    if (pane?.kind !== "home" || pane.view !== "research") return location;
+  } catch { return location; }
+  params.delete("pane");
+  return location.slice(0, delimiter) + (params.size ? `?${params}` : "");
+}
+
+export function withoutResearchWorkspace(state: ProjectWorkspace): ProjectWorkspace {
+  return { ...state, lastLocation: withoutResearchLocation(state.lastLocation), tasks: Object.fromEntries(Object.entries(state.tasks).map(([key, task]) => {
+    const tabs = task.tabs.filter((pane) => pane.kind !== "home" || pane.view !== "research");
+    const active = task.active?.kind === "home" && task.active.view === "research" ? tabs.at(-1) ?? null : task.active;
+    return [key, { ...task, tabs, active, history: task.history.filter((key) => key !== "home:research"), previewKey: task.previewKey === "home:research" ? null : task.previewKey }];
+  })) };
 }

@@ -109,6 +109,7 @@ pub enum HomeView {
     Files,
     Artifacts,
     Terminal,
+    Research,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -304,6 +305,13 @@ fn valid_location(location: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn research_home_pane_round_trips() {
+        let value = json!({"kind":"home","view":"research"});
+        let pane: Pane = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(pane).unwrap(), value);
+    }
 
     #[test]
     fn tree_viewport_is_optional_and_validated() {

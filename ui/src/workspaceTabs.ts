@@ -31,6 +31,7 @@ export function paneTab(pane: Pane): RightTab {
 
 export function rememberWorkspace(state: RightPaneSessionState, scroll: TaskWorkspace["scroll"], sourceModes: TaskWorkspace["sourceModes"]): TaskWorkspace {
   const home: RightTab[] = [];
+  if (state.researchTabOpen) home.push("research");
   if (state.filesTabOpen) home.push("files");
   if (state.terminalTabOpen) home.push("terminal");
   if (state.artifactsTabOpen) home.push("artifacts");
@@ -70,6 +71,7 @@ export function restoreWorkspace(saved: TaskWorkspace | undefined, pane: Pane | 
       if (tab === "files") state.filesTabOpen = true;
       if (tab === "artifacts") state.artifactsTabOpen = true;
       if (tab === "terminal") state.terminalTabOpen = true;
+      if (tab === "research") state.researchTabOpen = true;
       continue;
     }
     if ("code" in tab) { tab.toggled = new Set(saved?.expanded[rightTabKey(tab)] ?? []); state.codeTabs.push(tab); }
@@ -198,6 +200,7 @@ export type RightTab =
   | "files"
   | "artifacts"
   | "terminal"
+  | "research"
   | ExpViewDef
   | FileViewDef
   | PlanViewDef
@@ -236,6 +239,7 @@ export interface RightPaneSessionState {
   filesTabOpen: boolean;
   artifactsTabOpen: boolean;
   terminalTabOpen: boolean;
+  researchTabOpen?: boolean;
   expTabs: ExpViewDef[];
   fileTabs: FileViewDef[];
   planTabs: PlanViewDef[];
@@ -266,6 +270,7 @@ export function initialRightPaneSessionState(
     filesTabOpen: false,
     artifactsTabOpen: false,
     terminalTabOpen: false,
+    researchTabOpen: false,
     expTabs: [],
     fileTabs: [],
     planTabs: [],
@@ -347,6 +352,7 @@ export function applyPane(state: RightPaneSessionState, pane: Pane | undefined):
     if (tab === "files") next.filesTabOpen = true;
     else if (tab === "artifacts") next.artifactsTabOpen = true;
     else if (tab === "terminal") next.terminalTabOpen = true;
+    else if (tab === "research") next.researchTabOpen = true;
     else next.experimentsTabOpen = true;
   } else {
     if ("path" in tab) next.fileTabs = update(state.fileTabs, tab);
