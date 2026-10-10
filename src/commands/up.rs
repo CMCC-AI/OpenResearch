@@ -50,6 +50,7 @@ use crate::{browser, UpArgs};
 
 pub(crate) mod compute_settings;
 mod harness_setup;
+mod research;
 use compute_settings::*;
 
 pub async fn run(args: UpArgs) -> Result<()> {
@@ -503,6 +504,13 @@ impl ProjectLifecycle {
 fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
     let app = Router::new()
         .route("/api/health", get(health))
+        .route("/api/research/sessions/{id}", get(research::session))
+        .route(
+            "/api/research/studies/{id}/decisions/{decision}",
+            post(research::decide),
+        )
+        .route("/api/research/studies/{id}/package", get(research::export))
+        .route("/api/research/studies/{id}/stop", post(research::stop))
         .route("/api/onboarding/complete", post(complete_onboarding))
         .route("/api/project-path/status", get(project_path_status))
         .route("/api/project-path/pick", post(pick_project_folder))
@@ -7418,6 +7426,7 @@ struct CreateChatSessionReq {
     plan_mode: bool,
     reasoning_level: Option<String>,
     autonomy: Option<Autonomy>,
+    research: Option<research::NewResearch>,
 }
 
 async fn create_chat_session(
@@ -7480,7 +7489,14 @@ async fn create_chat_session(
         created_at: now_ms(),
         updated_at: now_ms(),
     };
+    let tx = store.begin_immediate()?;
     store.create_chat_session(&session)?;
+    if let Some(research) = req.research {
+        store
+            .research_create(&session.id, &research.mode, &research.objective)
+            .map_err(bad_request)?;
+    }
+    tx.commit().map_err(bad_request)?;
     Ok(Json(
         json!({ "session": local::chat::session_json(&session, false) }),
     ))

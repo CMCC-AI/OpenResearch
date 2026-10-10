@@ -5564,6 +5564,9 @@ impl ChatHost {
                 expanded,
             )
         });
+        if let Some(context) = super::research::turn_context(&store, &session.id)? {
+            turn_text.push_str(&context);
+        }
         // Harnesses take plain text; attachments ride as on-disk paths every
         // CLI can open with its own file-reading tool (Read handles PDFs and
         // images alike).

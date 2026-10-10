@@ -1,5 +1,7 @@
 # 实现与数据流
 
+2026-10-10：科研专家团已作为研究编排层接入原生执行底座。当前完整架构、功能和验收边界见[最终项目架构与功能设计](final-architecture-and-functional-design.md)；下文文献渠道说明沿用 2026-09-22 的核查范围。
+
 2026-09-22 产品主线收敛为本地 OpenResearch、Deep Literature 与统一账号。`packages/platform` 的前台只承担个人账号和 SSO；其中工作空间 RBAC、专属执行器和托管环境代码作为内部兼容能力保留，不进入个人版用户路径。原有本地数据流和设置不变；边界见[个人版产品主线](product-experience.md)。
 
 ## 系统边界与代码导航
@@ -9,7 +11,8 @@
 | 产品入口 | 介绍、开始研究、能力地图、多渠道发现、深度文献 | OpenResearch ui/src/product、ui/src/routes |
 | 本地 API | Rust Axum，REST、SSE、终端 WebSocket、静态 UI | src/commands/up.rs |
 | 研究状态 | SQLite WAL，项目、实验、运行、会话、消息、队列、唤醒记录 | src/store.rs |
-| Agent 适配 | Claude Code、Codex、OpenCode、Cursor、Antigravity 各自进程/协议适配 | src/local/harness、src/local/chat.rs |
+| 科研专家团 | Study、版本计划、专家任务 DAG、人工确认、证据与研究包，共用原生执行 | src/store/research.rs、src/local/research.rs、src/commands/up/research.rs |
+| Agent 适配 | Claude Code、Codex、OpenCode、Cursor、Antigravity 各自进程/协议适配 | src/local/harness、src/local/chat/mod.rs |
 | 代码与实验 | Git 仓库/分支/worktree、记录 revision、运行源快照 | src/local/experiments.rs、src/local/localrun.rs、src/commands/exp.rs |
 | 执行与监督 | 本地或远端任务、独立 supervise 进程、日志、退出码、取消 | src/commands/supervise.rs、src/jobs |
 | 文献产品 | Next.js 16 / React 19，Feed、PDF 阅读、Blog、个人文库 | DeepLiterature src/app、src/components |
@@ -57,9 +60,11 @@ PDF 下载包含最大大小、PDF 签名、SHA-256 和临时文件原子落盘�
 
 /literature → OpenResearch /api/deep-literature/papers → Deep Literature /api/papers?paginated=1。服务端选取公开字段，忽略 viewerStates，不转发 Cookie。本地版打开论文时也先走 Deep Literature 的 OpenResearch 登录入口，再进入 /abs/{id}。创建研究项目仍走原来的 alphaXiv 解析链路：Deep Literature 在线不保证 alphaXiv 在线。
 
-当前已经统一登录，但仍没有项目多篇文献关联表、双向跳转状态、跨系统笔记同步或研究证据包。因此按钮使用准确的“从此论文创建项目”，避免误认为已收藏到现有项目。
+当前已经统一登录。科研专家团已实现本地证据声明和可导出研究包，关联原生 Run、日志、产物和源码；仍没有项目多篇文献关联表、双向跳转状态或跨系统笔记同步，文献服务与 Study 证据未自动形成完整闭环。因此按钮使用准确的“从此论文创建项目”，避免误认为已收藏到现有项目。
 
 ## 下一阶段的数据契约（待建设）
+
+以下是跨服务文献和复现信息的进一步规范。当前已有本地 EvidenceClaim 与原生 Experiment / Run；扩展应沿用这些执行事实，不另建重复的实验运行引擎。
 
 - PaperIdentity：内部 UUID，arXiv ID + version、DOI、OpenAlex ID，多源 alias 去重。
 - PaperSource：provider、source URL、fetchedAt、license、contentHash，保留来源冲突。

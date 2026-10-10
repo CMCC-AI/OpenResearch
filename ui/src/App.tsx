@@ -1785,6 +1785,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             activeView={panelOpen && (rightTab === "files" || rightTab === "artifacts" || rightTab === "experiments" || rightTab === "terminal") ? rightTab : null}
             projectId={activeProject.id}
             onCompute={() => selectMainView("compute")}
+            onOpenSession={(id) => onActiveSessionChange(id)}
             sessionId={activeSessionId}
             busy={sessionsQuery.data?.some((session) => session.id === activeSessionId && session.busy) ?? false}
             onChanges={() => { setFilesView("changes"); openWorktreeTab(); }}

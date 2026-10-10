@@ -2058,7 +2058,7 @@ export interface TurnOptions {
 export const createChatSession = (
   projectId: string,
   harness: HarnessId,
-  opts: TurnOptions & { autonomy?: Autonomy } = {},
+  opts: TurnOptions & { autonomy?: Autonomy; research?: { mode: import("./research").ResearchMode; objective: string } } = {},
 ) =>
   post<{ session: ChatSession }>("/api/chat/sessions", { projectId, harness, ...opts }).then(
     (r) => r.session,
@@ -2340,3 +2340,19 @@ export const discoverLocalModels = (request: { baseUrl: string; apiKey: string }
 export const connectLocalModel = (request: { name: string; baseUrl: string; apiKey: string; model: string; contextWindow: number }) => post<{ model: string }>("/api/local-models", request);
 export const checkLocalModel = (id: string) => post<{ models: string[] }>(`/api/local-models/${encodeURIComponent(id)}/check`, {});
 export const removeLocalModel = (id: string) => writeResponse(`/api/local-models/${encodeURIComponent(id)}`, { method: "DELETE" }).then((r) => json<{ ok: boolean }>(r));
+
+// Expert research uses native project sessions, runs and artifacts.
+export const getResearchStudy = (sessionId: string, signal?: AbortSignal) =>
+  get<{ study: import("./research").ResearchStudy | null; runs: Run[] }>(`/api/research/sessions/${sessionId}`, signal);
+export const decideResearchGate = (studyId: string, decisionId: string, scopeHash: string, approved: boolean, reason: string) =>
+  post<{ ok: boolean; resumeError?: string | null }>(`/api/research/studies/${studyId}/decisions/${decisionId}`, { scopeHash, approved, reason });
+export const stopResearchStudy = (studyId: string) => post<{ ok: boolean }>(`/api/research/studies/${studyId}/stop`, {});
+export async function downloadResearchPackage(studyId: string, approved: boolean) {
+  const response = await fetch(`/api/research/studies/${studyId}/package?approved=${approved}`);
+  if (!response.ok) await json(response);
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `research-package-${approved ? "approved" : "draft"}.zip`; a.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

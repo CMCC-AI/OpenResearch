@@ -61,6 +61,8 @@ Docker Desktop 可能自动恢复此前的 Compose 容器；若没有运行，�
 
 2026-09-30 本机恢复时，实际先通过 `node scripts/dev-slot.mjs start --db empty` 恢复了 `4902` 后端和 `5202` UI 开发预览；Docker Desktop 启动后，既有的账号服务与 Deep Literature Compose 项目自动恢复；最后在 `ORX_ACCOUNT_URL`、`ORX_DEEP_LITERATURE_URL`、`ORX_DEEP_LITERATURE_WEB_URL` 环境变量下，以 `/Users/levent/.local/share/openresearch-dev/cargo-target/debug/orx`（`orx 0.2.9`）运行 `up --no-browser`，让产品入口监听 `4791`。最终通过 Node.js `spawn` 的 `detached: true` 和 `unref()` 将该实例作为独立后台进程启动，日志位于 `/private/tmp/openresearch-orx-4791.log`。这是基于本机现有构建产物的快速恢复；首次部署或代码更新后应使用下文的一键脚本重新构建。
 
+2026-10-10 本机排查：开发 slot-1（后端 `4901`、UI `5201`）仍在运行，但用户入口 `4791` 没有监听，登录回调因此出现 `ERR_CONNECTION_REFUSED`。账号服务 `5300` 和 Deep Literature `3000` 正常。已使用当前 dev-slot 构建的 `orx 0.2.17` 按上述后台恢复方式重新启动 `4791`，验证工作台与账号页 HTTP 200、后端健康检查正常，账号会话接口允许精确来源 `http://localhost:4791`。实际用户登录需在浏览器完成；开发预览地址不能代替既有登录回调入口。
+
 `5202` 是隔离的源码开发预览，`4791` 是当前账号与 Deep Literature 配置的登录回调目标。若直接从 `5202` 测试登录，必须先将两端 App origin 都改为 `http://localhost:5202` 并重启相应服务；否则应从 `http://localhost:4791` 进入完整产品。
 
 检查 Docker 容器归属时使用 `docker compose ls --all` 和容器的 `com.docker.compose.project.working_dir` 标签。只停止明确属于其他项目的容器，使用 `docker stop <容器名>` 或该项目目录下的 `docker compose stop`；不要执行 `docker compose down -v`，以免删除数据库卷。本机的 `cmcc-local-dev` MySQL、Redis 属于另一个项目，已停止但未删除；`openresearch-test` 执行器属于本仓库测试环境，虽非个人版必需服务，不能归类为无关项目。

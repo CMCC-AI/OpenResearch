@@ -183,6 +183,12 @@ const S_LIT: AgentSkill = AgentSkill {
     content: LIT,
     resources: &[],
 };
+const S_RESEARCH: AgentSkill = AgentSkill {
+    name: "orx-research-team",
+    description: "Research studies, expert consultations, independent review, human decisions, and research packages. Use when a research context is present or the user requests expert collaboration.",
+    content: super::research::GUIDE,
+    resources: &[],
+};
 const S_CREATE: AgentSkill = AgentSkill {
     name: "orx-create",
     description: "Initialize a project with `orx up` and add experiment nodes with `orx create-experiment`. Use when starting a project or experiment, when the tree is empty, or when choosing a baseline, parent, or run command.",
@@ -238,6 +244,7 @@ const S_FEEDBACK: AgentSkill = AgentSkill {
 pub fn skills(set: SkillSet) -> Vec<&'static AgentSkill> {
     match set {
         SkillSet::Local => vec![
+            &S_RESEARCH,
             &S_EXPERIMENT_TREE,
             &S_GIT,
             &S_AGENT_DELEGATION,
@@ -253,6 +260,7 @@ pub fn skills(set: SkillSet) -> Vec<&'static AgentSkill> {
         ],
         SkillSet::Full => vec![
             &S_CREATE,
+            &S_RESEARCH,
             &S_EXPERIMENT_TREE,
             &S_GIT,
             &S_AGENT_DELEGATION,

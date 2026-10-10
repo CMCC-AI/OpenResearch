@@ -79,6 +79,9 @@ enum Command {
     /// Delegate a task to a second agent session.
     Agent(AgentArgs),
 
+    /// Coordinate expert tasks, approvals, and research evidence.
+    Research(commands::research::ResearchArgs),
+
     /// List a project's runs.
     Runs(RunsArgs),
 
@@ -1216,6 +1219,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Orgs(_) => "orgs",
         Command::Project(_) => "project",
         Command::Agent(_) => "agent",
+        Command::Research(_) => "research",
         Command::Runs(_) => "runs",
         Command::Logs(_) => "logs",
         Command::CreateExperiment(_) => "create-experiment",
@@ -1265,6 +1269,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Orgs(args) => commands::orgs::run(args).await,
         Command::Project(args) => commands::project::run(args).await,
         Command::Agent(args) => commands::agent::run(args).await,
+        Command::Research(args) => commands::research::run(args).await,
         Command::Runs(args) => commands::runs::run(args).await,
         Command::Logs(args) => commands::logs::run(args).await,
         Command::CreateExperiment(args) => commands::create_experiment::run(args).await,

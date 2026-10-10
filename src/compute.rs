@@ -773,6 +773,20 @@ pub async fn submit(args: &crate::ExpRunArgs) -> Result<StoredRun> {
     let project = store
         .get_local_project(&experiment.project_id)?
         .ok_or_else(|| anyhow!("Local project {} not found.", experiment.project_id))?;
+    let research_contract = if store
+        .research_requires_gate(&experiment.id, args.launching_chat_session().as_deref())?
+    {
+        let contract = crate::local::research::run_contract(&store, args)?;
+        store.research_check_run(
+            &experiment.id,
+            args.launching_chat_session().as_deref(),
+            &contract,
+            None,
+        )?;
+        Some(contract)
+    } else {
+        None
+    };
     let preflight = backend.preflight(args).await?;
     if !preflight.ready {
         return Err(anyhow!(
@@ -849,12 +863,21 @@ pub async fn submit(args: &crate::ExpRunArgs) -> Result<StoredRun> {
             )
         })
         .flatten();
+    if research_contract
+        .as_ref()
+        .is_some_and(|contract| source.0.revision != contract.revision)
+    {
+        return Err(anyhow!(
+            "Code changed while preparing the run; please retry."
+        ));
+    }
     reserve_run(
         &store,
         &pending,
         args.force,
         identity.as_ref(),
         report.as_ref(),
+        research_contract.as_ref(),
     )?;
     let pending_backend_json = descriptor.to_json();
     match backend.submit(args, source, run_id.clone()).await {
@@ -951,6 +974,7 @@ fn reserve_run(
     force: bool,
     identity: Option<&crate::store::InvocationIdentity>,
     report: Option<&(String, serde_json::Value)>,
+    research_contract: Option<&crate::store::research::RunContract>,
 ) -> Result<()> {
     let dir = crate::store::data_dir().join("submission-locks");
     std::fs::create_dir_all(&dir)?;
@@ -977,7 +1001,23 @@ fn reserve_run(
             ));
         }
     }
-    let tx = store.begin()?;
+    let tx = store.begin_immediate()?;
+    if research_contract.is_none()
+        && store
+            .research_requires_gate(&pending.experiment_id, pending.chat_session_id.as_deref())?
+    {
+        return Err(anyhow!(
+            "Research binding changed while preparing the run; retry with its approved task."
+        ));
+    }
+    if let Some(contract) = research_contract {
+        store.research_check_run(
+            &pending.experiment_id,
+            pending.chat_session_id.as_deref(),
+            contract,
+            Some(&pending.id),
+        )?;
+    }
     store.reserve_run_telemetry(&pending.id, identity, report)?;
     store.upsert_run(pending)?;
     tx.commit()?;

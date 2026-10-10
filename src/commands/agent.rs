@@ -35,7 +35,21 @@ pub async fn run(args: crate::AgentArgs) -> Result<()> {
             harness,
             model,
             no_wake,
-        } => spawn(&store, task, stdin, title, harness, model, !no_wake).await,
+        } => {
+            spawn(
+                &store,
+                SpawnRequest {
+                    task,
+                    stdin,
+                    title,
+                    harness,
+                    model,
+                    wake_parent: !no_wake,
+                    research_task: None,
+                },
+            )
+            .await
+        }
     }
 }
 
@@ -114,15 +128,26 @@ fn install_refusal(harness: &str, install: &crate::commands::up::HarnessInstall)
     })
 }
 
-async fn spawn(
-    store: &Store,
-    task: Option<String>,
-    stdin: bool,
-    title: Option<String>,
-    harness: Option<String>,
-    model: Option<String>,
-    wake_parent: bool,
-) -> Result<()> {
+pub(crate) struct SpawnRequest {
+    pub task: Option<String>,
+    pub stdin: bool,
+    pub title: Option<String>,
+    pub harness: Option<String>,
+    pub model: Option<String>,
+    pub wake_parent: bool,
+    pub research_task: Option<String>,
+}
+
+pub(crate) async fn spawn(store: &Store, request: SpawnRequest) -> Result<()> {
+    let SpawnRequest {
+        task,
+        stdin,
+        title,
+        harness,
+        model,
+        wake_parent,
+        research_task,
+    } = request;
     if !crate::local::chat::in_local_session() {
         return Err(anyhow!(
             "`orx agent spawn` is only available inside a local `orx up` agent session."
@@ -133,6 +158,21 @@ async fn spawn(
     let parent = store
         .get_chat_session(&parent_id)?
         .ok_or_else(|| anyhow!("The current chat session no longer exists."))?;
+    let research = store.research_for_session(&parent_id)?;
+    if research.is_some() && research_task.is_none() {
+        return Err(anyhow!("专家团请使用 orx research dispatch 登记任务"));
+    }
+    if let (Some(study), Some(task_id)) = (&research, &research_task) {
+        if study.session_id != parent_id {
+            return Err(anyhow!("只有主理人可派发专家任务"));
+        }
+        let task = study.task(task_id)?;
+        if let Some(session) = &task.session_id {
+            println!("Existing expert session: {session}");
+            return Ok(());
+        }
+        study.ready(task_id)?;
+    }
     let prompt = task_text(task, stdin)?;
     if let Some(refusal) = spawn_refusal(&parent, store.count_live_chat_spawns(&parent_id)?) {
         return Err(anyhow!(refusal));
@@ -192,8 +232,11 @@ async fn spawn(
     };
     // One transaction: a session row without its spawn row is an empty session
     // in the user's sidebar that nothing will ever start.
-    let tx = store.begin()?;
+    let tx = store.begin_immediate()?;
     store.create_chat_session(&session)?;
+    if let (Some(study), Some(task)) = (&research, &research_task) {
+        store.research_bind_task(&study.id, task, &session.id)?;
+    }
     store.create_chat_spawn(&ChatSpawn {
         session_id: session.id.clone(),
         parent_session_id: parent_id,

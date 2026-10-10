@@ -8,6 +8,7 @@
 //! Data dir: `$ORX_DATA_DIR`, else `$XDG_DATA_HOME/openresearch`, else
 //! `~/.local/share/openresearch`.
 
+pub(crate) mod research;
 mod telemetry;
 pub(crate) use telemetry::{InvocationIdentity, TokenUsage};
 
@@ -905,6 +906,7 @@ impl Store {
         // to do it safely exists: `reconcileReasoning` in `ui/src/api.ts` drops
         // one the selected model doesn't offer, and each harness's mapper drops
         // it again before it can reach a CLI.
+        research::migrate(&conn)?;
         Ok(Self {
             conn,
             data_dir_move_lock_path,
@@ -2160,6 +2162,11 @@ impl Store {
     }
 
     pub fn delete_chat_session(&self, id: &str) -> Result<()> {
+        if let Some(study) = self.research_for_session(id)? {
+            if study.status == "active" {
+                return Err(anyhow!("请先停止研究，再删除关联会话。"));
+            }
+        }
         let tx = self.begin()?;
         tx.execute(
             "DELETE FROM chat_queued_messages WHERE session_id = ?1",

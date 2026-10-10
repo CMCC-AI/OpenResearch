@@ -1,3 +1,7 @@
+import { isDemoProjectId } from "../api";
+import { ResearchPanel } from "./ResearchPanel";
+import { ResearchModePicker } from "./ResearchModePicker";
+import { researchModes, type ResearchMode } from "../research";
 import { ComposerProjectPicker } from "./ComposerProjectPicker";
 import { ProjectInfoCard } from "./ProjectInfoCard";
 import { fitSidebarRows, sidebarRowHeight, type SidebarRow } from "../sidebarLayout";
@@ -4452,6 +4456,7 @@ export function ChatPanel({
     };
   }, [stashKey, composerPrefill]);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [researchMode, setResearchMode] = useState<ResearchMode | "normal">("normal");
   const settingsMutationTail = useRef<Promise<void>>(Promise.resolve());
   const settingsMutationSeq = useRef(0);
   const planMutationSeq = useRef(0);
@@ -5652,7 +5657,7 @@ export function ChatPanel({
       preparingSend.current = true;
       try {
         if (!sid) {
-          const session = await openNewSession(effective, independentPlanMode);
+          const session = await openNewSession(effective, independentPlanMode, text);
           sid = session.id;
           sourceSessionId = session.id;
         }
@@ -5747,7 +5752,7 @@ export function ChatPanel({
   }
 
   /** Create the session a first message (or `!` command) lands in and open it. */
-  async function openNewSession(selection: ModelSelection, planMode: boolean | undefined) {
+  async function openNewSession(selection: ModelSelection, planMode: boolean | undefined, objective = draft, mode = researchMode) {
     const scope = composerScopeRef.current;
     const visit = projectVisitRef.current;
     const session = await createChatSessionMutation.mutateAsync([projectId, selection.harness, {
@@ -5757,6 +5762,7 @@ export function ChatPanel({
       planMode,
       reasoningLevel: selection.reasoningLevel,
       autonomy: preferredAutonomy,
+      ...(mode !== "normal" ? { research: { mode, objective: objective.trim() || researchModes[mode] } } : {}),
     }]);
     if (projectVisitRef.current === visit) {
       setSessions((cur) => [session, ...cur.filter((row) => row.id !== session.id)]);
@@ -6772,6 +6778,15 @@ export function ChatPanel({
               }}
             />
           )}
+          {!embedded && !isDemoProjectId(projectId) && (activeId ? <ResearchPanel key={activeId} onOpenSession={openSpawnedSession} sessionId={activeId} disabled={!composerSelection || busy} onConsult={async (mode) => {
+            if (!composerSelection) return;
+            const objective = `${researchModes[mode]}：${draft.trim() || "请审计当前项目已有材料，并明确待审查的方案、日志或稿件；缺少材料时先澄清。"}`;
+            const session = await openNewSession(composerSelection, false, objective, mode);
+            await sendChatMessage(session.id, objective);
+          }} /> : <ResearchModePicker value={researchMode} onChange={setResearchMode} hasDraft={Boolean(draft.trim())} onUseExample={(topic) => {
+            setDraft((current) => current.trim() ? current : topic);
+            window.requestAnimationFrame(() => composerRef.current?.focus());
+          }} />)}
           <div className={`composer-box relative flex flex-col border ${bashActive ? "border-accent-amber" : "border-border"} rounded-lg bg-background shadow-elevated`} data-onboarding="composer">
             {activeHarness && !activeHarness.agentReady && (
               <div className="composer-harness-warning py-2 px-3 text-subtext text-sm leading-normal border-b border-b-border-variant [&_strong]:text-accent-amber [&_strong]:font-medium [&_code]:font-mono [&_code]:text-text">
@@ -6877,6 +6892,8 @@ export function ChatPanel({
                     ? m.chat_type_custom_answer()
                     : steering && activeHarness
                       ? m.chat_steer_placeholder({ harness: ltr(HARNESS_LABELS[activeHarness.id]), shortcut: ltr(queueChord) })
+                      : !activeId && researchMode !== "normal"
+                        ? "描述你想研究的问题；也可补充已有材料、期望结果和时间或预算限制……"
                       : composerSelection
                         ? activeHarness?.agentReady
                           ? m.chat_message_harness({ harness: ltr(HARNESS_LABELS[composerSelection.harness]) })
