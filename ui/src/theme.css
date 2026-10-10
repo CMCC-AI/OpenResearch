@@ -61,9 +61,9 @@
   --color-danger-hover: color-mix(in oklab, var(--accent-red) 8%, transparent);
   --color-danger-active: color-mix(in oklab, var(--accent-red) 14%, transparent);
   --color-plan-caret: color-mix(in oklab, var(--base) 35%, var(--text));
-  --color-image-backdrop: rgb(29 27 26 / 85%);
-  --color-modal-backdrop: rgb(29 27 26 / 42%);
-  --color-modal-backdrop-light: rgb(29 27 26 / 40%);
+  --color-image-backdrop: rgb(9 23 37 / 85%);
+  --color-modal-backdrop: rgb(9 23 37 / 42%);
+  --color-modal-backdrop-light: rgb(9 23 37 / 40%);
   --color-diff-selection: color-mix(in oklab, var(--surface) 76%, var(--primary));
   --color-diff-gutter-selection: color-mix(in oklab, var(--surface) 68%, var(--primary));
   --color-diff-insert-gutter: color-mix(in oklab, var(--base) 84%, var(--accent-green));
@@ -117,19 +117,19 @@
 :root {
   /* Theme is resolved by theme.ts; do not add prefers-color-scheme overrides. */
   --base: #ffffff;
-  --canvas: #faf8f4;
-  --panel: #f3f0ea;
-  --surface: #faf7f2;
-  --surface-bright: #fdfbfb;
-  --highlight: #fdf3f1;
+  --canvas: #f4f8fc;
+  --panel: #eaf2f9;
+  --surface: #f2f7fc;
+  --surface-bright: #fafdff;
+  --highlight: #e6f4ff;
   --chat-annotation-highlight: #b8d4ff;
-  --text: #1d1b1a;
-  --subtext: #737373;
-  --muted: #a1a1a1;
-  --primary: #9a2036;
-  --primary-subtle: #f7e9ec;
-  --border: #d4d4d4;
-  --border-variant: #e5e5e5;
+  --text: #152d43;
+  --subtext: #60758a;
+  --muted: #728397;
+  --primary: #006eb8;
+  --primary-subtle: #e4f3fc;
+  --border: #c5d7e6;
+  --border-variant: #dce7f0;
 
   --accent-orange: #da642c;
   --accent-red: #d94654;
@@ -149,22 +149,22 @@
   --skill-blue-slash: #7fa6d2;
   --accent-purple-subtle: #f1e8ff;
 
-  --dots-muted: #e3ded5;
-  --dots-strong: #bdb6a8;
+  --dots-muted: #dce7f0;
+  --dots-strong: #a8bfd2;
 
   --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
   --modal-top: min(30vh, 260px);
   /* Keep synchronized with LogTerminal's xterm theme. */
   --term-bg: #1a1a1a;
-  --term-foreground: #e6e1e0;
+  --term-foreground: #e4eff8;
   --term-selection: #2c3441;
   /* Terminals that follow the app theme (settings sign-in) instead of staying dark. */
-  --term-app-bg: #fdfbfb;
-  --term-app-foreground: #1d1b1a;
-  --term-app-selection: #e9e2d8;
+  --term-app-bg: #fafdff;
+  --term-app-foreground: #152d43;
+  --term-app-selection: #dcecf8;
   /* Light-theme ANSI palette; the dark theme keeps xterm's defaults. */
-  --term-app-ansi-black: #1d1b1a;
+  --term-app-ansi-black: #152d43;
   --term-app-ansi-red: #c0392b;
   --term-app-ansi-green: #3d8b37;
   --term-app-ansi-yellow: #b26a00;
@@ -179,7 +179,7 @@
   --term-app-ansi-bright-blue: #3a8dff;
   --term-app-ansi-bright-magenta: #9c5cff;
   --term-app-ansi-bright-cyan: #209a84;
-  --term-app-ansi-bright-white: #1d1b1a;
+  --term-app-ansi-bright-white: #152d43;
   --tool-shimmer: color-mix(in srgb, var(--text) 58%, var(--subtext));
   --editor-selection: color-mix(in oklab, var(--primary) 22%, transparent);
   /* Shared reading width for chat, markdown, and plan surfaces. */
@@ -208,20 +208,20 @@
 }
 
 :root[data-theme="dark"] {
-  --base: #0e0c0c;
-  --canvas: #141110;
-  --panel: #221f1e;
-  --surface: #1d1b1a;
-  --surface-bright: #130f0f;
-  --highlight: #393433;
+  --base: #091725;
+  --canvas: #0d1d2e;
+  --panel: #192d42;
+  --surface: #14283c;
+  --surface-bright: #102337;
+  --highlight: #203d58;
   --chat-annotation-highlight: #244e7a;
-  --text: #e6e1e0;
-  --subtext: #a68e8b;
-  --muted: #737373;
-  --primary: #ffb3ad;
-  --primary-subtle: #33191b;
-  --border: #525252;
-  --border-variant: #404040;
+  --text: #e4eff8;
+  --subtext: #a3b9cc;
+  --muted: #60758a;
+  --primary: #67c6ff;
+  --primary-subtle: #133852;
+  --border: #36516a;
+  --border-variant: #263e54;
 
   --accent-amber: #e67e22;
 
@@ -235,11 +235,11 @@
   --skill-blue-slash: #527ca8;
   --accent-purple-subtle: #251933;
 
-  --dots-muted: #2a2523;
-  --dots-strong: #555555;
+  --dots-muted: #1b3044;
+  --dots-strong: #49647d;
 
-  --term-app-bg: #141110;
-  --term-app-foreground: #e6e1e0;
+  --term-app-bg: #0d1d2e;
+  --term-app-foreground: #e4eff8;
   --term-app-selection: #2c3441;
 
   --syntax-comment: #7f848e;

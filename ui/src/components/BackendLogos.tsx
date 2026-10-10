@@ -1,6 +1,7 @@
 // Brand marks for the compute backends. Most are inline SVGs; Tinker uses the
 // supplied Thinking Machines raster mark.
 
+import { BrandMark } from "./Wordmark";
 import { Laptop, Server } from "lucide-react";
 import { backendDetail, backendKind, type Run } from "../api";
 import slurmLogo from "../assets/slurm-logo.svg";
@@ -23,7 +24,7 @@ function backendName(kind: string): string {
     case "ray_job":
       return "Ray";
     case "openresearch_job":
-      return "OpenResearch";
+      return "SONA";
     case "local_job":
       return m.compute_target_local();
     case "tinker_job":
@@ -115,15 +116,9 @@ function RayLogo({ size = 16 }: { size?: number }) {
   );
 }
 
-// OpenResearch — the product favicon (openresearch.sh/favicon.svg): white flag
-// mark on the brand-maroon rounded tile.
-function OpenResearchLogo({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 100 100" aria-hidden="true">
-      <rect width="100" height="100" rx="8" fill="#9a2036" />
-      <path d="M15.375 16.782v63.843a4 4 0 0 0 4 4h63.843c3.564 0 5.348-4.309 2.829-6.828L22.203 13.953c-2.52-2.52-6.828-.735-6.828 2.829" fill="#fff" />
-    </svg>
-  );
+// Share the SONA mark with the navigation and account entry.
+function SonaLogo({ size = 16 }: { size?: number }) {
+  return <span className="inline-flex flex-none" style={{ width: size, height: size }}><BrandMark /></span>;
 }
 
 function TinkerLogo({ size = 16 }: { size?: number }) {
@@ -171,7 +166,7 @@ export function BackendLogo({ kind, size = 16 }: { kind: string; size?: number }
     case "ray_job":
       return <RayLogo size={size} />;
     case "openresearch_job":
-      return <OpenResearchLogo size={size} />;
+      return <SonaLogo size={size} />;
     case "tinker_job":
       return <TinkerLogo size={size} />;
     case "local_job":

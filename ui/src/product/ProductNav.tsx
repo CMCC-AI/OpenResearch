@@ -1,6 +1,7 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { BookOpen, Boxes, FlaskConical, Home, Info, Library, LogOut, Search, UserRound } from "lucide-react";
+import { BookOpen, Boxes, Home, Info, Library, LogOut, Search, UserRound } from "lucide-react";
+import { BrandMark } from "../components/Wordmark";
 import { useAuthSession } from "./AuthSession";
 
 const links = [
@@ -12,10 +13,10 @@ const links = [
 ];
 
 export function ProductWordmark({ compact = false }: { compact?: boolean }) {
-  return <Link to="/" className="no-underline text-text" aria-label="OpenResearch 首页">
+  return <Link to="/" className="no-underline text-text" aria-label="SONA 首页">
     <span className="inline-flex items-center gap-2 font-semibold tracking-[-0.03em]">
-      <span className="grid h-8 w-8 place-items-center rounded-lg bg-primary text-background"><FlaskConical size={17} /></span>
-      {!compact && <span>OpenResearch <small className="ms-1 font-normal tracking-normal text-muted">AI for Science</small></span>}
+      <span className="h-8 w-8 [&_svg]:h-full [&_svg]:w-full"><BrandMark /></span>
+      {!compact && <span>SONA <small className="ms-1 font-normal tracking-normal text-muted">AI for Science</small></span>}
     </span>
   </Link>;
 }

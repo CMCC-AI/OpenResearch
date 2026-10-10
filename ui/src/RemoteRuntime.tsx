@@ -441,7 +441,7 @@ export function RuntimeRoot() {
     const remote = runtime?.kind === "ssh";
     setFavicon(remote);
     if (remote && (!everConnected.current || (runtime.session.status === "disconnected" && !runtime.session.error))) {
-      document.title = "OpenResearch";
+      document.title = "SONA";
     }
   }, [runtime]);
 

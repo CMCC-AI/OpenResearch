@@ -103,8 +103,8 @@ export function NewProjectForm({
     paper: { name: "", nameTouched: false, path: "", pathTouched: false },
   });
   const paperGithubRepo = mode === "paper" ? parseGithubRepository(paper?.repoUrl) : null;
-  const automaticBlankProjectPath = name.trim() ? `~/OpenResearch/${slugify(name, 48)}` : "";
-  const automaticPaperProjectPath = `~/OpenResearch/${slugify(name || paper?.title || paper?.paperId || "")}`;
+  const automaticBlankProjectPath = name.trim() ? `~/SONA/${slugify(name, 48)}` : "";
+  const automaticPaperProjectPath = `~/SONA/${slugify(name || paper?.title || paper?.paperId || "")}`;
   const projectPath = mode === "blank" && !pathTouched
     ? automaticBlankProjectPath
     : mode === "paper" && paper && !pathTouched
@@ -473,7 +473,7 @@ export function NewProjectForm({
                   setPath(event.target.value);
                 }}
                 aria-describedby={paperDestinationHasError ? "paper-destination-description" : undefined}
-                placeholder="~/OpenResearch/paper-title"
+                placeholder="~/SONA/paper-title"
                 spellCheck={false}
               />
               {checkingPath && (
@@ -527,7 +527,7 @@ export function NewProjectForm({
                   setPathTouched(true);
                   setPath(event.target.value);
                 }}
-                placeholder="~/OpenResearch/my-research"
+                placeholder="~/SONA/my-research"
                 aria-describedby={blankDestinationHasError ? "blank-destination-description" : undefined}
                 spellCheck={false}
               />

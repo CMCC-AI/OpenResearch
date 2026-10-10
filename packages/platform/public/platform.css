@@ -5,8 +5,8 @@
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-  color: #1d1b1a;
-  background: #faf8f4;
+  color: #152d43;
+  background: #f4f8fc;
   font-synthesis: none;
 }
 * {
@@ -21,11 +21,11 @@ header {
   align-items: center;
   justify-content: space-between;
   padding: 0 6%;
-  border-bottom: 1px solid #e5e5e5;
+  border-bottom: 1px solid #dce7f0;
   background: #ffffff;
 }
 a {
-  color: #9a2036;
+  color: #006eb8;
 }
 button,
 a,
@@ -35,23 +35,23 @@ select {
 }
 button {
   cursor: pointer;
-  border: 1px solid #d4d4d4;
+  border: 1px solid #c5d7e6;
   border-radius: 8px;
   padding: 10px 16px;
   background: white;
-  color: #1d1b1a;
+  color: #152d43;
 }
 button:hover {
-  background: #f3f0ea;
+  background: #eaf2f9;
 }
 button:disabled {
   opacity: 0.5;
   cursor: wait;
 }
 button.primary {
-  background: #9a2036;
+  background: #006eb8;
   color: white;
-  border-color: #9a2036;
+  border-color: #006eb8;
 }
 button.danger {
   color: #a02d2d;
@@ -67,7 +67,7 @@ button.solid-danger:hover {
 input,
 select {
   padding: 12px;
-  border: 1px solid #d4d4d4;
+  border: 1px solid #c5d7e6;
   border-radius: 8px;
   background: white;
   min-width: 0;
@@ -75,7 +75,7 @@ select {
 input:focus,
 select:focus,
 button:focus-visible {
-  outline: 2px solid #9a2036;
+  outline: 2px solid #006eb8;
   outline-offset: 2px;
 }
 label {
@@ -97,14 +97,14 @@ label {
   display: grid;
   place-items: center;
   color: #ffffff;
-  background: #9a2036;
+  background: #006eb8;
   border-radius: 8px;
   padding: 6px;
 }
 .brand small {
   font-size: 11px;
   font-weight: 400;
-  color: #a1a1a1;
+  color: #728397;
   margin-left: 6px;
 }
 main {
@@ -122,13 +122,13 @@ h2 {
   letter-spacing: -0.5px;
 }
 p {
-  color: #737373;
+  color: #60758a;
   line-height: 1.8;
 }
 .eyebrow {
   font-size: 12px;
   letter-spacing: 0.12em;
-  color: #9a2036;
+  color: #006eb8;
 }
 .hero {
   display: flex;
@@ -143,7 +143,7 @@ p {
   margin-top: 32px;
 }
 .card {
-  border: 1px solid #e5e5e5;
+  border: 1px solid #dce7f0;
   border-radius: 16px;
   background: white;
   padding: 26px;
@@ -197,13 +197,13 @@ form.stack {
   margin-top: 14px;
   border: 0;
   background: transparent;
-  color: #737373;
+  color: #60758a;
 }
 .auth-page {
   min-height: 100vh;
   background:
-    radial-gradient(circle at 12% 15%, rgb(154 32 54 / 7%), transparent 31rem),
-    #faf8f4;
+    radial-gradient(circle at 12% 15%, rgb(0 133 208 / 10%), transparent 31rem),
+    #f4f8fc;
 }
 .auth-page main {
   max-width: 1280px;
@@ -226,10 +226,10 @@ form.stack {
 .product-pill {
   display: inline-flex;
   align-items: center;
-  border: 1px solid #e5e5e5;
+  border: 1px solid #dce7f0;
   border-radius: 999px;
   background: #ffffff;
-  color: #737373;
+  color: #60758a;
   padding: 7px 12px;
   font-size: 12px;
 }
@@ -238,7 +238,7 @@ form.stack {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #9a2036;
+  background: #006eb8;
   margin-right: 8px;
 }
 .auth-story h1 {
@@ -248,7 +248,7 @@ form.stack {
   letter-spacing: -0.065em;
 }
 .auth-story h1 em {
-  color: #9a2036;
+  color: #006eb8;
   font-style: normal;
 }
 .auth-story > p {
@@ -268,14 +268,14 @@ form.stack {
   gap: 14px;
   min-height: 80px;
   padding: 13px;
-  border: 1px solid #e5e5e5;
+  border: 1px solid #dce7f0;
   border-radius: 10px;
   background: rgb(255 255 255 / 72%);
-  color: #1d1b1a;
+  color: #152d43;
   font-size: 12px;
 }
 .research-flow b {
-  color: #a1a1a1;
+  color: #728397;
   font-size: 10px;
   font-weight: 500;
 }
@@ -286,14 +286,14 @@ form.stack {
 .continue-tip {
   margin: -10px 0 20px;
   border-radius: 8px;
-  background: #f7e9ec;
+  background: #e4f3fc;
   color: #7e1c30;
   padding: 10px 12px;
   font-size: 12px;
   line-height: 1.5;
 }
 .auth label {
-  color: #1d1b1a;
+  color: #152d43;
   font-size: 13px;
 }
 .auth input {
@@ -302,7 +302,7 @@ form.stack {
   padding: 0 13px;
 }
 .auth input::placeholder {
-  color: #a1a1a1;
+  color: #728397;
 }
 .auth-submit {
   height: 48px;
