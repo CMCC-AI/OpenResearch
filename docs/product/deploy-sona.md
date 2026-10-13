@@ -44,7 +44,7 @@
 
 ## 打包和安装内容
 
-本地准备 Linux SONA 0.2.18、账号平台、DeepXiv、PostgreSQL 17、Nginx 1.28.0 镜像，以及 Docker 28.5.1 静态包和 Compose 2.39.4。Rust、Node、OpenCode、CodeGraph、配置插件和 DeepXiv 应用依赖在镜像构建阶段安装，服务器不执行 Cargo、pnpm 或 npm 下载。若主机缺少 iptables，安装器需通过 Ubuntu apt 安装 iptables 和 CA 证书，此首次系统依赖步骤仍需服务器能访问 Ubuntu 软件源。已有 Docker 被复用，不卸载已有服务。
+本地准备 Linux SONA 0.2.18、账号平台、DeepXiv、PostgreSQL 17、Nginx 1.28.0 镜像，以及 Docker 28.5.1 静态包和 Compose 2.39.4。Rust、Node、OpenCode、CodeGraph、配置插件和 DeepXiv 应用依赖在镜像构建阶段安装，两台服务器不执行 Cargo、pnpm 或 npm 下载；科研服务器仅创建账号数据库，文献数据库复用现有部署。若主机缺少 iptables，安装器需通过 Ubuntu apt 安装 iptables 和 CA 证书，此首次系统依赖步骤仍需服务器能访问 Ubuntu 软件源。已有 Docker 被复用，不卸载已有服务。
 
 读取本地 `opencode --version` 固定 Linux 安装版本，目前为 **1.18.32**；同步 JSON/JSONC、AGENTS、skills、agents、commands、plugins 及配置依赖锁文件。CodeGraph MCP 的 Linux CLI 固定为 1.6.0，不初始化项目索引。不会复制 macOS node_modules、可执行文件、service.json、本地聊天/研究数据库、SSH 私钥、缓存、账号密码或仓库 `.env`。
 
@@ -66,7 +66,7 @@ Nginx 使用专用容器，不覆盖主机已有 Nginx 站点。**若服务器�
 
 ## 启动、升级和恢复
 
-安装目录 `/opt/sona/releases/<发布号>`，当前版本链接为 `/opt/sona/current`，状态位于 `/opt/sona/state`。独立 Compose 项目名为 `sona-remote`；数据库使用持久卷，配置、模型凭据、研究和论文文件持久保存。systemd 和 `unless-stopped` 负责开机恢复。
+安装目录 `/opt/sona/releases/<发布号>`，当前版本链接为 `/opt/sona/current`，状态位于 `/opt/sona/state`。独立 Compose 项目名为 `sona-remote`；账号数据库使用持久卷，配置、模型凭据和研究持久保存；论文数据库与 PDF 保留在现有文献服务器。systemd 和 `unless-stopped` 负责开机恢复。
 
 ```bash
 # 状态
@@ -88,3 +88,21 @@ ssh -p 20280 ubuntu@61.136.101.179 \
 部署脚本测试、Bash 语法、Compose 配置、Nginx 配置与 HTTP 精确 origin 授权均在本地验证；安装器还会检查应用版本、三服务健康、Nginx 入口及匿名科研 API 拒绝访问。目标服务器的真实安装、登录/SSO、模型调用和重启恢复仍须在目标网络可访问后验证。
 
 参考：[Docker Ubuntu 安装](https://docs.docker.com/engine/install/ubuntu/)、[OpenCode 配置](https://opencode.ai/docs/config/)、[OpenCode 模型凭据](https://opencode.ai/docs/providers/)。
+
+## 已选择的现有文献服务器复用模式
+
+当前入口已默认切换为两台服务器部署，不再在科研服务器新建文献数据库：
+
+- SONA：`ssh -p 20280 ubuntu@61.136.101.179`；浏览器入口 `/sona`。
+- 文献数据与新 SONA Web：`ssh ubuntu@81.70.174.140`；原 `3000`、`3004`、数据库和 Worker 保持运行。
+- 新 Web 仅绑定文献服务器 `127.0.0.1:3005`，PDF 挂载只读。它通过独立数据库角色连接现有数据库；身份使用 `openresearch` provider，不合并旧 DockAPI 用户或文库。
+- 自动生成专用 SSH 通道密钥，私钥留在 SONA 服务器。文献服务器仅登记限定来源、禁止 Shell、只允许两个指定回环转发的公钥。主机密钥从已验证的 SSH 连接获取并严格校验。
+- 通道双向提供文献读取和 SSO 后端访问，无需额外开放公网端口，也不要求浏览器或用户手动启动隧道。
+
+完整流程为：准备 SONA 核心与稳定密钥 → 上传仅含文献镜像/迁移/安装器的子包 → 在文献服务器备份数据库并验证临时副本 → 检查新旧 Web 与迁移兼容 → 执行已验证的追加迁移 → 启动新 Web → 配置受限通道 → 启动主网关并检查公网入口。
+
+新 Web 的模型设置可在文献服务器继承现有 Qwen 配置，不复制到科研服务器；不启动新的采集或解析 Worker。SSO 授权与科研 API 都限定部署管理员，其他注册账号不会获得该入口的模型使用权限。
+
+`/opt/sona-literature/backups` 保存数据库备份与副本验证报告。每次安装都先验证副本，检查旧身份和会话内容不变；旧版公共查询和新版公共查询/SSO 路由都必须通过。副本测试失败时不对生产数据库执行迁移。不存在自动删除旧数据、重置旧密码或覆盖原 DockAPI 配置的步骤。
+
+此次文献服务器副本验证已通过旧身份/会话保持和旧版论文查询检查；新版候选镜像检查在构建完成后执行。由于改为复用模式，早期独立文献库部署包不再接受，必须重新准备格式 3 的部署包。

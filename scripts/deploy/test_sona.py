@@ -18,7 +18,7 @@ class DeploymentTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         path = Path(temp.name) / 'bundle.tgz'
         with tarfile.open(path, 'w:gz') as tar:
-            data = json.dumps({'deploymentFormat': 2, 'appPath': '/sona', 'architecture': 'linux/amd64', 'credentialsIncluded': False}).encode()
+            data = json.dumps({'deploymentFormat': 3, 'literatureMode': 'existing-server-sso', 'appPath': '/sona', 'architecture': 'linux/amd64', 'credentialsIncluded': False}).encode()
             info = tarfile.TarInfo(member)
             info.size = len(data)
             if kind:
@@ -58,7 +58,10 @@ class DeploymentTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         with patch.object(sona, 'ROOT', Path(temp.name)), patch.object(sona.subprocess, 'check_output', return_value='x86_64\n'), patch.object(sona, 'run') as run, patch.object(sona.urllib.request, 'urlopen') as public:
             public.return_value.__enter__.return_value.read.return_value = b'{"ok":true,"version":"0.2.18"}'
-            sona.deploy(self.archive())
+            import types
+            from unittest.mock import MagicMock
+            peer=types.ModuleType('deploy_peer');peer.deploy_literature_peer=MagicMock()
+            with patch.dict('sys.modules', {'deploy_peer': peer}): sona.deploy(self.archive())
             calls = [call.args[0] for call in run.call_args_list]
             scp = next(cmd for cmd in calls if cmd[0] == 'scp')
             self.assertEqual(scp[1:3], ['-P', '20280'])

@@ -200,6 +200,11 @@ test(
           config.researchOwnerEmail = "alice@test.invalid";
           try {
             assert.equal(
+              (await request("/api/auth/sso/authorize", { cookie: bob }))
+                .status,
+              403,
+            );
+            assert.equal(
               (
                 await request("/api/platform/browser-session", {
                   cookie: alice,

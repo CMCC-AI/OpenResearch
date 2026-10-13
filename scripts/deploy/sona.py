@@ -57,7 +57,7 @@ def validate_config(text):
 
 def compose_text(release):
     prefix = 'sona-' + release.lower()
-    return f'''name: sona-remote
+    text = f'''name: sona-remote
 services:
   platform-db:
     image: {prefix}-postgres
@@ -175,6 +175,12 @@ volumes:
   literature_db:
   research_home:
 '''
+    for start, end in (("  literature-db:\n", "  platform-migrate:\n"), ("  literature-migrate:\n", "  platform:\n"), ("  literature:\n", "  workbench:\n")):
+        a=text.index(start); b=text.index(end,a); text=text[:a]+text[b:]
+    text=text.replace("depends_on: [platform, literature, workbench]", "depends_on: [platform, workbench]")
+    text=text.replace("  literature_db:\n", "")
+    return text.replace("      ORX_DEEP_LITERATURE_WEB_URL:", "      ORX_DEEP_LITERATURE_URL: http://127.0.0.1:3005\n      ORX_DEEP_LITERATURE_WEB_URL:")
+
 
 
 def download(url, target):
@@ -263,7 +269,7 @@ def prepare(args):
     run(['docker', 'tag', 'postgres:17-alpine', prefix + '-postgres'])
     run(['docker', 'pull', '--platform', platform, 'nginx:1.28.0-alpine'])
     run(['docker', 'tag', 'nginx:1.28.0-alpine', prefix + '-nginx'])
-    run(['docker', 'save', '-o', bundle / 'images.tar', *[prefix + '-' + name for name in ('workbench', 'platform', 'literature', 'postgres', 'nginx')]])
+    run(['docker', 'save', '-o', bundle / 'images.tar', *[prefix + '-' + name for name in ('workbench', 'platform', 'postgres', 'nginx')]])
     # Engine and Compose binaries are also delivered, never downloaded on the server.
     engine_arch = 'x86_64' if args.arch == 'amd64' else 'aarch64'
     download(f'https://download.docker.com/linux/static/stable/{engine_arch}/docker-28.5.1.tgz', bundle / 'docker.tgz')
@@ -273,15 +279,17 @@ def prepare(args):
     expected = (bundle / 'compose.sha256').read_text().split()[0]
     if digest(bundle / 'docker-compose') != expected:
         raise ValueError('Docker Compose 官方校验和不匹配')
+    run(['docker', 'save', '-o', bundle / 'literature-image.tar', prefix + '-literature'])
+    (bundle / 'literature-image-name').write_text(prefix + '-literature')
     copy_safe(deep / 'db/migrations', bundle / 'migrations')
-    for name in ('server.sh', 'start.sh', 'nginx.conf'):
+    for name in ('server.sh', 'start.sh', 'nginx.conf', 'literature-server.py'):
         copy_safe(ROOT / 'scripts/deploy' / name, bundle / name)
         (bundle / name).chmod(0o700)
     (bundle / 'architecture').write_text('x86_64' if args.arch == 'amd64' else 'aarch64')
     (bundle / 'opencode-version').write_text(version)
     (bundle / 'release-id').write_text(release)
     (bundle / 'compose.yaml').write_text(compose_text(release))
-    manifest = {'deploymentFormat': 2, 'appPath': '/sona', 'release': release, 'architecture': platform, 'sonaCommit': subprocess.check_output(['git', '-C', ROOT, 'rev-parse', 'HEAD'], text=True).strip(), 'deepxivCommit': subprocess.check_output(['git', '-C', deep, 'rev-parse', 'HEAD'], text=True).strip(), 'opencodeVersion': version, 'credentialsIncluded': not args.without_auth and auth.exists()}
+    manifest = {'deploymentFormat': 3, 'literatureMode': 'existing-server-sso', 'appPath': '/sona', 'release': release, 'architecture': platform, 'sonaCommit': subprocess.check_output(['git', '-C', ROOT, 'rev-parse', 'HEAD'], text=True).strip(), 'deepxivCommit': subprocess.check_output(['git', '-C', deep, 'rev-parse', 'HEAD'], text=True).strip(), 'opencodeVersion': version, 'credentialsIncluded': not args.without_auth and auth.exists()}
     (bundle / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
     shutil.rmtree(build)
     lines = []
@@ -315,8 +323,8 @@ def inspect_bundle(archive):
             raise ValueError('非法发布编号')
         file = tar.extractfile(release + '/manifest.json')
         manifest = json.load(file)
-        if manifest.get('deploymentFormat') != 2 or manifest.get('appPath') != '/sona':
-            raise ValueError('此包不包含 /sona 入口与最新代理修正，请重新准备部署包。')
+        if manifest.get('deploymentFormat') != 3 or manifest.get('literatureMode') != 'existing-server-sso' or manifest.get('appPath') != '/sona':
+            raise ValueError('此包不包含现有文献服务复用与 /sona 入口，请重新准备部署包。')
         if manifest.get('architecture') not in ('linux/amd64', 'linux/arm64'):
             raise ValueError('部署包架构字段非法')
         return release, manifest
@@ -330,13 +338,19 @@ def deploy(archive):
     if remote_arch != expected:
         raise ValueError('服务器架构为 ' + remote_arch + '，请使用正确的 --arch 重新准备。')
     run(ssh + ['sudo -n true'])
+    run(['ssh', '-o', 'ConnectTimeout=15', 'ubuntu@81.70.174.140', 'sudo -n true'])
+    peer_arch=subprocess.check_output(['ssh','-o','ConnectTimeout=15','ubuntu@81.70.174.140','uname -m'],text=True).strip()
+    if peer_arch!=expected:raise ValueError('两台服务器需要匹配部署包 CPU 架构')
     # Host key checking intentionally uses normal OpenSSH defaults, never disabled.
     remote = '.sona-upload/' + release
     run(ssh + ['umask 077; mkdir -p ' + shlex.quote(remote)])
     run(['scp', '-P', PORT, archive, TARGET + ':' + remote + '/bundle.tgz'])
     checksum = digest(archive)
-    command = f'cd {remote} && printf "%s  bundle.tgz\\n" {checksum} | sha256sum -c - && tar -xzf bundle.tgz && sudo -n bash {release}/server.sh'
+    command = f'cd {remote} && printf "%s  bundle.tgz\\n" {checksum} | sha256sum -c - && tar -xzf bundle.tgz && sudo -n bash {release}/server.sh prepare'
     run(ssh + [command])
+    from deploy_peer import deploy_literature_peer
+    deploy_literature_peer(ssh, archive, release, manifest)
+    run(ssh + [f'cd {remote}/{release} && sudo -n bash server.sh finish'])
     # Check the browser's real network path, not only server loopback health.
     with urllib.request.urlopen('http://61.136.101.179:20281/api/health', timeout=20) as response:
         health = json.load(response)

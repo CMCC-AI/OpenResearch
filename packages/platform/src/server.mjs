@@ -227,6 +227,12 @@ export async function createPlatform(
     return `${config.deepLiterature.origin}/api/auth/openresearch/callback`;
   }
   async function authorizeDeepLiterature(req, res, s, workspace = null) {
+    if (config.researchOwnerEmail)
+      check(
+        s.email === config.researchOwnerEmail,
+        403,
+        "该账号无权访问此文献入口",
+      );
     await limit(`sso-authorize:${s.user_id}`, 120, 60);
     const url = new URL(req.url, config.origin);
     check(url.searchParams.get("client_id") === "deeplit", 400);
