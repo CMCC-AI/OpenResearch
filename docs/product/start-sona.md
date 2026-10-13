@@ -14,3 +14,5 @@ cd /Users/levent/cmccProjects/OpenResearch
 账号或 DeepXiv 未运行时，需要先打开 Docker Desktop，并已配置 `packages/platform/.env` 与 DeepXiv 的 `.env.local`。脚本会明确报告缺少的配置。DeepXiv 默认位于相邻的 `../DeepLiterature` 仓库，可通过 `./start-sona.command --deeplit-dir /path/to/DeepLiterature` 指定。
 
 `--rebuild` 可强制重新编译尚未运行的工作区；如果工作区已运行，仍会复用服务，避免中断研究。原有 `scripts/start-local.mjs` 保留作为完整初始化入口，新脚本用于日常启动现有个人工作区。开发隔离实例继续使用 `scripts/dev-slot.mjs`。
+
+远程服务器的一键打包、SCP 上传与安装方案见 [SONA 一键服务器部署](deploy-sona.md)。

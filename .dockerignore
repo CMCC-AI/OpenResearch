@@ -10,3 +10,6 @@ target
 **/*.db
 **/*.db-wal
 **/*.db-shm
+
+# Exclude personal runtime data and deployment credentials
+.sona-run
