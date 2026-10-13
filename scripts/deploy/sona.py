@@ -13,6 +13,7 @@ import sys
 import tarfile
 import time
 import urllib.request
+import urllib.error
 
 ROOT = Path(__file__).resolve().parents[2]
 TARGET = 'ubuntu@61.136.101.179'
@@ -326,6 +327,11 @@ def deploy(archive):
     checksum = digest(archive)
     command = f'cd {remote} && printf "%s  bundle.tgz\\n" {checksum} | sha256sum -c - && tar -xzf bundle.tgz && sudo -n bash {release}/server.sh'
     run(ssh + [command])
+    # Check the browser's real network path, not only server loopback health.
+    with urllib.request.urlopen('http://61.136.101.179:20281/api/health', timeout=20) as response:
+        health = json.load(response)
+        if not health.get('ok') or health.get('version') != '0.2.18':
+            raise ValueError('公网入口返回了不匹配的 SONA 服务')
     print('部署成功：http://61.136.101.179:20281；无需 SSH 隧道。')
     # Bring the bootstrap credential back only to a private local file; never log it.
     login_file = ROOT / '.sona-run' / 'deploy' / 'server-login.txt'

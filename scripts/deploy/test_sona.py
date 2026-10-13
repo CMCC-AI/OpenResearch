@@ -56,7 +56,8 @@ class DeploymentTests(unittest.TestCase):
     def test_scp_port_and_verified_server_execution(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        with patch.object(sona, 'ROOT', Path(temp.name)), patch.object(sona.subprocess, 'check_output', return_value='x86_64\n'), patch.object(sona, 'run') as run:
+        with patch.object(sona, 'ROOT', Path(temp.name)), patch.object(sona.subprocess, 'check_output', return_value='x86_64\n'), patch.object(sona, 'run') as run, patch.object(sona.urllib.request, 'urlopen') as public:
+            public.return_value.__enter__.return_value.read.return_value = b'{"ok":true,"version":"0.2.18"}'
             sona.deploy(self.archive())
             calls = [call.args[0] for call in run.call_args_list]
             scp = next(cmd for cmd in calls if cmd[0] == 'scp')
