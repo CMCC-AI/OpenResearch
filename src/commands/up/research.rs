@@ -131,7 +131,7 @@ pub(super) async fn stop(
                             .get_run(run)?
                             .is_some_and(|r| !local::is_terminal(&r.status))
                         {
-                            store.set_cancel_requested(run, true)?;
+                            store.request_cancel(run, "dashboard:research-stop")?;
                         }
                     }
                 }

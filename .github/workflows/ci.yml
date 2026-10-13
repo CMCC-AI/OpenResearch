@@ -83,6 +83,9 @@ jobs:
       - name: Local startup helper tests
         run: node --test scripts/start-local.test.mjs scripts/start-sona.test.mjs
 
+      - name: Interactive chart authoring tests
+        run: python3 scripts/test_orx_chart.py
+
       - name: Release notes composition
         run: python3 scripts/test_release_notes.py
 

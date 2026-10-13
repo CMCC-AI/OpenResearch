@@ -64,8 +64,8 @@
   --color-image-backdrop: rgb(9 23 37 / 85%);
   --color-modal-backdrop: rgb(9 23 37 / 42%);
   --color-modal-backdrop-light: rgb(9 23 37 / 40%);
-  --color-diff-selection: color-mix(in oklab, var(--surface) 76%, var(--primary));
-  --color-diff-gutter-selection: color-mix(in oklab, var(--surface) 68%, var(--primary));
+  --color-diff-selection: var(--code-selection);
+  --color-diff-gutter-selection: var(--code-selection);
   --color-diff-insert-gutter: color-mix(in oklab, var(--base) 84%, var(--accent-green));
   --color-diff-delete-gutter: color-mix(in oklab, var(--base) 86%, var(--accent-red));
   --color-diff-insert-code: color-mix(in oklab, var(--base) 91%, var(--accent-green));
@@ -123,6 +123,9 @@
   --surface-bright: #fafdff;
   --highlight: #e6f4ff;
   --chat-annotation-highlight: #b8d4ff;
+  --selection-background: #e3e3e3;
+  --selection-text: #161616;
+  --code-selection: var(--selection-background);
   --text: #152d43;
   --subtext: #60758a;
   --muted: #728397;
@@ -181,7 +184,7 @@
   --term-app-ansi-bright-cyan: #209a84;
   --term-app-ansi-bright-white: #152d43;
   --tool-shimmer: color-mix(in srgb, var(--text) 58%, var(--subtext));
-  --editor-selection: color-mix(in oklab, var(--primary) 22%, transparent);
+  --editor-selection: var(--code-selection);
   /* Shared reading width for chat, markdown, and plan surfaces. */
   --readable-col: 840px;
   --border-strong: var(--border);
@@ -215,6 +218,9 @@
   --surface-bright: #102337;
   --highlight: #203d58;
   --chat-annotation-highlight: #244e7a;
+  --selection-background: #606060;
+  --selection-text: #ffffff;
+  --code-selection: var(--selection-background);
   --text: #e4eff8;
   --subtext: #a3b9cc;
   --muted: #60758a;

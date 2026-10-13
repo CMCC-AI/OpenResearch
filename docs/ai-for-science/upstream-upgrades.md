@@ -2,9 +2,24 @@
 
 ## 当前基线
 
-本产品源码已合并官方 [OpenResearch v0.2.17](https://github.com/alphaXiv/OpenResearch/releases/tag/v0.2.17)，固定提交为 `b9ce4f3c0cbd5bf006330fbb7ed1cacfaefb5d21`。`product-upstream.json` 记录该基线，`scripts/check-upstream-base.mjs` 在 CI 中核对 Cargo 版本、提交祖先关系和更新通道状态。
+本产品源码已合并官方 [OpenResearch v0.2.18](https://github.com/alphaXiv/OpenResearch/releases/tag/v0.2.18)，固定提交为 `0d3d376dae7ba22373d34fd9e9090b5a88efc148`。`product-upstream.json` 记录该基线，`scripts/check-upstream-base.mjs` 在 CI 中核对 Cargo 版本、提交祖先关系和更新通道状态。
 
 产品仍由三部分组成：本地 `orx`（内嵌 `ui/dist`）、独立账号服务、Deep Literature。官方升级只提供第一部分的上游源码；统一登录、产品页面、文献服务、部署配置与跨系统数据契约仍由本项目维护。不能把官方安装包覆盖在产品安装目录上。
+
+## 2026-10-13 升级记录
+
+从官方 v0.2.17 升级到 v0.2.18；升级前产品提交为 `4ccb0f3`，备份分支为 `codex/backup-before-v0.2.18`。在独立工作树合并官方 release tag，保留完整上游提交祖先关系。
+
+- 同步上游图表与 HTML 图形预览、图片缩放、运行日志事件、执行器和 Agent 适配改进；合并后重新构建产品 `ui/dist`。
+- 保留 SONA 蓝色主题、统一导航、新建项目和新对话、工作模式选择、专家团 DAG 与审批、账号服务及 DeepXiv 对接；官方更新通道仍为 `product-disabled`。
+- 研究停止接口适配新的 `Store::request_cancel`，记录 `dashboard:research-stop` 原因，避免调用已移除的方法；CI 同时保留产品启动检查与上游图表检查。
+- SQLite 新增 `runs.cancel_reason`。使用运行中数据库的备份副本验证迁移，完整性检查通过；项目、会话、消息及专家团研究记录逐表内容摘要保持一致。
+
+验证：UI 268 项测试、Rust 1,094 项单元测试和 18 项集成测试通过（3 项上游单元测试忽略）；Clippy、Rust/Windows launcher 格式、UI 样式与构建、基线检查通过。启动脚本 16 项、图表 Python 4 项、发行说明 Python 6 项、账号平台单元与 16 项独立 PostgreSQL 集成测试、DeepXiv 14 项 SSO/Cookie 测试通过，平台依赖审计无漏洞。
+
+通过 `scripts/dev-slot.mjs` 使用空数据库启动隔离实例，验证介绍页可访问；账号平台生产 CORS 不允许该隔离端口，因此未以生产账号登录隔离实例。账号与文献服务通过独立测试验收，不替换其运行服务或改动生产认证配置。本次为本机源码升级，不代表 Windows、Linux 桌面、签名发行包或远端执行器镜像已经重新发布；这些环境仍需单独构建验收。
+
+回滚代码基准为 `4ccb0f3`；数据库仅作向前兼容的字段扩展，回滚时先恢复匹配的二进制及 UI，不直接覆盖已有数据库。升级前本机数据库备份保存在忽略目录 `.sona-run/backups/`。
 
 ## 2026-10-09 升级记录
 
@@ -27,7 +42,7 @@
 
 发布自己的安装包之前，需完成以下工作：
 
-1. 独立的产品版本号和发布源。推荐区分“上游基线 v0.2.17”和“产品发行号”；不能仅用上游版本判断产品构建的新旧。
+1. 独立的产品版本号和发布源。推荐区分“上游基线 v0.2.18”和“产品发行号”；不能仅用上游版本判断产品构建的新旧。
 2. 自有 CI 构建 macOS/Windows/Linux 包，生成带平台、架构、SHA-256、产品版本、上游基线和最低兼容协议版本的更新清单。
 3. 使用自己的签名与校验策略；macOS App 更新代码目前校验官方 Apple Team ID，启用自有自动更新前必须替换并验证完整签名链。
 4. 确认安装路径、升级锁、原子替换、失败回滚、重启恢复和发布灰度。账号服务与 Deep Literature 分别版本化，不随本地客户端二进制无条件替换。
