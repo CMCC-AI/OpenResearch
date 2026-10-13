@@ -12,7 +12,7 @@ urls=['http://localhost:4791/api/health','http://localhost:5300/healthz','http:/
 for url in urls:
  for attempt in range(120):
   try:
-   with urllib.request.urlopen(urllib.request.Request(url,headers={'Host':'61.136.101.179:20281'}),timeout=3) as r:
+   with urllib.request.urlopen(urllib.request.Request(url,headers={'Host':'61.136.101.179:20281'} if ':5300/' in url else {}),timeout=3) as r:
     if r.status!=200: raise ValueError('HTTP status')
     if '4791' in url:
      d=json.load(r)

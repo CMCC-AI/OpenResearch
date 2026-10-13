@@ -93,6 +93,7 @@ export interface Destination {
 }
 
 export function parseDestination(pathname: string): Destination | null {
+  pathname = pathname === "/sona" ? "/" : pathname.startsWith("/sona/") ? pathname.slice(5) : pathname;
   if (pathname === "/projects") return { kind: "home" };
   const parts = pathname.split("/");
   if (parts[0] !== "" || parts[1] !== "projects" || !parts[2]) return null;

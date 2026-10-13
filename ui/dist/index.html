@@ -2,8 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      // Relative build assets must resolve from the app root even on deep links.
+      document.write('<base href="' + (/^\/sona(?:\/|$)/.test(location.pathname) ? '/sona/' : '/') + '">');
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <meta name="theme-color" content="#006eb8" />
     <title>SONA</title>
     <script>
@@ -50,8 +54,8 @@
       html { background: #ffffff; }
       html[data-theme="dark"] { background: #091725; }
     </style>
-    <script type="module" crossorigin src="/assets/index-KVfO4tx4.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-C3gwqk9i.css">
+    <script type="module" crossorigin src="./assets/index-B3KOlhVp.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-7Lj_BfON.css">
   </head>
   <body>
     <div

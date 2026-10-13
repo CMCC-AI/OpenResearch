@@ -48,6 +48,7 @@ function pdfjsAssets(): Plugin {
 }
 
 export default defineConfig({
+  base: "./",
   plugins: [
     pdfjsAssets(),
     tanstackRouter({ target: "react", autoCodeSplitting: false }),

@@ -116,6 +116,7 @@ services:
       PLATFORM_INSECURE_PUBLIC_ORIGIN: http://61.136.101.179:20281
       PLATFORM_RESEARCH_OWNER_EMAIL: owner@research.local
       OPENRESEARCH_APP_ORIGIN: http://61.136.101.179:20281
+      OPENRESEARCH_APP_PATH: /sona
       DEEPLIT_ORIGIN: http://61.136.101.179:20281
       DEEPLIT_SSO_CLIENT_SECRET: ${{DEEPLIT_SSO_CLIENT_SECRET}}
       BIND_ADDRESS: 127.0.0.1
@@ -138,6 +139,7 @@ services:
       DEEPLIT_OPENRESEARCH_URL: http://localhost:20281
       DEEPLIT_OPENRESEARCH_PUBLIC_ORIGIN: http://61.136.101.179:20281
       DEEPLIT_OPENRESEARCH_APP_ORIGIN: http://61.136.101.179:20281
+      DEEPLIT_OPENRESEARCH_APP_PATH: /sona
       DEEPLIT_PUBLIC_ORIGIN: http://61.136.101.179:20281
       DEEPLIT_INSECURE_PUBLIC_ORIGIN: http://61.136.101.179:20281
       DEEPLIT_SSO_CLIENT_SECRET: ${{DEEPLIT_SSO_CLIENT_SECRET}}
@@ -250,6 +252,12 @@ def prepare(args):
         raise ValueError('DeepXiv SSO 配置结构发生变化，请重新审查部署适配。')
     text = text.replace(old, "if (url.protocol !== 'https:' && url.hostname !== 'localhost' && !(url.protocol === 'http:' && url.origin === process.env.DEEPLIT_INSECURE_PUBLIC_ORIGIN)) {")
     sso_file.write_text(text)
+    complete_file = deep_build / 'src/app/api/auth/openresearch/complete/route.ts'
+    complete = complete_file.read_text()
+    old_redirect = "new URL('/projects', destination)"
+    if complete.count(old_redirect) != 1:
+        raise ValueError('DeepXiv 登录回跳实现变化，请审查子路径适配。')
+    complete_file.write_text(complete.replace(old_redirect, "new URL(`${process.env.DEEPLIT_OPENRESEARCH_APP_PATH || ''}/projects`, destination)"))
     run(['docker', 'buildx', 'build', '--platform', platform, '--load', '-t', prefix + '-literature', deep_build])
     run(['docker', 'pull', '--platform', platform, 'postgres:17-alpine'])
     run(['docker', 'tag', 'postgres:17-alpine', prefix + '-postgres'])
@@ -332,7 +340,7 @@ def deploy(archive):
         health = json.load(response)
         if not health.get('ok') or health.get('version') != '0.2.18':
             raise ValueError('公网入口返回了不匹配的 SONA 服务')
-    print('部署成功：http://61.136.101.179:20281；无需 SSH 隧道。')
+    print('部署成功：http://61.136.101.179:20281/sona；无需 SSH 隧道。')
     # Bring the bootstrap credential back only to a private local file; never log it.
     login_file = ROOT / '.sona-run' / 'deploy' / 'server-login.txt'
     login_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

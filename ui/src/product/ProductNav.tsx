@@ -1,3 +1,4 @@
+import { stripAppBase } from "../appBasePath";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
 import { BookOpen, Boxes, Home, Library, PanelLeft, Search } from "lucide-react";
@@ -24,7 +25,7 @@ export function ProductWordmark({ compact = false }: { compact?: boolean }) {
 }
 
 export function ProductSidebar({ children, connectionInfo, onCollapse, onSettings }: { children?: ReactNode; connectionInfo?: ReactNode; onCollapse?: () => void; onSettings?: (tab: "compute" | "settings") => void }) {
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const pathname = useRouterState({ select: (state) => stripAppBase(state.location.pathname) });
   const { user } = useAuthSession();
   const [mobileOpen, setMobileOpen] = useState(false);
   return <aside className={`product-sidebar flex w-64 min-h-0 shrink-0 flex-col border-e border-border-variant bg-background px-3 py-4 mac-titlebar:pt-10 win-titlebar:pt-10 ${mobileOpen ? "[@media((max-width:_820px))]:absolute [@media((max-width:_820px))]:inset-y-0 [@media((max-width:_820px))]:start-0 [@media((max-width:_820px))]:z-40" : ""} ${children ? "session-rail [&_.rail-body]:ps-1 [&_.rail-body]:pe-1" : mobileOpen ? "" : "[@media((max-width:_820px))]:w-16 [@media((max-width:_820px))]:px-2 [@media((max-width:_820px))]:[&_.product-brand-text]:hidden [@media((max-width:_820px))]:[&_.research-nav-label]:hidden [@media((max-width:_820px))]:[&_.research-projects]:hidden"}`}>

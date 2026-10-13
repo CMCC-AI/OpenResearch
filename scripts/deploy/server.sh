@@ -110,7 +110,7 @@ p=Path(sys.argv[1])
 if not p.exists(): p.write_text(secrets.token_urlsafe(32)+'\n')
 ADMIN
   docker compose --env-file "$root/state/.env" -p sona-remote run --rm -T platform-migrate node src/admin.mjs create-user owner@research.local 科研平台管理员 <"$root/state/admin-password"
-  { printf '入口：http://61.136.101.179:20281\n账号：owner@research.local\n密码：'; cat "$root/state/admin-password"; } >"$root/state/admin-login.txt"
+  { printf '入口：http://61.136.101.179:20281/sona\n账号：owner@research.local\n密码：'; cat "$root/state/admin-password"; } >"$root/state/admin-login.txt"
 fi
 # Run a bundled Nginx, keeping the host's existing sites untouched.
 docker compose --env-file "$root/state/.env" -p sona-remote run --rm --no-deps gateway nginx -t
@@ -126,7 +126,7 @@ for attempt in range(30):
  except Exception:
   if attempt==29: raise SystemExit('Nginx 20281 未就绪，请检查是否被现有服务占用。')
   time.sleep(1)
-for path in ('/api/health','/_account/login','/api/papers?limit=1'):
+for path in ('/api/health','/sona/','/sona/projects','/_account/login','/api/papers?limit=1'):
  with urllib.request.urlopen(urllib.request.Request(u+path,headers=headers),timeout=10) as r:
   assert r.status==200
 try:
@@ -163,4 +163,4 @@ systemctl daemon-reload
 systemctl enable sona.service
 systemctl start sona.service
 printf '部署完成。SONA 0.2.18；OpenCode %s\n' "$(cat "$bundle/opencode-version")"
-echo '公网入口：http://61.136.101.179:20281；内部服务端口仅监听回环地址。'
+echo '公网入口：http://61.136.101.179:20281/sona；内部服务端口仅监听回环地址。'

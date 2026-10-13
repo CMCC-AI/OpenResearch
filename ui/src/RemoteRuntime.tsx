@@ -1,3 +1,4 @@
+import { stripAppBase } from "./appBasePath";
 import { useQuery } from "@tanstack/react-query";
 
 import { getRuntimeQuery } from "./queries/settings";
@@ -390,7 +391,7 @@ export function RuntimeRoot() {
     resetGlobalWorkspace();
     clearProjectWorkspaceCache();
   }), []);
-  const launchPlaceholder = useLocation({ select: (location) => location.pathname === "/remote-launch" });
+  const launchPlaceholder = useLocation({ select: (location) => stripAppBase(location.pathname) === "/remote-launch" });
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const everConnected = useRef(false);

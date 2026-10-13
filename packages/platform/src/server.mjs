@@ -69,6 +69,12 @@ export function configuration(env = process.env) {
     500,
     "PRIVATE_USER_SPACES requires MANAGED_EXECUTORS",
   );
+  const appPath = env.OPENRESEARCH_APP_PATH || "";
+  check(
+    appPath === "" || appPath === "/sona",
+    500,
+    "Unsupported application path",
+  );
   const managedCapacity = Number(env.MANAGED_CAPACITY || 4);
   check(
     Number.isSafeInteger(managedCapacity) && managedCapacity > 0,
@@ -102,6 +108,7 @@ export function configuration(env = process.env) {
   return {
     origin,
     appOrigin: appOrigin.origin,
+    appEntry: `${appOrigin.origin}${appPath}`,
     secure,
     researchOwnerEmail: env.PLATFORM_RESEARCH_OWNER_EMAIL || "",
     managed: env.MANAGED_EXECUTORS === "true",
@@ -718,7 +725,7 @@ export async function createPlatform(
         return json(res, {
           privateSpaces: !!config.privateSpaces,
           deepLiteratureUrl: config.deepLiterature?.origin || null,
-          openResearchAppUrl: config.appOrigin,
+          openResearchAppUrl: config.appEntry || config.appOrigin,
         });
       if (path === "/api/platform/me" && req.method === "GET")
         return json(res, { id: s.user_id, email: s.email, name: s.name });

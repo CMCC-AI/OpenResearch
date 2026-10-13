@@ -1,3 +1,4 @@
+import * as appBase from "../src/appBasePath.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -10,6 +11,7 @@ function authGate(pathname, user, loading = false) {
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports = {};
   const mocks = {
+    "../appBasePath": appBase,
     react: { ...React, useState: () => { const values = [loading, user, null]; return [values[stateIndex++], () => {}]; }, useEffect: () => {}, useCallback: (fn) => fn, useMemo: (fn) => fn() },
     "react/jsx-runtime": jsx,
     "@tanstack/react-router": { Navigate: "Navigate", useRouterState: ({ select }) => select({ location: { pathname } }) },
@@ -42,4 +44,9 @@ test("anonymous users retain the introduction and protected-page sign-in gate", 
 test("authentication loading does not flash the introduction for a signed-in session", () => {
   const result = authGate("/", null, true);
   assert.equal(result.type, "main");
+});
+
+test("subpath authentication uses the same protected-page gate", () => {
+  assert.equal(authGate("/sona/discover", null).type, "Navigate");
+  assert.equal(authGate("/sona/", {id:"user"}).props.to, "/projects");
 });

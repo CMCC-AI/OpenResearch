@@ -1,3 +1,4 @@
+import { stripAppBase, appHref } from "../appBasePath";
 import { Navigate, useRouterState } from "@tanstack/react-router";
 import {
   createContext,
@@ -33,7 +34,7 @@ export function AuthSessionProvider({
   runtime: RuntimeInfo;
   children: ReactNode;
 }) {
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const pathname = useRouterState({ select: (state) => stripAppBase(state.location.pathname) });
   const cloud = isCloudWorkspace();
   const accountUrl = cloud ? `${location.protocol}//${location.host.replace(/^[0-9a-f-]{36}\./, "")}` : runtime.kind === "local"
     ? runtime.accountUrl || "http://localhost:5300"
@@ -92,7 +93,7 @@ export function AuthSessionProvider({
     }
     setUser(null);
     setDeepLiteratureUrl(null);
-    window.location.assign(cloud ? accountUrl : "/");
+    window.location.assign(cloud ? accountUrl : appHref("/"));
   }, [accountUrl, cloud]);
 
   const value = useMemo(

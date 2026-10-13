@@ -1,6 +1,6 @@
 # SONA 一键部署：公网 IP / Nginx 20281
 
-入口为仓库根目录 `deploy-sona.command`。SSH 目标固定为 `ubuntu@61.136.101.179:20280`，部署后浏览器访问 **http://61.136.101.179:20281**，无需 SSH 隧道。已确认同步本地 OpenCode 配置及模型登录凭据，并明确授权该公网 HTTP 入口；其他部署继续默认要求 HTTPS。
+入口为仓库根目录 `deploy-sona.command`。SSH 目标固定为 `ubuntu@61.136.101.179:20280`，部署后浏览器访问 **http://61.136.101.179:20281/sona**，无需 SSH 隧道。已确认同步本地 OpenCode 配置及模型登录凭据，并明确授权该公网 HTTP 入口；其他部署继续默认要求 HTTPS。
 
 ## 一键执行
 
@@ -54,7 +54,7 @@
 
 ## Nginx 单入口和登录
 
-只有 Nginx 的 **20281** 面向外部；SONA 4791、平台 5300、DeepXiv 3000 及数据库端口仅监听服务器回环地址。Nginx 同时分流 SONA 页面与 API、`/_account/login`、平台/SSO API、DeepXiv `/library`、`/abs`、Next 静态资源和文献 API，支持 WebSocket、长任务流及上传。无需另行开放 3000/4791/5300，也不需要占用当前电脑端口。
+只有 Nginx 的 **20281** 面向外部；SONA 4791、平台 5300、DeepXiv 3000 及数据库端口仅监听服务器回环地址。Nginx 同时分流 SONA 页面与 API、`/_account/login`、平台/SSO API、DeepXiv `/library`、`/abs`、Next 静态资源和文献 API，支持 WebSocket、长任务流及上传。SONA 页面和静态资源位于 `/sona`；科研与登录/SSO API、DeepXiv 页面继续使用同域现有路径。根地址跳转到 `/sona/`，登录与 DeepXiv 完成后回到 `/sona/projects`，深层路由可以直接刷新。子路径科研 API 同样执行登录保护，不构成鉴权绕过。无需另行开放 3000/4791/5300，也不需要占用当前电脑端口。
 
 科研 API 在反向代理中通过平台会话鉴权，仅部署研究管理员能够访问共享研究空间。写请求校验指定 Origin；内部回调、远程管理及官方更新等 API 不向公网提供。平台注册的新账号不能因此访问研究管理员的数据。本方案为当前个人研究空间部署，不等价于每用户独立空间的多租户版本。
 
