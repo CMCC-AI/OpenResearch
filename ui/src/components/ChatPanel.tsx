@@ -1,3 +1,4 @@
+import { createClientTurnId } from "../clientTurnId";
 import { SessionFilterMenu, SessionRow, TitleReveal, TITLE_REVEAL_CLEAR_MS, type SessionFilter } from "./NativeSidebarRows";
 import { ResearchNavigationActions } from "./ResearchNavigation";
 import { ProductSidebar } from "../product/ProductNav";
@@ -5314,7 +5315,7 @@ export function ChatPanel({
     });
     const clientTurnId = pendingClientTurn.current?.signature === turnSignature
       ? pendingClientTurn.current.id
-      : `ct_${crypto.randomUUID()}`;
+      : createClientTurnId();
     pendingClientTurn.current = { signature: turnSignature, id: clientTurnId };
     if (busy) {
       // A turn is already running. Steering hands the message to it now, and
