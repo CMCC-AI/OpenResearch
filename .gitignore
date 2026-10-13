@@ -24,3 +24,6 @@ Claude.local.md
 
 # This repo uses pnpm; ignore an accidental npm lockfile
 ui/package-lock.json
+
+# Local SONA startup state and runtime logs
+.sona-run/

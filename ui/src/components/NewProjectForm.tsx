@@ -39,7 +39,10 @@ function slugify(text: string, maxLength?: number): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return (maxLength ? slug.slice(0, maxLength) : slug) || "research-project";
+  // Distinguish Chinese project titles when ASCII slugging removes the whole name.
+  let hash = 0;
+  for (const character of text) hash = (Math.imul(hash, 31) + character.codePointAt(0)!) >>> 0;
+  return (maxLength ? slug.slice(0, maxLength) : slug) || (text.trim() ? `research-${hash.toString(36)}` : "research-project");
 }
 
 function parsePaperId(input: string): string | null {
@@ -76,14 +79,16 @@ export function NewProjectForm({
   onCancel,
   remote = false,
   initialPaperId,
+  initialName,
 }: {
   onCreated: (project: Project, githubPublicationError: string | null) => void;
   onCancel?: () => void;
   remote?: boolean;
   initialPaperId?: string;
+  initialName?: string;
 }) {
   const [mode, setMode] = useState<Mode>(initialPaperId ? "paper" : "blank");
-  const [name, setName] = useState("");
+  const [name, setName] = useState(initialName ?? "");
   const [nameTouched, setNameTouched] = useState(false);
   const [path, setPath] = useState("");
   const [pathTouched, setPathTouched] = useState(false);
@@ -98,7 +103,7 @@ export function NewProjectForm({
   const seq = useRef(0);
   const folderPickSeq = useRef(0);
   const drafts = useRef<Record<Mode, ProjectDraft>>({
-    blank: { name: "", nameTouched: false, path: "", pathTouched: false },
+    blank: { name: initialName ?? "", nameTouched: false, path: "", pathTouched: false },
     folder: { name: "", nameTouched: false, path: "", pathTouched: false },
     paper: { name: "", nameTouched: false, path: "", pathTouched: false },
   });

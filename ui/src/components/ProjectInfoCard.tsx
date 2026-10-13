@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Folder, FolderOpen, MessageCircle, MoreHorizontal, Pin, Plus, Settings, Trash2, X } from "lucide-react";
+import { ArrowRight, Folder, FolderOpen, MessageCircle, MoreHorizontal, Pin, Plus, Settings, Trash2, X } from "lucide-react";
 import { deleteProject, revealFileInManager, updateProject, type Project } from "../api";
 import { m } from "../paraglide/messages.js";
 import { Button, IconButton, Input, MenuItem, Tooltip, showAlert } from "./ui";
@@ -11,14 +11,15 @@ function deleteExplanation(project: Project) {
   return `${m.projects_delete_from_app({ name: project.name })}\n\n${synced ? m.projects_home_local_and_github_kept() : m.projects_home_local_folder_kept()}`;
 }
 
-export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleCollapsed, onRemoved, onNewChat, pinned, onPin }: {
+export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleCollapsed, onRemoved, onNewChat, onOpen, pinned, onPin }: {
   project: Project;
   chatCount: number | undefined;
   collapsed: boolean;
   busy: boolean;
   onToggleCollapsed: () => void;
   onRemoved: () => void;
-  onNewChat: () => void;
+  onNewChat?: () => void;
+  onOpen?: () => void;
   pinned: boolean;
   onPin: () => void;
 }) {
@@ -70,16 +71,17 @@ export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleC
       {collapsed ? <Folder size={15} className="shrink-0" /> : <FolderOpen size={15} className="shrink-0" />}<span className="truncate">{project.name}</span>
       {busy && <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-primary animate-[or-pulse_1.2s_infinite]" />}
     </button>
+    {onOpen && <IconButton size="small" aria-label={`继续研究 ${project.name}`} onClick={onOpen}><ArrowRight size={15} /></IconButton>}
     <IconButton ref={triggerRef} size="small" className={`text-text group-hover:opacity-100 group-focus-within:opacity-100 ${menuOpen ? "bg-surface opacity-100" : "opacity-0"}`}
       aria-label={m.sidebar_project_details({ name: project.name })} aria-controls={menuId} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => {
           if (menuRef.current?.matches(":popover-open")) menuRef.current.hidePopover();
         else { show(menuRef.current, triggerRef.current); menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus(); }
       }}><MoreHorizontal size={15} /></IconButton>
-    <Tooltip interactive content={m.chat_panel_new_chat()} className="rounded-sm">
+    {onNewChat && <Tooltip interactive content={m.chat_panel_new_chat()} className="rounded-sm">
       <IconButton size="small" className="text-text opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
         aria-label={`${m.chat_panel_new_chat()} · ${project.name}`}
         onClick={onNewChat}><Plus size={15} /></IconButton>
-    </Tooltip>
+    </Tooltip>}
     <div ref={menuRef} id={menuId} popover="auto" role="menu" aria-label={project.name}
       onToggle={(event) => setMenuOpen(event.newState === "open")}
       onKeyDown={(event) => {

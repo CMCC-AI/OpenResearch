@@ -339,7 +339,7 @@
   "settings_page_cluster_default": "集群默认值",
   "settings_page_cluster_default_e_g_4h_30m": "集群默认值（例如 4h、30m）",
   "settings_page_cluster_unreachable": "无法连接集群",
-  "settings_page_compute": "算力",
+  "settings_page_compute": "算力调度",
   "settings_page_connect_compute_backends_and_choose_where_new_runs": "连接算力后端，并选择新运行的执行位置。",
   "settings_page_connected": "已连接",
   "settings_page_context": "上下文",

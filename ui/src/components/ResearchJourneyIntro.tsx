@@ -27,5 +27,3 @@ export function ResearchJourneyIntro({ compact = false }: { compact?: boolean })
     <p className="mb-0 mt-3 text-xs leading-relaxed text-subtext">会根据课题选择环节；不需要实验的课题会跳过实验。提交后，实际专家分工与实时进度将在研究流程图中显示。</p>
   </section>;
 }
-
-export const researchTopicExample = "我想比较固定学习率和逐步降低学习率，对一个简单预测模型的效果有什么影响。我没有现成数据，希望先用模拟数据，在本机做一个小实验，不使用付费算力。最后请给我结果表和通俗解释，并指出这个实验能说明什么、不能说明什么。";

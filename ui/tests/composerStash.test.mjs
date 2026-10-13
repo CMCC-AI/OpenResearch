@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { composerStashContent } from "../src/composerStash.ts";
+import { composerStashContent, getComposerStashStore } from "../src/composerStash.ts";
 
 test("an empty composer leaves nothing behind", () => {
   const live = { draft: "", attachments: [], annotations: [] };
@@ -30,4 +30,16 @@ test("stashed annotations drop their transcript DOM ranges", () => {
   };
   const stashed = composerStashContent(live, null);
   assert.deepEqual(stashed.annotations, [{ id: "a1", text: "selected" }]);
+});
+
+
+test("route remounts retain composer content while a runtime change clears it", () => {
+  const first = getComposerStashStore(10);
+  first.set("project:session", { draft: "未发送的研究说明", attachments: [], annotations: [] });
+  assert.equal(getComposerStashStore(10).get("project:session").draft, "未发送的研究说明");
+  assert.equal(getComposerStashStore(10).has("other:session"), false);
+  const nextRuntime = getComposerStashStore(11);
+  assert.equal(nextRuntime.size, 0);
+  first.set("outgoing:session", { draft: "旧运行时退出时保存的内容", attachments: [], annotations: [] });
+  assert.equal(nextRuntime.size, 0);
 });

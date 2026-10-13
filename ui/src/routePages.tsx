@@ -8,10 +8,14 @@ import { useEffect, useState } from "react";
 
 import { useRuntime } from "./RemoteRuntime";
 
-import { clearReadDemoSessions } from "./demoSessionState";
 import { globalResumeLocation, projectResumeLocation } from "./routeResume";
 import { m } from "./paraglide/messages.js";
-import { Onboarding } from "./components/Onboarding";
+import { createChatSession, type Project } from "./api";
+import { getHarnessesQuery } from "./queries/settings";
+import { defaultSelection } from "./components/ModelPicker";
+import { getComposerStashStore, type ComposerStash } from "./composerStash";
+import { getWorkspaceGeneration } from "./queries/client";
+import { queryClient } from "./queries/client";
 import { OfflineBanner } from "./components/OfflineBanner";
 import { WorkspaceConnection } from "./components/WorkspaceConnection";
 import { UpdateBanner, useUpdateStatus } from "./components/UpdateBanner";
@@ -74,7 +78,6 @@ export function ProjectsPage() {
   const stateQuery = useQuery(getUiStateQuery());
   const projects = projectsQuery.data;
   const state = stateQuery.data;
-  const onboarding = projects?.length === 0;
   const error = projectsQuery.error ?? stateQuery.error;
   const retry = () => { void projectsQuery.refetch(); void stateQuery.refetch(); };
   const { status } = useUpdateStatus(runtime.kind === "local" && !isCloudWorkspace());
@@ -83,37 +86,51 @@ export function ProjectsPage() {
   }, []);
   const openProject = (projectId: string) => void navigate({ to: "/projects/$projectId", params: { projectId } });
 
+  const [opening, setOpening] = useState(false);
+  async function beginResearch(project: Project, draft?: ComposerStash) {
+    if (opening) return;
+    setOpening(true);
+    const stashes = getComposerStashStore(getWorkspaceGeneration());
+    if (draft) stashes.set(`${project.id}:new`, draft);
+    try {
+      const selection = state?.preferredAgent ?? defaultSelection(await queryClient.fetchQuery(getHarnessesQuery()));
+      if (!selection) throw new Error("请先在个人菜单的设置中配置科研智能体。项目已保留，可从继续研究重新进入。");
+      const session = await createChatSession(project.id, selection.harness, { ...selection, autonomy: state?.preferredAutonomy ?? "agentic", ...(draft?.workMode !== "normal" ? { research: { mode: "team", objective: draft?.draft.trim().slice(0, 6000) || "请先澄清研究目标、已有材料和预期成果。" } } : {}) });
+      if (draft) stashes.set(session.id, draft);
+      stashes.delete(`${project.id}:new`);
+      await navigate({ to: "/projects/$projectId/tasks/$sessionId", params: { projectId: project.id, sessionId: session.id } });
+    } catch (error) {
+      showAlert(error instanceof Error ? error.message : String(error), "error");
+      void navigate({ to: "/projects", search: { project: project.id } });
+    } finally { setOpening(false); }
+  }
+
   return (
-    <PlatformFrame title="AI 原生科研工作台">
+    <PlatformFrame title="新建项目 · AI 原生科研工作台">
     <div className="app flex flex-col flex-1 min-h-0">
       {runtime.kind === "local" && !isCloudWorkspace() && <><OfflineBanner /><UpdateBanner status={status} /></>}
       {error && (!projects || !state) ? <RouteFailure error={error} reset={retry} />
         : !projects || !state ? <RoutePending />
-          : onboarding && !isCloudWorkspace() ? (
-            <Onboarding
-              remote={runtime.kind === "ssh"}
-              preferredAgent={state.preferredAgent}
-              onDone={(project) => {
-                clearReadDemoSessions();
-                openProject(project.id);
-              }}
-            />
-          ) : (
+          : (
             <ProjectsHome
               remote={runtime.kind === "ssh"}
               projects={projects}
               initialDialogOpen={Boolean(start.new || start.paper)}
               initialPaperId={start.paper}
+              initialProjectId={start.project}
+              onResume={(project, draft) => void beginResearch(project, draft)}
               onOpen={openProject}
-              onCreated={(project, publicationError) => {
+              onCreated={async (project, publicationError, draft) => {
                 if (publicationError) {
+                  if (draft) getComposerStashStore(getWorkspaceGeneration()).set(`${project.id}:new`, draft);
                   showAlert(publicationError, "error");
                   void navigate({ to: "/projects/$projectId/settings/$tab", params: { projectId: project.id, tab: "git" } });
-                } else openProject(project.id);
+                } else await beginResearch(project, draft);
               }}
               onDeleted={(id) => setScopedQueryData(projectsOptions.queryKey, (current) => current?.filter((project) => project.id !== id))}
             />
           )}
+      {opening && <div role="status" className="fixed inset-0 z-100 flex items-center justify-center bg-modal-backdrop"><div className="rounded-xl bg-background p-5 text-text">正在准备研究工作区…</div></div>}
       {runtime.kind === "ssh" && <WorkspaceConnection runtime={runtime} corner />}
     </div>
     </PlatformFrame>

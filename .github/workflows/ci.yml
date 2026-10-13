@@ -81,7 +81,7 @@ jobs:
         run: node --test scripts/dev-slot.test.mjs
 
       - name: Local startup helper tests
-        run: node --test scripts/start-local.test.mjs
+        run: node --test scripts/start-local.test.mjs scripts/start-sona.test.mjs
 
       - name: Release notes composition
         run: python3 scripts/test_release_notes.py

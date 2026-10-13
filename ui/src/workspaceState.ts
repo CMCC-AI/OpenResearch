@@ -43,7 +43,7 @@ export interface GlobalWorkspace {
 export const settingsTabs = ["settings", "harnesses", "projects", "compute", "instances", "environment", "git", "storage"] as const;
 export type SettingsSection = typeof settingsTabs[number];
 export const isSettingsSection = (value: unknown): value is SettingsSection =>
-  settingsTabs.some((tab) => tab === value);
+  value !== "environment" && settingsTabs.some((tab) => tab === value);
 
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -102,7 +102,8 @@ export function parseDestination(pathname: string): Destination | null {
   const validId = (id: string) => id.length > 0 && id !== "." && id !== ".." && !/[\\/?#\u0000-\u001f\u007f-\u009f]/.test(id);
   if (!validId(projectId)) return null;
   if (parts.length === 3 || (parts.length === 4 && parts[3] === "")) return { kind: "resume", projectId };
-  if (parts.length === 4 && parts[3] === "skills") return { kind: "skills", projectId };
+  // Hidden configuration pages must not be restored or reached by a bookmarked URL.
+  if (parts.length === 4 && parts[3] === "skills") return null;
   if (parts.length === 5 && parts[3] === "tasks" && validId(leaf)) return { kind: "task", projectId, ...(leaf === "new" ? {} : { sessionId: leaf }) };
   if (parts.length === 5 && parts[3] === "settings" && isSettingsSection(leaf)) return { kind: "settings", projectId, section: leaf };
   return null;

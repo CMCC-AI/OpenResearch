@@ -15,6 +15,7 @@ export interface ComposerAnnotation extends ChatTextAnnotation {
 
 export interface ComposerStash {
   draft: string;
+  workMode?: "normal" | "team";
   attachments: ComposerAttachment[];
   annotations: ComposerAnnotation[];
 }
@@ -40,4 +41,15 @@ export function composerStashContent(
     ...live,
     annotations: live.annotations.map(({ range: _range, ...annotation }) => annotation),
   };
+}
+
+// Route navigation unmounts the chat; keep drafts in memory until the runtime identity changes.
+let stashGeneration = -1;
+let routeStashes = new Map<string, ComposerStash>();
+export function getComposerStashStore(generation: number): Map<string, ComposerStash> {
+  if (generation !== stashGeneration) {
+    routeStashes = new Map();
+    stashGeneration = generation;
+  }
+  return routeStashes;
 }

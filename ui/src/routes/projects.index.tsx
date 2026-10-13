@@ -4,6 +4,7 @@ import { ProjectsPage } from "../routePages";
 export interface ProjectsSearch {
   new?: boolean;
   paper?: string;
+  project?: string;
 }
 
 export function parseProjectsSearch(search: Record<string, unknown>): ProjectsSearch {
@@ -15,6 +16,7 @@ export function parseProjectsSearch(search: Record<string, unknown>): ProjectsSe
   return {
     new: search.new === true || search.new === "true" || undefined,
     paper: paper || undefined,
+    ...(typeof search.project === "string" && search.project ? { project: search.project } : {}),
   };
 }
 

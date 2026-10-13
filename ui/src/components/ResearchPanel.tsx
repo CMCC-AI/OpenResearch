@@ -7,7 +7,7 @@ import { Button } from "./ui/Button";
 import { IconButton, MenuItem } from "./ui";
 import { ResearchStateErrorDialog } from "./ResearchOverviewDialog";
 import { ResearchOverviewDialog } from "./ResearchOverviewDialog";
-import { GitBranch, Users, ArrowRight } from "lucide-react";
+import { Users, ArrowRight } from "lucide-react";
 import { ResearchJourneyIntro } from "./ResearchJourneyIntro";
 import { ResearchModulePreview } from "./ResearchModulePreview";
 import { ResearchTeamDagDialog } from "./ResearchTeamDag";
@@ -61,10 +61,7 @@ export function ResearchPanel({ sessionId, onConsult, disabled, onOpenSession, p
   </>;
   return <section className={`mb-2 rounded-lg border text-sm ${study ? "border-primary bg-primary-subtle" : "border-border bg-background"}`} aria-label="当前研究流程">
     {!study ? <div className="p-3">
-      <div className="flex items-center gap-2"><GitBranch size={16} className="text-subtext" /><strong className="text-text">原生自主探索</strong><span className="text-xs text-subtext">原来的流程</span></div>
-      <p className="mt-1 text-xs text-subtext">主 Agent 驱动实验树：提出问题 → 创建实验 → 运行验证 → 分析迭代</p>
-      <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
-        <Button size="small" disabled={disabled || working} onClick={() => void act(() => onConsult?.("team") ?? Promise.resolve())}><Users size={14} />新建专家团研究</Button>
+      <div className="flex flex-wrap items-center gap-2">
         <details><summary className="cursor-pointer text-xs text-subtext">发起单项专家会诊</summary><div className="mt-2 flex flex-col gap-2">{(["design", "diagnosis", "review"] as const).map((mode) => <details key={mode} className="rounded-lg border border-border p-2"><summary className="cursor-pointer text-sm text-primary">{researchModes[mode]} · 了解子流程与专家</summary><div className="mt-2"><ResearchModulePreview mode={mode} /><Button size="small" className="mt-2" disabled={disabled || working} onClick={() => void act(() => onConsult?.(mode) ?? Promise.resolve())}>开始{researchModes[mode]}</Button></div></details>)}</div></details>
       </div>
     </div> : <div className="p-3">

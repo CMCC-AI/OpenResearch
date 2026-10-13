@@ -100,9 +100,10 @@ export function AuthSessionProvider({
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );
 
-  if (protectedRoute && loading)
+  if ((protectedRoute || pathname === "/") && loading)
     return <main className="app flex h-full items-center justify-center bg-background"><Spinner /></main>;
   if (protectedRoute && !user) return <Navigate to="/" replace />;
+  if (pathname === "/" && user) return <Navigate to="/projects" replace />;
   return <AuthSessionContext value={value}>{children}</AuthSessionContext>;
 }
 

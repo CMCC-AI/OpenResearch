@@ -1,3 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, notFound } from "@tanstack/react-router";
 
-export const Route = createFileRoute("/projects/$projectId/skills")({});
+export const Route = createFileRoute("/projects/$projectId/skills")({
+  beforeLoad: () => { throw notFound(); },
+});

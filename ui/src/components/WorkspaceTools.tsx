@@ -47,7 +47,7 @@ export function WorkspaceTools({ expanded, experiments, runs, onOpenExperiment, 
     { id: "experiments", label: m.app_experiments(), Icon: FlaskConical, onClick: onExperiments },
   ];
   return (
-    <div className={`workspace-tools absolute end-3.5 top-7 z-30 ${rightOffset === undefined ? "win-titlebar:top-10" : ""}`} style={{ insetInlineEnd: rightOffset }}>
+    <div className={`workspace-tools absolute end-3.5 top-23 z-30 ${rightOffset === undefined ? "win-titlebar:top-26" : ""}`} style={{ insetInlineEnd: rightOffset }}>
       {!expanded ? (
         <nav aria-label={m.workspace_tools_heading()} className="flex items-center justify-end gap-3">
           <ResearchPanel key={sessionId ?? "new"} onOpenResearch={onResearch} active={activeView === "research"} placement="workspace" sessionId={sessionId} disabled={false} onOpenSession={onOpenSession} />

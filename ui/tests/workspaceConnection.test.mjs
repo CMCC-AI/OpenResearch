@@ -82,6 +82,10 @@ for (const kind of ["local", "ssh"]) {
       const { ProjectsPage } = load("routePages.tsx", {
         react: hooks().react,
         "./queries/client": {},
+        "./api": {},
+        "./queries/settings": {},
+        "./components/ModelPicker": {},
+        "./composerStash": {},
         "@tanstack/react-query": { useQuery: ({ kind }) => ({
           data: scenario === "loading" || scenario === "error" ? undefined
             : kind === "projects" ? (scenario === "projects" ? [{ id: "p" }] : []) : { onboardingCompleted: scenario !== "onboarding" },
@@ -163,3 +167,41 @@ for (const outcome of ["success", "failure", "popup-blocked"]) {
     }
   });
 }
+
+for (const outcome of ["success", "failure"]) for (const workMode of ["normal", "team"]) test(`unified research entry preserves objectives and materials on ${outcome}/${workMode}`, async () => {
+  const stashes = new Map();
+  const navigations = [];
+  const calls = [];
+  const { ProjectsPage } = load("routePages.tsx", {
+    react: hooks().react,
+    "./queries/client": { getWorkspaceGeneration: () => 7, queryClient: {} },
+    "./api": { createChatSession: async (...args) => { calls.push(args); if (outcome === "failure") throw new Error("session unavailable"); return { id: "session-1" }; } },
+    "./queries/settings": {},
+    "./components/ModelPicker": {},
+    "./composerStash": { getComposerStashStore: () => stashes },
+    "@tanstack/react-query": { useQuery: ({ kind }) => ({ data: kind === "projects" ? [{ id: "p", name: "研究项目" }] : { preferredAgent: { harness: "opencode", model: "configured-model" }, preferredAutonomy: "copilot" } }) },
+    "./queries/projects": { listProjectsQuery: () => ({ kind: "projects" }), getUiStateQuery: () => ({ kind: "state" }) },
+    "@tanstack/react-router": { useNavigate: () => async (options) => navigations.push(options), useSearch: () => ({ project: "p" }) },
+    "./RemoteRuntime": { useRuntime: () => ({ kind: "local" }) },
+    "./product/CloudWorkspace": { isCloudWorkspace: () => false },
+    "./product/ProductNav": { PlatformFrame: "PlatformFrame" },
+    "./routeResume": {}, "./paraglide/messages.js": messages,
+    "./components/ProjectsHome": { ProjectsHome: "ProjectsHome" },
+    "./components/OfflineBanner": { OfflineBanner: "OfflineBanner" },
+    "./components/WorkspaceConnection": {},
+    "./components/UpdateBanner": { UpdateBanner: "UpdateBanner", useUpdateStatus: () => ({}) },
+    "./components/ui": { showAlert: () => { if (outcome === "success") assert.fail("unexpected creation failure"); } },
+  });
+  const home = nodes(ProjectsPage()).find((node) => node.type === "ProjectsHome");
+  const draft = { workMode, draft: "验证研究假设", attachments: [{ name: "paper.pdf", mediaType: "application/pdf", dataUrl: "data:application/pdf;base64,AA==" }], annotations: [] };
+  await home.props.onCreated({ id: "p" }, null, draft);
+  assert.deepEqual(stashes.get(outcome === "success" ? "session-1" : "p:new"), draft);
+  assert.equal(stashes.has("p:new"), outcome === "failure");
+  assert.equal(calls[0][0], "p");
+  assert.equal(calls[0][1], "opencode");
+  assert.equal(calls[0][2].autonomy, "copilot");
+  assert.deepEqual(calls[0][2].research, workMode === "team" ? { mode: "team", objective: "验证研究假设" } : undefined);
+  if (outcome === "success") assert.equal(navigations[0].params.sessionId, "session-1");
+  else assert.deepEqual(navigations[0], { to: "/projects", search: { project: "p" } });
+  assert.equal(home.props.initialProjectId, "p");
+});

@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowRight, BookOpen, Calendar, Quote, Search, Sparkles } from "lucide-react";
+import { ArrowRight, BookOpen, Calendar, Database, Quote, Search, Sparkles } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { discoverPapers, type LiteratureHit, type LiteratureSource } from "../api";
 import { LitSourceLogo, LIT_SOURCE_NAME } from "../components/LitSourceLogo";
@@ -10,6 +10,22 @@ const sources: { id: LiteratureSource | "all"; label: string }[] = [
   { id: "all", label: "全部渠道" }, { id: "alphaxiv", label: "alphaXiv" },
   { id: "biorxiv", label: "bioRxiv" }, { id: "openalex", label: "OpenAlex" },
 ];
+
+const databases = [
+  { name: "IEEE Xplore", description: "面向电子、电气、通信与计算机等领域的学术资源平台，提供期刊论文、会议论文及技术标准等内容。" },
+  { name: "中国知网（CNKI）", description: "中文学术文献平台，覆盖期刊论文、学位论文和会议论文等资源，帮助了解国内研究进展与相关成果。" },
+] as const;
+
+function DatabaseIntroductions() {
+  return <section aria-labelledby="database-introduction-title" className="mt-8">
+    <h2 id="database-introduction-title" className="m-0 text-xl">学术数据源</h2>
+    <div className="mt-4 grid grid-cols-2 gap-4 [@media((max-width:_760px))]:grid-cols-1">{databases.map(({ name, description }) => <article key={name} aria-label={`${name} 数据源介绍`} className="min-w-0 rounded-xl border border-border-variant bg-background p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3"><Database size={28} className="shrink-0 text-primary" aria-hidden="true" /></div>
+      <h3 className="mt-4 mb-2 break-words text-lg">{name}</h3>
+      <p className="m-0 text-sm leading-relaxed text-subtext">{description}</p>
+    </article>)}</div>
+  </section>;
+}
 
 function PaperCard({ paper }: { paper: LiteratureHit }) {
   return <article className="rounded-xl border border-border-variant bg-background p-5 transition-shadow hover:shadow-card">
@@ -45,6 +61,8 @@ export function DiscoverPage() {
           <div className="flex items-center gap-3"><Search className="text-muted" size={22} /><input autoFocus value={input} onChange={(event) => setInput(event.target.value)} className="min-w-0 flex-1 border-0 bg-transparent px-0 py-3 text-lg focus:border-0" placeholder="输入研究问题、主题、方法或论文标题…" /><button className="rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-background" type="submit">搜索论文</button></div>
           <div className="mt-3 flex flex-wrap gap-2 border-t border-border-variant pt-3">{sources.map((item) => <button key={item.id} type="button" onClick={() => setSource(item.id)} className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs ${source === item.id ? "border-primary bg-primary-subtle text-primary" : "border-border text-subtext"}`}>{item.id !== "all" && <LitSourceLogo source={item.id} size={14} decorative />}{item.label}</button>)}</div>
         </form>
+
+        <DatabaseIntroductions />
 
         {!query && <section className="mt-8 grid grid-cols-3 gap-4 [@media((max-width:_760px))]:grid-cols-1">
           {sources.slice(1).map((item) => <article key={item.id} className="rounded-xl border border-border-variant bg-background p-5"><LitSourceLogo source={item.id as LiteratureSource} size={28} /><h2 className="mt-4 mb-2 text-lg">{item.label}</h2><p className="m-0 text-sm leading-relaxed text-subtext">{item.id === "alphaxiv" ? "发现 arXiv 论文、社区评价与全文相关片段。" : item.id === "biorxiv" ? "聚焦生命科学预印本，快速跟进尚未正式发表的研究。" : "覆盖跨学科论文、作者、机构与引用关系。"}</p></article>)}

@@ -19,7 +19,7 @@ import { listChatSessionsQuery, getChatMessagesQuery } from "./queries/chat";
 import { listProjectsQuery, getUiStateQuery, listRunsQuery, listExperimentsQuery } from "./queries/projects";
 import { deleteChatSession, openSideChat, sendChatMessage, setExperimentArchived } from "./api";
 import { getArtifactsQuery } from "./queries/files";
-import { useBlocker, useRouter, useRouterState } from "@tanstack/react-router";
+import { Link, useBlocker, useRouter, useRouterState } from "@tanstack/react-router";
 import {
   getTaskWorkspace,
   parseDestination,
@@ -115,10 +115,9 @@ import { ClosableTab } from "./components/ClosableTab";
 import { DetailDrawer, type ExperimentView } from "./components/DetailDrawer";
 import { FileViewer, type FileScrollPosition } from "./components/FileViewer";
 import { confirmFileDiscard, FileBufferSession } from "./fileSync";
-import { RailHeader } from "./components/Header";
+import { ProductHeader } from "./product/ProductNav";
 import { UpdateBanner, useUpdateStatus } from "./components/UpdateBanner";
 import { OfflineBanner } from "./components/OfflineBanner";
-import { NewProjectDialog } from "./components/ProjectsHome";
 import { ExperimentsTable } from "./components/ExperimentsTable";
 import { archiveActionsByExperiment } from "./components/ArchiveMenu";
 import { Md } from "./components/Md";
@@ -309,11 +308,11 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     void router.navigate({ href: id ? `/projects/${encodeURIComponent(id)}` : "/projects" });
   }, [router]);
   const setMainView = useCallback((view: "chat" | "skills" | SettingsTab) => {
-    if (!projectId) return;
+    if (!projectId || view === "skills" || view === "environment") return;
     if (view === "chat") {
       const id = rememberedSessionRef.current;
       void router.navigate({ href: taskLocation(projectId, id, getTaskWorkspace(workspaceRef.current, id ?? "new")?.active) });
-    } else void router.navigate({ href: `/projects/${encodeURIComponent(projectId)}/${view === "skills" ? "skills" : `settings/${view}`}` });
+    } else void router.navigate({ href: `/projects/${encodeURIComponent(projectId)}/settings/${view}` });
   }, [router, projectId]);
 
   const locale = useLocale();
@@ -447,7 +446,6 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   const workspaceCardVisible = mainView === "chat" && !panelOpen && workspaceWide;
   // The agents rail is a floating panel too: fixed-width, collapsible.
   const [railOpen, setRailOpen] = useState(true);
-  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const currentRightPaneStateRef = useRef<RightPaneSessionState>(initialRightPaneSessionState());
   const activeSessionIdRef = useRef<string | null>(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
@@ -741,8 +739,8 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   }, []);
   const createProjectFromDemoWelcome = useCallback(async () => {
     await closeDemoWelcome("create_project");
-    setNewProjectOpen(true);
-  }, [closeDemoWelcome]);
+    void router.navigate({ to: "/projects", search: { new: true } });
+  }, [closeDemoWelcome, router]);
 
   // Show the welcome once the bundled demo is first visible. User projects
   // never open it automatically.
@@ -1510,13 +1508,6 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     window.addEventListener("pointercancel", stop);
   };
 
-  const onProjectCreated = (project: Project, publicationError: string | null) => {
-    setProjects((cur) => (cur ? upsert(cur, project) : [project]));
-    void router.navigate({ href: `/projects/${encodeURIComponent(project.id)}${publicationError ? "/settings/git" : ""}` });
-    if (publicationError) {
-      showAlert(publicationError, "error");
-    }
-  };
 
   const expTab =
     typeof rightTab === "object" && "id" in rightTab ? rightTab : null;
@@ -1722,18 +1713,13 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   const conversationLoading = !conversationError && (!workspaceLoaded || sessions === null);
   const retryConversation = () => { retryWorkspace(); void sessionsQuery.refetch(); };
 
-  const railHeader = (
-    <RailHeader
-      onCollapse={() => setRailOpen(false)}
-    />
-  );
-
   return (
     <div className="app flex flex-col h-full">
       {runtime.kind === "local" && <OfflineBanner />}
       {runtime.kind === "local" && <UpdateBanner status={updateStatus} />}
       {workspaceError && <div role="alert" className="flex items-center gap-2 px-4 mac-titlebar:ps-20 win-titlebar:pe-36 py-2 text-subtext"><span>{workspaceError}</span><Button onClick={retryWorkspace}>{m.app_retry()}</Button></div>}
-      <div className={`app-body workspace-body relative flex flex-1 min-h-0 py-0 px-3.5 ${workspaceCardVisible ? "workspace-card-visible" : ""}`}>
+      <div className={`app-body workspace-body relative grid flex-1 min-h-0 grid-rows-[4rem_minmax(0,1fr)] [&>.product-sidebar]:row-span-2 [&>.product-sidebar]:row-start-1 [&>.chat-pane]:row-start-2 [&>.right-pane]:row-start-2 ${railOpen ? "grid-cols-[16rem_minmax(0,1fr)_auto]" : "grid-cols-[minmax(0,1fr)_auto]"} ${workspaceCardVisible ? "workspace-card-visible" : ""}`}>
+        <div className="workspace-global-header min-w-0" style={{ gridColumn: railOpen ? "2 / -1" : "1 / -1", gridRow: 1 }}><ProductHeader title={<nav aria-label="当前位置" className="flex min-w-0 items-center gap-2"><Link to="/projects" className="shrink-0 text-subtext no-underline hover:text-primary">科研首页</Link><span aria-hidden="true">/</span><Link to="/projects/$projectId" params={{ projectId }} className="truncate text-subtext no-underline hover:text-primary">{activeProject.name}</Link><span aria-hidden="true">/</span><span className="shrink-0 text-text">{mainView === "chat" ? "研究工作区" : mainView === "skills" ? "自定义能力" : "项目设置"}</span></nav>} /></div>
         {projectId && (
           <ChatPanel
             projectId={projectId}
@@ -1741,10 +1727,10 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             contentLoading={conversationLoading}
             contentError={conversationError || null}
             onRetryContent={retryConversation}
-            railHeader={railHeader}
+            onCollapseRail={() => setRailOpen(false)}
             railOpen={railOpen}
             onShowRail={() => setRailOpen(true)}
-            onNewProject={() => setNewProjectOpen(true)}
+            onNewProject={() => void router.navigate({ to: "/projects", search: { new: true } })}
             mainView={mainView}
             onSelectMainView={selectMainView}
             onOpenFile={openChatFile}
@@ -1808,7 +1794,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
         )}
         {mainView === "chat" && panelOpen && (
           <aside
-            className={`right-pane relative shrink-0 min-w-0 flex flex-col mt-5 win-titlebar:mt-10 me-0 mb-5 ms-3.5 bg-canvas [&.max]:fixed [&.max]:inset-2.5 mac-titlebar:[&.max]:top-8 win-titlebar:[&.max]:top-10 [&.max]:m-0 [&.max]:z-60 [&.max]:shadow-panel-max border border-border rounded-lg overflow-hidden shadow-elevated ${panelMax ? "max" : ""}`}
+            className={`right-pane relative shrink-0 min-w-0 flex flex-col mt-5 win-titlebar:mt-10 me-3.5 mb-5 ms-3.5 bg-canvas [&.max]:fixed [&.max]:inset-2.5 mac-titlebar:[&.max]:top-8 win-titlebar:[&.max]:top-10 [&.max]:m-0 [&.max]:z-60 [&.max]:shadow-panel-max border border-border rounded-lg overflow-hidden shadow-elevated ${panelMax ? "max" : ""}`}
             style={panelMax ? undefined : { width: panelWidth }}
             data-onboarding="experiments"
           >
@@ -2316,16 +2302,6 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
           </aside>
         )}
       </div>
-      {newProjectOpen && (
-        <NewProjectDialog
-          remote={runtime.kind === "ssh"}
-          onClose={() => setNewProjectOpen(false)}
-          onCreated={(project, publicationError) => {
-            setNewProjectOpen(false);
-            onProjectCreated(project, publicationError);
-          }}
-        />
-      )}
       {demoWelcomeOpen && activeProject && isDemoProjectId(activeProject.id) && (
         <DemoWelcomeModal
           onClose={closeDemoWelcome}

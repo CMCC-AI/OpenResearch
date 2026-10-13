@@ -1,3 +1,4 @@
+import { isSettingsSection as isAvailableSettingsTab } from "../workspaceState";
 import { cn } from "./ui/cn";
 import { TARGET_LABELS } from "../computeTargets";
 import { HarnessSetupDialog } from "./HarnessSetupDialog";
@@ -1779,13 +1780,11 @@ function TargetTile({
   isDefault,
   summary,
   onOpen,
-  onOpenEnvironment,
 }: {
   target: ComputeTargetSummary;
   isDefault: boolean;
   summary?: string;
   onOpen?: () => void;
-  onOpenEnvironment: () => void;
 }) {
   const summaryId = `compute-${target.id}-summary`;
   const setupLabel = target.unverified
@@ -1822,13 +1821,7 @@ function TargetTile({
         {target.fromEnvironmentTab ? (
           <>
             {target.id === "tinker" ? m.settings_key_from() : m.settings_token_from()}{" "}
-            <button
-              type="button"
-              className="relative z-20 text-primary underline-offset-2 hover:text-primary-hover hover:underline"
-              onClick={onOpenEnvironment}
-            >
-              {m.settings_environment_tab()}
-            </button>
+            <span>{m.settings_environment_tab()}</span>
           </>
         ) : summary ?? target.summary}
       </span>
@@ -1950,12 +1943,10 @@ function QuickSetupDialog({ target, remote, onClose }: { target: ComputeTargetSu
 function ComputeTab({
   project,
   onViewHistory,
-  onOpenEnvironment,
   remote,
 }: {
   project: Project | null;
   onViewHistory: () => void;
-  onOpenEnvironment: () => void;
   remote: boolean;
 }) {
   const settingsOptions = getComputeSettingsQuery(project?.id);
@@ -1987,7 +1978,6 @@ function ComputeTab({
     )
     : null;
   const configuredTargets = orderedTargets?.filter((target) => target.configured) ?? [];
-  const availableTargets = orderedTargets?.filter((target) => !target.configured) ?? [];
   const renderTarget = (target: ComputeTargetSummary) => (
     <TargetTile
       key={`${project?.id ?? "none"}:${target.id}`}
@@ -1995,11 +1985,10 @@ function ComputeTab({
       isDefault={defaultBackend === target.id}
       summary={target.id === "local" ? localMachine ? localMachineSummary(localMachine) : localMachineError ?? m.settings_page_detecting_hardware() : undefined}
       onOpen={target.id === "local" ? undefined : () => setSelectedTarget(target.id)}
-      onOpenEnvironment={onOpenEnvironment}
     />
   );
   const selected = selectedTarget
-    ? settings?.targets.find((target) => target.id === selectedTarget)
+    ? settings?.targets.find((target) => target.id === selectedTarget && target.configured)
     : null;
 
   if (selected && !QUICK_SETUP_TARGETS.includes(selected.id)) {
@@ -2040,14 +2029,6 @@ function ComputeTab({
               {configuredTargets.map(renderTarget)}
             </div>
           </section>
-          {availableTargets.length > 0 && (
-            <section className="mb-3.5">
-              <h2 className="mt-0 mx-0 mb-2 text-lg">{m.settings_page_more_compute_options()}</h2>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {availableTargets.map(renderTarget)}
-              </div>
-            </section>
-          )}
           {selected && <QuickSetupDialog target={selected} remote={remote} onClose={() => setSelectedTarget(null)} />}
         </>
       )}
@@ -3716,7 +3697,6 @@ export const SETTINGS_NAV: SettingsNavItem[] = [
     icon: <Cpu size={15} />,
     activeTabs: ["compute", "instances"],
   },
-  { id: "environment", label: m.settings_page_environment, icon: <SquareTerminal size={15} />, activeTabs: ["environment"] },
   {
     id: "settings",
     label: m.settings_page_settings,
@@ -3763,6 +3743,8 @@ export function SettingsView({
     };
   }, [tab, project?.id]);
 
+  if (!isAvailableSettingsTab(tab)) return <p role="alert" className="p-6 text-subtext">该配置页面暂不开放。</p>;
+
   return (
     <div className="settings-view max-w-readable my-0 mx-auto pt-6 px-8 pb-15 [&_h1]:mt-0 [&_h1]:mx-0 [&_h1]:mb-1.5 [&_h1]:text-3xl [&_>_.error]:text-accent-red [&_>_.error]:text-base [&_>_.error]:whitespace-pre-wrap [&_>_.error]:mt-0 [&_>_.error]:mx-0 [&_>_.error]:mb-3">
       {showsSettings && (
@@ -3798,7 +3780,6 @@ export function SettingsView({
         <ComputeTab
           project={project}
           onViewHistory={() => onSelectTab("instances")}
-          onOpenEnvironment={() => onSelectTab("environment")}
           remote={remote}
         />
       )}

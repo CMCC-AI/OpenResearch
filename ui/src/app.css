@@ -344,3 +344,20 @@
 .openresearch-diff .diff-code {
   @apply whitespace-pre-wrap break-normal break-words;
 }
+
+@media (max-width: 820px) {
+  .workspace-body {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .workspace-body > .workspace-global-header {
+    grid-column: 1 / -1 !important;
+  }
+  .workspace-body > .session-rail {
+    position: absolute;
+    inset-inline-start: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 40;
+    box-shadow: var(--shadow-elevated);
+  }
+}

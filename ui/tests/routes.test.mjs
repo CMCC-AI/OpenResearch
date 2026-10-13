@@ -63,7 +63,6 @@ test("real file routes distinguish task/new, task IDs, project index, and settin
     ["/projects/p", "/projects/$projectId/"],
     ["/projects/p/tasks/new", "/projects/$projectId/tasks/new"],
     ["/projects/p/tasks/old", "/projects/$projectId/tasks/$sessionId"],
-    ["/projects/p/skills", "/projects/$projectId/skills"],
     ["/projects/p/settings/git", "/projects/$projectId/settings/$tab"],
     ["/remote-launch", "/remote-launch"],
   ]) {
@@ -71,10 +70,15 @@ test("real file routes distinguish task/new, task IDs, project index, and settin
     assert.equal(router.state.matches.at(-1).routeId, routeId, path);
     assert.equal(router.state.matches.at(-1).status, "success", path);
   }
-  for (const path of ["/projects/p/settings/unknown", "/projects/p/tasks/%00"]) {
+  for (const path of ["/projects/p/skills", "/projects/p/settings/environment", "/projects/p/settings/unknown", "/projects/p/tasks/%00"]) {
     const invalid = await match(path);
-    assert(invalid.state.matches.some((route) => route.status === "notFound"), path);
+    assert(invalid.state.matches.some((route) => route.status === "notFound" || route.globalNotFound), `${path}: ${JSON.stringify(invalid.state.matches.map(({ status, globalNotFound, routeId }) => ({ status, globalNotFound, routeId })))}`);
   }
+});
+
+test("hidden configuration tabs are rejected by the settings route guard", () => {
+  const { Route } = loadModule("routes/projects.$projectId.settings.$tab.tsx");
+  for (const tab of ["environment", "%65nvironment"]) assert.throws(() => Route.options.beforeLoad({ params: { tab } }), routing.isNotFound);
 });
 
 test("product start links preserve new-project and alphaXiv paper intent", async () => {
@@ -146,7 +150,7 @@ test("resume uses the current database response and current queued preference; f
   const saved = "/projects/p/settings/git";
   const api = resumeApi(saved);
   const current = loadModule("routeResume.ts", api, { lastLocation: "/projects/p/skills" });
-  assert.equal(await current.globalResumeLocation(), "/projects/p/skills");
+  assert.equal(await current.globalResumeLocation(), saved);
   const otherDatabase = loadModule("routeResume.ts", resumeApi(saved, [], [{ id: "other" }]));
   assert.equal(await otherDatabase.globalResumeLocation(), "/projects/other/tasks/new");
   const failed = loadModule("routeResume.ts", {

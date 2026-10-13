@@ -9,7 +9,7 @@ window.addEventListener("pagehide", () => clearTimeout(runtimeTimer));
 async function hostedHome(capabilities) {
   renderAccount();
   const space = await api("/personal-space", "POST");
-  app.innerHTML = `<section class="auth card account-card"><h1>我的科研空间</h1><p id="runtime-status" role="status">正在准备运行环境…</p><button id="enter-space" class="primary" disabled>进入科研工作台</button><button id="retry-space" hidden>重新准备环境</button>${capabilities.deepLiteratureUrl ? '<button id="literature">进入深度文献</button>' : ""}</section>`;
+  app.innerHTML = `<section class="auth card account-card"><h1>我的科研空间</h1><p id="runtime-status" role="status">正在准备运行环境…</p><button id="enter-space" class="primary" disabled>进入科研工作台</button><button id="retry-space" hidden>重新准备环境</button>${capabilities.deepLiteratureUrl ? '<button id="literature">进入论文精读</button>' : ""}</section>`;
   document.querySelector("#enter-space").onclick = async () => {
     try {
       const launch = await api(`/workspaces/${space.id}/launch`, "POST");

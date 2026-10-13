@@ -13,17 +13,12 @@ const journey = [
 export function LandingPage() {
   const { loading, user, login } = useAuthSession();
   return <main className="product-landing h-full overflow-y-auto bg-background text-text">
-    <nav className="mx-auto flex max-w-330 items-center justify-between px-7 py-5">
+    <header className="mx-auto flex max-w-330 items-center justify-between gap-4 px-7 py-5">
       <ProductWordmark />
-      <div className="flex items-center gap-7 text-sm [@media((max-width:_720px))]:hidden">
-        <a href="#product" className="text-subtext no-underline hover:text-text">产品</a>
-        <a href="#product" className="text-subtext no-underline hover:text-text">产品能力</a>
-      </div>
       {user
-        ? <Link to="/projects" className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-medium text-background no-underline">进入产品主页 <ArrowRight size={16} /></Link>
+        ? <Link to="/projects" className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-medium text-background no-underline">进入科研首页 <ArrowRight size={16} /></Link>
         : <button type="button" disabled={loading} onClick={login} className="inline-flex items-center gap-2 rounded-full border-0 bg-primary px-5 py-2.5 text-sm font-medium text-background disabled:opacity-60">登录 <ArrowRight size={16} /></button>}
-    </nav>
-
+    </header>
     <section className="relative mx-auto grid min-h-[calc(100vh_-_74px)] max-w-330 grid-cols-[1.05fr_.95fr] items-center gap-12 overflow-hidden px-7 py-14 [@media((max-width:_860px))]:grid-cols-1">
       <div className="relative z-1 max-w-170">
         <span className="mb-6 inline-flex items-center gap-2 rounded-full border border-border bg-canvas px-3 py-1.5 text-xs text-subtext"><Sparkles size={14} className="text-primary" />AI 原生科研工作台</span>
@@ -35,7 +30,7 @@ export function LandingPage() {
             : <button type="button" disabled={loading} onClick={login} className="inline-flex items-center gap-2 rounded-lg border-0 bg-primary px-6 py-3 font-medium text-background disabled:opacity-60">登录后开始研究 <ArrowRight size={18} /></button>}
           <a href="#product" className="inline-flex items-center gap-2 rounded-lg border border-border px-6 py-3 text-text no-underline hover:bg-canvas">了解能力</a>
         </div>
-        <div className="mt-12 flex flex-wrap items-center gap-5 text-xs text-muted"><span>论文渠道</span><strong className="text-text">alphaXiv</strong><strong className="text-text">bioRxiv</strong><strong className="text-text">OpenAlex</strong><strong className="text-text">Deep Literature</strong></div>
+        <div className="mt-12 flex flex-wrap items-center gap-5 text-xs text-muted"><span>论文渠道</span><strong className="text-text">alphaXiv</strong><strong className="text-text">bioRxiv</strong><strong className="text-text">OpenAlex</strong><strong className="text-text">DeepXiv</strong></div>
       </div>
 
       <div className="relative min-h-145 [@media((max-width:_860px))]:min-h-110" aria-hidden="true">
