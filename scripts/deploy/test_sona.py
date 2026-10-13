@@ -18,7 +18,7 @@ class DeploymentTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         path = Path(temp.name) / 'bundle.tgz'
         with tarfile.open(path, 'w:gz') as tar:
-            data = json.dumps({'architecture': 'linux/amd64', 'credentialsIncluded': False}).encode()
+            data = json.dumps({'deploymentFormat': 2, 'appPath': '/sona', 'architecture': 'linux/amd64', 'credentialsIncluded': False}).encode()
             info = tarfile.TarInfo(member)
             info.size = len(data)
             if kind:

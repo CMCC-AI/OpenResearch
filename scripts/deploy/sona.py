@@ -281,7 +281,7 @@ def prepare(args):
     (bundle / 'opencode-version').write_text(version)
     (bundle / 'release-id').write_text(release)
     (bundle / 'compose.yaml').write_text(compose_text(release))
-    manifest = {'release': release, 'architecture': platform, 'sonaCommit': subprocess.check_output(['git', '-C', ROOT, 'rev-parse', 'HEAD'], text=True).strip(), 'deepxivCommit': subprocess.check_output(['git', '-C', deep, 'rev-parse', 'HEAD'], text=True).strip(), 'opencodeVersion': version, 'credentialsIncluded': not args.without_auth and auth.exists()}
+    manifest = {'deploymentFormat': 2, 'appPath': '/sona', 'release': release, 'architecture': platform, 'sonaCommit': subprocess.check_output(['git', '-C', ROOT, 'rev-parse', 'HEAD'], text=True).strip(), 'deepxivCommit': subprocess.check_output(['git', '-C', deep, 'rev-parse', 'HEAD'], text=True).strip(), 'opencodeVersion': version, 'credentialsIncluded': not args.without_auth and auth.exists()}
     (bundle / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
     shutil.rmtree(build)
     lines = []
@@ -315,6 +315,8 @@ def inspect_bundle(archive):
             raise ValueError('非法发布编号')
         file = tar.extractfile(release + '/manifest.json')
         manifest = json.load(file)
+        if manifest.get('deploymentFormat') != 2 or manifest.get('appPath') != '/sona':
+            raise ValueError('此包不包含 /sona 入口与最新代理修正，请重新准备部署包。')
         if manifest.get('architecture') not in ('linux/amd64', 'linux/arm64'):
             raise ValueError('部署包架构字段非法')
         return release, manifest
