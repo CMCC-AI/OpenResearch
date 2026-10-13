@@ -21,6 +21,7 @@ import {
   workspaceOrigin,
   workspaceEntryOrigin,
   sameOrigin,
+  browserSessionOrigin,
   permitted,
   secretEqual,
   pkce,
@@ -570,7 +571,7 @@ export async function createPlatform(
         "/api/platform/browser-logout",
       ].includes(path);
       if (browserSessionPath) {
-        sameOrigin(req, config.appOrigin);
+        browserSessionOrigin(req, config.appOrigin);
         res.setHeader("access-control-allow-origin", config.appOrigin);
         res.setHeader("access-control-allow-credentials", "true");
         res.setHeader("vary", "Origin");

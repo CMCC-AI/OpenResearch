@@ -72,7 +72,7 @@ test(
               method,
               headers: {
                 host,
-                origin,
+                ...(origin === null ? {} : { origin }),
                 ...(cookie ? { cookie } : {}),
                 ...(payload
                   ? {
@@ -198,7 +198,41 @@ test(
         "public shared research space admits only its owner",
         async () => {
           config.researchOwnerEmail = "alice@test.invalid";
+          const appOrigin = config.appOrigin;
+          config.appOrigin = config.origin.origin;
           try {
+            for (const site of [undefined, "same-origin"]) {
+              assert.equal(
+                (
+                  await request("/api/platform/browser-session", {
+                    cookie: alice,
+                    origin: null,
+                    headers: site ? { "sec-fetch-site": site } : {},
+                  })
+                ).status,
+                200,
+              );
+            }
+            assert.equal(
+              (
+                await request("/api/platform/browser-session", {
+                  cookie: alice,
+                  origin: null,
+                  headers: { "sec-fetch-site": "cross-site" },
+                })
+              ).status,
+              403,
+            );
+            assert.equal(
+              (
+                await request("/api/platform/browser-logout", {
+                  method: "POST",
+                  cookie: alice,
+                  origin: null,
+                })
+              ).status,
+              403,
+            );
             assert.equal(
               (await request("/api/auth/sso/authorize", { cookie: bob }))
                 .status,
@@ -232,6 +266,7 @@ test(
             );
           } finally {
             config.researchOwnerEmail = "";
+            config.appOrigin = appOrigin;
           }
         },
       );

@@ -9,6 +9,7 @@ import {
   hostWorkspace,
   sessionCookie,
   workspaceEntryOrigin,
+  browserSessionOrigin,
 } from "../src/security.mjs";
 import { configuration } from "../src/server.mjs";
 test("cancelling an overloaded stream does not crash the gateway", () => {
@@ -167,4 +168,29 @@ test("public HTTP needs exact explicit origin approval", () => {
     "http://user@61.136.101.179:20281",
   ])
     assert.throws(() => configuration({ ...allowed, OPENRESEARCH_APP_ORIGIN }));
+});
+
+test("browser session reads accept same-origin GETs without Origin, but reject foreign reads and headerless writes", () => {
+  const origin = "http://61.136.101.179:20281";
+  const request = { method: "GET", headers: { host: "61.136.101.179:20281" } };
+  assert.doesNotThrow(() => browserSessionOrigin(request, origin));
+  assert.doesNotThrow(() =>
+    browserSessionOrigin(
+      {
+        ...request,
+        headers: { ...request.headers, "sec-fetch-site": "same-origin" },
+      },
+      origin,
+    ),
+  );
+  for (const req of [
+    { ...request, method: "POST" },
+    { ...request, headers: { host: "evil.test" } },
+    {
+      ...request,
+      headers: { ...request.headers, "sec-fetch-site": "cross-site" },
+    },
+    { ...request, headers: { ...request.headers, origin: "http://evil.test" } },
+  ])
+    assert.throws(() => browserSessionOrigin(req, origin), { status: 403 });
 });

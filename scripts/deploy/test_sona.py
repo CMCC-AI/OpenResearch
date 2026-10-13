@@ -13,12 +13,12 @@ spec.loader.exec_module(sona)
 
 
 class DeploymentTests(unittest.TestCase):
-    def archive(self, member='20261013T000000Z-aabbcc/manifest.json', kind=None):
+    def archive(self, member='20261013T000000Z-aabbcc/manifest.json', kind=None, browser_session_read=1):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         path = Path(temp.name) / 'bundle.tgz'
         with tarfile.open(path, 'w:gz') as tar:
-            data = json.dumps({'deploymentFormat': 3, 'literatureMode': 'existing-server-sso', 'appPath': '/sona', 'architecture': 'linux/amd64', 'credentialsIncluded': False}).encode()
+            data = json.dumps({'browserSessionReadVersion': browser_session_read, 'deploymentFormat': 3, 'literatureMode': 'existing-server-sso', 'appPath': '/sona', 'architecture': 'linux/amd64', 'credentialsIncluded': False}).encode()
             info = tarfile.TarInfo(member)
             info.size = len(data)
             if kind:
@@ -31,6 +31,10 @@ class DeploymentTests(unittest.TestCase):
         release, data = sona.inspect_bundle(self.archive())
         self.assertEqual(release, '20261013T000000Z-aabbcc')
         self.assertEqual(data['architecture'], 'linux/amd64')
+
+    def test_bundle_without_browser_login_fix_rejected(self):
+        with self.assertRaisesRegex(ValueError, '浏览器登录修复'):
+            sona.inspect_bundle(self.archive(browser_session_read=0))
 
     def test_tar_traversal_rejected(self):
         for path in ('../manifest.json', '/etc/manifest.json'):

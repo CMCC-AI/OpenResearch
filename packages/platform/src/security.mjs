@@ -94,6 +94,19 @@ export function hostWorkspace(config, host) {
 export function sameOrigin(req, origin) {
   check(req.headers.origin === origin, 403, "请求来源不受信任");
 }
+// Browsers omit Origin on same-origin GETs; writes still require it.
+export function browserSessionOrigin(req, origin) {
+  if (req.headers.origin !== undefined) return sameOrigin(req, origin);
+  check(
+    req.method === "GET" &&
+      req.headers.host === new URL(origin).host &&
+      [undefined, "same-origin", "none"].includes(
+        req.headers["sec-fetch-site"],
+      ),
+    403,
+    "请求来源不受信任",
+  );
+}
 export function workspaceEntryOrigin(req, origin) {
   const embeddedSameOriginNavigation =
     req.headers.origin === "null" &&

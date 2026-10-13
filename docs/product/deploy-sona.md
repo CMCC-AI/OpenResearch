@@ -126,3 +126,9 @@ ssh -p 20280 ubuntu@61.136.101.179 \
 复用包已部署到两台服务器。公网 `/sona/`、管理员登录、科研 API 授权、双服务器文献 SSO、回到 SONA 以及共享论文查询均通过。`sona.service` 与文献通道均为 active/enabled，文献容器配置自动恢复；未为验收重启整台服务器或调用付费模型。原 `deeplit-web-1`、`deeplit-cmcc-web-1` 和 `deeplit-db-1` 保持健康，CMCC 原应用入口检查返回 200。现有 CMCC 网关备份：`/opt/cmcc-apps/config/gateway-nginx.conf.sona-backup-20261013T080031Z`。
 
 文献退出会撤销关联的平台会话；首次登录信息仅保存在私密登录文件中，不写入提交。验收后撤销本次 `/etc/sudoers.d/sona-deploy` 临时免密权限，后续执行系统升级前需重新取得管理员权限。
+
+## 浏览器登录回跳修复
+
+2026-10-13 已在线修复账号平台：浏览器同源 GET 通常不携带 Origin，原 `browser-session` 错误要求该头，导致管理员通过 SSO 后再次被送回登录页。现在仅允许 Host 匹配、非跨站的无 Origin GET，写操作继续要求指定 Origin。无 Origin 的公网会话、科研 API、文献 SSO 和返回 SONA 的完整链路验证通过。原管理员账号与密码不变，新注册账号仍没有共享空间权限。
+
+服务器更新了平台镜像及容器，保留只读文件系统和原环境/资源限制；数据库、执行器和文献服务未重启。早期 `.sona-run/deploy/20261013T072430Z-bc63f1.tgz` 不含此修复，当前脚本会拒绝重新安装它。后续升级应运行 `./deploy-sona.command --prepare-only` 生成带 `browserSessionReadVersion: 1` 的新包。
