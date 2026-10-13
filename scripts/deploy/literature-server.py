@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Validate on a private clone; install a separate SONA view on the literature host."""
-import argparse, hashlib, json, os, pathlib, secrets, subprocess, time, urllib.request, urllib.error, fcntl
+import argparse, hashlib, json, os, pathlib, secrets, subprocess, time, urllib.request, urllib.error, fcntl, socket
 
 ROOT = pathlib.Path('/opt/sona-literature')
 PUBLIC = 'http://61.136.101.179:20281'
@@ -85,6 +85,10 @@ def validate(bundle, stamp):
         subprocess.run(['docker','stop',clone],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 
 def install(bundle, stamp, migration):
+    probe=socket.socket(); probe.settimeout(2)
+    occupied=probe.connect_ex(('127.0.0.1',3005))==0; probe.close()
+    if occupied and subprocess.run(['docker','inspect','sona-literature-web'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode!=0:
+        raise RuntimeError('Loopback 3005 belongs to another service')
     state=ROOT/'state';state.mkdir(mode=0o700,exist_ok=True)
     if not (bundle/'literature-image.tar').is_file():raise RuntimeError('Candidate image required before production migration')
     peer=json.loads((bundle/'peer.json').read_text())
@@ -129,7 +133,12 @@ def install(bundle, stamp, migration):
         if existing['Config'].get('Labels',{}).get('sona.managed')!='literature':raise RuntimeError('Container name belongs to another service')
         run(['docker','stop',name],stdout=subprocess.DEVNULL);run(['docker','rm',name],stdout=subprocess.DEVNULL)
     run(['docker','run','-d','--name',name,'--label','sona.managed=literature','--memory','1g','--cpus','1','--pids-limit','256','--restart','unless-stopped','--network','host','--env-file',str(envfile),'-v',papers+':/data/papers:ro',image],stdout=subprocess.DEVNULL)
-    print('SONA literature view installed on loopback 3005; existing services retained.')
+    check="Promise.all([fetch('http://localhost:3005/api/papers?paginated=1&limit=1').then(async r=>{const d=await r.json();if(!r.ok||!Array.isArray(d.papers))throw Error('papers')}),fetch('http://localhost:3005/api/auth/openresearch/start',{redirect:'manual'}).then(r=>{if(r.status!==303)throw Error('sso')})]).catch(()=>process.exit(1))"
+    for i in range(60):
+        if subprocess.run(['docker','exec',name,'node','-e',check],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0:break
+        if i==59:raise RuntimeError('New literature service did not become healthy')
+        time.sleep(1)
+    print('SONA literature view healthy on loopback 3005; existing services retained.')
 
 if __name__=='__main__':
     os.umask(0o077)
