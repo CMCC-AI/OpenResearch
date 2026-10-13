@@ -51,7 +51,7 @@ if [[ -e $release ]]; then
   cmp -s "$bundle/manifest.json" "$release/manifest.json" || { echo '发布编号碰撞，请重新打包。' >&2; exit 1; }
 fi
 install -d -m 0700 "$release"
-cp -a compose.yaml images.tar manifest.json migrations start.sh "$release/"
+cp -a compose.yaml images.tar manifest.json migrations start.sh nginx.conf "$release/"
 chmod 0700 "$release/start.sh"
 # Stable secrets survive upgrades; never copy local database or account credentials.
 if [[ ! -f $root/state/.env ]]; then
@@ -101,6 +101,41 @@ if ! ./start.sh; then
   echo '数据卷保持原样；数据库迁移后请勿自动恢复旧数据库。' >&2
   exit 1
 fi
+# Bootstrap a single authorized account before opening the public gateway.
+if [[ ! -f $root/state/admin-login.txt ]]; then
+  python3 - "$root/state/admin-password" <<'ADMIN'
+import secrets,sys
+from pathlib import Path
+p=Path(sys.argv[1])
+if not p.exists(): p.write_text(secrets.token_urlsafe(32)+'\n')
+ADMIN
+  docker compose --env-file "$root/state/.env" -p sona-remote run --rm -T platform-migrate node src/admin.mjs create-user owner@research.local 科研平台管理员 <"$root/state/admin-password"
+  { printf '入口：http://61.136.101.179:20281\n账号：owner@research.local\n密码：'; cat "$root/state/admin-password"; } >"$root/state/admin-login.txt"
+fi
+# Run a bundled Nginx, keeping the host's existing sites untouched.
+docker compose --env-file "$root/state/.env" -p sona-remote run --rm --no-deps gateway nginx -t
+docker compose --env-file "$root/state/.env" -p sona-remote up -d --pull never gateway
+python3 - <<'PUBLIC'
+import urllib.request,urllib.error,time
+u='http://127.0.0.1:20281'
+headers={'Host':'61.136.101.179:20281'}
+for attempt in range(30):
+ try:
+  urllib.request.urlopen(urllib.request.Request(u+'/api/health',headers=headers),timeout=3)
+  break
+ except Exception:
+  if attempt==29: raise SystemExit('Nginx 20281 未就绪，请检查是否被现有服务占用。')
+  time.sleep(1)
+for path in ('/api/health','/_account/login','/api/papers?limit=1'):
+ with urllib.request.urlopen(urllib.request.Request(u+path,headers=headers),timeout=10) as r:
+  assert r.status==200
+try:
+ urllib.request.urlopen(urllib.request.Request(u+'/api/projects',headers=headers),timeout=10)
+ raise SystemExit('科研 API 未登录保护校验失败')
+except urllib.error.HTTPError as e:
+ if e.code not in (401,403): raise
+print('Nginx 20281 入口与科研 API 登录保护检查通过。')
+PUBLIC
 ln -sfn "$release" "$root/current"
 cat >/etc/systemd/system/sona.service <<UNIT
 [Unit]
@@ -128,4 +163,4 @@ systemctl daemon-reload
 systemctl enable sona.service
 systemctl start sona.service
 printf '部署完成。SONA 0.2.18；OpenCode %s\n' "$(cat "$bundle/opencode-version")"
-echo '三个 HTTP 入口仅监听服务器回环地址，请使用本地 SSH 隧道访问。'
+echo '公网入口：http://61.136.101.179:20281；内部服务端口仅监听回环地址。'

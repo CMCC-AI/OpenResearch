@@ -194,6 +194,42 @@ test(
       );
       const alice = await login("alice"),
         bob = await login("bob");
+      await t.test(
+        "public shared research space admits only its owner",
+        async () => {
+          config.researchOwnerEmail = "alice@test.invalid";
+          try {
+            assert.equal(
+              (
+                await request("/api/platform/browser-session", {
+                  cookie: alice,
+                  origin: config.appOrigin,
+                })
+              ).status,
+              200,
+            );
+            assert.equal(
+              (
+                await request("/api/platform/browser-session", {
+                  cookie: bob,
+                  origin: config.appOrigin,
+                })
+              ).status,
+              403,
+            );
+            assert.equal(
+              (
+                await request("/api/platform/browser-session", {
+                  origin: config.appOrigin,
+                })
+              ).status,
+              401,
+            );
+          } finally {
+            config.researchOwnerEmail = "";
+          }
+        },
+      );
       assert.equal((await request("/")).status, 200);
       let aliceSso;
       await t.test("DeepLiterature SSO is PKCE-bound and one-use", async () => {

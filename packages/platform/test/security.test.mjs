@@ -148,3 +148,23 @@ test("workspace entry accepts only explicit or embedded same-origin navigation",
   ])
     assert.throws(() => workspaceEntryOrigin({ headers }, expected));
 });
+
+test("public HTTP needs exact explicit origin approval", () => {
+  const origin = "http://61.136.101.179:20281";
+  const env = {
+    DATABASE_URL: "postgres://test:test@localhost/test",
+    PLATFORM_ORIGIN: origin,
+    OPENRESEARCH_APP_ORIGIN: origin,
+    DEEPLIT_ORIGIN: origin,
+    DEEPLIT_SSO_CLIENT_SECRET: "x".repeat(32),
+  };
+  assert.throws(() => configuration(env), /HTTPS/);
+  const allowed = { ...env, PLATFORM_INSECURE_PUBLIC_ORIGIN: origin };
+  assert.equal(configuration(allowed).secure, false);
+  for (const OPENRESEARCH_APP_ORIGIN of [
+    "http://61.136.101.179:20282",
+    `${origin}/extra`,
+    "http://user@61.136.101.179:20281",
+  ])
+    assert.throws(() => configuration({ ...allowed, OPENRESEARCH_APP_ORIGIN }));
+});

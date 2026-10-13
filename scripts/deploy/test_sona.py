@@ -54,13 +54,15 @@ class DeploymentTests(unittest.TestCase):
             run.assert_not_called()
 
     def test_scp_port_and_verified_server_execution(self):
-        with patch.object(sona.subprocess, 'check_output', return_value='x86_64\n'), patch.object(sona, 'run') as run:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        with patch.object(sona, 'ROOT', Path(temp.name)), patch.object(sona.subprocess, 'check_output', return_value='x86_64\n'), patch.object(sona, 'run') as run:
             sona.deploy(self.archive())
             calls = [call.args[0] for call in run.call_args_list]
             scp = next(cmd for cmd in calls if cmd[0] == 'scp')
             self.assertEqual(scp[1:3], ['-P', '20280'])
             self.assertIn('ubuntu@61.136.101.179:', scp[-1])
-            command = calls[-1][-1]
+            command = next(cmd[-1] for cmd in calls if 'sudo -n bash' in cmd[-1])
             self.assertLess(command.index('sha256sum -c'), command.index('sudo -n bash'))
             self.assertNotIn('StrictHostKeyChecking=no', str(calls))
 

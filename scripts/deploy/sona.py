@@ -55,7 +55,7 @@ def validate_config(text):
 
 
 def compose_text(release):
-    prefix = 'sona-' + release
+    prefix = 'sona-' + release.lower()
     return f'''name: sona-remote
 services:
   platform-db:
@@ -111,9 +111,11 @@ services:
     network_mode: host
     environment:
       DATABASE_URL: postgres://research_platform:${{PLATFORM_DB_PASSWORD}}@127.0.0.1:15439/research_platform
-      PLATFORM_ORIGIN: http://localhost:5300
-      OPENRESEARCH_APP_ORIGIN: http://localhost:4791
-      DEEPLIT_ORIGIN: http://localhost:3000
+      PLATFORM_ORIGIN: http://61.136.101.179:20281
+      PLATFORM_INSECURE_PUBLIC_ORIGIN: http://61.136.101.179:20281
+      PLATFORM_RESEARCH_OWNER_EMAIL: owner@research.local
+      OPENRESEARCH_APP_ORIGIN: http://61.136.101.179:20281
+      DEEPLIT_ORIGIN: http://61.136.101.179:20281
       DEEPLIT_SSO_CLIENT_SECRET: ${{DEEPLIT_SSO_CLIENT_SECRET}}
       BIND_ADDRESS: 127.0.0.1
       ORX_UI_DIST: /app/ui/dist
@@ -132,10 +134,11 @@ services:
       PORT: 3000
       PAPER_STORAGE_DIR: /data/papers
       DEEPLIT_AUTH_MODE: openresearch
-      DEEPLIT_OPENRESEARCH_URL: http://localhost:5300
-      DEEPLIT_OPENRESEARCH_PUBLIC_ORIGIN: http://localhost:5300
-      DEEPLIT_OPENRESEARCH_APP_ORIGIN: http://localhost:4791
-      DEEPLIT_PUBLIC_ORIGIN: http://localhost:3000
+      DEEPLIT_OPENRESEARCH_URL: http://localhost:20281
+      DEEPLIT_OPENRESEARCH_PUBLIC_ORIGIN: http://61.136.101.179:20281
+      DEEPLIT_OPENRESEARCH_APP_ORIGIN: http://61.136.101.179:20281
+      DEEPLIT_PUBLIC_ORIGIN: http://61.136.101.179:20281
+      DEEPLIT_INSECURE_PUBLIC_ORIGIN: http://61.136.101.179:20281
       DEEPLIT_SSO_CLIENT_SECRET: ${{DEEPLIT_SSO_CLIENT_SECRET}}
       DEEPLIT_PASSWORD_PEPPER: ${{DEEPLIT_PASSWORD_PEPPER}}
       DEEPLIT_COOKIE_MODE: same-site
@@ -148,6 +151,8 @@ services:
     network_mode: host
     environment:
       OPENCODE_DISABLE_AUTOUPDATE: '1'
+      ORX_ACCOUNT_URL: http://61.136.101.179:20281
+      ORX_DEEP_LITERATURE_WEB_URL: http://61.136.101.179:20281
     volumes:
       - research_home:/home/node
       - /opt/sona/state/opencode:/home/node/.config/opencode
@@ -156,6 +161,12 @@ services:
     restart: unless-stopped
     init: true
     stop_grace_period: 2m
+  gateway:
+    image: {prefix}-nginx
+    network_mode: host
+    volumes: [./nginx.conf:/etc/nginx/conf.d/default.conf:ro]
+    restart: unless-stopped
+    depends_on: [platform, literature, workbench]
 volumes:
   platform_db:
   literature_db:
@@ -218,14 +229,32 @@ def prepare(args):
     run(['pnpm', '--dir', ROOT / 'ui', 'install', '--frozen-lockfile'])
     run(['pnpm', '--dir', ROOT / 'ui', 'build'])
     platform = 'linux/' + args.arch
-    prefix = 'sona-' + release
+    prefix = 'sona-' + release.lower()
     run(['docker', 'buildx', 'build', '--platform', platform, '--load', '-f', ROOT / 'packages/platform/Dockerfile.executor', '--build-arg', 'OPENCODE_VERSION=' + version, '-t', 'sona-executor:bundle', ROOT])
     run(['docker', 'buildx', 'build', '--platform', platform, '--load', '-f', ROOT / 'scripts/deploy/Dockerfile.workbench', '-t', prefix + '-workbench', build])
     run(['docker', 'buildx', 'build', '--platform', platform, '--load', '-f', ROOT / 'packages/platform/Dockerfile', '-t', prefix + '-platform', ROOT])
-    run(['docker', 'buildx', 'build', '--platform', platform, '--load', '-t', prefix + '-literature', deep])
+    # Patch only the disposable deployment copy; the companion checkout is untouched.
+    deep_build = build / 'deepxiv'
+    ignored = shutil.ignore_patterns('.git', 'node_modules', '.next', 'dist', '.env', '.env.*', '*.pdf', '*.part', '*.db', '*.db-*')
+    def ignore_deep(directory, names):
+        blocked = set(ignored(directory, names))
+        if Path(directory) == deep:
+            blocked.update(set(names) & {'papers', '.codex', '.agents', '.claude', 'docs'})
+        return blocked
+    shutil.copytree(deep, deep_build, ignore=ignore_deep)
+    sso_file = deep_build / 'src/lib/sso-config.ts'
+    text = sso_file.read_text()
+    old = "if (url.protocol !== 'https:' && url.hostname !== 'localhost') {"
+    if text.count(old) != 1:
+        raise ValueError('DeepXiv SSO 配置结构发生变化，请重新审查部署适配。')
+    text = text.replace(old, "if (url.protocol !== 'https:' && url.hostname !== 'localhost' && !(url.protocol === 'http:' && url.origin === process.env.DEEPLIT_INSECURE_PUBLIC_ORIGIN)) {")
+    sso_file.write_text(text)
+    run(['docker', 'buildx', 'build', '--platform', platform, '--load', '-t', prefix + '-literature', deep_build])
     run(['docker', 'pull', '--platform', platform, 'postgres:17-alpine'])
     run(['docker', 'tag', 'postgres:17-alpine', prefix + '-postgres'])
-    run(['docker', 'save', '-o', bundle / 'images.tar', *[prefix + '-' + name for name in ('workbench', 'platform', 'literature', 'postgres')]])
+    run(['docker', 'pull', '--platform', platform, 'nginx:1.28.0-alpine'])
+    run(['docker', 'tag', 'nginx:1.28.0-alpine', prefix + '-nginx'])
+    run(['docker', 'save', '-o', bundle / 'images.tar', *[prefix + '-' + name for name in ('workbench', 'platform', 'literature', 'postgres', 'nginx')]])
     # Engine and Compose binaries are also delivered, never downloaded on the server.
     engine_arch = 'x86_64' if args.arch == 'amd64' else 'aarch64'
     download(f'https://download.docker.com/linux/static/stable/{engine_arch}/docker-28.5.1.tgz', bundle / 'docker.tgz')
@@ -236,7 +265,7 @@ def prepare(args):
     if digest(bundle / 'docker-compose') != expected:
         raise ValueError('Docker Compose 官方校验和不匹配')
     copy_safe(deep / 'db/migrations', bundle / 'migrations')
-    for name in ('server.sh', 'start.sh'):
+    for name in ('server.sh', 'start.sh', 'nginx.conf'):
         copy_safe(ROOT / 'scripts/deploy' / name, bundle / name)
         (bundle / name).chmod(0o700)
     (bundle / 'architecture').write_text('x86_64' if args.arch == 'amd64' else 'aarch64')
@@ -297,10 +326,15 @@ def deploy(archive):
     checksum = digest(archive)
     command = f'cd {remote} && printf "%s  bundle.tgz\\n" {checksum} | sha256sum -c - && tar -xzf bundle.tgz && sudo -n bash {release}/server.sh'
     run(ssh + [command])
-    print('服务器部署成功。打开新终端执行以下命令，保持连接：')
-    print(f'ssh -p {PORT} -N -o ExitOnForwardFailure=yes -L 4791:127.0.0.1:4791 -L 5300:127.0.0.1:5300 -L 3000:127.0.0.1:3000 {TARGET}')
-    print('浏览器：http://localhost:4791；首次使用在账号页注册新账号。')
-    print('本地若已有 SONA 占用这三个端口，请先停本地服务；脚本不会替你停止。')
+    print('部署成功：http://61.136.101.179:20281；无需 SSH 隧道。')
+    # Bring the bootstrap credential back only to a private local file; never log it.
+    login_file = ROOT / '.sona-run' / 'deploy' / 'server-login.txt'
+    login_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with login_file.open('wb') as f:
+        run(ssh + ['sudo -n cat /opt/sona/state/admin-login.txt'], stdout=f)
+    login_file.chmod(0o600)
+    print('首次登录信息已保存到私密文件：', login_file)
+
 
 
 def main():

@@ -36,9 +36,14 @@ export function configuration(env = process.env) {
       !origin.search &&
       !origin.hash,
   );
+  const approvedHttpOrigin = env.PLATFORM_INSECURE_PUBLIC_ORIGIN || "";
+  const permitsHttp = (url) =>
+    url.protocol === "http:" && url.origin === approvedHttpOrigin;
   const secure = origin.protocol === "https:";
   check(
-    secure || (origin.protocol === "http:" && origin.hostname === "localhost"),
+    secure ||
+      (origin.protocol === "http:" && origin.hostname === "localhost") ||
+      permitsHttp(origin),
     400,
     "Public deployments require HTTPS",
   );
@@ -53,7 +58,8 @@ export function configuration(env = process.env) {
       !appOrigin.hash &&
       (appOrigin.protocol === "https:" ||
         (appOrigin.protocol === "http:" &&
-          ["localhost", "127.0.0.1"].includes(appOrigin.hostname))),
+          ["localhost", "127.0.0.1"].includes(appOrigin.hostname)) ||
+        permitsHttp(appOrigin)),
     500,
     "OPENRESEARCH_APP_ORIGIN must be HTTPS or a loopback HTTP origin",
   );
@@ -88,7 +94,8 @@ export function configuration(env = process.env) {
         !deepLiteratureOrigin.search &&
         !deepLiteratureOrigin.hash &&
         (deepLiteratureOrigin.protocol === "https:" ||
-          deepLiteratureOrigin.hostname === "localhost"),
+          deepLiteratureOrigin.hostname === "localhost" ||
+          permitsHttp(deepLiteratureOrigin)),
       500,
       "DEEPLIT_ORIGIN must be an HTTPS origin (localhost may use HTTP)",
     );
@@ -96,6 +103,7 @@ export function configuration(env = process.env) {
     origin,
     appOrigin: appOrigin.origin,
     secure,
+    researchOwnerEmail: env.PLATFORM_RESEARCH_OWNER_EMAIL || "",
     managed: env.MANAGED_EXECUTORS === "true",
     privateSpaces: env.PRIVATE_USER_SPACES === "true",
     managedCapacity,
@@ -560,11 +568,18 @@ export async function createPlatform(
           return res.end();
         }
         const s = await session(req);
-        if (path === "/api/platform/browser-session" && req.method === "GET")
+        if (path === "/api/platform/browser-session" && req.method === "GET") {
+          if (config.researchOwnerEmail)
+            check(
+              s.email === config.researchOwnerEmail,
+              403,
+              "该账号无权访问此研究空间",
+            );
           return json(res, {
             user: { id: s.user_id, email: s.email, name: s.name },
             deepLiteratureUrl: config.deepLiterature?.origin || null,
           });
+        }
         if (path === "/api/platform/browser-logout" && req.method === "POST") {
           const children = await pool.query(
             "SELECT token_hash FROM platform_sessions WHERE token_hash=$1 OR parent_hash=$1",

@@ -77,8 +77,11 @@ export function AuthSessionProvider({
   }, [accountUrl, cloud]);
 
   const login = useCallback(() => {
-    if (accountUrl) window.location.assign(accountUrl);
-  }, [accountUrl]);
+    if (accountUrl) {
+      const sharedOrigin = !cloud && new URL(accountUrl, location.href).origin === location.origin;
+      window.location.assign(sharedOrigin ? `${accountUrl}/_account/login` : accountUrl);
+    }
+  }, [accountUrl, cloud]);
 
   const logout = useCallback(async () => {
     if (accountUrl) {

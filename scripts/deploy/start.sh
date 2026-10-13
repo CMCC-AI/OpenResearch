@@ -12,7 +12,7 @@ urls=['http://localhost:4791/api/health','http://localhost:5300/healthz','http:/
 for url in urls:
  for attempt in range(120):
   try:
-   with urllib.request.urlopen(url,timeout=3) as r:
+   with urllib.request.urlopen(urllib.request.Request(url,headers={'Host':'61.136.101.179:20281'}),timeout=3) as r:
     if r.status!=200: raise ValueError('HTTP status')
     if '4791' in url:
      d=json.load(r)
@@ -24,3 +24,7 @@ for url in urls:
 print('SONA、账号服务、DeepXiv 健康检查通过。')
 PY
 "${compose[@]}" exec -T workbench opencode --version
+# Gateway startup is deferred until the first bootstrap account is ready.
+if [[ -f /opt/sona/state/admin-login.txt ]]; then
+  "${compose[@]}" up -d --pull never gateway
+fi
