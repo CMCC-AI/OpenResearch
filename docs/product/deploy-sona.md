@@ -54,7 +54,7 @@
 
 ## Nginx 单入口和登录
 
-SONA 新增公网入口只有 Nginx 的 **20281**；原文献服务的 3000/3004 入口保持现状。SONA 4791、平台 5300、新 DeepXiv 3005 及数据库端口仅监听服务器回环地址。Nginx 同时分流 SONA 页面与 API、`/_account/login`、平台/SSO API、DeepXiv `/library`、`/abs`、Next 静态资源和文献 API，支持 WebSocket、长任务流及上传。SONA 页面和静态资源位于 `/sona`；科研与登录/SSO API、DeepXiv 页面继续使用同域现有路径。根地址跳转到 `/sona/`，登录与 DeepXiv 完成后回到 `/sona/projects`，深层路由可以直接刷新。子路径科研 API 同样执行登录保护，不构成鉴权绕过。无需另行开放 3000/4791/5300，也不需要占用当前电脑端口。
+SONA 新增公网入口只有 Nginx 的 **20281**；原文献服务的 3000/3004 入口保持现状。SONA 4791、平台 5300、新 DeepXiv 3005 及数据库端口仅监听服务器回环地址。Nginx 同时分流 SONA 页面与 API、`/_account/login`、平台/SSO API、DeepXiv `/library`、`/abs`、Next 静态资源和文献 API，支持 WebSocket、长任务流及上传。SONA 页面和静态资源位于 `/sona`；科研与登录/SSO API、DeepXiv 页面继续使用同域现有路径。文献首页使用根地址 `/`，科研首页使用 `/sona/projects`；账号登录完成后回到 `/sona/projects`，深层路由可以直接刷新。子路径科研 API 同样执行登录保护，不构成鉴权绕过。无需另行开放 3000/4791/5300，也不需要占用当前电脑端口。
 
 科研 API 在反向代理中通过平台会话鉴权，仅部署研究管理员能够访问共享研究空间。写请求校验指定 Origin；内部回调、远程管理及官方更新等 API 不向公网提供。平台注册的新账号不能因此访问研究管理员的数据。本方案为当前个人研究空间部署，不等价于每用户独立空间的多租户版本。
 
@@ -132,3 +132,9 @@ ssh -p 20280 ubuntu@61.136.101.179 \
 2026-10-13 已在线修复账号平台：浏览器同源 GET 通常不携带 Origin，原 `browser-session` 错误要求该头，导致管理员通过 SSO 后再次被送回登录页。现在仅允许 Host 匹配、非跨站的无 Origin GET，写操作继续要求指定 Origin。无 Origin 的公网会话、科研 API、文献 SSO 和返回 SONA 的完整链路验证通过。原管理员账号与密码不变，新注册账号仍没有共享空间权限。
 
 服务器更新了平台镜像及容器，保留只读文件系统和原环境/资源限制；数据库、执行器和文献服务未重启。早期 `.sona-run/deploy/20261013T072430Z-bc63f1.tgz` 不含此修复，当前脚本会拒绝重新安装它。后续升级应运行 `./deploy-sona.command --prepare-only` 生成带 `browserSessionReadVersion: 1` 的新包。
+
+## 文献首页根路径修复
+
+2026-10-13，DeepXiv 顶栏首页链接使用 `/`，此前被共享网关误送到 CMCC 应用目录。现按 `61.136.101.179:20281` Host 将根地址转发给 SONA 文献首页，其余 Host 的 CMCC 目录与原应用路径保留。带签名登录继续参数的根地址仍转到账号登录页；SSO 完成入口继续回到 `/sona/projects`。文献 favicon 同步转发。
+
+线上 SONA 网关配置保存在 `/home/ubuntu/.sona-root-fix-20261013/nginx.conf` 并只读挂载；原网关配置及容器元数据留作回滚。共享网关备份为 `/home/ubuntu/.sona-root-fix-20261013/gateway-nginx-20261013T085850Z.conf`。后续新包包含该路由，正常启动保持现有网关配置。

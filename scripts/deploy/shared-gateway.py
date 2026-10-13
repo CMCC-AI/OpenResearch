@@ -1,8 +1,8 @@
 """Extend the known CMCC gateway without replacing its existing application routes."""
-import datetime,json,pathlib,subprocess
+import datetime,json,pathlib,subprocess,re
 
 
-def configure():
+def configure(backup_dir=None):
     container='cmcc-apps-gateway-1'
     result=subprocess.run(['docker','inspect',container],capture_output=True,text=True)
     if result.returncode:
@@ -19,23 +19,36 @@ def configure():
     host=network['Gateway']
     old=config.read_text()
     marker='# SONA shared gateway routes'
-    if marker in old:
-        print('CMCC SONA routes already configured.')
-        return
     if old.count('    location / { return 404; }')!=1 or old.count('    location = / {')!=1:
         raise SystemExit('Unexpected CMCC gateway route structure; manual review required.')
     routes=f'''    {marker}
     location = /sona {{ proxy_pass http://{host}:20281; }}
     location /sona/ {{ proxy_pass http://{host}:20281; }}
-    location ~ ^/(_account/|_orx/|api/|_next/|abs/|library(?:/|$)|account(?:/|$)|blog(?:/|$)|researchers(?:/|$)|papers/|platform\\.js$|platform\\.css$|healthz$) {{
+    location ~ ^/(_account/|_orx/|api/|_next/|abs/|library(?:/|$)|account(?:/|$)|blog(?:/|$)|researchers(?:/|$)|papers/|platform\\.js$|platform\\.css$|favicon\\.ico$|healthz$) {{
         client_max_body_size 100m;
         proxy_read_timeout 3600s;
         proxy_pass http://{host}:20281;
     }}
 '''
-    new=old.replace('    location / { return 404; }',routes+'    location / { return 404; }')
-    new=new.replace('    location = / {','    location = / {\n        if ($arg_continue != "") { return 302 /_account/login$is_args$args; }',1)
-    backup=config.with_name(config.name+'.sona-backup-'+datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
+    if marker not in old:
+        new=old.replace('    location / { return 404; }',routes+'    location / { return 404; }')
+        new=new.replace('    location = / {','    location = / {\n        if ($arg_continue != "") { return 302 /_account/login$is_args$args; }',1)
+    else:
+        new=old.replace('platform\\.css$|healthz$', 'platform\\.css$|favicon\\.ico$|healthz$')
+    root_marker='# SONA literature homepage by public host'
+    if root_marker not in new:
+        root=re.search(r'(?ms)^    location = / \{\n(.*?)^    \}',new)
+        if not root:raise SystemExit('Unexpected CMCC homepage structure; manual review required.')
+        returned=re.search(r'(?m)^        return 200 .*;$',root.group(1))
+        if not returned:raise SystemExit('Unexpected CMCC homepage response; manual review required.')
+        body=root.group(1).replace(returned.group(0),
+            '        '+root_marker+'\n        if ($http_host != "61.136.101.179:20281") {\n    '+returned.group(0)+'\n        }\n        proxy_pass http://'+host+':20281;',1)
+        new=new[:root.start(1)]+body+new[root.end(1):]
+    if new==old:
+        print('CMCC SONA routes already configured.')
+        return
+    stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    backup=(pathlib.Path(backup_dir)/('gateway-nginx-'+stamp+'.conf')) if backup_dir else config.with_name(config.name+'.sona-backup-'+stamp)
     backup.write_bytes(config.read_bytes());backup.chmod(0o600)
     # Keep the bind-mounted inode so the running container sees the change.
     try:
