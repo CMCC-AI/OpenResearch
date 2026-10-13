@@ -85,7 +85,7 @@ ssh -p 20280 ubuntu@61.136.101.179 \
 
 ## 验证范围
 
-部署脚本测试、Bash 语法、Compose 配置、Nginx 配置与 HTTP 精确 origin 授权均在本地验证；安装器还会检查应用版本、三服务健康、Nginx 入口及匿名科研 API 拒绝访问。目标服务器的真实安装、登录/SSO、模型调用和重启恢复仍须在目标网络可访问后验证。
+部署脚本测试、Bash 语法、Compose 配置、Nginx 配置与 HTTP 精确 origin 授权均在本地验证；安装器还会检查应用版本、三服务健康、Nginx 入口及匿名科研 API 拒绝访问。目标服务器安装与登录/SSO 已通过本次实际部署验证；模型调用和整机重启恢复未执行。
 
 参考：[Docker Ubuntu 安装](https://docs.docker.com/engine/install/ubuntu/)、[OpenCode 配置](https://opencode.ai/docs/config/)、[OpenCode 模型凭据](https://opencode.ai/docs/providers/)。
 
@@ -105,7 +105,7 @@ ssh -p 20280 ubuntu@61.136.101.179 \
 
 `/opt/sona-literature/backups` 保存数据库备份与副本验证报告。每次安装都先验证副本，检查旧身份和会话内容不变；旧版公共查询和新版公共查询/SSO 路由都必须通过。副本测试失败时不对生产数据库执行迁移。不存在自动删除旧数据、重置旧密码或覆盖原 DockAPI 配置的步骤。
 
-此次文献服务器副本验证已通过旧身份/会话保持、旧版论文查询、新版论文查询与 SSO 路由检查。验证报告为 `/opt/sona-literature/backups/20261013T073158Z.json`，生产数据库尚未迁移，原服务继续运行。由于改为复用模式，早期独立文献库部署包不再接受，必须重新准备格式 3 的部署包。
+此次文献服务器副本验证已通过旧身份/会话保持、旧版论文查询、新版论文查询与 SSO 路由检查。验证报告为 `/opt/sona-literature/backups/20261013T073158Z.json`，准备阶段生产数据库未迁移；本次实际部署已通过再次验证并执行追加迁移，原服务继续运行。由于改为复用模式，早期独立文献库部署包不再接受，必须重新准备格式 3 的部署包。
 
 ## 已准备的复用部署包
 
@@ -115,4 +115,14 @@ ssh -p 20280 ubuntu@61.136.101.179 \
 ./deploy-sona.command --bundle .sona-run/deploy/20261013T072430Z-bc63f1.tgz
 ```
 
-该命令需要同时连接两台服务器。完整跨服务器登录、模型调用与开机恢复仍待实际部署验收；当前未在生产文献库执行迁移或切换服务。
+该命令需要同时连接两台服务器。本次实际部署已通过跨服务器登录验证并执行生产追加迁移；模型调用及整机重启恢复未执行，原文献服务未切换。
+
+## 现有 CMCC 网关分流
+
+若公网 20281 已映射到 `cmcc-apps-gateway-1` 的 80 端口，部署器会核验已知配置挂载和网络后，为 `/sona`、登录和文献接口补充到 SONA 网关的转发。保留原 `/doclens`、`/research`、`/trading` 和 `/shopper` 路由；先备份配置，通过 `nginx -t` 后平滑重载，失败则恢复原文件。未知网关结构停止自动改写。
+
+## 2026-10-13 实际部署验收
+
+复用包已部署到两台服务器。公网 `/sona/`、管理员登录、科研 API 授权、双服务器文献 SSO、回到 SONA 以及共享论文查询均通过。`sona.service` 与文献通道均为 active/enabled，文献容器配置自动恢复；未为验收重启整台服务器或调用付费模型。原 `deeplit-web-1`、`deeplit-cmcc-web-1` 和 `deeplit-db-1` 保持健康，CMCC 原应用入口检查返回 200。现有 CMCC 网关备份：`/opt/cmcc-apps/config/gateway-nginx.conf.sona-backup-20261013T080031Z`。
+
+文献退出会撤销关联的平台会话；首次登录信息仅保存在私密登录文件中，不写入提交。验收后撤销本次 `/etc/sudoers.d/sona-deploy` 临时免密权限，后续执行系统升级前需重新取得管理员权限。

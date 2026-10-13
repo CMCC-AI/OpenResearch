@@ -351,6 +351,9 @@ def deploy(archive):
     from deploy_peer import deploy_literature_peer
     deploy_literature_peer(ssh, archive, release, manifest)
     run(ssh + [f'cd {remote}/{release} && sudo -n bash server.sh finish'])
+    # Public 20281 can be forwarded to the existing CMCC gateway's port 80.
+    gateway_script = Path(__file__).with_name('shared-gateway.py').read_text()
+    run(ssh + ['sudo -n python3 -'], input=gateway_script.encode())
     # Check the browser's real network path, not only server loopback health.
     with urllib.request.urlopen('http://61.136.101.179:20281/api/health', timeout=20) as response:
         health = json.load(response)
