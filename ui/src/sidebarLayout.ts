@@ -1,5 +1,15 @@
 import type { ChatSession, Project } from "./api";
 
+// Keep the product home and chat workspace navigation aligned.
+export const sidebarClasses = {
+  heading: "rail-section-head flex items-center justify-between shrink-0 pt-3.5 pe-2.5 pb-0 ps-4.5",
+  label: "rail-section-label m-0 p-0 text-sm font-medium text-subtext",
+  actions: "rail-section-actions flex items-center gap-0.5",
+  project: "group h-9 flex items-end gap-1 rounded-md px-2.5 text-text",
+  indent: "ms-5.5",
+  status: "flex h-8.5 items-center px-2.5 text-sm text-subtext",
+};
+
 export type SidebarRow =
   | { kind: "project"; project: Project; collapsed: boolean; busy: boolean }
   | { kind: "chat"; project: Project; session: ChatSession }

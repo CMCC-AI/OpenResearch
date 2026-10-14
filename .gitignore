@@ -27,3 +27,7 @@ ui/package-lock.json
 
 # Local SONA startup state and runtime logs
 .sona-run/
+
+# Python test and deployment bytecode caches
+__pycache__/
+*.py[cod]

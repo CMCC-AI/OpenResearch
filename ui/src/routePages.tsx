@@ -10,12 +10,9 @@ import { useRuntime } from "./RemoteRuntime";
 
 import { globalResumeLocation, projectResumeLocation } from "./routeResume";
 import { m } from "./paraglide/messages.js";
-import { createChatSession, type Project } from "./api";
-import { getHarnessesQuery } from "./queries/settings";
-import { defaultSelection } from "./components/ModelPicker";
+import { type Project } from "./api";
 import { getComposerStashStore, type ComposerStash } from "./composerStash";
 import { getWorkspaceGeneration } from "./queries/client";
-import { queryClient } from "./queries/client";
 import { OfflineBanner } from "./components/OfflineBanner";
 import { WorkspaceConnection } from "./components/WorkspaceConnection";
 import { UpdateBanner, useUpdateStatus } from "./components/UpdateBanner";
@@ -86,23 +83,9 @@ export function ProjectsPage() {
   }, []);
   const openProject = (projectId: string) => void navigate({ to: "/projects/$projectId", params: { projectId } });
 
-  const [opening, setOpening] = useState(false);
-  async function beginResearch(project: Project, draft?: ComposerStash) {
-    if (opening) return;
-    setOpening(true);
-    const stashes = getComposerStashStore(getWorkspaceGeneration());
-    if (draft) stashes.set(`${project.id}:new`, draft);
-    try {
-      const selection = state?.preferredAgent ?? defaultSelection(await queryClient.fetchQuery(getHarnessesQuery()));
-      if (!selection) throw new Error("请先在个人菜单的设置中配置科研智能体。项目已保留，可从继续研究重新进入。");
-      const session = await createChatSession(project.id, selection.harness, { ...selection, autonomy: state?.preferredAutonomy ?? "agentic", ...(draft?.workMode !== "normal" ? { research: { mode: "team", objective: draft?.draft.trim().slice(0, 6000) || "请先澄清研究目标、已有材料和预期成果。" } } : {}) });
-      if (draft) stashes.set(session.id, draft);
-      stashes.delete(`${project.id}:new`);
-      await navigate({ to: "/projects/$projectId/tasks/$sessionId", params: { projectId: project.id, sessionId: session.id } });
-    } catch (error) {
-      showAlert(error instanceof Error ? error.message : String(error), "error");
-      void navigate({ to: "/projects", search: { project: project.id } });
-    } finally { setOpening(false); }
+  async function beginResearch(project: Project, draft: ComposerStash) {
+    getComposerStashStore(getWorkspaceGeneration()).set(`${project.id}:new`, draft);
+    await navigate({ to: "/projects/$projectId/tasks/new", params: { projectId: project.id } });
   }
 
   return (
@@ -125,12 +108,13 @@ export function ProjectsPage() {
                   if (draft) getComposerStashStore(getWorkspaceGeneration()).set(`${project.id}:new`, draft);
                   showAlert(publicationError, "error");
                   void navigate({ to: "/projects/$projectId/settings/$tab", params: { projectId: project.id, tab: "git" } });
-                } else await beginResearch(project, draft);
+                } else if (draft && (draft.draft.trim() || draft.attachments.length || draft.annotations.length)) {
+                  await beginResearch(project, draft);
+                } else openProject(project.id);
               }}
               onDeleted={(id) => setScopedQueryData(projectsOptions.queryKey, (current) => current?.filter((project) => project.id !== id))}
             />
           )}
-      {opening && <div role="status" className="fixed inset-0 z-100 flex items-center justify-center bg-modal-backdrop"><div className="rounded-xl bg-background p-5 text-text">正在准备研究工作区…</div></div>}
       {runtime.kind === "ssh" && <WorkspaceConnection runtime={runtime} corner />}
     </div>
     </PlatformFrame>

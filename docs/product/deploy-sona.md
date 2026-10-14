@@ -150,3 +150,31 @@ ssh -p 20280 ubuntu@61.136.101.179 \
 账号平台增加 `DEEPLIT_WEB_PATH=/deepxiv`。新部署包标记 `deepxivBasePath: /deepxiv`，旧包会被拒绝，需重新准备。线上新网关配置继续只读挂载 `/home/ubuntu/.sona-root-fix-20261013/nginx.conf`；更换前的备份与共享网关备份保存在 `/home/ubuntu/.sona-prefix-20261014`。账号和文献容器元数据保存在各服务器用户私有 `.sona-service-rollbacks` 目录。
 
 验收通过：带前缀的首页、JS/CSS、favicon、匿名论文目录、SONA 登录、文献 SSO、文献会话、共享目录以及返回 SONA；未调用付费模型。原 3000/3004 文献 Web 与其他 CMCC 应用继续保持原入口。Next.js 子路径规范参考：https://nextjs.org/docs/app/api-reference/config/next-config-js/basePath。
+
+## 科研与侧栏修复的一键更新
+
+已有上述双服务器部署时，在仓库根目录执行：
+
+```bash
+./update-sona.command
+```
+
+该入口只更新 61 服务器的科研后端和平台前端资源；不更新文献服务、账号数据库或网关。保留当前容器的环境变量、数据挂载、权限、网络和重启策略，不重新同步模型凭据。更新前检查活跃智能体、运行实验和排队消息；任一非零则停止更新。先备份科研 SQLite，保留旧镜像和旧容器，启动与入口验证失败时恢复旧容器。
+
+本地已准备的包会自动复用。切换热点后执行同一命令即可上传；SSH 保持正常主机密钥校验并设置连接超时。上传 SHA-256 校验通过后，服务器在后台更新，电脑网络再次断开也不会中断容器切换。重新执行同一命令会查看同一包的更新结果，成功的包不会重复切换。
+
+需为后续代码改动重新构建时，本地需要 pnpm、Git、Docker Desktop/Buildx。可以提前准备，无需连接服务器：
+
+```bash
+./update-sona.command --prepare-only
+```
+
+产物位于 `.sona-run/updates/`，不包含账号密码、模型凭据或研究数据。指定某个包时使用 `./update-sona.command --bundle /完整路径/更新包.tgz`；默认按本地源码与资源指纹复用最新包，源码变化后会重新准备。服务器需已有两个 SONA 容器、Docker、Python 3，以及 `ubuntu` 用户的 Docker 操作权限，无需重新开启 sudo。
+
+服务器更新日志位于 `/home/ubuntu/.sona-updates/<包哈希前缀>/deploy.log`。回滚元数据位于用户私有 `.sona-sidebar-upgrade-<时间>/rollback.json`，其中可能包含容器环境变量，勿分享。科研备份保存在现有研究数据挂载的 `state/backups/sidebar-<时间>.db`。本次更新不会清理备份、旧镜像或回滚容器。脚本会验证新资源、服务健康和匿名科研 API 拒绝访问；不会创建线上测试会话或调用模型。
+
+### 2026-10-14 科研与侧栏修复部署验收
+
+已通过一键增量更新完成科研后端和前端切换，发布号为 `20261014T025901Z`。修复空项目自动创建研究、HTTP 研究停止、两入口侧栏布局以及“展开”按钮字重、颜色和行高。服务健康、新资源路径和匿名科研 API 拒绝访问检查通过；更新时活跃任务、运行实验和排队消息均为零。科研 SQLite 备份及旧容器保留，容器环境和数据挂载保持现有配置。
+
+一键脚本同时修正了两个部署问题：本地镜像 ID 先打标签再供 Dockerfile 使用，避免错误尝试从 Docker Hub 拉取 `sha256` 名称；科研健康探针使用回环 Host，账号平台使用已配置的公网 Host。一次健康探针误判已验证自动恢复旧容器，修正后的重试成功。回滚元数据为 `/home/ubuntu/.sona-sidebar-upgrade-20261014T025901Z/rollback.json`，其中包含部署环境信息，勿分享。

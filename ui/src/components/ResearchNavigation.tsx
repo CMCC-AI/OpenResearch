@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { sidebarClasses } from "../sidebarLayout";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { FolderPlus, Plus } from "lucide-react";
@@ -13,6 +14,12 @@ import { IconButton, Button, showAlert } from "./ui";
 
 export function ResearchNavigationActions({ onNewChat, shortcut }: { onNewChat: () => void; shortcut?: string }) {
   return <nav aria-label="研究导航" className="rail-nav flex shrink-0 flex-col gap-0.5 py-2"><button type="button" title={shortcut ?? m.chat_panel_new_chat()} aria-label={m.chat_panel_new_chat()} aria-keyshortcuts="Meta+Shift+Enter Control+Shift+Enter" data-onboarding="new-session" onClick={onNewChat} className="rail-nav-item flex items-center gap-2.5 rounded-md px-2.5 py-2 text-start text-sm text-text hover:bg-surface"><Plus size={15} className="shrink-0" /><span className="research-nav-label">{m.chat_panel_new_chat()}</span></button></nav>;
+}
+
+export function ResearchNavigationMore({ onClick, indented = true }: { onClick: () => void; indented?: boolean }) {
+  return <div className={`flex h-8.5 items-start ${indented ? sidebarClasses.indent : ""}`}>
+    <Button size="small" variant="ghost" className="font-normal text-subtext" onClick={onClick}>{m.common_show_more()}</Button>
+  </div>;
 }
 
 function storedIds(key: string): string[] {
@@ -54,15 +61,15 @@ export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
   return <>
     <ResearchNavigationActions onNewChat={() => go("tasks/new")} />
     <div className="research-projects flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center justify-between px-2 pb-2 pt-2"><h2 className="text-sm font-medium text-subtext">{grouping === "projects" ? m.projects_home_projects() : m.chat_all_sessions()}</h2><div className="flex items-center gap-0.5"><IconButton size="small" aria-label={m.projects_home_new_project()} onClick={() => void navigate({ to: "/projects", search: { new: true } })}><FolderPlus size={15} /></IconButton><SessionFilterMenu value={filter} onChange={setFilter} grouping={grouping} onGroupingChange={(next) => { setGrouping(next); try { localStorage.setItem("sidebar-grouping", next); } catch { /* optional */ } }} /></div></div>
+      <div className={sidebarClasses.heading}><h2 className={sidebarClasses.label}>{grouping === "projects" ? m.projects_home_projects() : m.chat_all_sessions()}</h2><div className={sidebarClasses.actions}><IconButton size="small" aria-label={m.projects_home_new_project()} onClick={() => void navigate({ to: "/projects", search: { new: true } })}><FolderPlus size={15} /></IconButton><SessionFilterMenu value={filter} onChange={setFilter} grouping={grouping} onGroupingChange={(next) => { setGrouping(next); try { localStorage.setItem("sidebar-grouping", next); } catch { /* optional */ } }} /></div></div>
       <div className="rail-body min-h-0 flex-1 overflow-y-auto">
-        {!enabled ? <p className="px-2 text-xs text-subtext">登录后查看研究项目</p> : projects.error ? <div className="px-2 text-xs text-accent-red">项目读取失败<Button size="small" onClick={() => void projects.refetch()}>重试</Button></div> : projects.isPending ? <p className="px-2 text-xs text-subtext">正在读取项目…</p> : !sorted.length ? <p className="px-2 text-xs text-subtext">尚无项目，点击上方按钮新建</p> : grouping === "list" ? <>{matching(sessions.flatMap((query) => query.data ?? [])).map(renderSession)}{sessions.some((query) => query.isPending) && <p className="p-2 text-xs text-subtext">正在读取会话…</p>}{sessions.some((query) => query.error) && <Button size="small" onClick={() => sessions.forEach((query) => { if (query.error) void query.refetch(); })}>重试会话列表</Button>}</> : sorted.map((project, index) => {
+        {!enabled ? <p className="px-2 text-xs text-subtext">登录后查看研究项目</p> : projects.error ? <div className="px-2 text-xs text-accent-red">项目读取失败<Button size="small" onClick={() => void projects.refetch()}>重试</Button></div> : projects.isPending ? <p className="px-2 text-xs text-subtext">正在读取项目…</p> : !sorted.length ? <p className="px-2 text-xs text-subtext">尚无项目，点击上方按钮新建</p> : grouping === "list" ? <>{matching(sessions.flatMap((query) => query.data ?? [])).map(renderSession)}{sessions.some((query) => query.isPending) && <p className={`m-0 ${sidebarClasses.status}`}>正在读取会话…</p>}{sessions.some((query) => query.error) && <Button size="small" onClick={() => sessions.forEach((query) => { if (query.error) void query.refetch(); })}>重试会话列表</Button>}</> : sorted.map((project, index) => {
           const query = sessions[index];
           const rows = matching(query.data ?? []);
           const limit = limits[project.id] ?? 6;
-          return <section key={project.id} className="mb-1" aria-label={`项目 ${project.name}`}>
-            <div className="flex h-9 items-end gap-1 rounded-md px-1"><ProjectInfoCard onNewChat={() => go("tasks/new", project.id)} onOpen={() => void navigate({ to: "/projects/$projectId", params: { projectId: project.id } })} project={project} chatCount={activity.data?.find((row) => row.projectId === project.id)?.totalAgents} collapsed={collapsed.includes(project.id)} busy={rows.some((session) => session.busy)} onToggleCollapsed={() => toggleId(project.id, collapsed, setCollapsed, "sidebar-collapsed-projects")} pinned={pinned.includes(project.id)} onPin={() => toggleId(project.id, pinned, setPinned, "sidebar-pinned-projects")} onRemoved={() => void projects.refetch()} /></div>
-            {!collapsed.includes(project.id) && <div className="ms-5">{query.isPending ? <p className="p-2 text-xs text-subtext">正在读取会话…</p> : query.error ? <Button size="small" onClick={() => void query.refetch()}>重试会话列表</Button> : !rows.length ? <p className="p-2 text-xs text-muted">{filter === "archived" ? m.chat_no_archived_sessions() : m.chat_no_sessions_yet()}</p> : rows.slice(0, limit).map(renderSession)}{rows.length > limit && <Button size="small" variant="ghost" onClick={() => setLimits((current) => ({ ...current, [project.id]: limit + 6 }))}>{m.common_show_more()}</Button>}</div>}
+          return <section key={project.id} aria-label={`项目 ${project.name}`}>
+            <div className={sidebarClasses.project}><ProjectInfoCard onNewChat={() => go("tasks/new", project.id)} onOpen={() => void navigate({ to: "/projects/$projectId", params: { projectId: project.id } })} project={project} chatCount={activity.data?.find((row) => row.projectId === project.id)?.totalAgents} collapsed={collapsed.includes(project.id)} busy={rows.some((session) => session.busy)} onToggleCollapsed={() => toggleId(project.id, collapsed, setCollapsed, "sidebar-collapsed-projects")} pinned={pinned.includes(project.id)} onPin={() => toggleId(project.id, pinned, setPinned, "sidebar-pinned-projects")} onRemoved={() => void projects.refetch()} /></div>
+            {!collapsed.includes(project.id) && <div className={sidebarClasses.indent}>{query.isPending ? <p className={`m-0 ${sidebarClasses.status}`}>正在读取会话…</p> : query.error ? <Button size="small" onClick={() => void query.refetch()}>重试会话列表</Button> : !rows.length ? <p className={`m-0 ${sidebarClasses.status}`}>{filter === "archived" ? m.chat_no_archived_sessions() : m.chat_no_sessions_yet()}</p> : rows.slice(0, limit).map(renderSession)}{rows.length > limit && <ResearchNavigationMore indented={false} onClick={() => setLimits((current) => ({ ...current, [project.id]: limit + 6 }))} />}</div>}
           </section>;
         })}
       </div>

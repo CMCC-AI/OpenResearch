@@ -32,7 +32,14 @@ fn browser_decision(headers: &HeaderMap) -> std::result::Result<(), ApiError> {
     // Defense against cross-site submissions and accidental use by CLI agents.
     // Local processes sharing the user's OS account are not a security sandbox.
     let site = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok());
-    if site != Some("same-origin") {
+    // Public HTTP dashboards do not receive Fetch Metadata headers. Their
+    // browser POSTs still carry Origin; compare it to Host as for the terminal.
+    let trusted = match site {
+        Some("same-origin") => true,
+        None => same_origin(headers),
+        _ => false,
+    };
+    if !trusted {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
             "请在本地工作台确认研究决策".into(),
@@ -159,6 +166,35 @@ mod tests {
         }
         headers.insert("sec-fetch-site", "same-origin".parse().unwrap());
         assert!(browser_decision(&headers).is_ok());
+    }
+
+    #[test]
+    fn research_controls_accept_same_origin_http_without_fetch_metadata() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "61.136.101.179:20281".parse().unwrap());
+        headers.insert(
+            header::ORIGIN,
+            "http://61.136.101.179:20281".parse().unwrap(),
+        );
+        assert!(browser_decision(&headers).is_ok());
+        headers.insert(
+            header::ORIGIN,
+            "https://61.136.101.179:20281".parse().unwrap(),
+        );
+        assert!(browser_decision(&headers).is_ok());
+        for origin in ["null", "http://example.com", "http://61.136.101.179:20282"] {
+            headers.insert(header::ORIGIN, origin.parse().unwrap());
+            assert!(browser_decision(&headers).is_err());
+        }
+        headers.insert(
+            header::ORIGIN,
+            "http://61.136.101.179:20281".parse().unwrap(),
+        );
+        headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
+        assert!(browser_decision(&headers).is_err());
+        headers.remove("sec-fetch-site");
+        headers.remove(header::HOST);
+        assert!(browser_decision(&headers).is_err());
     }
 
     #[test]

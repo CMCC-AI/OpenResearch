@@ -168,14 +168,14 @@ for (const outcome of ["success", "failure", "popup-blocked"]) {
   });
 }
 
-for (const outcome of ["success", "failure"]) for (const workMode of ["normal", "team"]) test(`unified research entry preserves objectives and materials on ${outcome}/${workMode}`, async () => {
+for (const content of ["objective", "attachments", "empty", "missing"]) for (const workMode of ["normal", "team"]) test(`project creation defers research until sending: ${content}/${workMode}`, async () => {
   const stashes = new Map();
   const navigations = [];
   const calls = [];
   const { ProjectsPage } = load("routePages.tsx", {
     react: hooks().react,
     "./queries/client": { getWorkspaceGeneration: () => 7, queryClient: {} },
-    "./api": { createChatSession: async (...args) => { calls.push(args); if (outcome === "failure") throw new Error("session unavailable"); return { id: "session-1" }; } },
+    "./api": { createChatSession: async (...args) => { calls.push(args); assert.fail("project creation must not create a session"); } },
     "./queries/settings": {},
     "./components/ModelPicker": {},
     "./composerStash": { getComposerStashStore: () => stashes },
@@ -190,18 +190,22 @@ for (const outcome of ["success", "failure"]) for (const workMode of ["normal", 
     "./components/OfflineBanner": { OfflineBanner: "OfflineBanner" },
     "./components/WorkspaceConnection": {},
     "./components/UpdateBanner": { UpdateBanner: "UpdateBanner", useUpdateStatus: () => ({}) },
-    "./components/ui": { showAlert: () => { if (outcome === "success") assert.fail("unexpected creation failure"); } },
+    "./components/ui": { showAlert: () => assert.fail("unexpected creation failure") },
   });
   const home = nodes(ProjectsPage()).find((node) => node.type === "ProjectsHome");
-  const draft = { workMode, draft: "验证研究假设", attachments: [{ name: "paper.pdf", mediaType: "application/pdf", dataUrl: "data:application/pdf;base64,AA==" }], annotations: [] };
+  const draft = content === "missing" ? undefined : {
+    workMode,
+    draft: content === "objective" ? "验证研究假设" : "  ",
+    attachments: content === "attachments" ? [{ name: "paper.pdf", mediaType: "application/pdf", dataUrl: "data:application/pdf;base64,AA==", size: 1 }] : [],
+    annotations: [],
+  };
   await home.props.onCreated({ id: "p" }, null, draft);
-  assert.deepEqual(stashes.get(outcome === "success" ? "session-1" : "p:new"), draft);
-  assert.equal(stashes.has("p:new"), outcome === "failure");
-  assert.equal(calls[0][0], "p");
-  assert.equal(calls[0][1], "opencode");
-  assert.equal(calls[0][2].autonomy, "copilot");
-  assert.deepEqual(calls[0][2].research, workMode === "team" ? { mode: "team", objective: "验证研究假设" } : undefined);
-  if (outcome === "success") assert.equal(navigations[0].params.sessionId, "session-1");
-  else assert.deepEqual(navigations[0], { to: "/projects", search: { project: "p" } });
+  assert.equal(calls.length, 0);
+  const hasContent = content === "objective" || content === "attachments";
+  assert.deepEqual(stashes.get("p:new"), hasContent ? draft : undefined);
+  assert.deepEqual(navigations[0], {
+    to: hasContent ? "/projects/$projectId/tasks/new" : "/projects/$projectId",
+    params: { projectId: "p" },
+  });
   assert.equal(home.props.initialProjectId, "p");
 });

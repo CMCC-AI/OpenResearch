@@ -1,6 +1,6 @@
 import { createClientTurnId } from "../clientTurnId";
 import { SessionFilterMenu, SessionRow, TitleReveal, TITLE_REVEAL_CLEAR_MS, type SessionFilter } from "./NativeSidebarRows";
-import { ResearchNavigationActions } from "./ResearchNavigation";
+import { ResearchNavigationActions, ResearchNavigationMore } from "./ResearchNavigation";
 import { ProductSidebar } from "../product/ProductNav";
 import { isDemoProjectId } from "../api";
 import { ResearchPanel } from "./ResearchPanel";
@@ -9,7 +9,7 @@ import { getResearchStudy } from "../api";
 import { researchModes, type ResearchMode } from "../research";
 import { ComposerProjectPicker } from "./ComposerProjectPicker";
 import { ProjectInfoCard } from "./ProjectInfoCard";
-import { fitSidebarRows, sidebarRowHeight, type SidebarRow } from "../sidebarLayout";
+import { fitSidebarRows, sidebarRowHeight, sidebarClasses, type SidebarRow } from "../sidebarLayout";
 import { useVirtualizer, defaultRangeExtractor, type Range as VirtualRange } from "@tanstack/react-virtual";
 import { markLiveUpdate } from "../queries/live";
 import { removeSession as removeCachedSession } from "../queries/invalidation";
@@ -4129,6 +4129,7 @@ export function ChatPanel({
   if (projectVisitRef.current.projectId !== projectId) projectVisitRef.current = { projectId };
   const [unreadSessionIds, setUnreadSessionIds] = useState<ReadonlySet<string>>(new Set());
   const [draft, setDraft] = useState("");
+  const [researchMode, setResearchMode] = useState<WorkMode>("normal");
   const [demoHintDismissed, setDemoHintDismissed] = useState(false);
   const [annotations, setAnnotations] = useState<ComposerAnnotation[]>([]);
   const annotationId = useRef(0);
@@ -4147,7 +4148,7 @@ export function ChatPanel({
   const stashKey = activeId ?? `${projectId}:new`;
   const composerStashRef = useRef(getComposerStashStore(getWorkspaceGeneration()));
   const composerLiveRef = useRef(EMPTY_COMPOSER_STASH);
-  composerLiveRef.current = { draft, attachments, annotations };
+  composerLiveRef.current = { draft, attachments, annotations, workMode: researchMode };
   // On offer until the user has sent anything in the demo: a send either adds
   // a session or moves a recorded session's leaf off its seeded message. The
   // nudge anchors to the first scope that had it — seeding it in every scope
@@ -4171,6 +4172,7 @@ export function ChatPanel({
     // the pre-restore render's.
     composerLiveRef.current = restored;
     setDraft(restored.draft);
+    setResearchMode(restored.workMode ?? "normal");
     setAttachments(restored.attachments);
     setAnnotations(restored.annotations);
     setImageRefusedFor(null);
@@ -4181,7 +4183,6 @@ export function ChatPanel({
     };
   }, [stashKey, composerPrefill]);
   const [settingsError, setSettingsError] = useState<string | null>(null);
-  const [researchMode, setResearchMode] = useState<WorkMode>("normal");
   const researchState = useQuery({ queryKey: workspaceKey("researchStudy", activeId), queryFn: ({ signal }) => getResearchStudy(activeId!, signal), enabled: Boolean(activeId) && !embedded, refetchInterval: (query) => query.state.data?.study?.status === "active" ? 2500 : false });
   const currentWorkMode = activeId ? researchState.data?.study ? "team" : "normal" : researchMode;
   const settingsMutationTail = useRef<Promise<void>>(Promise.resolve());
@@ -5932,11 +5933,11 @@ export function ChatPanel({
   const rail = (
     <ProductSidebar onCollapse={onCollapseRail} onSettings={onSelectMainView} connectionInfo={<WorkspaceConnection runtime={runtime} />}>
       <ResearchNavigationActions onNewChat={startNewTask} shortcut={isApple ? "⌘ ⇧ ↵" : "Ctrl + Shift + ↵"} />
-      <div className="rail-section-head flex items-center justify-between shrink-0 pt-3.5 pe-2.5 pb-0 ps-4.5">
-        <div className="rail-section-label p-0 text-sm font-medium text-subtext">
+      <div className={sidebarClasses.heading}>
+        <div className={sidebarClasses.label}>
           {sidebarGrouping === "projects" ? m.projects_home_projects() : m.chat_all_sessions()}
         </div>
-        <div className="rail-section-actions flex items-center gap-0.5">
+        <div className={sidebarClasses.actions}>
           {onNewProject && <Tooltip interactive content={m.projects_home_new_project()} className="rounded-sm">
             <IconButton size="small" className="text-subtext" aria-label={m.projects_home_new_project()} onClick={onNewProject}>
               <FolderPlus size={15} className="text-subtext" />
@@ -5972,7 +5973,7 @@ export function ChatPanel({
                 style={{ height: sidebarRowHeight(row), transform: sidebarScrollable ? `translateY(${top}px)` : undefined }}
               >
                 {row.kind === "project" ? (
-                  <div className="group h-9 flex items-end gap-1 rounded-md px-2.5 text-text">
+                  <div className={sidebarClasses.project}>
                     <ProjectInfoCard
                       onNewChat={() => { if (project.id === projectId) startNewTask(); else void navigate({ to: "/projects/$projectId/tasks/new", params: { projectId: project.id } }); }}
                       onOpen={() => void navigate({ to: "/projects/$projectId", params: { projectId: project.id } })}
@@ -5995,7 +5996,7 @@ export function ChatPanel({
                     />
                   </div>
                 ) : s ? (
-                  <div className={sidebarGrouping === "projects" ? "ms-5.5" : undefined}>
+                  <div className={sidebarGrouping === "projects" ? sidebarClasses.indent : undefined}>
                     <SessionRow
                       key={s.id}
                       session={s}
@@ -6030,14 +6031,12 @@ export function ChatPanel({
                     />
                   </div>
                 ) : row.kind === "more" ? (
-                  <Button variant="ghost" size="small" className="ms-5.5 font-normal text-subtext" onClick={() => {
+                  <ResearchNavigationMore onClick={() => {
                     setSidebarExpanded(true);
                     setChatLimits((current) => ({ ...current, [project.id]: (current[project.id] ?? 6) + 6 }));
-                  }}>
-                    {m.common_show_more()}
-                  </Button>
+                  }} />
                 ) : row.kind === "status" && (
-                  <div className={`flex h-full items-center px-2.5 text-sm text-subtext ${sidebarGrouping === "projects" ? "ms-5.5" : ""}`}>
+                  <div className={`${sidebarClasses.status} ${sidebarGrouping === "projects" ? sidebarClasses.indent : ""}`}>
                     {row.error ? <Button size="small" onClick={row.retry}>{m.app_retry()}</Button>
                       : row.pending ? <Spinner />
                         : sessionFilter === "archived" ? m.chat_no_archived_sessions() : m.chat_no_sessions_yet()}
