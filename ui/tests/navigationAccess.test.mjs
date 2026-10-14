@@ -47,6 +47,6 @@ test("authentication loading does not flash the introduction for a signed-in ses
 });
 
 test("subpath authentication uses the same protected-page gate", () => {
-  assert.equal(authGate("/sona/discover", null).type, "Navigate");
-  assert.equal(authGate("/sona/", {id:"user"}).props.to, "/projects");
+  assert.equal(authGate("/mobilesci/discover", null).type, "Navigate");
+  assert.equal(authGate("/mobilesci/", {id:"user"}).props.to, "/projects");
 });

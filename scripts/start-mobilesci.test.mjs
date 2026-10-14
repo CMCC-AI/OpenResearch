@@ -3,7 +3,7 @@ import test from 'node:test'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { optionsFrom, workspaceIsHealthy, sourceIsNewer, composeFiles } from './start-sona.mjs'
+import { optionsFrom, workspaceIsHealthy, sourceIsNewer, composeFiles } from './start-mobilesci.mjs'
 
 test('startup options reject unknown arguments and resolve companion paths', () => {
   assert.equal(optionsFrom(['--rebuild', '--deeplit-dir', '/tmp/literature']).rebuild, true)
@@ -17,7 +17,7 @@ test('existing service must expose the actual workspace health protocol', () => 
 })
 
 test('managed compose configuration is retained and foreign paths are refused', () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'sona-compose-'))
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'mobilesci-compose-'))
   try {
     const files = ['compose.yaml', 'compose.dev.yaml', 'compose.managed.yaml'].map(file => path.join(dir,file))
     files.forEach(file => writeFileSync(file,''))
@@ -27,7 +27,7 @@ test('managed compose configuration is retained and foreign paths are refused', 
 })
 
 test('source changes rebuild a cached executable while an unchanged checkout reuses it', () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(),'sona-binary-'))
+  const dir = mkdtempSync(path.join(os.tmpdir(),'mobilesci-binary-'))
   try {
     const binary = path.join(dir,'orx'), sources = path.join(dir,'src')
     mkdirSync(sources); writeFileSync(path.join(sources,'main.rs'),'source')

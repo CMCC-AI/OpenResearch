@@ -79,7 +79,7 @@ export function ProjectsPage() {
   const retry = () => { void projectsQuery.refetch(); void stateQuery.refetch(); };
   const { status } = useUpdateStatus(runtime.kind === "local" && !isCloudWorkspace());
   useEffect(() => {
-    document.title = "SONA";
+    document.title = "MobileSci";
   }, []);
   const openProject = (projectId: string) => void navigate({ to: "/projects/$projectId", params: { projectId } });
 

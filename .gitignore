@@ -25,8 +25,8 @@ Claude.local.md
 # This repo uses pnpm; ignore an accidental npm lockfile
 ui/package-lock.json
 
-# Local SONA startup state and runtime logs
-.sona-run/
+# Local MobileSci startup state and runtime logs
+.mobilesci-run/
 
 # Python test and deployment bytecode caches
 __pycache__/

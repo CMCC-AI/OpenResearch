@@ -61,7 +61,7 @@ export function RemoteStatus({
               })}
             </div>
             <div className="mt-0.5 text-xs text-subtext">
-              SONA {ltr(runtime.session.version ?? "…")}
+              MobileSci {ltr(runtime.session.version ?? "…")}
             </div>
           </div>
           <div className="flex items-center rounded-sm hover:bg-surface">
@@ -134,7 +134,7 @@ export function RemoteStatus({
               {m.remote_ssh_host({ host: ltr(runtime.session.host) })}
             </span>
             <span className="truncate text-xs leading-tight text-subtext">
-              SONA {ltr(runtime.session.version ?? "…")}
+              MobileSci {ltr(runtime.session.version ?? "…")}
             </span>
           </span>
         </div>

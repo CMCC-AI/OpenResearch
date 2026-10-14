@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Validate on a private clone; install a separate SONA view on the literature host."""
+"""Validate on a private clone; install a separate MobileSci view on the literature host."""
 import argparse, hashlib, json, os, pathlib, secrets, subprocess, time, urllib.request, urllib.error, fcntl, socket
 
-ROOT = pathlib.Path('/opt/sona-literature')
+ROOT = pathlib.Path('/opt/mobilesci-literature')
 PUBLIC = 'http://61.136.101.179:20281'
 
 def run(args, **kw):
@@ -24,7 +24,7 @@ def validate(bundle, stamp):
     backup=backups/(stamp+'.dump')
     with backup.open('wb') as f:
         run(['docker','exec','deeplit-db-1','pg_dump','-U','deeplit','-d','deeplit','-Fc'],stdout=f)
-    clone='sona-lit-check-'+stamp.lower()
+    clone='mobilesci-lit-check-'+stamp.lower()
     password=secrets.token_hex(20)
     _, all_env=env_of('deeplit-web-1')
     old_env={k:v for k,v in all_env.items() if k in ('NODE_ENV','DEEPLIT_AUTH_MODE','DEEPLIT_PUBLIC_ORIGIN','DEEPLIT_COOKIE_MODE','DEEPLIT_SECURE_COOKIES','DEEPLIT_DOCKAPI_URL','DEEPLIT_DOCKAPI_PUBLIC_ORIGIN','DEEPLIT_DOCKAPI_APP_ORIGIN')}
@@ -45,7 +45,7 @@ def validate(bundle, stamp):
         old,_=env_of('deeplit-web-1')
         network=json.loads(subprocess.check_output(['docker','inspect',clone]))[0]['NetworkSettings']['Networks']
         ip=next(iter(network.values()))['IPAddress']
-        stage='sona-lit-old-check-'+stamp.lower()
+        stage='mobilesci-lit-old-check-'+stamp.lower()
         stage_env=ROOT/('check-'+stamp+'.env')
         old_env.update(DATABASE_URL=f'postgres://postgres:{password}@{ip}:5432/postgres',HOSTNAME='0.0.0.0',PORT='3000')
         stage_env.write_text(''.join(k+'='+v+'\n' for k,v in old_env.items() if '\n' not in v));stage_env.chmod(0o600)
@@ -63,15 +63,15 @@ def validate(bundle, stamp):
         if (bundle/'literature-image.tar').exists():
             run(['docker','load','-i',str(bundle/'literature-image.tar')],stdout=subprocess.DEVNULL)
             image=(bundle/'literature-image-name').read_text().strip()
-            candidate='sona-lit-new-check-'+stamp.lower()
-            new_env={'NODE_ENV':'production','DATABASE_URL':f'postgres://postgres:{password}@{ip}:5432/postgres','HOSTNAME':'0.0.0.0','PORT':'3000','DEEPLIT_AUTH_MODE':'openresearch','DEEPLIT_OPENRESEARCH_URL':'http://localhost:15300','DEEPLIT_OPENRESEARCH_PUBLIC_ORIGIN':PUBLIC,'DEEPLIT_OPENRESEARCH_APP_ORIGIN':PUBLIC,'DEEPLIT_OPENRESEARCH_APP_PATH':'/sona','DEEPLIT_PUBLIC_ORIGIN':PUBLIC,'DEEPLIT_INSECURE_PUBLIC_ORIGIN':PUBLIC,'DEEPLIT_SSO_CLIENT_SECRET':'test-only-candidate-secret-32-characters','DEEPLIT_SECURE_COOKIES':'false'}
+            candidate='mobilesci-lit-new-check-'+stamp.lower()
+            new_env={'NODE_ENV':'production','DATABASE_URL':f'postgres://postgres:{password}@{ip}:5432/postgres','HOSTNAME':'0.0.0.0','PORT':'3000','DEEPLIT_AUTH_MODE':'openresearch','DEEPLIT_OPENRESEARCH_URL':'http://localhost:15300','DEEPLIT_OPENRESEARCH_PUBLIC_ORIGIN':PUBLIC,'DEEPLIT_OPENRESEARCH_APP_ORIGIN':PUBLIC,'DEEPLIT_OPENRESEARCH_APP_PATH':'/mobilesci','DEEPLIT_PUBLIC_ORIGIN':PUBLIC,'DEEPLIT_INSECURE_PUBLIC_ORIGIN':PUBLIC,'DEEPLIT_SSO_CLIENT_SECRET':'test-only-candidate-secret-32-characters','DEEPLIT_SECURE_COOKIES':'false'}
             stage_env.write_text(''.join(k+'='+v+'\n' for k,v in new_env.items()));stage_env.chmod(0o600)
             try:
                 run(['docker','run','-d','--rm','--name',candidate,'--env-file',str(stage_env),image],stdout=subprocess.DEVNULL)
                 check="Promise.all([fetch('http://localhost:3000/api/papers?paginated=1&limit=1').then(async r=>{const d=await r.json();if(!r.ok||!Array.isArray(d.papers))throw Error('papers')}),fetch('http://localhost:3000/api/auth/openresearch/start?returnTo=/library',{redirect:'manual'}).then(r=>{if(r.status!==303||!r.headers.get('location')?.startsWith('http://61.136.101.179:20281/api/auth/sso/authorize?'))throw Error('sso')})]).catch(()=>process.exit(1))"
                 for i in range(60):
                     if subprocess.run(['docker','exec',candidate,'node','-e',check],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0:break
-                    if i==59:raise RuntimeError('Candidate SONA view failed clone public/SSO smoke test')
+                    if i==59:raise RuntimeError('Candidate MobileSci view failed clone public/SSO smoke test')
                     time.sleep(1)
                 candidate_passed=True
             finally:
@@ -87,7 +87,7 @@ def validate(bundle, stamp):
 def install(bundle, stamp, migration):
     probe=socket.socket(); probe.settimeout(2)
     occupied=probe.connect_ex(('127.0.0.1',3005))==0; probe.close()
-    if occupied and subprocess.run(['docker','inspect','sona-literature-web'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode!=0:
+    if occupied and subprocess.run(['docker','inspect','mobilesci-literature-web'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode!=0:
         raise RuntimeError('Loopback 3005 belongs to another service')
     state=ROOT/'state';state.mkdir(mode=0o700,exist_ok=True)
     if not (bundle/'literature-image.tar').is_file():raise RuntimeError('Candidate image required before production migration')
@@ -97,7 +97,7 @@ def install(bundle, stamp, migration):
     pub=peer['publicKey'].strip()
     if not pub.startswith('ssh-ed25519 ') or '\n' in pub:raise ValueError('Invalid tunnel key')
     _,old_env=env_of('deeplit-web-1')
-    role='sona_literature'
+    role='mobilesci_literature'
     password_file=state/'database-password'
     if not password_file.exists():password_file.write_text(secrets.token_hex(32))
     password=password_file.read_text().strip()
@@ -105,14 +105,14 @@ def install(bundle, stamp, migration):
     with migration.open('rb') as f:
         run(['docker','exec','-i','deeplit-db-1','psql','-U','deeplit','-d','deeplit','-v','ON_ERROR_STOP=1'],stdin=f,stdout=subprocess.DEVNULL)
     marker=state/'database-role-owned'
-    exists=sql('deeplit-db-1',"select count(*) from pg_roles where rolname='sona_literature'")=='1'
+    exists=sql('deeplit-db-1',"select count(*) from pg_roles where rolname='mobilesci_literature'")=='1'
     if exists and not marker.exists():raise RuntimeError('Existing database role is not owned by this deployment')
     if not exists:
-        statement="CREATE ROLE sona_literature LOGIN PASSWORD '"+password+"';"
+        statement="CREATE ROLE mobilesci_literature LOGIN PASSWORD '"+password+"';"
         run(['docker','exec','-i','deeplit-db-1','psql','-U','deeplit','-d','deeplit','-v','ON_ERROR_STOP=1'],input=statement.encode(),stdout=subprocess.DEVNULL)
         marker.write_text(role+'\n')
-    sql('deeplit-db-1','GRANT CONNECT ON DATABASE deeplit TO sona_literature; GRANT USAGE ON SCHEMA public TO sona_literature; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO sona_literature; GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO sona_literature;')
-    env={'NODE_ENV':'production','HOSTNAME':'127.0.0.1','PORT':'3005','DATABASE_URL':f'postgres://{role}:{password}@127.0.0.1:5433/deeplit','PAPER_STORAGE_DIR':'/data/papers','DEEPLIT_AUTH_MODE':'openresearch','DEEPLIT_OPENRESEARCH_URL':'http://localhost:15300','DEEPLIT_OPENRESEARCH_PUBLIC_ORIGIN':PUBLIC,'DEEPLIT_OPENRESEARCH_APP_ORIGIN':PUBLIC,'DEEPLIT_OPENRESEARCH_APP_PATH':'/sona','DEEPLIT_PUBLIC_ORIGIN':PUBLIC,'DEEPLIT_INSECURE_PUBLIC_ORIGIN':PUBLIC,'DEEPLIT_COOKIE_MODE':'same-site','DEEPLIT_SECURE_COOKIES':'false','DEEPLIT_SSO_CLIENT_SECRET':peer['ssoSecret'],'DEEPLIT_PASSWORD_PEPPER':peer['pepper']}
+    sql('deeplit-db-1','GRANT CONNECT ON DATABASE deeplit TO mobilesci_literature; GRANT USAGE ON SCHEMA public TO mobilesci_literature; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO mobilesci_literature; GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO mobilesci_literature;')
+    env={'NODE_ENV':'production','HOSTNAME':'127.0.0.1','PORT':'3005','DATABASE_URL':f'postgres://{role}:{password}@127.0.0.1:5433/deeplit','PAPER_STORAGE_DIR':'/data/papers','DEEPLIT_AUTH_MODE':'openresearch','DEEPLIT_OPENRESEARCH_URL':'http://localhost:15300','DEEPLIT_OPENRESEARCH_PUBLIC_ORIGIN':PUBLIC,'DEEPLIT_OPENRESEARCH_APP_ORIGIN':PUBLIC,'DEEPLIT_OPENRESEARCH_APP_PATH':'/mobilesci','DEEPLIT_PUBLIC_ORIGIN':PUBLIC,'DEEPLIT_INSECURE_PUBLIC_ORIGIN':PUBLIC,'DEEPLIT_COOKIE_MODE':'same-site','DEEPLIT_SECURE_COOKIES':'false','DEEPLIT_SSO_CLIENT_SECRET':peer['ssoSecret'],'DEEPLIT_PASSWORD_PEPPER':peer['pepper']}
     for k in ('QWEN_API_KEY','QWEN_BASE_URL','QWEN_MODEL','QWEN_BLOG_MODEL'):
         if old_env.get(k): env[k]=old_env[k]
     envfile=state/'web.env';envfile.write_text(''.join(k+'='+v+'\n' for k,v in env.items()));envfile.chmod(0o600)
@@ -127,18 +127,18 @@ def install(bundle, stamp, migration):
     image=(bundle/'literature-image-name').read_text().strip()
     old,_=env_of('deeplit-web-1')
     papers=next(m['Source'] for m in old['Mounts'] if m['Destination']=='/data/papers')
-    name='sona-literature-web'
+    name='mobilesci-literature-web'
     if subprocess.run(['docker','inspect',name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0:
         existing=json.loads(subprocess.check_output(['docker','inspect',name]))[0]
-        if existing['Config'].get('Labels',{}).get('sona.managed')!='literature':raise RuntimeError('Container name belongs to another service')
+        if existing['Config'].get('Labels',{}).get('mobilesci.managed')!='literature':raise RuntimeError('Container name belongs to another service')
         run(['docker','stop',name],stdout=subprocess.DEVNULL);run(['docker','rm',name],stdout=subprocess.DEVNULL)
-    run(['docker','run','-d','--name',name,'--label','sona.managed=literature','--memory','1g','--cpus','1','--pids-limit','256','--restart','unless-stopped','--network','host','--env-file',str(envfile),'-v',papers+':/data/papers:ro',image],stdout=subprocess.DEVNULL)
+    run(['docker','run','-d','--name',name,'--label','mobilesci.managed=literature','--memory','1g','--cpus','1','--pids-limit','256','--restart','unless-stopped','--network','host','--env-file',str(envfile),'-v',papers+':/data/papers:ro',image],stdout=subprocess.DEVNULL)
     check="Promise.all([fetch('http://localhost:3005/api/papers?paginated=1&limit=1').then(async r=>{const d=await r.json();if(!r.ok||!Array.isArray(d.papers))throw Error('papers')}),fetch('http://localhost:3005/api/auth/openresearch/start',{redirect:'manual'}).then(r=>{if(r.status!==303)throw Error('sso')})]).catch(()=>process.exit(1))"
     for i in range(60):
         if subprocess.run(['docker','exec',name,'node','-e',check],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0:break
         if i==59:raise RuntimeError('New literature service did not become healthy')
         time.sleep(1)
-    print('SONA literature view healthy on loopback 3005; existing services retained.')
+    print('MobileSci literature view healthy on loopback 3005; existing services retained.')
 
 if __name__=='__main__':
     os.umask(0o077)

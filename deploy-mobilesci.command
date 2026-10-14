@@ -10,6 +10,6 @@ for arg in "$@"; do
   fi
 done
 if [[ "$sync_auth" == 1 ]]; then
-  exec python3 scripts/deploy/sona.py --sync-auth "$@"
+  exec python3 scripts/deploy/mobilesci.py --sync-auth "$@"
 fi
-exec python3 scripts/deploy/sona.py "$@"
+exec python3 scripts/deploy/mobilesci.py "$@"

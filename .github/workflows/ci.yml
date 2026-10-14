@@ -81,12 +81,12 @@ jobs:
         run: node --test scripts/dev-slot.test.mjs
 
       - name: Local startup helper tests
-        run: node --test scripts/start-local.test.mjs scripts/start-sona.test.mjs
+        run: node --test scripts/start-local.test.mjs scripts/start-mobilesci.test.mjs
 
       - name: Remote deployment helper tests
         run: |
           python3 -m unittest discover -s scripts/deploy -p 'test_*.py'
-          bash -n scripts/deploy/server.sh scripts/deploy/start.sh deploy-sona.command
+          bash -n scripts/deploy/server.sh scripts/deploy/start.sh deploy-mobilesci.command
 
       - name: Interactive chart authoring tests
         run: python3 scripts/test_orx_chart.py

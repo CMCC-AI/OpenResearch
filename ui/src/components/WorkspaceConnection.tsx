@@ -46,7 +46,7 @@ export function WorkspaceConnection({
             </IconButton>
             <span className="flex min-w-0 flex-col gap-1 text-start text-text">
               <span className="truncate text-sm leading-tight">{m.projects_local()}</span>
-              <span className="truncate text-xs leading-tight text-subtext">SONA {ltr(runtime.version)}</span>
+              <span className="truncate text-xs leading-tight text-subtext">MobileSci {ltr(runtime.version)}</span>
             </span>
           </div>
         </div>

@@ -14,28 +14,28 @@
 
 ## 兼容性结论
 
-公开论文 API 返回 HTTP 200，`paginated=1` 支持 `papers`、`viewerStates`、`authenticated`、`total`、`hasMore`；本次检查返回总数 1,886。这一响应结构与 SONA 当前公共文献读取接口兼容。
+公开论文 API 返回 HTTP 200，`paginated=1` 支持 `papers`、`viewerStates`、`authenticated`、`total`、`hasMore`；本次检查返回总数 1,886。这一响应结构与 MobileSci 当前公共文献读取接口兼容。
 
 现有认证模式为 `dockapi`。源码与已构建路由中没有 `/api/auth/openresearch/start`；公开请求返回 404。已构建认证路由包括本地登录/注册/退出/身份与 `/api/auth/sso/exchange`，不能将这个旧交换接口视为 OpenResearch PKCE 授权协议的替代品。
 
-SONA 当前平台会在登录后进入 OpenResearch SSO 流程。因此只把文献 URL 改成现有服务、继续启用自动 SSO，将导致登录回跳失败。当前完整部署包的新建 DeepXiv 模式也不会自动复用此服务器数据库。
+MobileSci 当前平台会在登录后进入 OpenResearch SSO 流程。因此只把文献 URL 改成现有服务、继续启用自动 SSO，将导致登录回跳失败。当前完整部署包的新建 DeepXiv 模式也不会自动复用此服务器数据库。
 
 ## 方案一：复用公开服务，保留原登录
 
-SONA 后端通过现有公共论文 API 读取、搜索、分页，精读与文库打开现有服务；文库使用原 DockAPI 账号。
+MobileSci 后端通过现有公共论文 API 读取、搜索、分页，精读与文库打开现有服务；文库使用原 DockAPI 账号。
 
-这一模式需要关闭平台对该文献服务的自动 OpenResearch SSO 跳转，并明确区分“论文服务已连接”和“统一身份已建立”。保留 SONA 自身登录，不将另一个系统的账号或会话当作 SONA 身份。不修改现有 DeepLiterature 服务、数据库或用户资产。
+这一模式需要关闭平台对该文献服务的自动 OpenResearch SSO 跳转，并明确区分“论文服务已连接”和“统一身份已建立”。保留 MobileSci 自身登录，不将另一个系统的账号或会话当作 MobileSci 身份。不修改现有 DeepLiterature 服务、数据库或用户资产。
 
-## 方案二：保留 SONA 同步登录，新增专用文献入口
+## 方案二：保留 MobileSci 同步登录，新增专用文献入口
 
-建议保留现有两个 Web 入口、DockAPI 配置及后台 Worker，在文献服务器新增 SONA 专用 Web 实例。它运行支持 OpenResearch PKCE/授权码与会话内省的版本，通过 SONA 的 20281 网关提供访问；其公共 origin 与 SONA 网关保持一致，登录完成回到 `/sona/projects`。
+建议保留现有两个 Web 入口、DockAPI 配置及后台 Worker，在文献服务器新增 MobileSci 专用 Web 实例。它运行支持 OpenResearch PKCE/授权码与会话内省的版本，通过 MobileSci 的 20281 网关提供访问；其公共 origin 与 MobileSci 网关保持一致，登录完成回到 `/mobilesci/projects`。
 
-复用既有论文数据和 PDF 存储，但 SONA 身份使用独立 `openresearch` provider 映射，不按邮箱自动合并旧 DockAPI 文库。现有账号的收藏、笔记、会话仍保留；如果要求 SONA 用户直接获得旧文库，必须核验身份并设计显式迁移。
+复用既有论文数据和 PDF 存储，但 MobileSci 身份使用独立 `openresearch` provider 映射，不按邮箱自动合并旧 DockAPI 文库。现有账号的收藏、笔记、会话仍保留；如果要求 MobileSci 用户直接获得旧文库，必须核验身份并设计显式迁移。
 
 实施前需要备份现有数据库与 PDF，使用数据库副本验证新应用所需的 schema 迁移与旧 DockAPI 服务兼容性。未经这一验证，不在共享生产数据库执行迁移。新增入口的网络访问范围、应用角色权限及 SSO 密钥要单独配置，不暴露现有数据库公网端口，不复制主数据库到科研服务器。
 
-用户已选择方案二。已在文献服务器执行独立副本验证：旧用户、身份和会话内容保持不变，旧版 DockAPI 公共查询、新版 SONA 公共查询与 SSO 路由均通过。生产数据库未迁移，原服务未切换；复用版安装器会在部署时重新进行上述副本验证，再执行生产追加迁移。验证报告：`/opt/sona-literature/backups/20261013T073158Z.json`。
+用户已选择方案二。已在文献服务器执行独立副本验证：旧用户、身份和会话内容保持不变，旧版 DockAPI 公共查询、新版 MobileSci 公共查询与 SSO 路由均通过。生产数据库未迁移，原服务未切换；复用版安装器会在部署时重新进行上述副本验证，再执行生产追加迁移。验证报告：`/opt/mobilesci-literature/backups/20261013T073158Z.json`。
 
 ## 实际部署完成
 
-2026-10-13，复用安装器再次通过副本验证并完成生产追加迁移。新 `sona-literature-web` 已运行，原两个 DockAPI Web 和数据库保持健康；公网 SONA 管理员登录、文献 SSO、返回 SONA 与共享论文查询均通过。旧账号与文库不自动合并。
+2026-10-13，复用安装器再次通过副本验证并完成生产追加迁移。新 `mobilesci-literature-web` 已运行，原两个 DockAPI Web 和数据库保持健康；公网 MobileSci 管理员登录、文献 SSO、返回 MobileSci 与共享论文查询均通过。旧账号与文库不自动合并。

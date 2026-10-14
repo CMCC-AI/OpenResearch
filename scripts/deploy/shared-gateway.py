@@ -6,7 +6,7 @@ def configure(backup_dir=None):
     container='cmcc-apps-gateway-1'
     result=subprocess.run(['docker','inspect',container],capture_output=True,text=True)
     if result.returncode:
-        print('No existing CMCC gateway; dedicated SONA entry retained.')
+        print('No existing CMCC gateway; dedicated MobileSci entry retained.')
         return
     info=json.loads(result.stdout)[0]
     config=pathlib.Path('/opt/cmcc-apps/config/gateway-nginx.conf')
@@ -18,12 +18,12 @@ def configure(backup_dir=None):
         raise SystemExit('Expected CMCC gateway host network unavailable.')
     host=network['Gateway']
     old=config.read_text()
-    marker='# SONA shared gateway routes'
+    marker='# MobileSci shared gateway routes'
     if old.count('    location / { return 404; }')!=1 or old.count('    location = / {')!=1:
         raise SystemExit('Unexpected CMCC gateway route structure; manual review required.')
     routes=f'''    {marker}
-    location = /sona {{ proxy_pass http://{host}:20281; }}
-    location /sona/ {{ proxy_pass http://{host}:20281; }}
+    location = /mobilesci {{ proxy_pass http://{host}:20281; }}
+    location /mobilesci/ {{ proxy_pass http://{host}:20281; }}
     location = /deepxiv {{ proxy_pass http://{host}:20281; }}
     location /deepxiv/ {{ proxy_pass http://{host}:20281; }}
     location ~ ^/(_account/|_orx/|api/|_next/|abs/|library(?:/|$)|account(?:/|$)|blog(?:/|$)|researchers(?:/|$)|papers/|platform\\.js$|platform\\.css$|favicon\\.ico$|healthz$) {{
@@ -37,7 +37,7 @@ def configure(backup_dir=None):
         new=new.replace('    location = / {','    location = / {\n        if ($arg_continue != "") { return 302 /_account/login$is_args$args; }',1)
     else:
         new=old.replace('platform\\.css$|healthz$', 'platform\\.css$|favicon\\.ico$|healthz$')
-    root_marker='# SONA literature homepage by public host'
+    root_marker='# MobileSci literature homepage by public host'
     if root_marker not in new:
         root=re.search(r'(?ms)^    location = / \{\n(.*?)^    \}',new)
         if not root:raise SystemExit('Unexpected CMCC homepage structure; manual review required.')
@@ -47,13 +47,13 @@ def configure(backup_dir=None):
             '        '+root_marker+'\n        if ($http_host != "61.136.101.179:20281") {\n    '+returned.group(0)+'\n        }\n        proxy_pass http://'+host+':20281;',1)
         new=new[:root.start(1)]+body+new[root.end(1):]
     if '    location /deepxiv/' not in new:
-        new=new.replace('    # SONA shared gateway routes',
-            '    location = /deepxiv { proxy_pass http://'+host+':20281; }\n    location /deepxiv/ { proxy_pass http://'+host+':20281; }\n    # SONA shared gateway routes',1)
+        new=new.replace('    # MobileSci shared gateway routes',
+            '    location = /deepxiv { proxy_pass http://'+host+':20281; }\n    location /deepxiv/ { proxy_pass http://'+host+':20281; }\n    # MobileSci shared gateway routes',1)
     if new==old:
-        print('CMCC SONA routes already configured.')
+        print('CMCC MobileSci routes already configured.')
         return
     stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-    backup=(pathlib.Path(backup_dir)/('gateway-nginx-'+stamp+'.conf')) if backup_dir else config.with_name(config.name+'.sona-backup-'+stamp)
+    backup=(pathlib.Path(backup_dir)/('gateway-nginx-'+stamp+'.conf')) if backup_dir else config.with_name(config.name+'.mobilesci-backup-'+stamp)
     backup.write_bytes(config.read_bytes());backup.chmod(0o600)
     # Keep the bind-mounted inode so the running container sees the change.
     try:
@@ -64,7 +64,7 @@ def configure(backup_dir=None):
         config.write_text(old)
         subprocess.run(['docker','exec',container,'nginx','-s','reload'],check=False)
         raise
-    print('CMCC SONA routes configured; original routes retained. Backup:',backup)
+    print('CMCC MobileSci routes configured; original routes retained. Backup:',backup)
 
 
 if __name__=='__main__':configure()

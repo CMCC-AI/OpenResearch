@@ -116,6 +116,18 @@ test("origins and cookies are host-scoped, public HTTP rejected", () => {
   assert.ok(cookie.includes("Secure"));
   assert.ok(!cookie.includes("Domain="));
 });
+test("MobileSci entry uses its configured base path", () => {
+  const env = {
+    DATABASE_URL: "postgres://unused",
+    PLATFORM_ORIGIN: "http://localhost:5300",
+    OPENRESEARCH_APP_ORIGIN: "http://localhost:5202",
+    OPENRESEARCH_APP_PATH: "/mobilesci",
+  };
+  assert.equal(configuration(env).appEntry, "http://localhost:5202/mobilesci");
+  assert.throws(() =>
+    configuration({ ...env, OPENRESEARCH_APP_PATH: "/other" }),
+  );
+});
 test("workspace entry accepts only explicit or embedded same-origin navigation", () => {
   const expected = "http://workspace.localhost:5300";
   assert.doesNotThrow(() =>

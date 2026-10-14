@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Start the personal SONA workspace without replacing its data or credentials.
+// Start the personal MobileSci workspace without replacing its data or credentials.
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, openSync, closeSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
@@ -10,7 +10,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const appOrigin = 'http://localhost:4791'
 const platformOrigin = 'http://localhost:5300'
 const literatureOrigin = 'http://localhost:3000'
-const runtimeDir = path.join(root, '.sona-run')
+const runtimeDir = path.join(root, '.mobilesci-run')
 
 export function optionsFrom(args) {
   const result = { literatureDir: path.resolve(root, '../DeepLiterature'), rebuild: false }
@@ -67,7 +67,7 @@ async function waitFor(url, name, workspace = false, timeout = 180000) {
     if (await ready(url, workspace)) return
     await new Promise(resolve => setTimeout(resolve, 1000))
   }
-  throw new Error(`${name} 未就绪，请检查 .sona-run/workspace.log 或对应 Docker 日志。`)
+  throw new Error(`${name} 未就绪，请检查 .mobilesci-run/workspace.log 或对应 Docker 日志。`)
 }
 
 function lockStartup() {
@@ -96,7 +96,7 @@ async function ensureCompanions(options) {
   ])
   if (platformReady && literatureReady) { console.log('账号服务和 DeepXiv 已运行，复用现有服务。'); return }
   const docker = spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], { stdio: 'ignore' })
-  if (docker.status !== 0) throw new Error('请先启动 Docker Desktop，再双击 start-sona.command。')
+  if (docker.status !== 0) throw new Error('请先启动 Docker Desktop，再双击 start-mobilesci.command。')
   if (!platformReady) {
     const directory = path.join(root, 'packages/platform')
     if (!existsSync(path.join(directory, '.env'))) throw new Error('账号服务尚未配置 packages/platform/.env；脚本不会自动生成或覆盖凭据。')
@@ -118,7 +118,7 @@ async function main() {
   try {
     await ensureCompanions(options)
     if (await ready(`${appOrigin}/api/health`, true)) {
-      console.log(`SONA 已运行，保留当前研究会话：${appOrigin}/projects`)
+      console.log(`MobileSci 已运行，保留当前研究会话：${appOrigin}/projects`)
       if (options.rebuild) console.log('当前服务正在运行；未重建或重启。请停止服务后使用 --rebuild。')
       return
     }
@@ -146,8 +146,8 @@ async function main() {
       writeFileSync(path.join(runtimeDir, 'workspace.json'), JSON.stringify({ pid: child.pid, url: appOrigin, binary, startedAt: new Date().toISOString() }, null, 2), { mode: 0o600 })
       child.unref()
     } finally { closeSync(log) }
-    await waitFor(`${appOrigin}/api/health`, 'SONA 工作区', true)
-    console.log(`\nSONA 已启动：${appOrigin}/projects\n账号服务：${platformOrigin}\nDeepXiv：${literatureOrigin}\n后台 PID：${child.pid}\n日志：${logFile}\n关闭启动窗口不会停止 SONA；再次运行脚本会复用现有服务。`)
+    await waitFor(`${appOrigin}/api/health`, 'MobileSci 工作区', true)
+    console.log(`\nMobileSci 已启动：${appOrigin}/projects\n账号服务：${platformOrigin}\nDeepXiv：${literatureOrigin}\n后台 PID：${child.pid}\n日志：${logFile}\n关闭启动窗口不会停止 MobileSci；再次运行脚本会复用现有服务。`)
   } finally { unlock() }
 }
 

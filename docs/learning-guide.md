@@ -46,7 +46,7 @@
 `git diff 0d3d376..HEAD`：**248 个文件，+17408 / −2132，35 个提交全是自研改动** ✅。
 
 - **上游原生**：CLI 骨架、`up` 服务、`store.rs`、harness 适配、jobs 后端、UI 主体、除 `orx-research-team` 外的所有 `agent-skills/`。注释是英文，风格统一且极详尽。
-- **本分支自研**：`research` 命令族、`store/research.rs`、`local/research.rs`、`agent-skills/orx-research-team/`、`ui/src/product/`、`packages/platform/`、`scripts/deploy/`、Deep Literature 集成、SONA 品牌。
+- **本分支自研**：`research` 命令族、`store/research.rs`、`local/research.rs`、`agent-skills/orx-research-team/`、`ui/src/product/`、`packages/platform/`、`scripts/deploy/`、Deep Literature 集成、MobileSci 品牌。
 
 > 判断方法：`git log --oneline` 里中文提交 = 自研；英文提交 = 上游同步。
 > 最明显的代码标记：自研模块里 `src/commands/research.rs` 是**唯一用中文报错**的命令模块。
@@ -550,7 +550,7 @@ pnpm build && cd ..                      # 记得提交重新生成的 ui/dist
 4. `docs/ai-for-science/unified-login.md` — 统一身份边界。
 5. `docs/ai-for-science/startup-and-deployment.md` — 三服务 env/端口/启动/验收。
 6. `docs/ai-for-science/upstream-upgrades.md` — 上游合并与回滚。
-7. `docs/product/deploy-sona.md`、`start-sona.md` — SONA 部署与日常 SOP。
+7. `docs/product/deploy-mobilesci.md`、`start-mobilesci.md` — MobileSci 部署与日常 SOP。
 
 **再读代码**（顺序即数据流）
 
@@ -614,40 +614,40 @@ cat agent-skills/orx-research-team/SKILL.md   # 主理人技能，读起来像�
 1. `.github/workflows/ci.yml` — 全部门禁。
 2. `build.rs:1-37` — 构建通道与桌面 app 条件编译。
 3. `scripts/check-upstream-base.mjs` + `docs/ai-for-science/upstream-upgrades.md`。
-4. `docs/product/start-sona.md`、`deploy-sona.md`。
+4. `docs/product/start-mobilesci.md`、`deploy-mobilesci.md`。
 
-**日常启动（SONA 形态）** ✅
+**日常启动（MobileSci 形态）** ✅
 
 ```sh
-./start-sona.command      # = scripts/start-sona.mjs
+./start-mobilesci.command      # = scripts/start-mobilesci.mjs
 ```
 
 它会：复用/拉起 5300 账号服务与 3000 文献服务 → `pnpm -C ui build` → `cargo build --locked`
 （`CARGO_TARGET_DIR=~/.local/share/openresearch-dev/cargo-target`）→ detached `orx up --no-browser --port 4791`。
-日志在 `.sona-run/workspace.log`，入口 `http://localhost:4791/projects`。**4791 被占用则拒绝启动。**
+日志在 `.mobilesci-run/workspace.log`，入口 `http://localhost:4791/projects`。**4791 被占用则拒绝启动。**
 
 从零初始化用 `./start-local.command`（会生成并保留 `.env`）。
 
 **服务器一键部署**
 
 ```sh
-./deploy-sona.command [--prepare-only | --bundle x.tgz]
+./deploy-mobilesci.command [--prepare-only | --bundle x.tgz]
 ```
 
 两阶段：本地建 Linux 镜像 + 打包 OpenCode 配置与凭据 → `scp -P 20280` →
 远端 `server.sh`（SHA256/架构校验、装 Docker、迁移、`start.sh`、Nginx 20281、systemd）→
-部署到 `/opt/sona/releases/<号>`。增量更新用 `./update-sona.command`（只换 platform + workbench 容器，
+部署到 `/opt/mobilesci/releases/<号>`。增量更新用 `./update-mobilesci.command`（只换 platform + workbench 容器，
 先备份 SQLite，失败回滚）。
 
-> ⚠️ 部署脚本里有**硬编码**的目标机、端口与网关路径（`/sona` + `/deepxiv`），
-> Host 校验写死在 `sona.py` 与 `nginx.conf`。迁移环境前必须改这些。
+> ⚠️ 部署脚本里有**硬编码**的目标机、端口与网关路径（`/mobilesci` + `/deepxiv`），
+> Host 校验写死在 `mobilesci.py` 与 `nginx.conf`。迁移环境前必须改这些。
 
 **本地等价于 CI 的检查**
 
 ```sh
 node scripts/check-upstream-base.mjs
 node ui/scripts/check-i18n.mjs && node ui/scripts/check-styles.mjs
-node --test scripts/dev-slot.test.mjs scripts/start-local.test.mjs scripts/start-sona.test.mjs
+node --test scripts/dev-slot.test.mjs scripts/start-local.test.mjs scripts/start-mobilesci.test.mjs
 cd ui && pnpm typecheck && pnpm test && pnpm build && cd ..
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
@@ -778,8 +778,8 @@ sqlite3 $DB "select * from chat_run_wakeups order by requested_at desc limit 5;"
 21. **`orx update` 不会装官方包**（`updateChannel: product-disabled`），别把
     `OFFICIAL_UPDATE_CHANNEL_ENABLED` 改 true。
 22. **origin 必须精确**：`localhost` ≠ `127.0.0.1`；`ORX_DEEP_LITERATURE_WEB_URL` 必须等于文献服务的公开 origin。
-23. **当前工作树是脏的**：`ui/dist`、`docs/product/deploy-sona.md` 有未提交改动，
-    `update-sona.command`、`scripts/deploy/*.py` 未跟踪。`git diff <base>..HEAD` 不含它们。
+23. **当前工作树是脏的**：`ui/dist`、`docs/product/deploy-mobilesci.md` 有未提交改动，
+    `update-mobilesci.command`、`scripts/deploy/*.py` 未跟踪。`git diff <base>..HEAD` 不含它们。
 
 ---
 
@@ -829,7 +829,7 @@ sqlite3 $DB "select * from chat_run_wakeups order by requested_at desc limit 5;"
 | 研究编排模型 | `src/store/research.rs` |
 | 专家角色 | `agent-skills/orx-research-team/references/` |
 | 整体设计 | `docs/ai-for-science/final-architecture-and-functional-design.md` |
-| 启动部署 | `docs/ai-for-science/startup-and-deployment.md`、`docs/product/start-sona.md` |
+| 启动部署 | `docs/ai-for-science/startup-and-deployment.md`、`docs/product/start-mobilesci.md` |
 | CI 门禁 | `.github/workflows/ci.yml` |
 
 ---
@@ -842,4 +842,4 @@ sqlite3 $DB "select * from chat_run_wakeups order by requested_at desc limit 5;"
 - **B. 执行后端**：`compute.rs` 的 `ComputeBackend` 与 `jobs/` 九个实现，如何加第十个。
 - **C. 研究编排**：`store/research.rs` 的 DAG 校验、授权消费、证据验收规则。
 - **D. 前端**：`ui/src` 的 6.1 万行，路由、状态、SSE 与 DAG 可视化。
-- **E. 部署运维**：`scripts/deploy/`、`packages/platform/`、SONA 部署与上游同步。
+- **E. 部署运维**：`scripts/deploy/`、`packages/platform/`、MobileSci 部署与上游同步。

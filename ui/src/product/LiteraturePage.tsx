@@ -49,7 +49,7 @@ export function LiteraturePage() {
     <main className="min-h-0 flex-1 overflow-y-auto px-7 py-10">
       <div className="mx-auto max-w-280">
         <header className="grid grid-cols-[1fr_auto] gap-6 [@media((max-width:_760px))]:grid-cols-1">
-          <div><span className="inline-flex items-center gap-2 text-sm font-medium text-primary"><BookOpenCheck size={16} />DeepXiv 文献理解层</span><h1 className="mt-3 mb-2 text-5xl tracking-[-0.045em]">从发现论文，到读懂论文</h1><p className="m-0 max-w-190 text-lg leading-relaxed text-subtext">在 DeepXiv 完成精读、解读、问答与笔记，再把论文带入 SONA 建立项目、运行实验并沉淀结果。</p></div>
+          <div><span className="inline-flex items-center gap-2 text-sm font-medium text-primary"><BookOpenCheck size={16} />DeepXiv 文献理解层</span><h1 className="mt-3 mb-2 text-5xl tracking-[-0.045em]">从发现论文，到读懂论文</h1><p className="m-0 max-w-190 text-lg leading-relaxed text-subtext">在 DeepXiv 完成精读、解读、问答与笔记，再把论文带入 MobileSci 建立项目、运行实验并沉淀结果。</p></div>
           <div className="flex h-fit flex-col items-end gap-3 [@media((max-width:_760px))]:items-start">
             <div className={`rounded-full border px-3 py-1.5 text-xs ${status.data?.connected ? "border-accent-green bg-accent-green-subtle text-accent-green" : "border-border bg-background text-muted"}`}>{status.isLoading ? "正在检测连接" : status.data?.connected ? "DeepXiv 已连接" : "DeepXiv 未连接"}</div>
             {status.data?.connected && status.data.webUrl && <a href={deepLiteratureUrl(status.data.webUrl, "/library")} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-background no-underline">登录并打开我的文库 <ExternalLink size={14} /></a>}

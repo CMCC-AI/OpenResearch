@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare/reuse a code-only SONA update, upload it, and safely replace two services."""
+"""Prepare/reuse a code-only MobileSci update, upload it, and safely replace two services."""
 import argparse
 import hashlib
 import io
@@ -14,7 +14,7 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-OUTPUT = ROOT / '.sona-run' / 'updates'
+OUTPUT = ROOT / '.mobilesci-run' / 'updates'
 TARGET = 'ubuntu@61.136.101.179'
 SSH_OPTIONS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=2']
 
@@ -30,7 +30,7 @@ def digest(path):
 
 def fingerprint():
     value = hashlib.sha256()
-    for name in ['Cargo.toml', 'Cargo.lock', 'build.rs', 'SYSTEM_PROMPT.md', 'SKILL.md', 'src', 'ui/src', 'ui/dist', 'linux', 'agent-skills', 'demo', 'packages/platform/Dockerfile.executor', 'scripts/deploy/update-server.py']:
+    for name in ['Cargo.toml', 'Cargo.lock', 'build.rs', 'SYSTEM_PROMPT.md', 'SKILL.md', 'src', 'ui/src', 'ui/dist', 'linux', 'agent-skills', 'demo', 'packages/platform/Dockerfile.executor', 'packages/platform/public', 'packages/platform/src', 'scripts/deploy/update-server.py']:
         path = ROOT / name
         for file in sorted(path.rglob('*') if path.is_dir() else [path]):
             if file.is_file():
@@ -78,7 +78,7 @@ def prepare(image=None):
             return bundle
     if image is None:
         run(['pnpm', 'build'], cwd=ROOT / 'ui')
-    with tempfile.TemporaryDirectory(prefix='sona-update-') as temp:
+    with tempfile.TemporaryDirectory(prefix='mobilesci-update-') as temp:
         work = Path(temp)
         if image is None:
             baseline = work / 'baseline'
@@ -88,9 +88,9 @@ def prepare(image=None):
             # controls its paths; unlike uploaded bundles it is not untrusted.
             with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
                 tar.extractall(baseline)
-            run(['docker', 'buildx', 'build', '--platform', 'linux/amd64', '--target', 'build', '--load', '-f', baseline / 'packages/platform/Dockerfile.executor', '-t', 'sona-update-build:base', baseline])
-            (work / 'Dockerfile').write_text('FROM sona-update-build:base AS build\nCOPY src /src/src\nCOPY ui/dist /src/ui/dist\nCOPY Cargo.toml Cargo.lock build.rs /src/\nCOPY linux /src/linux\nCOPY agent-skills /src/agent-skills\nCOPY demo /src/demo\nCOPY SYSTEM_PROMPT.md SKILL.md /src/\nRUN cargo build --release --locked\nFROM scratch\nCOPY --from=build /src/target/release/orx /orx\nCMD ["/orx"]\n')
-            image = 'sona-update-binary:' + source[:12]
+            run(['docker', 'buildx', 'build', '--platform', 'linux/amd64', '--target', 'build', '--load', '-f', baseline / 'packages/platform/Dockerfile.executor', 'packages/platform/public', 'packages/platform/src', '-t', 'mobilesci-update-build:base', baseline])
+            (work / 'Dockerfile').write_text('FROM mobilesci-update-build:base AS build\nCOPY src /src/src\nCOPY ui/dist /src/ui/dist\nCOPY Cargo.toml Cargo.lock build.rs /src/\nCOPY linux /src/linux\nCOPY agent-skills /src/agent-skills\nCOPY demo /src/demo\nCOPY SYSTEM_PROMPT.md SKILL.md /src/\nRUN cargo build --release --locked\nFROM scratch\nCOPY --from=build /src/target/release/orx /orx\nCMD ["/orx"]\n')
+            image = 'mobilesci-update-binary:' + source[:12]
             run(['docker', 'buildx', 'build', '--platform', 'linux/amd64', '--load', '-f', work / 'Dockerfile', '-t', image, ROOT])
             binary_path = '/orx'
         else:
@@ -111,8 +111,10 @@ def prepare(image=None):
         if (package / 'workbench/orx').read_bytes()[:4] != b'\x7fELF':
             raise ValueError('后端产物不是 Linux ELF 可执行文件')
         shutil.copytree(ROOT / 'ui/dist', package / 'platform/dist')
+        shutil.copytree(ROOT / 'packages/platform/public', package / 'platform/public')
+        shutil.copytree(ROOT / 'packages/platform/src', package / 'platform/src')
         for service in ['workbench', 'platform']:
-            copy = 'COPY orx /usr/local/bin/orx' if service == 'workbench' else 'COPY dist /app/ui/dist'
+            copy = 'COPY orx /usr/local/bin/orx' if service == 'workbench' else 'COPY dist /app/ui/dist\nCOPY public /app/platform/public\nCOPY src /app/platform/src'
             (package / service / 'Dockerfile').write_text('ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n' + copy + '\n')
         shutil.copy2(ROOT / 'scripts/deploy/update-server.py', package / 'update-server.py')
         source = fingerprint()
@@ -133,7 +135,7 @@ def prepare(image=None):
 def upload(bundle):
     verify_bundle(bundle)
     sha = digest(bundle)
-    remote = '/home/ubuntu/.sona-updates/' + sha[:16]
+    remote = '/home/ubuntu/.mobilesci-updates/' + sha[:16]
     ssh = ['ssh', *SSH_OPTIONS, '-p', '20280', TARGET]
     # Check connectivity before uploading; a failed upload may be retried safely.
     run([*ssh, 'umask 077; mkdir -p ' + shlex.quote(remote)])
@@ -189,11 +191,11 @@ print(json.dumps({'log':text,'offset':offset,'code':int(result.read_text()) if r
                 raise ValueError('服务器更新失败；请查看上述日志。旧容器按失败恢复流程保留。服务器日志：' + remote + '/deploy.log')
             break
         time.sleep(5)
-    print('更新完成：http://61.136.101.179:20281/sona/\n请刷新页面；必要时强制刷新浏览器缓存。', flush=True)
+    print('更新完成：http://61.136.101.179:20281/mobilesci/\n请刷新页面；必要时强制刷新浏览器缓存。', flush=True)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='只更新 SONA 科研后端和前端，保留线上配置、数据库、模型凭据和文献服务。')
+    parser = argparse.ArgumentParser(description='只更新 MobileSci 科研后端和前端，保留线上配置、数据库、模型凭据和文献服务。')
     parser.add_argument('--prepare-only', action='store_true', help='只准备本地更新包，不连接服务器')
     parser.add_argument('--bundle', type=Path, help='使用指定的已准备更新包')
     parser.add_argument('--workbench-image', help='从指定的本地 Linux amd64 科研镜像提取二进制')

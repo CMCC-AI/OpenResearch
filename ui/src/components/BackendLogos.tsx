@@ -24,7 +24,7 @@ function backendName(kind: string): string {
     case "ray_job":
       return "Ray";
     case "openresearch_job":
-      return "SONA";
+      return "MobileSci";
     case "local_job":
       return m.compute_target_local();
     case "tinker_job":
@@ -116,7 +116,7 @@ function RayLogo({ size = 16 }: { size?: number }) {
   );
 }
 
-// Share the SONA mark with the navigation and account entry.
+// Share the MobileSci mark with the navigation and account entry.
 function SonaLogo({ size = 16 }: { size?: number }) {
   return <span className="inline-flex flex-none" style={{ width: size, height: size }}><BrandMark /></span>;
 }

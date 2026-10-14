@@ -442,7 +442,7 @@ export function RuntimeRoot() {
     const remote = runtime?.kind === "ssh";
     setFavicon(remote);
     if (remote && (!everConnected.current || (runtime.session.status === "disconnected" && !runtime.session.error))) {
-      document.title = "SONA";
+      document.title = "MobileSci";
     }
   }, [runtime]);
 

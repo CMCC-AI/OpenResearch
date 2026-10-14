@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-compose=(docker compose --env-file /opt/sona/state/.env -p sona-remote)
+compose=(docker compose --env-file /opt/mobilesci/state/.env -p mobilesci-remote)
 "${compose[@]}" up -d --pull never platform-db
 "${compose[@]}" run --rm platform-migrate
 "${compose[@]}" up -d --pull never platform workbench
-SONA_PREPARE_CORE=${SONA_PREPARE_CORE:-0} python3 - <<'PY'
+MOBILESCI_PREPARE_CORE=${MOBILESCI_PREPARE_CORE:-0} python3 - <<'PY'
 import json,time,urllib.request,os
 urls=['http://localhost:4791/api/health','http://localhost:5300/healthz']
-if os.environ['SONA_PREPARE_CORE']!='1':urls.append('http://localhost:3005/api/papers?limit=1')
+if os.environ['MOBILESCI_PREPARE_CORE']!='1':urls.append('http://localhost:3005/api/papers?limit=1')
 for url in urls:
  for attempt in range(120):
   try:
@@ -16,7 +16,7 @@ for url in urls:
     if r.status!=200: raise ValueError('HTTP status')
     if '4791' in url:
      d=json.load(r)
-     if not d.get('ok') or d.get('version')!='0.2.18': raise ValueError('SONA version')
+     if not d.get('ok') or d.get('version')!='0.2.18': raise ValueError('MobileSci version')
    break
   except Exception:
    if attempt==119: raise SystemExit('健康检查失败：'+url)
@@ -25,6 +25,6 @@ print('当前阶段所需服务健康检查通过。')
 PY
 "${compose[@]}" exec -T workbench opencode --version
 # Gateway startup is deferred until the first bootstrap account is ready.
-if [[ -f /opt/sona/state/admin-login.txt && "${SONA_PREPARE_CORE:-0}" != 1 ]]; then
+if [[ -f /opt/mobilesci/state/admin-login.txt && "${MOBILESCI_PREPARE_CORE:-0}" != 1 ]]; then
   "${compose[@]}" up -d --pull never gateway
 fi

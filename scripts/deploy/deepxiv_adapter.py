@@ -1,4 +1,4 @@
-"""Adapt only the disposable DeepXiv build copy for SONA's /deepxiv deployment."""
+"""Adapt only the disposable DeepXiv build copy for MobileSci's /deepxiv deployment."""
 import pathlib,re
 
 PREFIX='/deepxiv'
@@ -22,8 +22,8 @@ def adapt(folder):
         text=text.replace('${window.location.origin}/abs/', '${window.location.origin}/deepxiv/abs/')
         text=re.sub(r'<a\b[^>]*>',lambda m:re.sub(r'(href=\{?)([\'"`])/(?!/|deepxiv)',r'\1\2/deepxiv/',m.group(0)),text)
         if file.name=='EmbeddedAuthBoundary.tsx':
-            text=text.replace('window.location.assign(platformOrigin)',"window.location.assign(`${platformOrigin}/sona`)")
-            text=text.replace('登录 OpenResearch 后','登录 SONA 后').replace('进入 OpenResearch 登录','进入 SONA 登录').replace('连接 OpenResearch 与 DeepLiterature','连接 SONA 与 DeepXiv')
+            text=text.replace('window.location.assign(platformOrigin)',"window.location.assign(`${platformOrigin}/mobilesci`)")
+            text=text.replace('登录 OpenResearch 后','登录 MobileSci 后').replace('进入 OpenResearch 登录','进入 MobileSci 登录').replace('连接 OpenResearch 与 DeepLiterature','连接 MobileSci 与 DeepXiv')
         file.write_text(text)
     store=folder/'src/lib/papers/store.ts'
     store.write_text(re.sub(r'([\'"`])/api/',r'\1/deepxiv/api/',store.read_text()))

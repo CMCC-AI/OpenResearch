@@ -56,8 +56,8 @@ def validate_config(text):
 
 
 def compose_text(release):
-    prefix = 'sona-' + release.lower()
-    text = f'''name: sona-remote
+    prefix = 'mobilesci-' + release.lower()
+    text = f'''name: mobilesci-remote
 services:
   platform-db:
     image: {prefix}-postgres
@@ -116,7 +116,7 @@ services:
       PLATFORM_INSECURE_PUBLIC_ORIGIN: http://61.136.101.179:20281
       PLATFORM_RESEARCH_OWNER_EMAIL: owner@research.local
       OPENRESEARCH_APP_ORIGIN: http://61.136.101.179:20281
-      OPENRESEARCH_APP_PATH: /sona
+      OPENRESEARCH_APP_PATH: /mobilesci
       DEEPLIT_WEB_PATH: /deepxiv
       DEEPLIT_ORIGIN: http://61.136.101.179:20281
       DEEPLIT_SSO_CLIENT_SECRET: ${{DEEPLIT_SSO_CLIENT_SECRET}}
@@ -140,14 +140,14 @@ services:
       DEEPLIT_OPENRESEARCH_URL: http://localhost:20281
       DEEPLIT_OPENRESEARCH_PUBLIC_ORIGIN: http://61.136.101.179:20281
       DEEPLIT_OPENRESEARCH_APP_ORIGIN: http://61.136.101.179:20281
-      DEEPLIT_OPENRESEARCH_APP_PATH: /sona
+      DEEPLIT_OPENRESEARCH_APP_PATH: /mobilesci
       DEEPLIT_PUBLIC_ORIGIN: http://61.136.101.179:20281
       DEEPLIT_INSECURE_PUBLIC_ORIGIN: http://61.136.101.179:20281
       DEEPLIT_SSO_CLIENT_SECRET: ${{DEEPLIT_SSO_CLIENT_SECRET}}
       DEEPLIT_PASSWORD_PEPPER: ${{DEEPLIT_PASSWORD_PEPPER}}
       DEEPLIT_COOKIE_MODE: same-site
       DEEPLIT_SECURE_COOKIES: 'false'
-    volumes: [/opt/sona/state/papers:/data/papers]
+    volumes: [/opt/mobilesci/state/papers:/data/papers]
     restart: unless-stopped
     init: true
   workbench:
@@ -159,9 +159,9 @@ services:
       ORX_DEEP_LITERATURE_WEB_URL: http://61.136.101.179:20281
     volumes:
       - research_home:/home/node
-      - /opt/sona/state/opencode:/home/node/.config/opencode
-      - /opt/sona/state/opencode-auth:/home/node/.local/share/opencode
-      - /opt/sona/state/research:/home/node/research
+      - /opt/mobilesci/state/opencode:/home/node/.config/opencode
+      - /opt/mobilesci/state/opencode-auth:/home/node/.local/share/opencode
+      - /opt/mobilesci/state/research:/home/node/research
     restart: unless-stopped
     init: true
     stop_grace_period: 2m
@@ -203,7 +203,7 @@ def prepare(args):
     if not re.fullmatch(r'\d+\.\d+\.\d+', version):
         raise ValueError('无法识别 OpenCode 精确版本：' + version)
     release = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-' + os.urandom(3).hex()
-    bundle = ROOT / '.sona-run' / 'deploy' / release
+    bundle = ROOT / '.mobilesci-run' / 'deploy' / release
     bundle.mkdir(parents=True, mode=0o700)
     config = args.opencode_config_dir.resolve()
     found = False
@@ -239,8 +239,8 @@ def prepare(args):
     run(['pnpm', '--dir', ROOT / 'ui', 'install', '--frozen-lockfile'])
     run(['pnpm', '--dir', ROOT / 'ui', 'build'])
     platform = 'linux/' + args.arch
-    prefix = 'sona-' + release.lower()
-    run(['docker', 'buildx', 'build', '--platform', platform, '--load', '-f', ROOT / 'packages/platform/Dockerfile.executor', '--build-arg', 'OPENCODE_VERSION=' + version, '-t', 'sona-executor:bundle', ROOT])
+    prefix = 'mobilesci-' + release.lower()
+    run(['docker', 'buildx', 'build', '--platform', platform, '--load', '-f', ROOT / 'packages/platform/Dockerfile.executor', '--build-arg', 'OPENCODE_VERSION=' + version, '-t', 'mobilesci-executor:bundle', ROOT])
     run(['docker', 'buildx', 'build', '--platform', platform, '--load', '-f', ROOT / 'scripts/deploy/Dockerfile.workbench', '-t', prefix + '-workbench', build])
     run(['docker', 'buildx', 'build', '--platform', platform, '--load', '-f', ROOT / 'packages/platform/Dockerfile', '-t', prefix + '-platform', ROOT])
     # Patch only the disposable deployment copy; the companion checkout is untouched.
@@ -279,7 +279,7 @@ def prepare(args):
     (bundle / 'opencode-version').write_text(version)
     (bundle / 'release-id').write_text(release)
     (bundle / 'compose.yaml').write_text(compose_text(release))
-    manifest = {'deepxivBasePath': '/deepxiv', 'browserSessionReadVersion': 1, 'deploymentFormat': 3, 'literatureMode': 'existing-server-sso', 'appPath': '/sona', 'release': release, 'architecture': platform, 'sonaCommit': subprocess.check_output(['git', '-C', ROOT, 'rev-parse', 'HEAD'], text=True).strip(), 'deepxivCommit': subprocess.check_output(['git', '-C', deep, 'rev-parse', 'HEAD'], text=True).strip(), 'opencodeVersion': version, 'credentialsIncluded': not args.without_auth and auth.exists()}
+    manifest = {'deepxivBasePath': '/deepxiv', 'browserSessionReadVersion': 1, 'deploymentFormat': 3, 'literatureMode': 'existing-server-sso', 'appPath': '/mobilesci', 'release': release, 'architecture': platform, 'mobilesciCommit': subprocess.check_output(['git', '-C', ROOT, 'rev-parse', 'HEAD'], text=True).strip(), 'deepxivCommit': subprocess.check_output(['git', '-C', deep, 'rev-parse', 'HEAD'], text=True).strip(), 'opencodeVersion': version, 'credentialsIncluded': not args.without_auth and auth.exists()}
     (bundle / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
     shutil.rmtree(build)
     lines = []
@@ -313,8 +313,8 @@ def inspect_bundle(archive):
             raise ValueError('非法发布编号')
         file = tar.extractfile(release + '/manifest.json')
         manifest = json.load(file)
-        if manifest.get('deploymentFormat') != 3 or manifest.get('literatureMode') != 'existing-server-sso' or manifest.get('appPath') != '/sona':
-            raise ValueError('此包不包含现有文献服务复用与 /sona 入口，请重新准备部署包。')
+        if manifest.get('deploymentFormat') != 3 or manifest.get('literatureMode') != 'existing-server-sso' or manifest.get('appPath') != '/mobilesci':
+            raise ValueError('此包不包含现有文献服务复用与 /mobilesci 入口，请重新准备部署包。')
         if manifest.get('browserSessionReadVersion') != 1:
             raise ValueError('此包缺少浏览器登录修复，请使用 --prepare-only 重新准备，避免覆盖线上修复。')
         if manifest.get('deepxivBasePath') != '/deepxiv':
@@ -336,7 +336,7 @@ def deploy(archive):
     peer_arch=subprocess.check_output(['ssh','-o','ConnectTimeout=15','ubuntu@81.70.174.140','uname -m'],text=True).strip()
     if peer_arch!=expected:raise ValueError('两台服务器需要匹配部署包 CPU 架构')
     # Host key checking intentionally uses normal OpenSSH defaults, never disabled.
-    remote = '.sona-upload/' + release
+    remote = '.mobilesci-upload/' + release
     run(ssh + ['umask 077; mkdir -p ' + shlex.quote(remote)])
     run(['scp', '-P', PORT, archive, TARGET + ':' + remote + '/bundle.tgz'])
     checksum = digest(archive)
@@ -352,13 +352,13 @@ def deploy(archive):
     with urllib.request.urlopen('http://61.136.101.179:20281/api/health', timeout=20) as response:
         health = json.load(response)
         if not health.get('ok') or health.get('version') != '0.2.18':
-            raise ValueError('公网入口返回了不匹配的 SONA 服务')
-    print('部署成功：http://61.136.101.179:20281/sona；无需 SSH 隧道。')
+            raise ValueError('公网入口返回了不匹配的 MobileSci 服务')
+    print('部署成功：http://61.136.101.179:20281/mobilesci；无需 SSH 隧道。')
     # Bring the bootstrap credential back only to a private local file; never log it.
-    login_file = ROOT / '.sona-run' / 'deploy' / 'server-login.txt'
+    login_file = ROOT / '.mobilesci-run' / 'deploy' / 'server-login.txt'
     login_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with login_file.open('wb') as f:
-        run(ssh + ['sudo -n cat /opt/sona/state/admin-login.txt'], stdout=f)
+        run(ssh + ['sudo -n cat /opt/mobilesci/state/admin-login.txt'], stdout=f)
     login_file.chmod(0o600)
     print('首次登录信息已保存到私密文件：', login_file)
 

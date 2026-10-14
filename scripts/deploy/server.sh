@@ -3,9 +3,9 @@ set -euo pipefail
 umask 077
 phase=${1:-finish}
 bundle=$(cd "$(dirname "$0")" && pwd)
-root=/opt/sona
+root=/opt/mobilesci
 [[ $(id -u) == 0 ]] || { echo '请通过 sudo 执行服务器安装阶段。' >&2; exit 1; }
-exec 9>/var/lock/sona-deploy.lock
+exec 9>/var/lock/mobilesci-deploy.lock
 flock -n 9 || { echo '已有部署在执行。' >&2; exit 1; }
 cd "$bundle"
 sha256sum -c SHA256SUMS
@@ -25,7 +25,7 @@ if ! command -v docker >/dev/null; then
   ln -sf /usr/local/bin/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
   cat >/etc/systemd/system/docker.service <<'UNIT'
 [Unit]
-Description=Docker Engine for SONA
+Description=Docker Engine for MobileSci
 After=network-online.target
 Wants=network-online.target
 [Service]
@@ -70,7 +70,7 @@ if [[ -L $root/current ]]; then
   tar -czf "$root/backups/config-$stamp.tgz" -C "$root/state" .env opencode opencode-auth
   old=$(readlink -f "$root/current")
   cd "$old"
-  docker compose --env-file "$root/state/.env" -p sona-remote exec -T platform-db pg_dump -U research_platform research_platform >"$root/backups/platform-$stamp.sql"
+  docker compose --env-file "$root/state/.env" -p mobilesci-remote exec -T platform-db pg_dump -U research_platform research_platform >"$root/backups/platform-$stamp.sql"
   # Active research blocks redeployment; no forced cancellation.
   python3 - <<'PY'
 import json,urllib.request
@@ -94,10 +94,10 @@ docker load -i "$release/images.tar"
 cd "$release"
 # A container with host networking must not be replaced by another image tag accidentally.
 if [[ -L $root/current ]]; then
-  docker compose --env-file "$root/state/.env" -p sona-remote stop workbench
+  docker compose --env-file "$root/state/.env" -p mobilesci-remote stop workbench
 fi
-if ! SONA_PREPARE_CORE=1 ./start.sh; then
-  echo "启动失败。日志：cd $release && docker compose --env-file $root/state/.env -p sona-remote logs --tail 80" >&2
+if ! MOBILESCI_PREPARE_CORE=1 ./start.sh; then
+  echo "启动失败。日志：cd $release && docker compose --env-file $root/state/.env -p mobilesci-remote logs --tail 80" >&2
   echo '数据卷保持原样；数据库迁移后请勿自动恢复旧数据库。' >&2
   exit 1
 fi
@@ -109,23 +109,23 @@ from pathlib import Path
 p=Path(sys.argv[1])
 if not p.exists(): p.write_text(secrets.token_urlsafe(32)+'\n')
 ADMIN
-  docker compose --env-file "$root/state/.env" -p sona-remote run --rm -T platform-migrate node src/admin.mjs create-user owner@research.local 科研平台管理员 <"$root/state/admin-password"
-  { printf '入口：http://61.136.101.179:20281/sona\n账号：owner@research.local\n密码：'; cat "$root/state/admin-password"; } >"$root/state/admin-login.txt"
+  docker compose --env-file "$root/state/.env" -p mobilesci-remote run --rm -T platform-migrate node src/admin.mjs create-user owner@research.local 科研平台管理员 <"$root/state/admin-password"
+  { printf '入口：http://61.136.101.179:20281/mobilesci\n账号：owner@research.local\n密码：'; cat "$root/state/admin-password"; } >"$root/state/admin-login.txt"
 fi
 if ! command -v ssh-keygen >/dev/null; then
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-client
 fi
 if [[ ! -f $root/state/literature-tunnel ]]; then
-  ssh-keygen -q -t ed25519 -N '' -f "$root/state/literature-tunnel" -C sona-literature-only
+  ssh-keygen -q -t ed25519 -N '' -f "$root/state/literature-tunnel" -C mobilesci-literature-only
 fi
 if [[ $phase == prepare ]]; then
-  echo 'SONA core prepared. Waiting for literature peer and restricted tunnel.'
+  echo 'MobileSci core prepared. Waiting for literature peer and restricted tunnel.'
   exit 0
 fi
 # Run a bundled Nginx, keeping the host's existing sites untouched.
-docker compose --env-file "$root/state/.env" -p sona-remote run --rm --no-deps gateway nginx -t
-docker compose --env-file "$root/state/.env" -p sona-remote up -d --pull never gateway
+docker compose --env-file "$root/state/.env" -p mobilesci-remote run --rm --no-deps gateway nginx -t
+docker compose --env-file "$root/state/.env" -p mobilesci-remote up -d --pull never gateway
 python3 - <<'PUBLIC'
 import urllib.request,urllib.error,time
 u='http://127.0.0.1:20281'
@@ -137,7 +137,7 @@ for attempt in range(30):
  except Exception:
   if attempt==29: raise SystemExit('Nginx 20281 未就绪，请检查是否被现有服务占用。')
   time.sleep(1)
-for path in ('/api/health','/sona/','/sona/projects','/_account/login','/api/papers?limit=1'):
+for path in ('/api/health','/mobilesci/','/mobilesci/projects','/_account/login','/api/papers?limit=1'):
  with urllib.request.urlopen(urllib.request.Request(u+path,headers=headers),timeout=10) as r:
   assert r.status==200
 try:
@@ -148,17 +148,17 @@ except urllib.error.HTTPError as e:
 print('Nginx 20281 入口与科研 API 登录保护检查通过。')
 PUBLIC
 ln -sfn "$release" "$root/current"
-cat >/etc/systemd/system/sona.service <<UNIT
+cat >/etc/systemd/system/mobilesci.service <<UNIT
 [Unit]
-Description=SONA research services
-Requires=docker.service sona-literature-tunnel.service
-After=docker.service sona-literature-tunnel.service network-online.target
+Description=MobileSci research services
+Requires=docker.service mobilesci-literature-tunnel.service
+After=docker.service mobilesci-literature-tunnel.service network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$root/current
 ExecStart=$root/current/start.sh
-ExecStop=/usr/local/bin/docker-compose --env-file $root/state/.env -p sona-remote stop
+ExecStop=/usr/local/bin/docker-compose --env-file $root/state/.env -p mobilesci-remote stop
 TimeoutStartSec=900
 [Install]
 WantedBy=multi-user.target
@@ -169,9 +169,9 @@ cat >"$root/compose" <<'WRAP'
 exec docker compose "$@"
 WRAP
 chmod 0700 "$root/compose"
-sed -i "s|ExecStop=/usr/local/bin/docker-compose |ExecStop=$root/compose |" /etc/systemd/system/sona.service
+sed -i "s|ExecStop=/usr/local/bin/docker-compose |ExecStop=$root/compose |" /etc/systemd/system/mobilesci.service
 systemctl daemon-reload
-systemctl enable sona.service
-systemctl start sona.service
-printf '部署完成。SONA 0.2.18；OpenCode %s\n' "$(cat "$bundle/opencode-version")"
-echo '公网入口：http://61.136.101.179:20281/sona；内部服务端口仅监听回环地址。'
+systemctl enable mobilesci.service
+systemctl start mobilesci.service
+printf '部署完成。MobileSci 0.2.18；OpenCode %s\n' "$(cat "$bundle/opencode-version")"
+echo '公网入口：http://61.136.101.179:20281/mobilesci；内部服务端口仅监听回环地址。'

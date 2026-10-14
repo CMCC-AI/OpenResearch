@@ -16,10 +16,10 @@ const productLinks = [
 ];
 
 export function ProductWordmark({ compact = false }: { compact?: boolean }) {
-  return <Link to="/projects" className="no-underline text-text" aria-label="SONA 科研首页">
+  return <Link to="/projects" className="no-underline text-text" aria-label="MobileSci 科研首页">
     <span className="inline-flex items-center gap-2 font-semibold tracking-[-0.03em]">
       <span className="h-8 w-8 [&_svg]:h-full [&_svg]:w-full"><BrandMark /></span>
-      {!compact && <span className="product-brand-text flex flex-col leading-tight"><span>SONA</span><small className="text-xs font-normal tracking-normal text-muted">AI for Science</small></span>}
+      {!compact && <span className="product-brand-text flex flex-col leading-tight"><span>MobileSci</span><small className="text-xs font-normal tracking-normal text-muted">AI for Science</small></span>}
     </span>
   </Link>;
 }
@@ -30,7 +30,7 @@ export function ProductSidebar({ children, connectionInfo, onCollapse, onSetting
   const [mobileOpen, setMobileOpen] = useState(false);
   return <aside className={`product-sidebar session-rail [&_.rail-body]:ps-1 [&_.rail-body]:pe-1 flex w-64 min-h-0 shrink-0 flex-col border-e border-border-variant bg-background px-3 py-4 mac-titlebar:pt-10 win-titlebar:pt-10 ${mobileOpen ? "[@media((max-width:_820px))]:absolute [@media((max-width:_820px))]:inset-y-0 [@media((max-width:_820px))]:start-0 [@media((max-width:_820px))]:z-40" : ""} ${children || mobileOpen ? "" : "[@media((max-width:_820px))]:w-16 [@media((max-width:_820px))]:px-2 [@media((max-width:_820px))]:[&_.product-brand-text]:hidden [@media((max-width:_820px))]:[&_.research-nav-label]:hidden [@media((max-width:_820px))]:[&_.research-projects]:hidden"}`}>
     <div className={`flex shrink-0 items-center justify-between gap-1 px-2 pb-4 ${!children && !mobileOpen ? "[@media((max-width:_820px))]:flex-col [@media((max-width:_820px))]:px-0 [@media((max-width:_820px))]:gap-2" : ""}`}><ProductWordmark />{!children && <button type="button" aria-label={mobileOpen ? "收起项目导航" : "展开历史项目"} aria-expanded={mobileOpen} onClick={() => setMobileOpen((value) => !value)} className="hidden [@media((max-width:_820px))]:block"><PanelLeft size={17} /></button>}{onCollapse && <IconButton size="small" aria-label="收起导航" title="收起导航" onClick={onCollapse}><PanelLeft size={17} /></IconButton>}</div>
-    <nav aria-label="SONA 菜单" className="flex shrink-0 flex-col gap-0.5 pb-2">{productLinks.map(({ to, label, Icon }) => {
+    <nav aria-label="MobileSci 菜单" className="flex shrink-0 flex-col gap-0.5 pb-2">{productLinks.map(({ to, label, Icon }) => {
       const active = pathname === to || pathname.startsWith(`${to}/`);
       return <Link key={to} to={to} title={label} aria-label={label} aria-current={active ? "page" : undefined} className={`flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm no-underline ${active ? "bg-primary-subtle text-primary font-medium" : "text-subtext hover:bg-surface hover:text-text"}`}><Icon size={15} className="shrink-0" /><span className="research-nav-label">{label}</span></Link>;
     })}</nav>

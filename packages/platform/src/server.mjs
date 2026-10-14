@@ -72,7 +72,7 @@ export function configuration(env = process.env) {
   );
   const appPath = env.OPENRESEARCH_APP_PATH || "";
   check(
-    appPath === "" || appPath === "/sona",
+    appPath === "" || appPath === "/mobilesci",
     500,
     "Unsupported application path",
   );

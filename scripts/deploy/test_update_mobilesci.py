@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('update_sona', Path(__file__).with_name('update-sona.py'))
+spec = importlib.util.spec_from_file_location('update_mobilesci', Path(__file__).with_name('update-mobilesci.py'))
 update = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(update)
 
@@ -40,8 +40,8 @@ class UpdateBundleTests(unittest.TestCase):
         namespace = {'cmd': lambda *args: calls.append(args)}
         exec(compile(ast.Module(body=[function], type_ignores=[]), '<build_service>', 'exec'), namespace)
         namespace['build_service']('workbench', 'sha256:abc123', '/tmp/context', 'release')
-        self.assertEqual(calls[0], ('docker', 'tag', 'sha256:abc123', 'sona-update-base-workbench:release'))
-        self.assertIn('BASE_IMAGE=sona-update-base-workbench:release', calls[1])
+        self.assertEqual(calls[0], ('docker', 'tag', 'sha256:abc123', 'mobilesci-update-base-workbench:release'))
+        self.assertIn('BASE_IMAGE=mobilesci-update-base-workbench:release', calls[1])
         self.assertNotIn('BASE_IMAGE=sha256:abc123', calls[1])
 
     def test_health_probe_keeps_workbench_loopback_host(self):

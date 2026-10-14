@@ -1,4 +1,4 @@
-FROM sona-executor:bundle
+FROM mobilesci-executor:bundle
 USER root
 ARG CODEGRAPH_VERSION=1.6.0
 RUN npm install --global @colbymchenry/codegraph@${CODEGRAPH_VERSION}
