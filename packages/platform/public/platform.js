@@ -31,10 +31,7 @@ async function hostedHome(capabilities) {
   if (capabilities.deepLiteratureUrl)
     document.querySelector("#literature").onclick = () =>
       location.assign(
-        new URL(
-          "/api/auth/openresearch/start?returnTo=/library",
-          capabilities.deepLiteratureUrl,
-        ).href,
+        `${capabilities.deepLiteratureUrl}/api/auth/openresearch/start?returnTo=/library`,
       );
   async function refresh() {
     clearTimeout(runtimeTimer);
@@ -237,8 +234,7 @@ async function load() {
     if (capabilities.privateSpaces) return hostedHome(capabilities);
     if (capabilities.deepLiteratureUrl) {
       const login = new URL(
-        "/api/auth/openresearch/start",
-        capabilities.deepLiteratureUrl,
+        `${capabilities.deepLiteratureUrl}/api/auth/openresearch/start`,
       );
       login.searchParams.set("returnTo", "/api/auth/openresearch/complete");
       location.replace(login.href);

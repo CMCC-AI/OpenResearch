@@ -117,6 +117,7 @@ services:
       PLATFORM_RESEARCH_OWNER_EMAIL: owner@research.local
       OPENRESEARCH_APP_ORIGIN: http://61.136.101.179:20281
       OPENRESEARCH_APP_PATH: /sona
+      DEEPLIT_WEB_PATH: /deepxiv
       DEEPLIT_ORIGIN: http://61.136.101.179:20281
       DEEPLIT_SSO_CLIENT_SECRET: ${{DEEPLIT_SSO_CLIENT_SECRET}}
       BIND_ADDRESS: 127.0.0.1
@@ -251,19 +252,8 @@ def prepare(args):
             blocked.update(set(names) & {'papers', '.codex', '.agents', '.claude', 'docs'})
         return blocked
     shutil.copytree(deep, deep_build, ignore=ignore_deep)
-    sso_file = deep_build / 'src/lib/sso-config.ts'
-    text = sso_file.read_text()
-    old = "if (url.protocol !== 'https:' && url.hostname !== 'localhost') {"
-    if text.count(old) != 1:
-        raise ValueError('DeepXiv SSO 配置结构发生变化，请重新审查部署适配。')
-    text = text.replace(old, "if (url.protocol !== 'https:' && url.hostname !== 'localhost' && !(url.protocol === 'http:' && url.origin === process.env.DEEPLIT_INSECURE_PUBLIC_ORIGIN)) {")
-    sso_file.write_text(text)
-    complete_file = deep_build / 'src/app/api/auth/openresearch/complete/route.ts'
-    complete = complete_file.read_text()
-    old_redirect = "new URL('/projects', destination)"
-    if complete.count(old_redirect) != 1:
-        raise ValueError('DeepXiv 登录回跳实现变化，请审查子路径适配。')
-    complete_file.write_text(complete.replace(old_redirect, "new URL(`${process.env.DEEPLIT_OPENRESEARCH_APP_PATH || ''}/projects`, destination)"))
+    from deepxiv_adapter import adapt
+    adapt(deep_build)
     run(['docker', 'buildx', 'build', '--platform', platform, '--load', '-t', prefix + '-literature', deep_build])
     run(['docker', 'pull', '--platform', platform, 'postgres:17-alpine'])
     run(['docker', 'tag', 'postgres:17-alpine', prefix + '-postgres'])
@@ -289,7 +279,7 @@ def prepare(args):
     (bundle / 'opencode-version').write_text(version)
     (bundle / 'release-id').write_text(release)
     (bundle / 'compose.yaml').write_text(compose_text(release))
-    manifest = {'browserSessionReadVersion': 1, 'deploymentFormat': 3, 'literatureMode': 'existing-server-sso', 'appPath': '/sona', 'release': release, 'architecture': platform, 'sonaCommit': subprocess.check_output(['git', '-C', ROOT, 'rev-parse', 'HEAD'], text=True).strip(), 'deepxivCommit': subprocess.check_output(['git', '-C', deep, 'rev-parse', 'HEAD'], text=True).strip(), 'opencodeVersion': version, 'credentialsIncluded': not args.without_auth and auth.exists()}
+    manifest = {'deepxivBasePath': '/deepxiv', 'browserSessionReadVersion': 1, 'deploymentFormat': 3, 'literatureMode': 'existing-server-sso', 'appPath': '/sona', 'release': release, 'architecture': platform, 'sonaCommit': subprocess.check_output(['git', '-C', ROOT, 'rev-parse', 'HEAD'], text=True).strip(), 'deepxivCommit': subprocess.check_output(['git', '-C', deep, 'rev-parse', 'HEAD'], text=True).strip(), 'opencodeVersion': version, 'credentialsIncluded': not args.without_auth and auth.exists()}
     (bundle / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
     shutil.rmtree(build)
     lines = []
@@ -327,6 +317,8 @@ def inspect_bundle(archive):
             raise ValueError('此包不包含现有文献服务复用与 /sona 入口，请重新准备部署包。')
         if manifest.get('browserSessionReadVersion') != 1:
             raise ValueError('此包缺少浏览器登录修复，请使用 --prepare-only 重新准备，避免覆盖线上修复。')
+        if manifest.get('deepxivBasePath') != '/deepxiv':
+            raise ValueError('此包缺少 /deepxiv 子路径适配，请重新准备部署包。')
         if manifest.get('architecture') not in ('linux/amd64', 'linux/arm64'):
             raise ValueError('部署包架构字段非法')
         return release, manifest

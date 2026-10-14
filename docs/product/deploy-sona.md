@@ -138,3 +138,15 @@ ssh -p 20280 ubuntu@61.136.101.179 \
 2026-10-13，DeepXiv 顶栏首页链接使用 `/`，此前被共享网关误送到 CMCC 应用目录。现按 `61.136.101.179:20281` Host 将根地址转发给 SONA 文献首页，其余 Host 的 CMCC 目录与原应用路径保留。带签名登录继续参数的根地址仍转到账号登录页；SSO 完成入口继续回到 `/sona/projects`。文献 favicon 同步转发。
 
 线上 SONA 网关配置保存在 `/home/ubuntu/.sona-root-fix-20261013/nginx.conf` 并只读挂载；原网关配置及容器元数据留作回滚。共享网关备份为 `/home/ubuntu/.sona-root-fix-20261013/gateway-nginx-20261013T085850Z.conf`。后续新包包含该路由，正常启动保持现有网关配置。
+
+## 2026-10-14：文献入口迁移到 /deepxiv
+
+最终入口为 `http://61.136.101.179:20281/deepxiv/`，裸 `/deepxiv` 自动补斜杠。根地址 `/` 返回 SONA `/sona/`。DeepXiv 使用构建时的 Next.js basePath，页面导航、资源、浏览器 API、PDF 链接与 SSO 回调使用 `/deepxiv`；完成科研登录后仍回到 `/sona/projects`。旧论文详情和文库地址会转入新前缀。原科研后端读取论文的私有 `/api` 地址由文献容器内的轻量代理兼容，避免改变原生执行器。
+
+部署位置保持两台服务器：61 上运行 SONA、账号平台、Nginx 和受限 SSH 通道；81 上运行 SONA 专用文献 Web。专用 Web 与原 DeepLiterature 共用现有 PostgreSQL 论文数据和 `/home/ubuntu/deeplit/shared/papers` PDF，原 DockAPI Web、数据库及 Worker 均保留。新 Web 使用 SONA 身份和独立数据库角色，旧用户收藏与笔记不自动合并。
+
+此次镜像只在临时源码副本中适配；原 DeepLiterature checkout 不改动。切换前在数据库副本验证新旧查询和身份保持，通过后仅替换 SONA 文献与账号容器。保留环境、数据卷、只读 PDF 挂载和资源限制，没有复制数据库或启动新采集 Worker。文献内部 Next 监听 127.0.0.1:3006，由同容器代理在 3005 提供原受限通道入口；不新增公网端口。
+
+账号平台增加 `DEEPLIT_WEB_PATH=/deepxiv`。新部署包标记 `deepxivBasePath: /deepxiv`，旧包会被拒绝，需重新准备。线上新网关配置继续只读挂载 `/home/ubuntu/.sona-root-fix-20261013/nginx.conf`；更换前的备份与共享网关备份保存在 `/home/ubuntu/.sona-prefix-20261014`。账号和文献容器元数据保存在各服务器用户私有 `.sona-service-rollbacks` 目录。
+
+验收通过：带前缀的首页、JS/CSS、favicon、匿名论文目录、SONA 登录、文献 SSO、文献会话、共享目录以及返回 SONA；未调用付费模型。原 3000/3004 文献 Web 与其他 CMCC 应用继续保持原入口。Next.js 子路径规范参考：https://nextjs.org/docs/app/api-reference/config/next-config-js/basePath。

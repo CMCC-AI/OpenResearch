@@ -24,6 +24,8 @@ def configure(backup_dir=None):
     routes=f'''    {marker}
     location = /sona {{ proxy_pass http://{host}:20281; }}
     location /sona/ {{ proxy_pass http://{host}:20281; }}
+    location = /deepxiv {{ proxy_pass http://{host}:20281; }}
+    location /deepxiv/ {{ proxy_pass http://{host}:20281; }}
     location ~ ^/(_account/|_orx/|api/|_next/|abs/|library(?:/|$)|account(?:/|$)|blog(?:/|$)|researchers(?:/|$)|papers/|platform\\.js$|platform\\.css$|favicon\\.ico$|healthz$) {{
         client_max_body_size 100m;
         proxy_read_timeout 3600s;
@@ -44,6 +46,9 @@ def configure(backup_dir=None):
         body=root.group(1).replace(returned.group(0),
             '        '+root_marker+'\n        if ($http_host != "61.136.101.179:20281") {\n    '+returned.group(0)+'\n        }\n        proxy_pass http://'+host+':20281;',1)
         new=new[:root.start(1)]+body+new[root.end(1):]
+    if '    location /deepxiv/' not in new:
+        new=new.replace('    # SONA shared gateway routes',
+            '    location = /deepxiv { proxy_pass http://'+host+':20281; }\n    location /deepxiv/ { proxy_pass http://'+host+':20281; }\n    # SONA shared gateway routes',1)
     if new==old:
         print('CMCC SONA routes already configured.')
         return

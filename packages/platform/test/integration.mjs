@@ -271,6 +271,56 @@ test(
         },
       );
       assert.equal((await request("/")).status, 200);
+      await t.test(
+        "prefixed literature SSO keeps callback and web entry under its basePath",
+        async () => {
+          const previous = config.deepLiterature;
+          config.deepLiterature = {
+            ...previous,
+            path: "/deepxiv",
+            webUrl: `${previous.origin}/deepxiv`,
+          };
+          try {
+            const context = await request("/api/platform/browser-session", {
+              cookie: alice,
+              origin: config.appOrigin,
+            });
+            assert.equal(
+              context.data.deepLiteratureUrl,
+              `${previous.origin}/deepxiv`,
+            );
+            const query = new URLSearchParams({
+              client_id: "deeplit",
+              redirect_uri: `${previous.origin}/deepxiv/api/auth/openresearch/callback`,
+              state: "p".repeat(43),
+              code_challenge: pkce("q".repeat(43)),
+              code_challenge_method: "S256",
+            });
+            const result = await request(`/api/auth/sso/authorize?${query}`, {
+              cookie: alice,
+            });
+            assert.equal(result.status, 303);
+            assert.equal(
+              new URL(result.headers.location).pathname,
+              "/deepxiv/api/auth/openresearch/callback",
+            );
+            query.set(
+              "redirect_uri",
+              `${previous.origin}/api/auth/openresearch/callback`,
+            );
+            assert.equal(
+              (
+                await request(`/api/auth/sso/authorize?${query}`, {
+                  cookie: alice,
+                })
+              ).status,
+              400,
+            );
+          } finally {
+            config.deepLiterature = previous;
+          }
+        },
+      );
       let aliceSso;
       await t.test("DeepLiterature SSO is PKCE-bound and one-use", async () => {
         const state = "s".repeat(43),

@@ -85,6 +85,12 @@ export function configuration(env = process.env) {
   const deepLiteratureOrigin = env.DEEPLIT_ORIGIN
     ? new URL(env.DEEPLIT_ORIGIN)
     : null;
+  const deepLiteraturePath = env.DEEPLIT_WEB_PATH || "";
+  check(
+    ["", "/deepxiv"].includes(deepLiteraturePath),
+    500,
+    "Unsupported literature path",
+  );
   const deepLiteratureSecret = env.DEEPLIT_SSO_CLIENT_SECRET || "";
   check(
     (!deepLiteratureOrigin && !deepLiteratureSecret) ||
@@ -119,7 +125,12 @@ export function configuration(env = process.env) {
     port: Number(env.PORT || 5300),
     bind: env.BIND_ADDRESS || "127.0.0.1",
     deepLiterature: deepLiteratureOrigin
-      ? { origin: deepLiteratureOrigin.origin, secret: deepLiteratureSecret }
+      ? {
+          origin: deepLiteratureOrigin.origin,
+          path: deepLiteraturePath,
+          webUrl: `${deepLiteratureOrigin.origin}${deepLiteraturePath}`,
+          secret: deepLiteratureSecret,
+        }
       : null,
     ui: resolve(
       env.ORX_UI_DIST ||
@@ -225,7 +236,7 @@ export async function createPlatform(
   }
   function deepLiteratureRedirect() {
     check(config.deepLiterature, 404, "Deep Literature SSO is disabled");
-    return `${config.deepLiterature.origin}/api/auth/openresearch/callback`;
+    return `${config.deepLiterature.origin}${config.deepLiterature.path || ""}/api/auth/openresearch/callback`;
   }
   async function authorizeDeepLiterature(req, res, s, workspace = null) {
     if (config.researchOwnerEmail)
@@ -399,7 +410,10 @@ export async function createPlatform(
             online: tunnels.has(workspace),
             portal: config.origin.origin,
             privateSpaces: !!config.privateSpaces,
-            deepLiteratureUrl: config.deepLiterature?.origin || null,
+            deepLiteratureUrl:
+              config.deepLiterature?.webUrl ||
+              config.deepLiterature?.origin ||
+              null,
             user: { id: s.user_id, name: s.name, email: s.email },
           });
         if (path === "/_platform/logout" && req.method === "POST") {
@@ -591,7 +605,10 @@ export async function createPlatform(
             );
           return json(res, {
             user: { id: s.user_id, email: s.email, name: s.name },
-            deepLiteratureUrl: config.deepLiterature?.origin || null,
+            deepLiteratureUrl:
+              config.deepLiterature?.webUrl ||
+              config.deepLiterature?.origin ||
+              null,
           });
         }
         if (path === "/api/platform/browser-logout" && req.method === "POST") {
@@ -731,7 +748,10 @@ export async function createPlatform(
       if (path === "/api/platform/capabilities" && req.method === "GET")
         return json(res, {
           privateSpaces: !!config.privateSpaces,
-          deepLiteratureUrl: config.deepLiterature?.origin || null,
+          deepLiteratureUrl:
+            config.deepLiterature?.webUrl ||
+            config.deepLiterature?.origin ||
+            null,
           openResearchAppUrl: config.appEntry || config.appOrigin,
         });
       if (path === "/api/platform/me" && req.method === "GET")
