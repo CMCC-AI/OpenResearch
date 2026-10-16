@@ -37,3 +37,7 @@ npm audit --omit=dev --audit-level=high
 ## 上线边界
 
 这版不是已经完成公开商业 SaaS 运营的账号系统。Deep Literature 已通过一次性授权码、PKCE 和服务端会话内省复用账号；公开上线前仍需邮箱验证、找回密码、MFA/异常登录保护、账号删除和数据导出联动。
+
+## 账号管理
+
+注册自动登录、邮件找回密码、密码显隐和系统管理员用户概况见 [账号管理说明](../../docs/product/account-management.md)。SMTP 凭据仅写入本地 `.env`；未配置时邮件找回明确禁用。

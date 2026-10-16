@@ -1,3 +1,5 @@
+import { accountRoutes } from "./accounts.mjs";
+import { resetMailer } from "./mail.mjs";
 import http from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
@@ -114,6 +116,7 @@ export function configuration(env = process.env) {
     );
   return {
     origin,
+    sendPasswordReset: resetMailer(env),
     appOrigin: appOrigin.origin,
     appEntry: `${appOrigin.origin}${appPath}`,
     secure,
@@ -182,7 +185,7 @@ export async function createPlatform(
   async function session(req) {
     const digest = hash(cookie(req, cookieName(config.secure)));
     const { rows } = await pool.query(
-      `SELECT s.*,u.email,u.name FROM platform_sessions s JOIN platform_users u ON u.id=s.user_id
+      `SELECT s.*,u.email,u.name,u.is_admin FROM platform_sessions s JOIN platform_users u ON u.id=s.user_id
       LEFT JOIN platform_sessions p ON p.token_hash=s.parent_hash
       WHERE s.token_hash=$1 AND s.host=$2 AND s.expires_at>now() AND NOT u.disabled
       AND (s.parent_hash IS NULL OR p.expires_at>now())`,
@@ -333,6 +336,15 @@ export async function createPlatform(
     });
     res.end(await readFile(file));
   }
+  const accounts = accountRoutes({
+    config,
+    pool,
+    limit,
+    input,
+    json,
+    audit,
+    tunnels,
+  });
   const server = http.createServer(async (req, res) => {
     res.setHeader("cache-control", "no-store");
     res.setHeader("referrer-policy", "no-referrer");
@@ -638,6 +650,7 @@ export async function createPlatform(
       }
       if (!["GET", "HEAD"].includes(req.method))
         sameOrigin(req, config.origin.origin);
+      if (await accounts.public(req, res, path)) return;
       if (path === "/api/platform/login" && req.method === "POST") {
         await limit(
           `login-ip:${hash(req.socket.remoteAddress || "")}`,
@@ -647,14 +660,25 @@ export async function createPlatform(
         const b = await input(req);
         const address = email(b.email);
         await limit(`login-email:${hash(address)}`, 10, 900);
-        const { rows } = await pool.query(
-          "SELECT * FROM platform_users WHERE email=$1",
-          [address],
-        );
-        const valid = await verifyPassword(b.password, rows[0]?.password_hash);
-        check(valid && !rows[0].disabled, 401, "邮箱或密码错误");
-        const secret = await newSession(pool, rows[0].id, req.headers.host);
-        await audit(pool, rows[0].id, null, "login");
+        const secret = await transaction(pool, async (db) => {
+          // Serialize authentication with password reset/change for this user.
+          const { rows } = await db.query(
+            "SELECT * FROM platform_users WHERE email=$1 FOR UPDATE",
+            [address],
+          );
+          const valid = await verifyPassword(
+            b.password,
+            rows[0]?.password_hash,
+          );
+          check(valid && !rows[0].disabled, 401, "邮箱或密码错误");
+          const secret = await newSession(db, rows[0].id, req.headers.host);
+          await db.query(
+            "UPDATE platform_users SET last_login_at=now() WHERE id=$1",
+            [rows[0].id],
+          );
+          await audit(db, rows[0].id, null, "login");
+          return secret;
+        });
         res.setHeader("set-cookie", sessionCookie(secret, config.secure));
         return json(res, { ok: true });
       }
@@ -673,7 +697,7 @@ export async function createPlatform(
         try {
           secret = await transaction(pool, async (db) => {
             await db.query(
-              "INSERT INTO platform_users(id,email,name,password_hash) VALUES($1,$2,$3,$4)",
+              "INSERT INTO platform_users(id,email,name,password_hash,last_login_at) VALUES($1,$2,$3,$4,now())",
               [user, address, name, encoded],
             );
             const created = await newSession(db, user, req.headers.host);
@@ -745,6 +769,7 @@ export async function createPlatform(
       }
       const s = await session(req);
       await limit(`portal:${s.user_id}`, 180, 60);
+      if (await accounts.admin(req, res, path, s)) return;
       if (path === "/api/platform/capabilities" && req.method === "GET")
         return json(res, {
           privateSpaces: !!config.privateSpaces,
@@ -752,10 +777,15 @@ export async function createPlatform(
             config.deepLiterature?.webUrl ||
             config.deepLiterature?.origin ||
             null,
-          openResearchAppUrl: config.appEntry || config.appOrigin,
+          openResearchAppUrl: `${config.appEntry || config.appOrigin}/projects`,
         });
       if (path === "/api/platform/me" && req.method === "GET")
-        return json(res, { id: s.user_id, email: s.email, name: s.name });
+        return json(res, {
+          id: s.user_id,
+          email: s.email,
+          name: s.name,
+          isAdmin: s.is_admin,
+        });
       if (path === "/api/platform/personal-space" && req.method === "POST") {
         check(
           config.privateSpaces && config.managed,
@@ -815,26 +845,37 @@ export async function createPlatform(
       if (path === "/api/platform/password" && req.method === "POST") {
         const b = await input(req);
         await limit(`password:${s.user_id}`, 5, 900);
-        const user = await pool.query(
-          "SELECT password_hash FROM platform_users WHERE id=$1",
-          [s.user_id],
-        );
-        check(
-          await verifyPassword(b.current, user.rows[0].password_hash),
-          403,
-          "当前密码错误",
-        );
         const next = await passwordHash(b.password);
-        await transaction(pool, async (db) => {
+        const revoked = await transaction(pool, async (db) => {
+          const user = await db.query(
+            "SELECT password_hash FROM platform_users WHERE id=$1 AND NOT disabled FOR UPDATE",
+            [s.user_id],
+          );
+          check(
+            user.rows[0] &&
+              (await verifyPassword(b.current, user.rows[0].password_hash)),
+            403,
+            "当前密码错误",
+          );
+          const sessions = await db.query(
+            "SELECT token_hash FROM platform_sessions WHERE user_id=$1",
+            [s.user_id],
+          );
           await db.query(
-            "UPDATE platform_users SET password_hash=$2 WHERE id=$1",
+            "UPDATE platform_users SET password_hash=$2,password_version=password_version+1 WHERE id=$1",
             [s.user_id, next],
           );
           await db.query("DELETE FROM platform_sessions WHERE user_id=$1", [
             s.user_id,
           ]);
+          await db.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [
+            s.user_id,
+          ]);
           await audit(db, s.user_id, null, "password.change");
+          return sessions.rows;
         });
+        for (const tunnel of tunnels.values())
+          for (const row of revoked) tunnel.revokeSession(row.token_hash);
         res.setHeader("set-cookie", sessionCookie("", config.secure, 0));
         return json(res, { ok: true });
       }
@@ -1285,7 +1326,7 @@ export async function createPlatform(
     () =>
       pool
         .query(
-          `DELETE FROM auth_limits WHERE expires_at<now(); DELETE FROM platform_sessions WHERE expires_at<now(); DELETE FROM launch_tickets WHERE expires_at<now(); DELETE FROM workspace_invites WHERE expires_at<now(); DELETE FROM sso_authorization_codes WHERE expires_at<now(); DELETE FROM sso_grants WHERE expires_at<now()`,
+          `DELETE FROM password_reset_tokens WHERE expires_at<now(); DELETE FROM auth_limits WHERE expires_at<now(); DELETE FROM platform_sessions WHERE expires_at<now(); DELETE FROM launch_tickets WHERE expires_at<now(); DELETE FROM workspace_invites WHERE expires_at<now(); DELETE FROM sso_authorization_codes WHERE expires_at<now(); DELETE FROM sso_grants WHERE expires_at<now()`,
         )
         .catch(() => {}),
     60000,
@@ -1296,6 +1337,7 @@ export async function createPlatform(
     wss.close();
     server.closeAllConnections();
     await new Promise((done) => server.close(done));
+    await accounts.close();
     await pool.end();
   };
   return { server, pool, tunnels, close };
