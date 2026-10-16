@@ -9,14 +9,12 @@ import { Toaster } from "./components/ui";
 import { WindowControls } from "./components/WindowControls";
 import { WINDOWS_TITLEBAR } from "./desktopTitlebar";
 import { getLocale } from "./paraglide/runtime.js";
-import { reportLocale } from "./api";
 import "./tailwind.css";
 import { CloudWorkspace } from "./product/CloudWorkspace";
 
 const locale = getLocale();
 document.documentElement.lang = locale;
 document.documentElement.dir = "ltr";
-reportLocale(locale);
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

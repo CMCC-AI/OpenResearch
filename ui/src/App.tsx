@@ -1,3 +1,4 @@
+import { readHarnesses } from "./queries/settings";
 import {
   setScopedQueryData,
   queryClient,
@@ -89,7 +90,6 @@ import {
   captureUiEvent,
   isDemoProjectId,
   type FirstAction,
-  openProject,
   updateUiState,
   type AgentSelection,
   type Autonomy,
@@ -103,6 +103,7 @@ import {
 import { ResearchPanel } from "./components/ResearchPanel";
 import { WorkspaceTools } from "./components/WorkspaceTools";
 import { ProjectTerminal } from "./components/ProjectTerminal";
+import { SettingsCommandTerminal } from "./components/SshConnectTerminal";
 import { isWindowsDrivePath } from "./markdownTarget";
 import { ChatPanel, findPartById, spawnRowTitle } from "./components/ChatPanel";
 import { usePopover } from "./components/ModelPicker";
@@ -419,6 +420,8 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   const [terminalTabOpen, setTerminalTabOpen] = useState(false);
   // Which checkout has a live shell; a restored-but-unselected tab spawns nothing until selected.
   const [terminalStartedFor, setTerminalStartedFor] = useState<string | null>(null);
+  // A setup command (e.g. an agent login) from a composer note; shown over the project shell until closed.
+  const [setupRun, setSetupRun] = useState<{ command: string; path: string; attempt: number } | null>(null);
   const [expTabs, setExpTabs] = useState<ExpViewDef[]>([]);
   const [fileTabs, setFileTabs] = useState<FileViewDef[]>([]);
   const fileScrollPositionsRef = useRef(new Map<string, FileScrollPosition>());
@@ -931,7 +934,6 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     liveRunIdsRef.current.clear();
     streamingRunsRef.current.clear();
     autoOpenRunsRef.current.clear();
-    openProject(projectId).catch(() => {});
     loadRunsBaseline(projectId);
     return () => { runsVisitRef.current++; };
   }, [loadRunsBaseline, projectId]);
@@ -950,7 +952,16 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     setTerminalTabOpen(true);
     selectRightTab("terminal");
   }, [selectRightTab]);
+  const runSetup = useCallback((command: string, path: string) => {
+    setSetupRun((current) => ({ command, path, attempt: (current?.attempt ?? 0) + 1 }));
+    openTerminalTab();
+  }, [openTerminalTab]);
   const terminalKey = activeSessionId ?? (projectId ? `project:${projectId}` : null);
+  // The run's socket closes whenever its tab body unmounts; remounting would start the command again.
+  const setupMountable = panelOpen && mainView === "chat" && terminalTabOpen;
+  useEffect(() => {
+    if (!setupMountable) setSetupRun(null);
+  }, [setupMountable]);
   useEffect(() => {
     if (!panelOpen) setTerminalStartedFor(null);
     else if (rightTab === "terminal") setTerminalStartedFor(terminalKey);
@@ -1463,6 +1474,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
       else if (tab === "terminal") {
         setTerminalTabOpen(false);
         setTerminalStartedFor(null);
+        setSetupRun(null);
       }
       else setArtifactsTabOpen(false);
       forgetRightTab(tab, rightTab === tab);
@@ -1754,6 +1766,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             onOpenPlan={openPlanTab}
             onOpenSubagent={openSubagentTab}
             onOpenSideChat={(parentSessionId, question) => void startSideChat(parentSessionId, question)}
+            onRunSetup={runtime.kind === "ssh" ? undefined : runSetup}
             composerFocusNonce={composerFocusNonce}
             runtime={runtime}
             onOpenDemoWelcome={
@@ -2299,14 +2312,28 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
                 )}
               </TabBody>
             )}
+            {terminalTabOpen && setupRun && (
+              <TabBody className={rightTab === "terminal" ? undefined : "hidden"}>
+                <SettingsCommandTerminal
+                  key={setupRun.attempt}
+                  path={setupRun.path}
+                  label={setupRun.command}
+                  className="flex min-h-0 flex-1 flex-col"
+                  heightClass="min-h-0 flex-1"
+                  onComplete={() => void readHarnesses().catch(() => {})}
+                  onError={(error) => showAlert(error, "error")}
+                  onClose={() => setSetupRun(null)}
+                />
+              </TabBody>
+            )}
             {/* Hidden rather than unmounted so the shell survives tab switches within the panel. */}
             {terminalTabOpen && terminalStartedFor !== null && terminalStartedFor === terminalKey && activeProject && (
-              <TabBody className={rightTab === "terminal" ? undefined : "hidden"}>
+              <TabBody className={rightTab === "terminal" && !setupRun ? undefined : "hidden"}>
                 <ProjectTerminal
                   key={terminalKey}
                   projectId={activeProject.id}
                   sessionId={activeSessionId}
-                  active={rightTab === "terminal"}
+                  active={rightTab === "terminal" && !setupRun}
                 />
               </TabBody>
             )}

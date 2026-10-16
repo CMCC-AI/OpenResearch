@@ -2564,6 +2564,52 @@ struct QueuedMessage {
     next_retry_at: Option<i64>,
 }
 
+pub(crate) fn legacy_opening_message(
+    session_id: &str,
+    text: String,
+    created_at: i64,
+    brief_recorded: bool,
+) -> Result<crate::store::StoredQueuedChatMessage> {
+    let id = format!("legacy_spawn_{session_id}");
+    let transcript_text = brief_recorded.then(String::new);
+    let overrides = TurnOverrides::default();
+    let messages = vec![AnnotatedText {
+        text: text.clone(),
+        annotations: Vec::new(),
+    }];
+    let request_hash = turn_request_hash(
+        &messages,
+        &TranscriptDisplay {
+            text: transcript_text.clone(),
+            annotations: None,
+            record_user_message: !brief_recorded,
+        },
+        &overrides,
+        &TurnAttachments::Uploaded(Vec::new()),
+    )?;
+    let payload = QueuedMessage {
+        id: id.clone(),
+        client_turn_id: id.clone(),
+        request_hash: request_hash.clone(),
+        text,
+        transcript_text,
+        overrides,
+        images: Vec::new(),
+        annotations: Vec::new(),
+        dispatch_attempts: 0,
+        dispatch_error: None,
+        next_retry_at: None,
+    };
+    Ok(crate::store::StoredQueuedChatMessage {
+        id: id.clone(),
+        session_id: session_id.to_string(),
+        client_turn_id: id,
+        request_hash,
+        payload_json: serde_json::to_string(&payload)?,
+        created_at,
+    })
+}
+
 /// The running turn's end of the steering channel.
 pub type SteerReceiver = mpsc::UnboundedReceiver<SteerMessage>;
 

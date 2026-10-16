@@ -87,9 +87,9 @@ pub async fn run(args: ResearchArgs) -> Result<()> {
                 entry.spec.brief,
                 crate::local::research::role(&entry.spec.role)?
             );
-            crate::commands::agent::spawn(
+            crate::commands::research_dispatch::spawn(
                 &store,
-                crate::commands::agent::SpawnRequest {
+                crate::commands::research_dispatch::SpawnRequest {
                     task: Some(prompt),
                     stdin: false,
                     title: Some(format!("{} · {}", entry.spec.role, task)),

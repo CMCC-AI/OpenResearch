@@ -176,14 +176,28 @@ pub fn run_contract(store: &Store, args: &crate::ExpRunArgs) -> Result<RunContra
         experiment_id: exp.id,
         revision,
         command,
-        options: serde_json::json!({
-            "backend":args.backend.as_deref().unwrap_or("local"),"flavor":args.flavor,"host":args.host,
-            "image":args.image,"manifest":args.manifest,"container":args.container,"noContainer":args.no_container,
-            "timeout":args.timeout,"disk":args.disk,"provider":args.provider,"org":args.org,
-            "settingsHash":digest(&settings)
-        }),
+        options: run_options(args, &digest(&settings)),
     })
 }
+
+fn run_options(args: &crate::ExpRunArgs, settings_hash: &str) -> serde_json::Value {
+    let mut options = serde_json::json!({
+        "backend":args.backend.as_deref().unwrap_or("local"),"flavor":args.flavor,"host":args.host,
+        "image":args.image,"manifest":args.manifest,"container":args.container,"noContainer":args.no_container,
+        "timeout":args.timeout,"disk":args.disk,"provider":args.provider,"org":args.org,
+        "settingsHash":settings_hash
+    });
+    // Omitted flags retain the old approval contract; explicit Slurm requests
+    // must be bound to G2/G3 so resources cannot change after approval.
+    if let Some(cpus) = args.cpus {
+        options["cpus"] = serde_json::json!(cpus);
+    }
+    if let Some(mem) = &args.mem {
+        options["mem"] = serde_json::json!(mem);
+    }
+    options
+}
+
 pub fn export_package(store: &Store, study: &Study, published: bool) -> Result<Vec<u8>> {
     if published {
         let scope = store.research_package_scope(study)?;
@@ -254,4 +268,44 @@ pub fn export_package(store: &Store, study: &Study, published: bool) -> Result<V
         }
     }
     Ok(zip.finish()?.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_options;
+    use clap::Parser;
+
+    #[test]
+    fn slurm_flags_are_part_of_the_approved_research_contract() {
+        let args = |flags: &[&str]| {
+            let cli = crate::Cli::try_parse_from(
+                ["orx", "exp", "run", "experiment"]
+                    .into_iter()
+                    .chain(flags.iter().copied()),
+            )
+            .unwrap();
+            let Some(crate::Command::Exp(crate::ExpArgs {
+                command: crate::ExpCommand::Run(args),
+            })) = cli.command
+            else {
+                panic!("expected run command")
+            };
+            args
+        };
+        let defaults = run_options(&args(&[]), "settings");
+        assert!(defaults.get("cpus").is_none());
+        assert!(defaults.get("mem").is_none());
+        let approved = run_options(
+            &args(&["--backend", "slurm", "--cpus", "4", "--mem", "16G"]),
+            "settings",
+        );
+        assert_eq!(approved["cpus"], 4);
+        assert_eq!(approved["mem"], "16G");
+        for flags in [
+            ["--backend", "slurm", "--cpus", "8", "--mem", "16G"],
+            ["--backend", "slurm", "--cpus", "4", "--mem", "32G"],
+        ] {
+            assert_ne!(run_options(&args(&flags), "settings"), approved);
+        }
+    }
 }

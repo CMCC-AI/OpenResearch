@@ -1120,6 +1120,16 @@ mod tests {
         assert!(store
             .research_check_run("exp", Some("operator"), &contract, None)
             .is_ok());
+        for (key, value) in [
+            ("cpus", serde_json::json!(8)),
+            ("mem", serde_json::json!("32G")),
+        ] {
+            let mut changed = contract.clone();
+            changed.options[key] = value;
+            assert!(store
+                .research_check_run("exp", Some("operator"), &changed, None)
+                .is_err());
+        }
         {
             let _tx = store.begin_immediate().unwrap();
             store

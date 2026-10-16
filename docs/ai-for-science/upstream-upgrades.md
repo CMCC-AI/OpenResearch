@@ -2,9 +2,30 @@
 
 ## 当前基线
 
-本产品源码已合并官方 [OpenResearch v0.2.18](https://github.com/alphaXiv/OpenResearch/releases/tag/v0.2.18)，固定提交为 `0d3d376dae7ba22373d34fd9e9090b5a88efc148`。`product-upstream.json` 记录该基线，`scripts/check-upstream-base.mjs` 在 CI 中核对 Cargo 版本、提交祖先关系和更新通道状态。
+本产品源码已合并官方 [OpenResearch v0.2.19](https://github.com/alphaXiv/OpenResearch/releases/tag/v0.2.19)，固定提交为 `1d8a285468aed5d5a1f1ea86ecf6e2f63fcaa8bd`。`product-upstream.json` 记录该基线，`scripts/check-upstream-base.mjs` 在 CI 中核对 Cargo 版本、提交祖先关系和更新通道状态。
 
 产品仍由三部分组成：本地 `orx`（内嵌 `ui/dist`）、独立账号服务、Deep Literature。官方升级只提供第一部分的上游源码；统一登录、产品页面、文献服务、部署配置与跨系统数据契约仍由本项目维护。不能把官方安装包覆盖在产品安装目录上。
+
+## 2026-10-16 升级记录
+
+从官方 v0.2.18 升级到 v0.2.19；升级前产品提交为 `951c384`，备份分支为 `codex/backup-before-v0.2.19-20261016`，升级分支为 `codex/upgrade-v0.2.19`。固定官方 release tag，保留上游提交祖先关系。
+
+- 同步聊天 `@` 文件引用、实验树移动、Slurm CPU/内存配置及记录、SSH Include/上传重试/取消进程清理、运行监督恢复、数据库锁重试和 macOS 中文输入法等改进；重新构建产品 `ui/dist`。
+- 普通 `orx agent spawn` 采用上游独立聊天行为，使用已保存的新聊天设置，不继承创建者配置、不自动回报；专家团会话禁止通过该命令绕过任务登记。专家派发迁入产品内部 `src/commands/research_dispatch.rs`，继续由 `orx research dispatch` 管理计划、审批、工作树和主理人唤醒。
+- 不执行上游的 `DROP TABLE chat_spawns`。迁移仅把未被接收的旧普通派发首条消息转入正常队列，解除普通聊天父子关联，并将其旧派发状态置为 `done`；保留旧表、原有记录和专家会话状态。`product_migrations` 记录事务成功后的一次性迁移，重复打开不会重派消息。存在活跃旧普通派发租约时拒绝迁移。专家会话的 Claude 后台任务等待逻辑继续保留。
+- Slurm 显式 `--cpus`、`--mem` 纳入专家运行契约，资源变化必须重新批准；未传新参数的旧契约保持相同格式。MobileSci 品牌和蓝色主题、统一导航与登录、DeepXiv、专家 DAG 和官方更新禁用策略均保留。
+
+已使用运行数据库的 WAL 安全备份副本，在副本中移除新版本迁移标记以强制覆盖首次迁移，再执行新版读取、重复迁移及旧版 0.2.18 重新读取；各阶段 SQLite `integrity_check` 均为 `ok`，所有原有表逐表记录数和内容摘要保持一致。副本演练未启动 Agent 或调用模型，备份及摘要报告在忽略目录 `.mobilesci-run/backups/` 与 `.mobilesci-run/upgrade-v0.2.19/`。
+
+回归覆盖普通派发的 pending/starting/admitted/running/waking/done、首条消息去重、迁移事务失败回滚、专家派发五种状态及父会话保留、运行资源审批。上游非 UTF-8 文件名用例在 macOS 创建夹具时即被文件系统以 EILSEQ 拒绝，因此仅在其他 Unix 平台执行，Linux CI 仍覆盖该用例。
+
+验证：Rust 1,147 项单元测试及 18 项 CLI 集成测试通过，3 项上游单元测试忽略；Clippy、Rust/Windows launcher 格式、debug/release 构建和上游基线检查通过。UI 335 项测试、类型检查、国际化/样式检查及构建通过；启动脚本 16 项、部署 Python 22 项、图表 4 项、发行说明 6 项检查通过。账号平台 12 项单元测试及专用 PostgreSQL 的 18 项集成检查、DeepXiv 14 项 SSO/Cookie 测试通过；平台生产依赖审计无漏洞。
+
+通过 `scripts/dev-slot.mjs --db empty` 启动独立端口实例，浏览器确认 MobileSci 首页与蓝色主题正常、无控制台错误。账号平台和 DeepXiv 的 SSO/Cookie 使用独立测试验收；DeepXiv 测试在源码副本中复用已有 esbuild 执行，不改动伴随仓库。没有为隔离端口放宽生产 CORS 或认证设置。
+
+本机既有工作台在确认无运行研究、活跃派发、租约或排队消息后，完成 SQLite 在线备份并优雅切换至 0.2.19；`http://localhost:4791/api/health` 返回新版，官方自更新仍关闭，浏览器首页和统一登录入口可达。账号服务及文献服务未被替换。升级前文献接口 `http://localhost:3000/api/papers?limit=1` 已返回 HTTP 502，因此真实文献连通和完整浏览器 SSO 未作为本次通过项；独立 SSO/Cookie 测试通过不代表该运行服务已恢复。远程服务器本次未部署。
+
+数据库回退须先停新版写入，再换回匹配的旧二进制与静态资源；本次保留的表结构已用本机旧产品二进制验证可读取。含旧普通派发记录的数据会按上述规则迁移，不能把回退理解为撤销所有聊天语义变化。仅在确需恢复历史快照时恢复备份，并先保全升级后的新增数据。远端部署仍通过经验证的 MobileSci 产品包进行，不能用官方 `orx update` 覆盖。
 
 ## 2026-10-13 升级记录
 
@@ -42,7 +63,7 @@
 
 发布自己的安装包之前，需完成以下工作：
 
-1. 独立的产品版本号和发布源。推荐区分“上游基线 v0.2.18”和“产品发行号”；不能仅用上游版本判断产品构建的新旧。
+1. 独立的产品版本号和发布源。推荐区分“上游基线 v0.2.19”和“产品发行号”；不能仅用上游版本判断产品构建的新旧。
 2. 自有 CI 构建 macOS/Windows/Linux 包，生成带平台、架构、SHA-256、产品版本、上游基线和最低兼容协议版本的更新清单。
 3. 使用自己的签名与校验策略；macOS App 更新代码目前校验官方 Apple Team ID，启用自有自动更新前必须替换并验证完整签名链。
 4. 确认安装路径、升级锁、原子替换、失败回滚、重启恢复和发布灰度。账号服务与 Deep Literature 分别版本化，不随本地客户端二进制无条件替换。

@@ -29,6 +29,9 @@
   --color-accent-amber-subtle: var(--accent-amber-subtle);
   --color-accent-red-subtle: var(--accent-red-subtle);
   --color-accent-blue-subtle: var(--accent-blue-subtle);
+  --color-accent-blue-border: var(--accent-blue-border);
+  --color-accent-blue-strong: var(--accent-blue-strong);
+  --color-accent-purple-subtle: var(--accent-purple-subtle);
   --color-dots-strong: var(--dots-strong);
   --color-syntax-comment: var(--syntax-comment);
   --color-syntax-text: var(--syntax-text);
@@ -143,14 +146,17 @@
   --accent-purple: #9c5cff;
 
   --accent-green-subtle: #e7f4e5;
-  --accent-amber-subtle: #fff3e1;
+  --accent-amber-subtle: #fff8cc;
   --accent-teal-subtle: #e1f3f0;
   --accent-red-subtle: #fbe9ea;
-  --accent-blue-subtle: #e5f0ff;
+  --accent-blue-subtle: #eff6ff;
+  --accent-blue-border: #bfdbfe;
+  --accent-blue-strong: #2858a4;
+  --link-underline: color-mix(in srgb, var(--accent-blue-strong) 60%, transparent);
   --skill-blue: #184f91;
   --skill-blue-subtle: #d9e9fb;
   --skill-blue-slash: #7fa6d2;
-  --accent-purple-subtle: #f1e8ff;
+  --accent-purple-subtle: #f5f0ff;
 
   --dots-muted: #dce7f0;
   --dots-strong: #a8bfd2;
@@ -174,8 +180,8 @@
   --term-app-ansi-blue: #2a6fcb;
   --term-app-ansi-magenta: #8e44ad;
   --term-app-ansi-cyan: #1a8a7a;
-  --term-app-ansi-white: #8f8a85;
-  --term-app-ansi-bright-black: #6b6663;
+  --term-app-ansi-white: #737373;
+  --term-app-ansi-bright-black: #737373;
   --term-app-ansi-bright-red: #d94654;
   --term-app-ansi-bright-green: #5eb64c;
   --term-app-ansi-bright-yellow: #da9100;
@@ -232,14 +238,16 @@
   --accent-amber: #e67e22;
 
   --accent-green-subtle: #1c2b18;
-  --accent-amber-subtle: #33260f;
+  --accent-amber-subtle: #302a0d;
   --accent-teal-subtle: #12332d;
   --accent-red-subtle: #331418;
-  --accent-blue-subtle: #10233a;
+  --accent-blue-subtle: #132239;
+  --accent-blue-border: #28466b;
+  --accent-blue-strong: #79adf0;
   --skill-blue: #79adf0;
   --skill-blue-subtle: #183452;
   --skill-blue-slash: #527ca8;
-  --accent-purple-subtle: #251933;
+  --accent-purple-subtle: #261c38;
 
   --dots-muted: #1b3044;
   --dots-strong: #49647d;

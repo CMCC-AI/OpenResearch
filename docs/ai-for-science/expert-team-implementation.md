@@ -105,7 +105,7 @@ G2/G3 当前控制正式实验提交，不拦截所有 shell、联网、安装�
 | `src/commands/research.rs` | 主理人及成员 CLI |
 | `src/commands/up/research.rs` | 页面查询、决策、停止和导出接口 |
 | `src/local/research.rs` | 角色加载、回合上下文、运行契约和 ZIP |
-| `src/commands/agent.rs` | 原生 helper 与研究任务原子绑定 |
+| `src/commands/research_dispatch.rs` | 产品内部专家派发，与研究任务原子绑定 |
 | `src/compute.rs` | Run 提交前检查及事务内防重复消费 |
 | `src/local/chat/mod.rs` | 每轮注入研究上下文 |
 | `ui/src/components/ChatPanel.tsx` | 模式选择及会诊入口 |
