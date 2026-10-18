@@ -1,11 +1,39 @@
 import { spawn } from "node:child_process";
-import { mkdir, unlink } from "node:fs/promises";
+import { mkdir, unlink, cp, access } from "node:fs/promises";
 // This entrypoint is for a dedicated container; neither API port is published.
 await mkdir("/home/node/.runner-state", { recursive: true });
 // The previous connector cannot survive a container restart; remove only its lock.
 await unlink("/home/node/.runner-state/connector.lock").catch((error) => {
   if (error.code !== "ENOENT") throw error;
 });
+// Seed settings once into this user's writable home; never overwrite personal data.
+if (process.env.MANAGED_CONFIG_SEED_DIR) {
+  const destination = "/home/node/.config/opencode";
+  const configured = await Promise.any([
+    access(`${destination}/opencode.json`),
+    access(`${destination}/opencode.jsonc`),
+  ]).then(
+    () => true,
+    () => false,
+  );
+  if (!configured)
+    await cp(process.env.MANAGED_CONFIG_SEED_DIR, destination, {
+      recursive: true,
+      force: false,
+      errorOnExist: false,
+    });
+}
+if (process.env.MANAGED_AUTH_SEED_FILE) {
+  const destination = "/home/node/.local/share/opencode/auth.json";
+  const exists = await access(destination).then(
+    () => true,
+    () => false,
+  );
+  if (!exists) {
+    await mkdir("/home/node/.local/share/opencode", { recursive: true });
+    await cp(process.env.MANAGED_AUTH_SEED_FILE, destination, { force: false });
+  }
+}
 const orx = spawn("orx", ["up", "--no-browser", "--no-telemetry"], {
   stdio: "inherit",
 });

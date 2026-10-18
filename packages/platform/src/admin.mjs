@@ -1,3 +1,7 @@
+import {
+  ensurePersonalSpace,
+  preparePersonalSpace,
+} from "./personal-spaces.mjs";
 import { createPool, migrate, transaction } from "./db.mjs";
 import { email, text, id, passwordHash, check } from "./security.mjs";
 const pool = createPool(process.env.DATABASE_URL);
@@ -6,6 +10,29 @@ try {
   if (command === "migrate") {
     await migrate(pool);
     console.log("Platform schema ready");
+  } else if (command === "prepare-personal-space") {
+    const user = await pool.query(
+      "SELECT id FROM platform_users WHERE email=$1 AND NOT disabled",
+      [email(address)],
+    );
+    check(user.rows.length, 404, "Enabled account not found");
+    const workspace = await transaction(pool, (db) =>
+      preparePersonalSpace(
+        db,
+        user.rows[0].id,
+        Number(process.env.MANAGED_CAPACITY || 4),
+      ),
+    );
+    console.log(workspace);
+  } else if (command === "ensure-personal-spaces") {
+    const count = await transaction(pool, async (db) => {
+      const users = await db.query(
+        "SELECT id FROM platform_users ORDER BY id FOR UPDATE",
+      );
+      for (const user of users.rows) await ensurePersonalSpace(db, user.id);
+      return users.rows.length;
+    });
+    console.log(`Personal spaces ready: ${count}`);
   } else if (command === "grant-admin") {
     await transaction(pool, async (db) => {
       const { rows } = await db.query(
@@ -38,18 +65,20 @@ try {
     }
     const encoded = await passwordHash(password.replace(/\r?\n$/, ""));
     await transaction(pool, async (db) => {
-      if (command === "create-user" || command === "create-admin")
+      if (command === "create-user" || command === "create-admin") {
+        const user = id();
         await db.query(
           "INSERT INTO platform_users(id,email,name,password_hash,is_admin) VALUES($1,$2,$3,$4,$5)",
           [
-            id(),
+            user,
             email(address),
             text(name),
             encoded,
             command === "create-admin",
           ],
         );
-      else {
+        await ensurePersonalSpace(db, user);
+      } else {
         const { rows } = await db.query(
           "UPDATE platform_users SET password_hash=$2,password_version=password_version+1 WHERE email=$1 RETURNING id",
           [email(address), encoded],
@@ -66,7 +95,7 @@ try {
     console.log("Account updated; password not logged");
   } else
     throw new Error(
-      "Usage: admin.mjs migrate | grant-admin EMAIL | create-user EMAIL NAME | create-admin EMAIL NAME | reset-password EMAIL (password via stdin)",
+      "Usage: admin.mjs migrate | ensure-personal-spaces | grant-admin EMAIL | create-user EMAIL NAME | create-admin EMAIL NAME | reset-password EMAIL (password via stdin)",
     );
 } catch (error) {
   console.error(error.code || error.message);

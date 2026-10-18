@@ -33,7 +33,7 @@ def digest(path):
 
 def fingerprint():
     value = hashlib.sha256()
-    for name in ['Cargo.toml', 'Cargo.lock', 'build.rs', 'SYSTEM_PROMPT.md', 'SKILL.md', 'src', 'ui/src', 'ui/dist', 'linux', 'agent-skills', 'demo', 'packages/platform/Dockerfile.executor', 'packages/platform/package.json', 'packages/platform/package-lock.json', 'packages/platform/migrations', 'packages/platform/public', 'packages/platform/src', 'scripts/deploy/update-server.py', 'scripts/deploy/update-mobilesci.py']:
+    for name in ['Cargo.toml', 'Cargo.lock', 'build.rs', 'SYSTEM_PROMPT.md', 'SKILL.md', 'src', 'ui/src', 'ui/dist', 'linux', 'agent-skills', 'demo', 'packages/platform/Dockerfile.executor', 'packages/platform/package.json', 'packages/platform/package-lock.json', 'packages/platform/migrations', 'packages/platform/public', 'packages/platform/src', 'scripts/deploy/update-server.py', 'scripts/deploy/update-mobilesci.py', 'scripts/deploy/enable-personal-spaces.py']:
         path = ROOT / name
         for file in sorted(path.rglob('*') if path.is_dir() else [path]):
             if file.is_file():
@@ -144,6 +144,7 @@ def prepare(image=None):
             copy = 'COPY --chmod=755 orx /usr/local/bin/orx' if service == 'workbench' else 'WORKDIR /app/platform\nCOPY package.json package-lock.json ./\nCOPY node_modules ./node_modules\nCOPY migrations ./migrations\nCOPY dist /app/ui/dist\nCOPY public ./public\nCOPY src ./src'
             (package / service / 'Dockerfile').write_text('ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n' + copy + '\n')
         shutil.copy2(ROOT / 'scripts/deploy/update-server.py', package / 'update-server.py')
+        shutil.copy2(ROOT / 'scripts/deploy/enable-personal-spaces.py', package / 'enable-personal-spaces.py')
         source = fingerprint()
         version = re.search(r'^version = "([^"]+)"', (ROOT / 'Cargo.toml').read_text(), re.MULTILINE).group(1)
         manifest = {'format': 1, 'architecture': 'linux/amd64', 'version': version, 'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(), 'fingerprint': source, 'files': {file.relative_to(package).as_posix(): digest(file) for file in sorted(package.rglob('*')) if file.is_file()}}

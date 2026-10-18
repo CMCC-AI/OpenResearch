@@ -7,7 +7,7 @@ import { once } from "node:events";
 import { randomUUID } from "node:crypto";
 import { createPool, migrate } from "../src/db.mjs";
 import { configuration, createPlatform } from "../src/server.mjs";
-import { hash } from "../src/security.mjs";
+import { hash, id, token } from "../src/security.mjs";
 
 test(
   "account recovery and administrator boundaries",
@@ -403,6 +403,144 @@ test(
         },
       );
       await t.test(
+        "administrator password reset reauthenticates the actor and revokes target sessions and recovery",
+        async () => {
+          const operator = await signup("reset-operator@test.invalid");
+          await pool.query(
+            "UPDATE platform_users SET is_admin=true WHERE email='reset-operator@test.invalid'",
+          );
+          const target = await signup("reset-target@test.invalid");
+          const targetId = (await request("/me", { cookie: target.cookie }))
+            .data.id;
+          const rootHash = hash(target.cookie.split("=")[1]);
+          const child = token(),
+            recovery = token(),
+            grant = id();
+          await pool.query(
+            "INSERT INTO platform_sessions(token_hash,user_id,host,parent_hash,expires_at) VALUES($1,$2,'private.test',$3,now()+interval '1 hour')",
+            [hash(child), targetId, rootHash],
+          );
+          await pool.query(
+            "INSERT INTO password_reset_tokens(token_hash,user_id,password_version,expires_at) VALUES($1,$2,0,now()+interval '1 hour')",
+            [hash(recovery), targetId],
+          );
+          await pool.query(
+            "INSERT INTO sso_grants(id,client,root_session_hash,user_id,expires_at) VALUES($1,'deeplit',$2,$3,now()+interval '1 hour')",
+            [grant, rootHash, targetId],
+          );
+          const route = `/admin/users/${targetId}/password`;
+          const data = { password: replacement, adminPassword: password };
+          assert.equal(
+            (
+              await request(route, {
+                method: "POST",
+                cookie: target.cookie,
+                data,
+              })
+            ).status,
+            403,
+          );
+          assert.equal(
+            (
+              await request(route, {
+                method: "POST",
+                cookie: operator.cookie,
+                source: "https://evil.test",
+                data,
+              })
+            ).status,
+            403,
+          );
+          assert.equal(
+            (
+              await request(route, {
+                method: "POST",
+                cookie: operator.cookie,
+                data: { ...data, password: "short" },
+              })
+            ).status,
+            400,
+          );
+          assert.equal(
+            (
+              await request(route, {
+                method: "POST",
+                cookie: operator.cookie,
+                data: { ...data, adminPassword: "incorrect-admin-password" },
+              })
+            ).status,
+            403,
+          );
+          assert.equal(
+            (await request("/me", { cookie: target.cookie })).status,
+            200,
+          );
+          const reset = await request(route, {
+            method: "POST",
+            cookie: operator.cookie,
+            data,
+          });
+          assert.equal(reset.status, 200, JSON.stringify(reset.data));
+          assert.equal(reset.data.reauthenticate, false);
+          assert.equal(
+            (await request("/me", { cookie: target.cookie })).status,
+            401,
+          );
+          assert.equal((await login("reset-target@test.invalid")).status, 401);
+          assert.equal(
+            (await login("reset-target@test.invalid", replacement)).status,
+            200,
+          );
+          assert.equal(
+            (
+              await pool.query(
+                "SELECT count(*)::int n FROM platform_sessions WHERE token_hash=$1",
+                [hash(child)],
+              )
+            ).rows[0].n,
+            0,
+          );
+          assert.equal(
+            (
+              await pool.query(
+                "SELECT count(*)::int n FROM sso_grants WHERE id=$1",
+                [grant],
+              )
+            ).rows[0].n,
+            0,
+          );
+          assert.equal(
+            (
+              await pool.query(
+                "SELECT count(*)::int n FROM password_reset_tokens WHERE user_id=$1",
+                [targetId],
+              )
+            ).rows[0].n,
+            0,
+          );
+          const auditRow = (
+            await pool.query(
+              "SELECT resource FROM audit_events WHERE action='password.admin.reset' AND resource=$1",
+              [targetId],
+            )
+          ).rows;
+          assert.deepEqual(auditRow, [{ resource: targetId }]);
+          const operatorId = (await request("/me", { cookie: operator.cookie }))
+            .data.id;
+          const self = await request(`/admin/users/${operatorId}/password`, {
+            method: "POST",
+            cookie: operator.cookie,
+            data,
+          });
+          assert.equal(self.status, 200);
+          assert.equal(self.data.reauthenticate, true);
+          assert.equal(
+            (await request("/me", { cookie: operator.cookie })).status,
+            401,
+          );
+        },
+      );
+      await t.test(
         "offline administrator grant preserves password and is audited once",
         async () => {
           const account = "promoted@test.invalid";
@@ -454,6 +592,55 @@ test(
             [account],
           );
           await assert.rejects(grant(account));
+        },
+      );
+      await t.test(
+        "existing accounts receive one logical space without automatically allocating compute",
+        async () => {
+          const legacy = id();
+          await pool.query(
+            "INSERT INTO platform_users(id,email,name,password_hash) SELECT $1,'legacy@test.invalid','Legacy',password_hash FROM platform_users LIMIT 1",
+            [legacy],
+          );
+          const command = (name, ...args) =>
+            promisify(execFile)(
+              process.execPath,
+              [
+                fileURLToPath(new URL("../src/admin.mjs", import.meta.url)),
+                name,
+                ...args,
+              ],
+              { env: { ...process.env, DATABASE_URL: url.href } },
+            );
+          await command("ensure-personal-spaces");
+          const before = (
+            await pool.query("SELECT * FROM personal_spaces ORDER BY user_id")
+          ).rows;
+          await command("ensure-personal-spaces");
+          assert.deepEqual(
+            (await pool.query("SELECT * FROM personal_spaces ORDER BY user_id"))
+              .rows,
+            before,
+          );
+          assert.equal(
+            before.length,
+            (await pool.query("SELECT count(*)::int n FROM platform_users"))
+              .rows[0].n,
+          );
+          assert.equal(
+            (await pool.query("SELECT count(*)::int n FROM workspace_runtimes"))
+              .rows[0].n,
+            0,
+          );
+          const first = await command(
+            "prepare-personal-space",
+            "legacy@test.invalid",
+          );
+          const again = await command(
+            "prepare-personal-space",
+            "legacy@test.invalid",
+          );
+          assert.equal(first.stdout, again.stdout);
         },
       );
     } finally {

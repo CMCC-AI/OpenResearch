@@ -6,6 +6,7 @@ import {
   token,
   passwordHash,
   sessionCookie,
+  verifyPassword,
 } from "./security.mjs";
 
 export function accountRoutes({
@@ -127,6 +128,68 @@ export function accountRoutes({
     async admin(req, res, path, session) {
       if (!path.startsWith("/api/platform/admin/")) return false;
       check(session.is_admin, 403, "仅系统管理员可访问");
+      const passwordRoute = path.match(
+        /^\/api\/platform\/admin\/users\/([0-9a-f-]{36})\/password$/,
+      );
+      if (passwordRoute) {
+        check(req.method === "POST", 405);
+        const target = passwordRoute[1];
+        await limit(`admin-password:${session.user_id}`, 5, 900);
+        const b = await input(req);
+        const encoded = await passwordHash(b.password);
+        const revoked = await transaction(pool, async (db) => {
+          // Lock in stable order, including the actor, against revocation and concurrent resets.
+          const locked = await db.query(
+            "SELECT id,password_hash,is_admin,disabled FROM platform_users WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE",
+            [[session.user_id, target]],
+          );
+          const actor = locked.rows.find((row) => row.id === session.user_id);
+          check(
+            actor?.is_admin && !actor.disabled,
+            403,
+            "管理员权限已变更，请重新登录",
+          );
+          check(
+            await verifyPassword(b.adminPassword, actor.password_hash),
+            403,
+            "管理员当前密码不正确",
+          );
+          check(
+            locked.rows.some((row) => row.id === target),
+            404,
+            "用户不存在",
+          );
+          const sessions = await db.query(
+            "SELECT token_hash FROM platform_sessions WHERE user_id=$1",
+            [target],
+          );
+          await db.query(
+            "UPDATE platform_users SET password_hash=$2,password_version=password_version+1 WHERE id=$1",
+            [target, encoded],
+          );
+          await db.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [
+            target,
+          ]);
+          await db.query("DELETE FROM platform_sessions WHERE user_id=$1", [
+            target,
+          ]);
+          await audit(
+            db,
+            session.user_id,
+            null,
+            "password.admin.reset",
+            target,
+          );
+          return sessions.rows;
+        });
+        for (const tunnel of tunnels.values())
+          for (const row of revoked) tunnel.revokeSession(row.token_hash);
+        const reauthenticate = target === session.user_id;
+        if (reauthenticate)
+          res.setHeader("set-cookie", sessionCookie("", config.secure, 0));
+        json(res, { ok: true, reauthenticate });
+        return true;
+      }
       check(path === "/api/platform/admin/users", 404);
       check(req.method === "GET", 405);
       const params = new URL(req.url, config.origin).searchParams;
@@ -151,8 +214,7 @@ export function accountRoutes({
           [`%${q}%`],
         );
         const users = await db.query(
-          `SELECT u.id,u.email,u.name,u.is_admin,u.disabled,u.created_at,u.last_login_at,
-          (SELECT count(*)::int FROM workspaces w WHERE w.created_by=u.id) AS workspace_count
+          `SELECT u.id,u.email,u.name,u.is_admin,u.disabled,u.created_at,u.last_login_at
           FROM platform_users u WHERE u.email ILIKE $1 OR u.name ILIKE $1
           ORDER BY u.created_at DESC,u.id LIMIT 25 OFFSET $2`,
           [`%${q}%`, (page - 1) * 25],

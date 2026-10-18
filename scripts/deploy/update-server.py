@@ -27,6 +27,15 @@ def idle():
     runs=sum(row.get('runningExperiments',0) for row in data['activity'])
     counts=json.loads(cmd('docker','exec','mobilesci-remote-workbench-1','python3','-c',"import sqlite3,time,json; c=sqlite3.connect('file:/home/node/research/state/orx.db?mode=ro',uri=True); print(json.dumps([c.execute('select count(*) from chat_queued_messages').fetchone()[0],c.execute('select count(*) from chat_turn_leases where heartbeat_at > ?', (int(time.time()*1000)-60000,)).fetchone()[0],c.execute(\"select count(*) from chat_spawns where state != 'done'\").fetchone()[0]]))",capture=True))
     queued,leases,dispatches=counts
+    # Every private executor is affected by an account gateway restart.
+    managed=cmd('docker','ps','-q','--filter','label=openresearch.managed=true',capture=True).split()
+    for container in managed:
+        detail=info(container)
+        if 'src/connector-entry.mjs' in (detail['Config'].get('Cmd') or []): continue
+        activity=json.loads(cmd('docker','exec',container,'node','-e',"fetch('http://127.0.0.1:4791/api/projects/activity').then(r=>{if(!r.ok)throw Error('Not ready');return r.json()}).then(d=>console.log(JSON.stringify(d)))",capture=True))
+        if any(row.get('activeAgents') or row.get('runningExperiments') for row in activity['activity']): raise RuntimeError('Active private research blocks upgrade')
+        pending=json.loads(cmd('docker','exec',container,'python3','-c',"import sqlite3,time,json; c=sqlite3.connect('file:/home/node/research/state/orx.db?mode=ro',uri=True); print(json.dumps([c.execute('select count(*) from chat_queued_messages').fetchone()[0],c.execute('select count(*) from chat_turn_leases where heartbeat_at > ?', (int(time.time()*1000)-60000,)).fetchone()[0],c.execute(\"select count(*) from chat_spawns where state != 'done'\").fetchone()[0]]))",capture=True))
+        if any(pending): raise RuntimeError('Queued or dispatching private research blocks upgrade')
     print(f'Upgrade admission: active={active}, runs={runs}, queued={queued}, leases={leases}, dispatches={dispatches}',flush=True)
     if active or runs or any(counts): raise RuntimeError('Active or queued research blocks upgrade')
 

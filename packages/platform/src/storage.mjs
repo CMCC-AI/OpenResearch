@@ -8,7 +8,12 @@ export function storageAccess(config, session, workspace = false) {
       config.managed ||
       config.privateSpaces
     ),
-    canInspect: !!(!workspace && config.researchOwnerEmail && session.is_admin),
+    canInspect: !!(
+      !workspace &&
+      !config.privateSpaces &&
+      config.researchOwnerEmail &&
+      session.is_admin
+    ),
     readOnly: true,
   };
 }

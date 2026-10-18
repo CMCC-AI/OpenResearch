@@ -1,3 +1,4 @@
+import { PersonalResearchGate } from "./PersonalResearchGate";
 import { stripAppBase, appHref } from "../appBasePath";
 import { Navigate, useRouterState } from "@tanstack/react-router";
 import {
@@ -47,6 +48,7 @@ export function AuthSessionProvider({
   const [canAccessResearch, setCanAccessResearch] = useState(false);
   const [deepLiteratureUrl, setDeepLiteratureUrl] = useState<string | null>(null);
   const [storage, setStorage] = useState<StoragePolicy | null>(null);
+  const [privateResearch,setPrivateResearch]=useState(false);
 
   useEffect(() => {
     if (!accountUrl) {
@@ -67,6 +69,7 @@ export function AuthSessionProvider({
         return response.json() as Promise<{
           user: AccountUser;
           canAccessResearch?: boolean;
+          privateResearch?: boolean;
           deepLiteratureUrl: string | null;
           storage?: StoragePolicy;
         }>;
@@ -74,6 +77,7 @@ export function AuthSessionProvider({
       .then((session) => {
         if (controller.signal.aborted) return;
         setUser(session?.user ?? null);
+        setPrivateResearch(!!session?.privateResearch);
         setCanAccessResearch(session?.canAccessResearch ?? Boolean(session));
         setDeepLiteratureUrl(session?.deepLiteratureUrl ?? null);
         setStorage(session?.storage ?? null);
@@ -125,7 +129,8 @@ export function AuthSessionProvider({
   if (protectedRoute && !user) return <Navigate to="/" replace />;
   if (user && !canAccessResearch && protectedRoute && !pathname.startsWith("/cases") && !pathname.startsWith("/admin")) return <Navigate to="/cases" replace />;
   if (pathname === "/" && user) return <Navigate to={canAccessResearch ? "/projects" : "/cases"} replace />;
-  return <AuthSessionContext value={value}>{children}</AuthSessionContext>;
+  const needsRuntime = privateResearch && user && protectedRoute && !pathname.startsWith("/admin") && !pathname.startsWith("/cases") && !pathname.startsWith("/literature");
+  return <AuthSessionContext value={value}>{needsRuntime ? <PersonalResearchGate key={user.id} accountUrl={accountUrl}>{children}</PersonalResearchGate> : children}</AuthSessionContext>;
 }
 
 export function useAuthSession() {

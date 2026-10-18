@@ -1,3 +1,7 @@
+import {
+  ensurePersonalSpace,
+  preparePersonalSpace,
+} from "./personal-spaces.mjs";
 import { accountRoutes } from "./accounts.mjs";
 import { resetMailer } from "./mail.mjs";
 import { featuredCaseRoutes } from "./featured-cases.mjs";
@@ -74,6 +78,15 @@ export function configuration(env = process.env) {
     500,
     "PRIVATE_USER_SPACES requires MANAGED_EXECUTORS",
   );
+  const sharedOriginSpaces = env.PRIVATE_SPACE_ROUTING === "shared-origin";
+  check(
+    !sharedOriginSpaces ||
+      (env.PRIVATE_USER_SPACES === "true" &&
+        env.MANAGED_EXECUTORS === "true" &&
+        appOrigin.origin === origin.origin),
+    500,
+    "Shared-origin private spaces require private managed spaces and the same app origin",
+  );
   const appPath = env.OPENRESEARCH_APP_PATH || "";
   check(
     appPath === "" || appPath === "/mobilesci",
@@ -125,6 +138,7 @@ export function configuration(env = process.env) {
     researchOwnerEmail: env.PLATFORM_RESEARCH_OWNER_EMAIL || "",
     managed: env.MANAGED_EXECUTORS === "true",
     privateSpaces: env.PRIVATE_USER_SPACES === "true",
+    sharedOriginSpaces,
     managedCapacity,
     database: env.DATABASE_URL,
     port: Number(env.PORT || 5300),
@@ -219,6 +233,21 @@ export async function createPlatform(
       sameOrigin(req, workspaceOrigin(config, workspace));
     return { s };
   }
+  async function personalAccess(req, websocket = false) {
+    const s = await session(req);
+    const { rows } = await pool.query(
+      "SELECT workspace_id FROM personal_spaces WHERE user_id=$1",
+      [s.user_id],
+    );
+    check(rows.length, 409, "个人空间正在准备，请刷新页面");
+    const workspace = rows[0].workspace_id;
+    await spaceOwner(s.user_id, workspace);
+    const path = new URL(req.url, config.origin).pathname;
+    check(permitted(req.method, path), 403, "此操作不允许通过科研网关访问");
+    if (websocket || !["GET", "HEAD"].includes(req.method))
+      sameOrigin(req, config.origin.origin);
+    return { s, workspace };
+  }
   async function newSession(db, user, host, parent = null) {
     const secret = token();
     await db.query(
@@ -232,7 +261,7 @@ export async function createPlatform(
     return `${config.deepLiterature.origin}${config.deepLiterature.path || ""}/api/auth/openresearch/callback`;
   }
   async function authorizeDeepLiterature(req, res, s, workspace = null) {
-    if (config.researchOwnerEmail)
+    if (config.researchOwnerEmail && !config.privateSpaces)
       check(
         s.email === config.researchOwnerEmail,
         403,
@@ -349,13 +378,14 @@ export async function createPlatform(
     res.setHeader("access-control-allow-credentials", "true");
     res.setHeader("vary", "Origin");
     if (req.method === "OPTIONS") {
-      res.setHeader("access-control-allow-methods", "GET, OPTIONS");
+      res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+      res.setHeader("access-control-allow-headers", "content-type");
       res.writeHead(204);
       return res.end();
     }
     const s = currentSession || (await session(req));
     await limit(`admin-users:${s.user_id}`, 180, 60);
-    await accounts.admin(req, res, "/api/platform/admin/users", s);
+    await accounts.admin(req, res, new URL(req.url, config.origin).pathname, s);
   }
   const server = http.createServer(async (req, res) => {
     res.setHeader("cache-control", "no-store");
@@ -426,7 +456,11 @@ export async function createPlatform(
         }
         const s = await session(req);
         await spaceOwner(s.user_id, workspace);
-        if (path === "/api/platform/admin/users")
+        if (
+          /^\/api\/platform\/admin\/users(?:\/[0-9a-f-]{36}\/password)?$/.test(
+            path,
+          )
+        )
           return await adminUsers(
             req,
             res,
@@ -535,6 +569,29 @@ export async function createPlatform(
         check(req.method === "GET" || req.method === "HEAD", 405);
         return await staticFile(res, config.ui, path);
       }
+      // The shared UI never chooses a tenant: the authenticated user selects it.
+      if (
+        config.sharedOriginSpaces &&
+        path.startsWith("/api/") &&
+        !path.startsWith("/api/platform/") &&
+        !path.startsWith("/api/auth/")
+      ) {
+        const { s, workspace } = await personalAccess(req);
+        const tunnel = tunnels.get(workspace);
+        check(tunnel, 503, "正在准备你的研究环境，请稍候再试");
+        await limit(`api:${workspace}:${s.user_id}`, 600, 60);
+        if (!["GET", "HEAD"].includes(req.method))
+          await audit(
+            pool,
+            s.user_id,
+            workspace,
+            `research.${req.method}`,
+            path,
+          );
+        return await tunnel.http(req, res, s.token_hash, () =>
+          personalAccess(req),
+        );
+      }
       if (path === "/healthz") {
         await pool.query("SELECT 1");
         return json(res, { ok: true });
@@ -618,7 +675,11 @@ export async function createPlatform(
           for (const row of children.rows) tunnel.revokeSession(row.token_hash);
         return json(res, { code: 200, data: { ok: true } });
       }
-      if (path === "/api/platform/admin/users") {
+      if (
+        /^\/api\/platform\/admin\/users(?:\/[0-9a-f-]{36}\/password)?$/.test(
+          path,
+        )
+      ) {
         const origin =
           !req.headers.origin || req.headers.origin === config.origin.origin
             ? config.origin.origin
@@ -650,7 +711,9 @@ export async function createPlatform(
           req.method === "GET"
         ) {
           const canAccessResearch =
-            !config.researchOwnerEmail || s.email === config.researchOwnerEmail;
+            !!config.sharedOriginSpaces ||
+            !config.researchOwnerEmail ||
+            s.email === config.researchOwnerEmail;
           if (path === "/api/platform/browser-session")
             check(canAccessResearch, 403, "该账号无权访问此研究空间");
           return json(res, {
@@ -661,6 +724,7 @@ export async function createPlatform(
               isAdmin: s.is_admin,
             },
             canAccessResearch,
+            privateResearch: !!config.sharedOriginSpaces,
             storage: storageAccess(config, s),
             deepLiteratureUrl:
               config.deepLiterature?.webUrl ||
@@ -745,6 +809,7 @@ export async function createPlatform(
               "INSERT INTO platform_users(id,email,name,password_hash,last_login_at) VALUES($1,$2,$3,$4,now())",
               [user, address, name, encoded],
             );
+            await ensurePersonalSpace(db, user);
             const created = await newSession(db, user, req.headers.host);
             await audit(db, user, null, "account.register");
             return created;
@@ -769,6 +834,7 @@ export async function createPlatform(
       if (path === "/api/platform/capabilities" && req.method === "GET")
         return json(res, {
           privateSpaces: !!config.privateSpaces,
+          sharedOriginSpaces: !!config.sharedOriginSpaces,
           deepLiteratureUrl:
             config.deepLiterature?.webUrl ||
             config.deepLiterature?.origin ||
@@ -782,44 +848,41 @@ export async function createPlatform(
           name: s.name,
           isAdmin: s.is_admin,
         });
-      if (path === "/api/platform/personal-space" && req.method === "POST") {
+      if (path === "/api/platform/personal-space") {
         check(
           config.privateSpaces && config.managed,
           409,
           "私人托管空间未启用",
         );
+        check(["GET", "POST"].includes(req.method), 405);
+        const retry =
+          req.method === "POST" && req.headers["content-type"]
+            ? !!(await input(req)).retry
+            : false;
         const workspace = await transaction(pool, async (db) => {
-          await db.query("SELECT pg_advisory_xact_lock(721947)");
+          if (req.method === "POST")
+            return preparePersonalSpace(
+              db,
+              s.user_id,
+              config.managedCapacity || 4,
+              retry,
+            );
           await db.query(
             "SELECT id FROM platform_users WHERE id=$1 FOR UPDATE",
             [s.user_id],
           );
-          const existing = await db.query(
-            "SELECT w.id FROM workspaces w JOIN workspace_runtimes r ON r.workspace_id=w.id WHERE w.created_by=$1 AND r.desired='running' ORDER BY w.created_at LIMIT 1",
-            [s.user_id],
-          );
-          if (existing.rows.length) return existing.rows[0].id;
-          const capacity = await db.query(
-            "SELECT count(*)::int AS n FROM workspace_runtimes WHERE desired='running'",
-          );
-          check(
-            capacity.rows[0].n < (config.managedCapacity || 4),
-            409,
-            "服务器运行容量已满，请联系管理员",
-          );
-          const workspace = id();
-          await db.query(
-            "INSERT INTO workspaces(id,name,created_by) VALUES($1,$2,$3)",
-            [workspace, "我的科研空间", s.user_id],
-          );
-          await db.query(
-            "INSERT INTO workspace_runtimes(workspace_id) VALUES($1)",
-            [workspace],
-          );
-          await audit(db, s.user_id, workspace, "workspace.create");
-          return workspace;
+          return ensurePersonalSpace(db, s.user_id);
         });
-        return json(res, { id: workspace });
+        const result = await pool.query(
+          "SELECT status,error FROM workspace_runtimes WHERE workspace_id=$1 AND desired='running'",
+          [workspace],
+        );
+        return json(res, {
+          id: workspace,
+          status: result.rows[0]?.status || "not_started",
+          error: result.rows[0]?.error || null,
+          online: tunnels.has(workspace),
+        });
       }
       if (path === "/api/platform/logout" && req.method === "POST") {
         const children = await pool.query(
@@ -874,8 +937,8 @@ export async function createPlatform(
       if (path === "/api/platform/workspaces") {
         if (req.method === "GET") {
           const { rows } = await pool.query(
-            `SELECT w.id,w.name,r.last_seen,r.expires_at AS credential_expires_at,rt.status AS runtime_status,rt.error AS runtime_error FROM workspaces w LEFT JOIN runners r ON r.workspace_id=w.id LEFT JOIN workspace_runtimes rt ON rt.workspace_id=w.id WHERE w.created_by=$1 ORDER BY w.created_at`,
-            [s.user_id],
+            `SELECT w.id,w.name,r.last_seen,r.expires_at AS credential_expires_at,rt.status AS runtime_status,rt.error AS runtime_error FROM workspaces w LEFT JOIN runners r ON r.workspace_id=w.id LEFT JOIN workspace_runtimes rt ON rt.workspace_id=w.id WHERE w.created_by=$1 AND ($2::boolean OR NOT EXISTS(SELECT 1 FROM personal_spaces p WHERE p.workspace_id=w.id)) ORDER BY w.created_at`,
+            [s.user_id, !!config.privateSpaces],
           );
           return json(
             res,
@@ -983,6 +1046,9 @@ export async function createPlatform(
             "UPDATE audit_events SET workspace_id=NULL WHERE workspace_id=$1",
             [workspace],
           );
+          await db.query("DELETE FROM personal_spaces WHERE workspace_id=$1", [
+            workspace,
+          ]);
           await db.query("DELETE FROM workspaces WHERE id=$1", [workspace]);
           await audit(
             db,
@@ -1137,7 +1203,7 @@ export async function createPlatform(
   });
   server.on("upgrade", async (req, socket, head) => {
     try {
-      const workspace = hostWorkspace(config, req.headers.host);
+      let workspace = hostWorkspace(config, req.headers.host);
       if (!workspace && req.url === "/_platform/runner") {
         check(!req.headers.origin, 403);
         const secret = req.headers.authorization?.replace(/^Bearer /, "") || "";
@@ -1175,16 +1241,23 @@ export async function createPlatform(
           });
         });
       } else {
-        check(workspace, 404);
-        const { s } = await access(req, workspace, true);
+        let s, authorize;
+        if (!workspace && config.sharedOriginSpaces) {
+          const selected = await personalAccess(req, true);
+          workspace = selected.workspace;
+          s = selected.s;
+          authorize = () => personalAccess(req, true);
+        } else {
+          check(workspace, 404);
+          ({ s } = await access(req, workspace, true));
+          authorize = () => access(req, workspace, true);
+        }
         check(/\/terminal(?:\?|$)/.test(req.url), 403, "仅允许科研终端连接");
         const tunnel = tunnels.get(workspace);
         check(tunnel, 503);
         wss.handleUpgrade(req, socket, head, (ws) => {
           try {
-            tunnel.socket(req, ws, s.token_hash, () =>
-              access(req, workspace, true),
-            );
+            tunnel.socket(req, ws, s.token_hash, authorize);
           } catch {
             ws.close(1013);
           }

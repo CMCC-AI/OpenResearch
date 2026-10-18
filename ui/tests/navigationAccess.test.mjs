@@ -5,17 +5,18 @@ import test from "node:test";
 import React from "react";
 import ts from "typescript";
 
-function authGate(pathname, user, loading = false, canAccessResearch = true) {
+function authGate(pathname, user, loading = false, canAccessResearch = true, privateResearch = false) {
   let stateIndex = 0;
   const source = readFileSync(new URL("../src/product/AuthSession.tsx", import.meta.url), "utf8");
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports = {};
   const mocks = {
     "../appBasePath": appBase,
-    react: { ...React, useState: () => { const values = [loading, user, canAccessResearch, null, null]; return [values[stateIndex++], () => {}]; }, useEffect: () => {}, useCallback: (fn) => fn, useMemo: (fn) => fn() },
+    react: { ...React, useState: () => { const values = [loading, user, canAccessResearch, null, null, privateResearch]; return [values[stateIndex++], () => {}]; }, useEffect: () => {}, useCallback: (fn) => fn, useMemo: (fn) => fn() },
     "react/jsx-runtime": jsx,
     "@tanstack/react-router": { Navigate: "Navigate", useRouterState: ({ select }) => select({ location: { pathname } }) },
     "../components/ui": { Spinner: "Spinner" },
+    "./PersonalResearchGate": { PersonalResearchGate: "PersonalResearchGate" },
     "./CloudWorkspace": { isCloudWorkspace: () => false },
   };
   new Function("require", "exports", "location", code)((name) => {
@@ -65,4 +66,12 @@ test("administration requires login and permits administrators without private r
   assert.equal(authGate("/admin/users",null).props.to,"/");
   assert.equal(authGate("/mobilesci/admin/cases",null).props.to,"/");
   assert.notEqual(authGate("/admin/users",{id:"admin",isAdmin:true},false,false).type,"Navigate");
+});
+
+test("only research pages prepare private compute; cases and administration remain available",()=>{
+ const user={id:"researcher",isAdmin:true};
+ const research=authGate("/projects",user,false,true,true);
+ assert.equal(research.props.children.type,"PersonalResearchGate");
+ assert.equal(research.props.children.key,user.id);
+ for(const path of ["/cases","/admin/users","/admin/cases","/literature"])assert.equal(authGate(path,user,false,true,true).props.children,"page");
 });

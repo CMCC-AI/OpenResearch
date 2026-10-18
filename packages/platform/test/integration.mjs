@@ -119,7 +119,7 @@ test(
         return r.cookie;
       }
       await t.test(
-        "personal account registration needs no workspace",
+        "registration owns a personal space without allocating compute",
         async () => {
           const registered = await request("/api/platform/register", {
             method: "POST",
@@ -141,6 +141,24 @@ test(
             [profile.data.id],
           );
           assert.equal(memberships.rows[0].n, 0);
+          assert.equal(
+            (
+              await pool.query(
+                "SELECT count(*)::int n FROM personal_spaces WHERE user_id=$1",
+                [profile.data.id],
+              )
+            ).rows[0].n,
+            1,
+          );
+          assert.equal(
+            (
+              await pool.query(
+                "SELECT count(*)::int n FROM workspace_runtimes r JOIN personal_spaces p ON p.workspace_id=r.workspace_id WHERE p.user_id=$1",
+                [profile.data.id],
+              )
+            ).rows[0].n,
+            0,
+          );
           const browserSession = await request(
             "/api/platform/browser-session",
             {
@@ -920,6 +938,117 @@ test(
             ).status,
             200,
           );
+        },
+      );
+      await t.test(
+        "shared-origin research routes only by account and registration owns space before compute",
+        async () => {
+          config.sharedOriginSpaces = true;
+          config.privateSpaces = true;
+          config.managed = true;
+          config.managedCapacity = 2;
+          config.researchOwnerEmail = "alice@test.invalid";
+          await pool.query(
+            "INSERT INTO personal_spaces VALUES($1,$2),($3,$4)",
+            [users.alice, a, users.bob, b],
+          );
+          await pool.query(
+            "INSERT INTO workspace_runtimes(workspace_id,status) VALUES($1,'ready'),($2,'ready')",
+            [a, b],
+          );
+          try {
+            assert.equal((await request("/api/projects")).status, 401);
+            for (const [cookie, expected] of [
+              [alice, "only-a"],
+              [bob, "only-b"],
+            ]) {
+              const projects = await request(`/api/projects?workspace=${a}`, {
+                cookie,
+                headers: { "x-workspace-id": a },
+              });
+              assert.equal(projects.status, 200, JSON.stringify(projects.data));
+              assert.equal(projects.data.projects[0].id, expected);
+              assert.equal(projects.data.cookie, null);
+              assert.equal(projects.data.authorization, null);
+            }
+            assert.equal(
+              (
+                await request("/api/projects", {
+                  method: "POST",
+                  cookie: bob,
+                  origin: "https://evil.test",
+                  data: {},
+                })
+              ).status,
+              403,
+            );
+            assert.equal(
+              (await request("/api/settings/data-dir", { cookie: alice }))
+                .status,
+              403,
+            );
+            const session = await request("/api/platform/catalog-session", {
+              cookie: bob,
+              origin: config.appOrigin,
+            });
+            assert.equal(session.data.canAccessResearch, true);
+            assert.equal(session.data.privateResearch, true);
+            const created = await request("/api/platform/register", {
+              method: "POST",
+              data: { email: "lazy@test.invalid", name: "Lazy user", password },
+            });
+            assert.equal(created.status, 201);
+            const initial = await request("/api/platform/personal-space", {
+              cookie: created.cookie,
+            });
+            assert.equal(initial.status, 200);
+            assert.equal(initial.data.status, "not_started");
+            assert.equal(
+              (
+                await request("/api/platform/personal-space", {
+                  method: "POST",
+                  cookie: created.cookie,
+                  data: {},
+                })
+              ).status,
+              409,
+            );
+            const again = await request("/api/platform/personal-space", {
+              cookie: created.cookie,
+            });
+            assert.equal(again.data.id, initial.data.id);
+            assert.equal(again.data.status, "not_started");
+            const ws = new WebSocket(
+              `ws://127.0.0.1:${port}/api/projects/p/terminal`,
+              {
+                headers: {
+                  host: portal,
+                  cookie: bob,
+                  origin: config.origin.origin,
+                },
+              },
+            );
+            sockets.push(ws);
+            await once(ws, "open");
+            const message = once(ws, "message");
+            ws.send("own terminal");
+            assert.equal((await message)[0].toString(), "own terminal");
+            ws.close();
+          } finally {
+            config.sharedOriginSpaces = false;
+            config.privateSpaces = false;
+            config.managed = false;
+            config.managedCapacity = 4;
+            config.researchOwnerEmail = "";
+            await pool.query(
+              "DELETE FROM personal_spaces WHERE workspace_id=ANY($1::uuid[])",
+              [[a, b]],
+            );
+            await pool.query(
+              "DELETE FROM workspace_runtimes WHERE workspace_id=ANY($1::uuid[])",
+              [[a, b]],
+            );
+          }
         },
       );
       await t.test(

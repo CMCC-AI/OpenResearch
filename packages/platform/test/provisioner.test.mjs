@@ -102,3 +102,21 @@ test("deletion removes only owned container and retains data volume", async () =
     /ownership/,
   );
 });
+
+test("preserved original research uses a connector while new accounts get disjoint private volumes", () => {
+  const legacy = runtimeConfig(workspace, {
+    ...env,
+    MANAGED_LEGACY_WORKSPACE: workspace,
+    MANAGED_CONNECTOR_IMAGE: "platform:test",
+    MANAGED_OPENCODE_CONFIG_DIR: "/srv/config",
+    MANAGED_OPENCODE_AUTH_FILE: "/srv/auth.json",
+  });
+  assert.equal(legacy.Image, "platform:test");
+  assert.equal(legacy.HostConfig.NetworkMode, "host");
+  assert.deepEqual(legacy.Cmd, ["node", "src/connector-entry.mjs"]);
+  assert.equal(legacy.HostConfig.Binds.length, 1);
+  assert(!legacy.HostConfig.Binds.some((p) => p.includes("research")));
+  const ordinary = runtimeConfig(workspace, env);
+  assert.notEqual(ordinary.HostConfig.NetworkMode, "host");
+  assert(ordinary.Env.includes("RUNNER_ISOLATION_ACK=dedicated-workspace"));
+});

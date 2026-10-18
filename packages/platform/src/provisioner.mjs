@@ -88,8 +88,19 @@ export function runtimeConfig(workspace, env) {
     throw new Error(
       "MANAGED_OPENCODE_CONFIG_FILE must be an absolute host path",
     );
+  const legacy = workspace === env.MANAGED_LEGACY_WORKSPACE;
+  const sharedDirectory = env.MANAGED_OPENCODE_CONFIG_DIR;
+  const authFile = env.MANAGED_OPENCODE_AUTH_FILE;
+  for (const path of [sharedDirectory, authFile])
+    if (path && (!path.startsWith("/") || /[:\n\r]/.test(path)))
+      throw Error("Managed configuration must be an absolute host path");
   return {
-    Image: env.MANAGED_EXECUTOR_IMAGE,
+    Image: legacy ? env.MANAGED_CONNECTOR_IMAGE : env.MANAGED_EXECUTOR_IMAGE,
+    WorkingDir: "/app/platform",
+    Cmd: [
+      "node",
+      legacy ? "src/connector-entry.mjs" : "src/executor-entry.mjs",
+    ],
     User: "1000:1000",
     Labels: {
       "openresearch.managed": "true",
@@ -97,24 +108,51 @@ export function runtimeConfig(workspace, env) {
     },
     Env: [
       `PLATFORM_ORIGIN=${env.PLATFORM_ORIGIN}`,
-      `PLATFORM_CONNECT_URL=${env.MANAGED_CONNECT_URL || env.PLATFORM_ORIGIN}`,
+      `PLATFORM_CONNECT_URL=${legacy ? env.MANAGED_LEGACY_CONNECT_URL || env.MANAGED_CONNECT_URL || env.PLATFORM_ORIGIN : env.MANAGED_CONNECT_URL || env.PLATFORM_ORIGIN}`,
+      "HOME=/home/node",
+      "XDG_CONFIG_HOME=/home/node/.config",
+      "XDG_DATA_HOME=/home/node/.local/share",
+      "XDG_STATE_HOME=/home/node/.local/state",
+      "XDG_CACHE_HOME=/home/node/.cache",
+      "ORX_DATA_DIR=/home/node/research/state",
+      "ORX_UPSTREAM=http://127.0.0.1:4791",
+      "RUNNER_STATE_DIR=/home/node/.runner-state",
+      "RUNNER_ISOLATION_ACK=dedicated-workspace",
+      "OPENCODE_DISABLE_AUTOUPDATE=1",
+      `ORX_ACCOUNT_URL=${env.PLATFORM_ORIGIN}`,
       "RUNNER_TOKEN_FILE=/home/node/.platform-token",
+      ...(!legacy && sharedDirectory
+        ? ["MANAGED_CONFIG_SEED_DIR=/run/orx-seed/opencode"]
+        : []),
+      ...(!legacy && authFile
+        ? ["MANAGED_AUTH_SEED_FILE=/run/orx-seed/auth.json"]
+        : []),
       `ORX_DEEP_LITERATURE_URL=${env.ORX_DEEP_LITERATURE_URL || "http://host.docker.internal:3000"}`,
       `ORX_DEEP_LITERATURE_WEB_URL=${env.ORX_DEEP_LITERATURE_WEB_URL || "http://localhost:3000"}`,
     ],
     HostConfig: {
       Binds: [
         `orx-managed-${workspace}:/home/node`,
-        ...(configFile
+        ...(!legacy && sharedDirectory
+          ? [`${sharedDirectory}:/run/orx-seed/opencode:ro`]
+          : []),
+        ...(!legacy && authFile
+          ? [`${authFile}:/run/orx-seed/auth.json:ro`]
+          : []),
+        ...(!legacy && configFile
           ? [`${configFile}:/home/node/.config/opencode/opencode.json:ro`]
           : []),
       ],
-      ...(env.MANAGED_NETWORK ? { NetworkMode: env.MANAGED_NETWORK } : {}),
+      ...(legacy
+        ? { NetworkMode: "host" }
+        : env.MANAGED_NETWORK
+          ? { NetworkMode: env.MANAGED_NETWORK }
+          : {}),
       ExtraHosts: ["host.docker.internal:host-gateway"],
       RestartPolicy: { Name: "unless-stopped" },
       CapDrop: ["ALL"],
       SecurityOpt: ["no-new-privileges:true"],
-      Memory: 1024 * 1024 * 1024,
+      Memory: legacy ? 128 * 1024 * 1024 : 1024 * 1024 * 1024,
       NanoCpus: 1000000000,
       PidsLimit: 256,
       Init: true,

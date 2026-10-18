@@ -81,7 +81,7 @@ class UpdateBundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / 'Cargo.toml').write_text('version = "0.2.19"\n')
-            for name in ['ui/dist/index.html', 'packages/platform/src/server.mjs', 'packages/platform/public/index.html', 'packages/platform/migrations/004.sql', 'packages/platform/package.json', 'packages/platform/package-lock.json', 'scripts/deploy/update-server.py']:
+            for name in ['ui/dist/index.html', 'packages/platform/src/server.mjs', 'packages/platform/public/index.html', 'packages/platform/migrations/004.sql', 'packages/platform/package.json', 'packages/platform/package-lock.json', 'scripts/deploy/update-server.py', 'scripts/deploy/enable-personal-spaces.py']:
                 file = root / name
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text('test')
