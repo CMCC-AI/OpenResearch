@@ -56,6 +56,20 @@ class UpdateBundleTests(unittest.TestCase):
     def test_complete_bundle_verifies(self):
         self.assertEqual(update.verify_bundle(self.bundle())['architecture'], 'linux/amd64')
 
+    def test_literature_callback_drift_blocks_upgrade_before_replacement(self):
+        import ast
+        source = Path(__file__).with_name('update-server.py').read_text()
+        function = next(node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name == 'validate_literature_config')
+        namespace = {}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), '<validate_literature_config>', 'exec'), namespace)
+        validate = namespace['validate_literature_config']
+        validate({'Env': []})
+        origin = 'DEEPLIT_ORIGIN=http://61.136.101.179:20281'
+        validate({'Env': [origin, 'DEEPLIT_WEB_PATH=/deepxiv']})
+        for suffix in ([], ['DEEPLIT_WEB_PATH='], ['DEEPLIT_WEB_PATH=/wrong']):
+            with self.subTest(suffix=suffix), self.assertRaisesRegex(RuntimeError, 'DEEPLIT_WEB_PATH=/deepxiv'):
+                validate({'Env': [origin, *suffix]})
+
     def test_corrupt_binary_is_rejected(self):
         with self.assertRaisesRegex(ValueError, '校验失败'):
             update.verify_bundle(self.bundle(corrupt=True))

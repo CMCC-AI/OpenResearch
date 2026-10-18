@@ -18,6 +18,13 @@ def health_headers(service):
     # The local workbench only accepts loopback Host. The account platform
     # validates its configured public Host even for loopback health requests.
     return {'Host':'61.136.101.179:20281'} if service=='platform' else None
+
+def validate_literature_config(config):
+    # This deployment serves literature under /deepxiv. A healthy platform with
+    # the old root callback still rejects every real literature SSO login.
+    env=dict(value.split('=',1) for value in config.get('Env',[]))
+    if env.get('DEEPLIT_ORIGIN') and env.get('DEEPLIT_WEB_PATH')!='/deepxiv':
+        raise RuntimeError('Literature SSO requires DEEPLIT_WEB_PATH=/deepxiv in the platform and persisted Compose configuration; repair it before upgrading')
 def info(name): return json.loads(cmd('docker','inspect',name,capture=True))[0]
 def get(url, headers=None):
     with urllib.request.urlopen(urllib.request.Request(url,headers=headers or {}),timeout=8) as res: return res.read()
@@ -92,6 +99,7 @@ for file,digest in manifest['files'].items():
         raise RuntimeError('Bundle checksum mismatch: '+file)
 services=[('workbench','mobilesci-remote-workbench-1'),('platform','mobilesci-remote-platform-1')]
 originals={name:info(name) for _,name in services}
+validate_literature_config(originals['mobilesci-remote-platform-1']['Config'])
 for service,name in services:
     old=originals[name]
     labels=old['Config'].get('Labels') or {}
