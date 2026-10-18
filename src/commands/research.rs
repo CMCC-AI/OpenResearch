@@ -137,9 +137,15 @@ pub async fn run(args: ResearchArgs) -> Result<()> {
             store.research_update(&study.id, |study| {
                 study.ensure_active()?;
                 let scope = store.research_package_scope(study)?;
-                study.request_gate("G4", scope)
+                study.request_gate(
+                    crate::local::research::delivery_gate(study.workflow_mode()),
+                    scope,
+                )
             })?;
-            println!("研究包已申请 G4 确认；用户可在研究面板下载草稿或批准后的归档。");
+            println!(
+                "交付已申请 {} 确认；用户可在研究面板查看方案、下载草稿或确认后的归档。",
+                crate::local::research::delivery_gate(study.workflow_mode())
+            );
         }
     }
     Ok(())

@@ -4211,7 +4211,7 @@ export function ChatPanel({
   }, [stashKey, composerPrefill]);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const researchState = useQuery({ queryKey: workspaceKey("researchStudy", activeId), queryFn: ({ signal }) => getResearchStudy(activeId!, signal), enabled: Boolean(activeId) && !embedded, refetchInterval: (query) => query.state.data?.study?.status === "active" ? 2500 : false });
-  const currentWorkMode = activeId ? researchState.data?.study ? "team" : "normal" : researchMode;
+  const currentWorkMode: WorkMode = activeId ? researchState.data?.study?.mode ?? "normal" : researchMode;
   const settingsMutationTail = useRef<Promise<void>>(Promise.resolve());
   const settingsMutationSeq = useRef(0);
   const planMutationSeq = useRef(0);
@@ -6533,11 +6533,16 @@ export function ChatPanel({
               }}
             />
           )}
-          {!embedded && !isDemoProjectId(projectId) && (activeId ? <ResearchPanel onOpenResearch={onOpenResearch} key={activeId} onOpenSession={openSpawnedSession} sessionId={activeId} disabled={!composerSelection || busy} onConsult={async (mode) => {
+          {!embedded && !isDemoProjectId(projectId) && (activeId ? <ResearchPanel onOpenResearch={onOpenResearch} key={activeId} onOpenSession={openSpawnedSession} sessionId={activeId} disabled={!composerSelection || busy} onStartWorkflow={async (mode) => {
             if (!composerSelection) return;
-            const objective = `${researchModes[mode]}：${draft.trim() || "请审计当前项目已有材料，并明确待审查的方案、日志或稿件；缺少材料时先澄清。"}`;
+            const objective = `${researchModes[mode]}：${draft.trim() || "请接管项目材料，明确研究目标与交付，并按需求判断执行路径；缺少材料时先澄清。"}`;
+            const images: ChatImageAttachment[] = attachments.map((attachment) => ({
+              mediaType: attachment.mediaType,
+              dataBase64: attachment.dataUrl.slice(attachment.dataUrl.indexOf(",") + 1),
+              name: attachment.name,
+            }));
             const session = await openNewSession(composerSelection, false, objective, mode);
-            await sendChatMessage(session.id, objective);
+            await sendChatMessage(session.id, objective, {}, images.length ? images : undefined);
           }} /> : null)}
           <div className={`composer-box relative flex flex-col border ${bashActive ? "border-accent-amber" : "border-border"} rounded-lg bg-background shadow-elevated`} data-onboarding="composer">
             {activeHarness && !activeHarness.agentReady && (
@@ -6641,7 +6646,7 @@ export function ChatPanel({
                 {settingsError}
               </div>
             )}
-            {!embedded && !isDemoProjectId(projectId) && (!activeId || researchState.data) && <div className="px-3 pt-3 pb-1"><WorkModeSwitch value={currentWorkMode} onChange={setResearchMode} readOnly={Boolean(activeId)} /></div>}
+            {!embedded && !isDemoProjectId(projectId) && (!activeId || researchState.data) && <div className="px-3 pt-3 pb-1"><WorkModeSwitch value={currentWorkMode} onChange={setResearchMode} readOnly={Boolean(activeId)} activeWorkflow={researchState.data?.study?.plans.at(-1)?.workflow} /></div>}
             <div className={`composer-input relative flex overflow-hidden [&_textarea]:flex-1 ${bashActive ? "[&_textarea]:font-mono [&_textarea]:text-sm" : ""}`}>
               <textarea
                 dir="auto"

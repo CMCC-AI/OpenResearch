@@ -1,6 +1,13 @@
-export type ResearchMode = "team" | "design" | "diagnosis" | "review";
+import presets from "./researchWorkflows.json" with { type: "json" };
+
+export type PresetWorkflowMode = keyof typeof presets;
+export const presetWorkflowModes = Object.keys(presets) as PresetWorkflowMode[];
+export const researchPresets = presets;
+/** Legacy modes remain readable for existing studies. */
+export type ResearchMode = PresetWorkflowMode | "team" | "design" | "diagnosis" | "review";
 export const researchModes: Record<ResearchMode, string> = {
-  team: "科研专家团", design: "方案设计会诊", diagnosis: "失败异常诊断", review: "独立审稿与引用核验",
+  literature: presets.literature.title, reproduction: presets.reproduction.title, analysis: presets.analysis.title, proposal: presets.proposal.title,
+  team: "科研专家团模式", design: "方案设计会诊", diagnosis: "失败异常诊断", review: "独立审稿与引用核验",
 };
 export const researchStates: Record<string, string> = {
   pending: "待执行", running: "执行中 / 待验收", completed: "产物已验收", failed: "未通过", cancelled: "已取消",
@@ -18,9 +25,13 @@ export interface ResearchDecision {
 }
 export interface ResearchStudy {
   id: string; sessionId: string; mode: ResearchMode; objective: string; status: string;
-  plans: { version: number; summary: string; tasks: ResearchTask[] }[];
+  plans: { version: number; workflow?: PresetWorkflowMode | null; summary: string; tasks: ResearchTask[] }[];
   decisions: ResearchDecision[];
   claims: { id: string; text: string; support: string; source: string; location?: string; runId?: string; excerpt?: string }[];
+}
+/** Category stays fixed; automatic routing is versioned with the plan. */
+export function researchWorkflowMode(study: ResearchStudy): ResearchMode {
+  return study.mode === "team" ? study.plans.at(-1)?.workflow ?? "team" : study.mode;
 }
 export function currentDecisions(study: ResearchStudy): ResearchDecision[] {
   const version = study.plans.at(-1)?.version;
@@ -73,7 +84,9 @@ export function researchWorkflow(study: ResearchStudy) {
   const tasks = study.plans.at(-1)?.tasks ?? [];
   const decisions = currentDecisions(study);
   const experimental = tasks.some((task) => task.role === "as-experiment-operator");
-  return researchStages.map((stage) => {
+  return researchStages.map((originalStage) => {
+    const stage = researchWorkflowMode(study) === "proposal" && originalStage.id === "delivery"
+      ? { ...originalStage, title: "方案交付", description: "确认实验方案；不自动运行实验", gates: ["G3"] } : originalStage;
     const members = tasks.filter((task) => (stage.roles as readonly string[]).includes(task.role));
     const gates = decisions.filter((decision) => (stage.gates as readonly string[]).includes(decision.gate));
     const optional = stage.id === "approval" && (!experimental && (study.mode !== "team" || study.plans.length > 0));
@@ -82,7 +95,7 @@ export function researchWorkflow(study: ResearchStudy) {
     else if (members.some((task) => task.state === "failed" || task.state === "cancelled") || gates.some((gate) => gate.status === "rejected")) state = "blocked";
     else if (gates.some((gate) => gate.status === "pending")) state = "blocked";
     else if (members.some((task) => task.state === "running")) state = "running";
-    else if ((members.length > 0 || gates.length > 0) && members.every((task) => task.state === "completed") && gates.every((gate) => gate.status === "approved") && (stage.id !== "delivery" || gates.some((gate) => gate.gate === "G4"))) state = "completed";
+    else if ((members.length > 0 || gates.length > 0) && members.every((task) => task.state === "completed") && gates.every((gate) => gate.status === "approved") && (stage.id !== "delivery" || gates.some((gate) => gate.gate === deliveryGate(researchWorkflowMode(study))))) state = "completed";
     else if (stage.id === "intake" && tasks.length === 0) state = "running";
     else if (stage.id === "intake" && members.length === 0 && study.plans.length > 0) state = "completed";
     else if (members.length === 0 && stage.gates.length === 0 && study.plans.length > 0) state = "optional";
@@ -103,7 +116,7 @@ export function researchAttention(study: ResearchStudy) {
   if (failed.length) return `${failed.length} 个任务需处理`;
   const active = tasks.filter((task) => task.state === "running");
   if (active.length) return `${active.length} 位专家执行中 / 待验收`;
-  if (decisions.some((decision) => decision.gate === "G4" && decision.status === "approved")) return "当前研究包已批准";
+  if (decisions.some((decision) => decision.gate === deliveryGate(researchWorkflowMode(study)) && decision.status === "approved")) return researchWorkflowMode(study) === "proposal" ? "实验方案已确认 · 未授权运行实验" : "当前研究包已批准";
   if (!tasks.length) return "主理人正在梳理目标与材料";
   if (tasks.every((task) => task.state === "completed")) return "任务已验收 · 等待研究包确认";
   return "计划已登记 · 等待推进就绪任务";
@@ -155,6 +168,7 @@ export function researchDagLayout(tasks: ResearchTask[]) {
 
 
 export type ConsultationMode = Exclude<ResearchMode, "team">;
+export const deliveryGate = (mode: ResearchMode) => mode in presets ? presets[mode as PresetWorkflowMode].deliveryGate : "G4";
 export interface ConsultationModule {
   purpose: string;
   inputs: string;
@@ -162,8 +176,9 @@ export interface ConsultationModule {
   requiredRoles: string[];
   steps: { title: string; description: string; roles: string[] }[];
 }
-/** A capability preview, never a task template or an execution record. */
+/** Shared preset profiles plus read-only descriptions of legacy consultations. */
 export const consultationModules: Record<ConsultationMode, ConsultationModule> = {
+  ...presets,
   design: {
     purpose: "判断课题是否可行，形成可执行的研究方案。",
     inputs: "研究问题、已有论文 / 代码 / 数据、期望成果及时间或资源限制；缺失材料可先说明。",
@@ -204,7 +219,8 @@ export const consultationModules: Record<ConsultationMode, ConsultationModule> =
 export function consultationCoverage(study: ResearchStudy) {
   const tasks = study.plans.at(-1)?.tasks ?? [];
   const roles = [...new Set(tasks.map((task) => task.role))];
-  const profile = study.mode === "team" ? null : consultationModules[study.mode];
+  const mode = researchWorkflowMode(study);
+  const profile = mode === "team" ? null : consultationModules[mode];
   const candidates = profile ? [...new Set(profile.steps.flatMap((step) => step.roles))] : [];
   return {
     roles,

@@ -76,7 +76,7 @@ test("consultation previews distinguish mandatory review from optional roles wit
   assert.deepEqual(consultationModules.design.requiredRoles, []);
   assert.deepEqual(consultationModules.diagnosis.requiredRoles, []);
   assert.deepEqual(consultationModules.review.requiredRoles, ["as-independent-reviewer", "as-quality-citation-auditor"]);
-  for (const module of Object.values(consultationModules)) {
+  for (const module of [consultationModules.design, consultationModules.diagnosis, consultationModules.review]) {
     const roles = module.steps.flatMap((step) => step.roles);
     assert.equal(module.steps.length, 4);
     assert.ok(roles.every((role) => role in expertRoles));
@@ -152,4 +152,38 @@ test("actual DAG preserves task identities and real edges even when a role repea
   assert.deepEqual(graph.edges, [{ source: "a", target: "b" }, { source: "b", target: "c" }]);
   assert.ok(graph.nodes[0].y < graph.nodes[1].y && graph.nodes[1].y < graph.nodes[2].y);
   assert.equal(researchTeamGraph(null, true).nodes.length, 0);
+});
+
+const { researchPresets, presetWorkflowModes, deliveryGate } = await import("../src/research.ts");
+test("original preset profiles cover W1–W4 and share execution and delivery rules", () => {
+  assert.deepEqual(presetWorkflowModes, ["literature", "reproduction", "analysis", "proposal"]);
+  for (const [mode, profile] of Object.entries(researchPresets)) {
+    assert.ok(profile.requiredRoles.every((role) => role in expertRoles));
+    assert.ok(profile.steps.flatMap((step) => step.roles).every((role) => role in expertRoles));
+    assert.equal(deliveryGate(mode), profile.deliveryGate);
+    assert.ok(profile.dependencies.every(([a, b]) => profile.requiredRoles.includes(a) && profile.requiredRoles.includes(b)));
+    assert.equal(profile.allowsExperiments, mode === "reproduction");
+  }
+  assert.ok(researchPresets.literature.forbiddenRoles.includes("as-methodology-designer"));
+  assert.ok(!researchPresets.proposal.requiredRoles.includes("as-independent-reviewer"));
+});
+test("W4 G3 means completed plan delivery, not experiment authorization or G4 publication", () => {
+  const value = { ...study([task("plan", "as-experiment-designer", [], "completed")], [gate("G1", "approved"), gate("G3", "pending")]), mode: "proposal" };
+  assert.equal(researchWorkflow(value).find((s) => s.id === "approval").state, "optional");
+  assert.equal(researchWorkflow(value).find((s) => s.id === "delivery").state, "blocked");
+  value.decisions[1].status = "approved";
+  assert.equal(researchWorkflow(value).find((s) => s.id === "delivery").state, "completed");
+  assert.match(researchAttention(value), /方案已确认.*未授权/);
+  value.plans.push({ version: 3, tasks: value.plans[0].tasks });
+  assert.doesNotMatch(researchAttention(value), /已确认/);
+});
+
+test("automatic routing reads the current versioned workflow without changing the team category", () => {
+  const value = study([task("design", "as-experiment-designer", [], "completed")], [gate("G1", "approved"), gate("G3", "approved")]);
+  value.plans[0].workflow = "proposal";
+  assert.equal(value.mode, "team");
+  assert.match(researchAttention(value), /方案已确认.*未授权/);
+  assert.equal(researchWorkflow(value).find((s) => s.id === "delivery").state, "completed");
+  value.plans.push({ version: 3, workflow: "literature", tasks: [] });
+  assert.doesNotMatch(researchAttention(value), /方案已确认/);
 });

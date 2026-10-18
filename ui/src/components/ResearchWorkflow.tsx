@@ -2,7 +2,7 @@ import { useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ArrowRight, CheckCircle2, Circle, CircleDot, GitBranch, ShieldCheck, Users, X } from "lucide-react";
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Node, type NodeProps } from "@xyflow/react";
-import { consultationCoverage, expertRoles, researchAttention, currentDecisions, researchDagLayout, researchModes, researchProgress, researchTaskStatus, researchWorkflow, workflowStateNames, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
+import { consultationCoverage, researchWorkflowMode, expertRoles, researchAttention, currentDecisions, researchDagLayout, researchModes, researchProgress, researchTaskStatus, researchWorkflow, workflowStateNames, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
 import { ResearchModulePreview } from "./ResearchModulePreview";
 import { ResearchJourneyIntro } from "./ResearchJourneyIntro";
 import { useDialogFocus } from "./useDialogFocus";
@@ -52,6 +52,7 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
   const tasks = study.plans.at(-1)?.tasks ?? [];
   const progress = researchProgress(study);
   const coverage = consultationCoverage(study);
+  const workflowMode = researchWorkflowMode(study);
   const stages = researchWorkflow(study);
   const selectedTask = tasks.find((task) => task.id === selected);
   const nodes = useMemo(() => researchDagLayout(tasks).map((position): TaskNode => {
@@ -66,7 +67,7 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
   }))), [tasks, study.status]);
   const content = <div ref={embedded ? undefined : ref} role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-labelledby={titleId} tabIndex={-1} className={`flex min-h-0 w-full flex-col overflow-hidden bg-background text-text ${embedded ? "h-full" : "max-h-full max-w-6xl rounded-xl border border-border shadow-elevated"}`} onClick={(event) => event.stopPropagation()}>
       <header className="flex shrink-0 items-start justify-between gap-3 border-b border-border p-4">
-        <div><div className="flex items-center gap-2"><Users size={20} className="text-primary" /><h2 id={titleId} className="font-semibold">{researchModes[study.mode]} · 研究流程</h2></div><p role="status" className="mt-1 text-sm text-subtext">{researchAttention(study)} · {progress.completed}/{progress.total} 个任务已验收{study.plans.length ? ` · 计划 v${study.plans.at(-1)?.version}` : ""}</p></div>
+        <div><div className="flex items-center gap-2"><Users size={20} className="text-primary" /><h2 id={titleId} className="font-semibold">{researchModes[workflowMode]} · 研究流程</h2></div><p role="status" className="mt-1 text-sm text-subtext">{researchAttention(study)} · {progress.completed}/{progress.total} 个任务已验收{study.plans.length ? ` · 计划 v${study.plans.at(-1)?.version}` : ""}</p></div>
         <IconButton data-initial-focus aria-label={embedded ? "返回专家团流程图" : "关闭研究流程"} onClick={onClose}><X size={18} /></IconButton>
       </header>
       <div className="flex min-h-0 flex-col gap-5 overflow-y-auto p-4 sm:p-5">
@@ -78,7 +79,7 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
             { id: "execution", title: "3 · 实际执行与成果", description: "已派发的任务、当前进度与验收产物" },
           ] as const).map((item) => <button key={item.id} type="button" aria-pressed={layer === item.id} onClick={() => setLayer(item.id)} className={`rounded-lg border p-3 text-start focus-visible:outline-2 focus-visible:outline-primary ${layer === item.id ? "border-primary bg-primary-subtle" : "border-border bg-surface"}`}><strong className="text-sm">{item.title}</strong><span className="mt-1 block text-xs text-subtext">{item.description}</span></button>)}
         </nav>
-        {layer === "preview" && (study.mode === "team" ? <ResearchJourneyIntro /> : <ResearchModulePreview mode={study.mode} />)}
+        {layer === "preview" && (workflowMode === "team" ? <ResearchJourneyIntro /> : <ResearchModulePreview mode={workflowMode} />)}
         {layer === "plan" && <section aria-label="本次专家分工" className="flex flex-col gap-3">
           <h3 className="text-sm font-medium">本次具体计划{study.plans.length > 0 ? ` · v${study.plans.at(-1)?.version}` : " · 尚未登记"}</h3>
           {!tasks.length ? <p className="rounded-lg border border-dashed border-border p-5 text-sm text-subtext">主理人尚未登记计划。模块预览中的专家只是候选，实际分工将在这里出现。</p> : <>

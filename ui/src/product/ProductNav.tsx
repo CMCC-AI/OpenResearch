@@ -1,7 +1,7 @@
 import { stripAppBase } from "../appBasePath";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
-import { BookOpen, Boxes, Home, Library, PanelLeft, Search } from "lucide-react";
+import { BookOpen, Boxes, Home, Library, PanelLeft } from "lucide-react";
 import { BrandMark } from "../components/Wordmark";
 import { IconButton } from "../components/ui";
 import { ResearchProjectNavigation } from "../components/ResearchNavigation";
@@ -42,7 +42,6 @@ export function ProductSidebar({ children, connectionInfo, onCollapse, onSetting
 export function ProductHeader({ title }: { title: ReactNode }) {
   return <header className="product-header flex h-16 shrink-0 items-center justify-between border-b border-border-variant bg-background px-6">
     <div className="min-w-0 text-sm text-subtext">{title}</div>
-    <Link to="/discover" className="inline-flex items-center gap-2 rounded-full border border-border px-3 py-1.5 text-xs text-subtext no-underline hover:text-text"><Search size={14} />搜索论文</Link>
   </header>;
 }
 

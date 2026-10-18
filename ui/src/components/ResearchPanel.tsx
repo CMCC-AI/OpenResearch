@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getResearchStudy, decideResearchGate, stopResearchStudy, downloadResearchPackage, sendChatMessage } from "../api";
 import { workspaceKey } from "../queries/client";
-import { currentDecisions, researchProgress, researchModes, researchAttention, researchWorkflow, gateNames, type ResearchDecision, type ResearchMode } from "../research";
+import { currentDecisions, researchProgress, researchModes, presetWorkflowModes, researchWorkflowMode, deliveryGate, researchAttention, researchWorkflow, gateNames, type ResearchDecision, type ResearchMode } from "../research";
 import { Button } from "./ui/Button";
 import { IconButton, MenuItem } from "./ui";
 import { ResearchStateErrorDialog } from "./ResearchOverviewDialog";
@@ -13,8 +13,8 @@ import { ResearchModulePreview } from "./ResearchModulePreview";
 import { ResearchTeamDagDialog } from "./ResearchTeamDag";
 import { ResearchWorkflowDialog } from "./ResearchWorkflow";
 
-export function ResearchPanel({ sessionId, onConsult, disabled, onOpenSession, placement = "composer", expanded = false, onOpenResearch, active = false }: {
-  sessionId: string | null; onConsult?: (mode: ResearchMode) => Promise<void>; disabled: boolean; onOpenSession?: (sessionId: string) => void; placement?: "composer" | "workspace" | "pane"; expanded?: boolean; onOpenResearch?: () => void; active?: boolean;
+export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSession, placement = "composer", expanded = false, onOpenResearch, active = false }: {
+  sessionId: string | null; onStartWorkflow?: (mode: ResearchMode) => Promise<void>; disabled: boolean; onOpenSession?: (sessionId: string) => void; placement?: "composer" | "workspace" | "pane"; expanded?: boolean; onOpenResearch?: () => void; active?: boolean;
 }) {
   const query = useQuery({ queryKey: workspaceKey("researchStudy", sessionId), queryFn: ({ signal }) => getResearchStudy(sessionId!, signal), enabled: Boolean(sessionId), refetchInterval: (query) => query.state.data?.study?.status === "active" ? 2500 : false });
   const [error, setError] = useState<string | null>(null);
@@ -33,11 +33,11 @@ export function ResearchPanel({ sessionId, onConsult, disabled, onOpenSession, p
   const progress = study ? researchProgress(study) : null;
   const decisions = study ? currentDecisions(study) : [];
   const activeStages = study ? researchWorkflow(study).filter((stage) => ["running", "blocked"].includes(stage.state)) : [];
-  const approved = decisions.some((d) => d.gate === "G4" && d.status === "approved");
+  const approved = decisions.some((d) => d.gate === deliveryGate(researchWorkflowMode(study!)) && d.status === "approved");
   const actions = study && <>
     <Button size="small" disabled={working || study.status === "stopped"} onClick={() => void act(() => sendChatMessage(study.sessionId, "请读取当前研究计划、人工决策和真实运行状态，继续推进已就绪任务。"))}>继续研究</Button>
     <Button size="small" disabled={working} onClick={() => void act(() => downloadResearchPackage(study.id, false))}>下载草稿包</Button>
-    {approved && <Button size="small" disabled={working} onClick={() => void act(() => downloadResearchPackage(study.id, true))}>下载已批准研究包</Button>}
+    {approved && <Button size="small" disabled={working} onClick={() => void act(() => downloadResearchPackage(study.id, true))}>下载已确认交付</Button>}
     <Button size="small" variant="danger" disabled={working || study.status === "stopped"} onClick={() => void act(() => stopResearchStudy(study.id))}>停止研究</Button>
   </>;
   const renderDecision = (decision: ResearchDecision) => <GateCard key={decision.id} decision={decision} disabled={working || study?.status === "stopped"} onDecide={(accepted, reason) => act(async () => {
@@ -55,18 +55,18 @@ export function ResearchPanel({ sessionId, onConsult, disabled, onOpenSession, p
   const openResearch = () => onOpenResearch ? onOpenResearch() : setDagOpen(true);
   if (placement === "pane") return <div className="flex h-full min-h-0 flex-col">{query.isPending && sessionId ? <p className="p-4 text-sm text-subtext">正在读取专家团状态…</p> : query.error ? <div role="alert" className="p-4 text-sm text-accent-red">研究状态读取失败：{query.error.message}<Button onClick={() => void query.refetch()}>重试</Button></div> : workflowOpen ? study ? dialog : <div className="h-full overflow-y-auto p-4"><Button size="small" className="mb-3" onClick={() => setWorkflowOpen(false)}>返回专家团流程图</Button><ResearchJourneyIntro /></div> : <ResearchTeamDagDialog embedded study={study ?? null} runs={query.data?.runs ?? []} actions={actions} onClose={() => {}} onDetails={() => setWorkflowOpen(true)} onOpenSession={onOpenSession} />}</div>;
   if (placement === "workspace") return <>
-    {expanded ? <MenuItem className="min-h-7 py-1" aria-label="科研专家团流程" onClick={openResearch} disabled={Boolean(sessionId) && query.isPending}><span className="flex min-w-0 flex-col gap-0.5"><span className="flex items-center gap-4"><Users size={15} className="shrink-0 text-primary" />科研专家团</span><span className="truncate ps-[31px] text-menu text-subtext">{study ? researchAttention(study) : query.error ? "状态读取失败 · 点击重试" : "完整流程与单项会诊"}</span></span></MenuItem> : <IconButton aria-label="科研专家团流程" data-tip="科研专家团 · 流程与执行" aria-pressed={active} active={active} disabled={Boolean(sessionId) && query.isPending} onClick={openResearch}><Users size={15} /></IconButton>}
+    {expanded ? <MenuItem className="min-h-7 py-1" aria-label="科研专家团流程" onClick={openResearch} disabled={Boolean(sessionId) && query.isPending}><span className="flex min-w-0 flex-col gap-0.5"><span className="flex items-center gap-4"><Users size={15} className="shrink-0 text-primary" />科研专家团</span><span className="truncate ps-[31px] text-menu text-subtext">{study ? researchAttention(study) : query.error ? "状态读取失败 · 点击重试" : "预设流程与执行"}</span></span></MenuItem> : <IconButton aria-label="科研专家团流程" data-tip="科研专家团 · 流程与执行" aria-pressed={active} active={active} disabled={Boolean(sessionId) && query.isPending} onClick={openResearch}><Users size={15} /></IconButton>}
     {dagDialog}
     {dialog}
   </>;
   return <section className={`mb-2 rounded-lg border text-sm ${study ? "border-primary bg-primary-subtle" : "border-border bg-background"}`} aria-label="当前研究流程">
     {!study ? <div className="p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <details><summary className="cursor-pointer text-xs text-subtext">发起单项专家会诊</summary><div className="mt-2 flex flex-col gap-2">{(["design", "diagnosis", "review"] as const).map((mode) => <details key={mode} className="rounded-lg border border-border p-2"><summary className="cursor-pointer text-sm text-primary">{researchModes[mode]} · 了解子流程与专家</summary><div className="mt-2"><ResearchModulePreview mode={mode} /><Button size="small" className="mt-2" disabled={disabled || working} onClick={() => void act(() => onConsult?.(mode) ?? Promise.resolve())}>开始{researchModes[mode]}</Button></div></details>)}</div></details>
+        <details><summary className="cursor-pointer text-xs text-subtext">科研专家团模式</summary><div className="mt-2 flex flex-col gap-2"><p className="text-xs text-subtext">当前对话的工作模式保持不变；在同一项目中新建专家团对话，可自动判断或手动指定流程。</p><Button size="small" disabled={disabled || working} onClick={() => void act(() => onStartWorkflow?.("team") ?? Promise.resolve())}>新建专家团对话 · 自动判断</Button>{presetWorkflowModes.map((mode) => <details key={mode} className="rounded-lg border border-border p-2"><summary className="cursor-pointer text-sm text-primary">{researchModes[mode]} · 了解流程与专家</summary><div className="mt-2"><ResearchModulePreview mode={mode} /><Button size="small" className="mt-2" disabled={disabled || working} onClick={() => void act(() => onStartWorkflow?.(mode) ?? Promise.resolve())}>新建专家团对话 · {researchModes[mode]}</Button></div></details>)}</div></details>
       </div>
     </div> : <div className="p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2"><Users size={16} className="shrink-0 text-primary" /><strong className="text-text">{researchModes[study.mode]}</strong><span className="text-xs text-subtext">{study.mode === "team" ? "专家协作流程" : "单项专家会诊"}</span></div>
+        <div className="flex min-w-0 items-center gap-2"><Users size={16} className="shrink-0 text-primary" /><strong className="text-text">{researchModes[researchWorkflowMode(study)]}</strong></div>
         <Button size="small" onClick={openResearch}>查看流程、分工与执行 <ArrowRight size={14} /></Button>
       </div>
       <p role="status" className="mt-2 text-sm font-medium text-primary">{researchAttention(study)}</p>
@@ -83,10 +83,12 @@ function GateCard({ decision, disabled, onDecide }: { decision: ResearchDecision
   const [reason, setReason] = useState("");
   let scope: { summary?: string; command?: string; revision?: string; options?: { backend?: string; flavor?: string; host?: string; timeout?: string }; plan?: { summary?: string } } = {};
   try { scope = JSON.parse(decision.scope); } catch { /* old text scopes remain readable */ }
-  return <section className="rounded border border-border p-3" aria-label={`${decision.gate} ${gateNames[decision.gate]}`}>
-    <strong>{decision.gate} · {gateNames[decision.gate]} · {decision.status === "approved" ? "已批准" : decision.status === "rejected" ? "已拒绝" : "等待确认"}</strong>
+  const gateName = decision.gate === "G3" && !scope.command ? "实验方案确认" : gateNames[decision.gate];
+  return <section className="rounded border border-border p-3" aria-label={`${decision.gate} ${gateName}`}>
+    <strong>{decision.gate} · {gateName} · {decision.status === "approved" ? "已批准" : decision.status === "rejected" ? "已拒绝" : "等待确认"}</strong>
     <p className="whitespace-pre-wrap py-1">{scope.summary ?? scope.plan?.summary}</p>
     {scope.command && <><p>执行位置：{scope.options?.backend} {scope.options?.host} {scope.options?.flavor} {scope.options?.timeout}</p><pre className="whitespace-pre-wrap break-all text-xs">{scope.command}</pre><p className="text-xs text-subtext break-all">代码版本：{scope.revision}</p></>}
+    {decision.gate === "G3" && !scope.command && <p className="text-subtext">确认实验方案的假设、指标、基线、预算与停止条件；此项确认不授权运行实验。</p>}
     {decision.gate === "G4" && <p className="text-subtext">确认当前研究包的结论、证据与局限。此操作生成批准记录，公开发布需另行操作。</p>}
     <details className="mt-2"><summary className="cursor-pointer text-subtext">查看完整审批范围</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(scope, null, 2)}</pre><p className="text-xs text-subtext break-all">范围校验：{decision.scopeHash}</p></details>
     {decision.status === "pending" ? <div className="flex flex-wrap gap-2 mt-2">

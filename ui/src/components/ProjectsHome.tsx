@@ -240,7 +240,7 @@ export function ProjectsHome({
   const [modalOpen, setModalOpen] = useState(initialDialogOpen);
   const homeStashes = getComposerStashStore(getWorkspaceGeneration());
   const [draft, setDraft] = useState(() => homeStashes.get("research-home")?.draft ?? "");
-  const [workMode, setWorkMode] = useState<"normal" | "team">(() => homeStashes.get("research-home")?.workMode ?? "team");
+  const [workMode, setWorkMode] = useState<NonNullable<ComposerStash["workMode"]>>(() => homeStashes.get("research-home")?.workMode ?? "normal");
   const [attachments, setAttachments] = useState<ComposerStash["attachments"]>(() => homeStashes.get("research-home")?.attachments ?? []);
   useEffect(() => { homeStashes.set("research-home", { draft, attachments, annotations: [], workMode }); }, [homeStashes, draft, attachments, workMode]);
   useEffect(() => { if (initialDialogOpen) setModalOpen(true); }, [initialDialogOpen, initialPaperId]);
@@ -250,7 +250,7 @@ export function ProjectsHome({
   useEffect(() => {
     if (!initialProjectId) return;
     const saved = getComposerStashStore(getWorkspaceGeneration()).get(`${initialProjectId}:new`);
-    if (saved) { setDraft(saved.draft); setAttachments(saved.attachments); setWorkMode(saved.workMode ?? "team"); }
+    if (saved) { setDraft(saved.draft); setAttachments(saved.attachments); setWorkMode(saved.workMode ?? "normal"); }
   }, [initialProjectId]);
   const activity = useQuery(listProjectActivityQuery());
   const activityByProject = Object.fromEntries((activity.data ?? []).map((summary) => [summary.projectId, summary]));

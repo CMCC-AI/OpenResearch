@@ -379,11 +379,12 @@
 }
 
 .workspace-card-visible .workspace-tools {
-  top: 1.25rem;
+  /* Clear the 4rem global header before applying the card's content inset. */
+  top: calc(4rem + 1.25rem);
 }
 
 .win-titlebar .workspace-card-visible .workspace-tools {
-  top: 2.5rem;
+  top: calc(4rem + 2.5rem);
 }
 
 .code-source-text,

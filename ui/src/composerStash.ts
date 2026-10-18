@@ -15,7 +15,7 @@ export interface ComposerAnnotation extends ChatTextAnnotation {
 
 export interface ComposerStash {
   draft: string;
-  workMode?: "normal" | "team";
+  workMode?: import("./components/WorkModeSwitch").WorkMode;
   attachments: ComposerAttachment[];
   annotations: ComposerAnnotation[];
 }

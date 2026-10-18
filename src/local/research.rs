@@ -7,6 +7,44 @@ use crate::store::{
 use std::io::{Cursor, Write};
 use std::path::Path;
 
+/// Shared with the UI: original W1–W4 profiles, not separate display-only previews.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Workflow {
+    pub code: String,
+    pub title: String,
+    pub purpose: String,
+    pub inputs: String,
+    pub deliverables: String,
+    pub allows_experiments: bool,
+    pub delivery_gate: String,
+    pub rules: String,
+    pub triggers: String,
+    pub steps: Vec<WorkflowStep>,
+    pub required_roles: Vec<String>,
+    pub forbidden_roles: Vec<String>,
+    pub dependencies: Vec<[String; 2]>,
+}
+#[derive(serde::Deserialize, serde::Serialize)]
+pub struct WorkflowStep {
+    pub title: String,
+    pub description: String,
+    pub roles: Vec<String>,
+}
+pub fn workflows() -> &'static std::collections::BTreeMap<String, Workflow> {
+    static PROFILES: std::sync::OnceLock<std::collections::BTreeMap<String, Workflow>> =
+        std::sync::OnceLock::new();
+    PROFILES.get_or_init(|| {
+        serde_json::from_str(include_str!("../../ui/src/researchWorkflows.json"))
+            .expect("valid built-in research workflows")
+    })
+}
+pub fn delivery_gate(mode: &str) -> &'static str {
+    workflows()
+        .get(mode)
+        .map_or("G4", |profile| profile.delivery_gate.as_str())
+}
+
 pub const GUIDE: &str = include_str!("../../agent-skills/orx-research-team/SKILL.md");
 pub const ROLES: &[(&str, &str)] = &[
     (
@@ -128,6 +166,14 @@ pub fn turn_context(store: &Store, session: &str) -> Result<Option<String>> {
     } else {
         "你是科研主理人。先理解需求、盘点材料，再制定按需裁剪的任务 DAG。通过 orx research dispatch 调用真实专家；不得自己模拟成员或代写专业产物。不要调用原生 task/subagent，也不要调用 orx agent spawn 绕开任务登记。已有授权应写入计划并由用户一次确认范围，避免反复询问。".into()
     };
+    let workflow = if study.mode == "team" {
+        format!("你处于科研专家团自动判断模式。先识别主要/次要意图、当前研究阶段、已有材料和目标交付，再判断执行路径；不要求用户选择工作流。以下四个预设包含触发条件：\n{}\n用户明确指定优先；依据语义和材料判断，不能仅按关键词机械触发。匹配单一预设时在 orx research plan 的 JSON 中填写 workflow（literature/reproduction/analysis/proposal），并在 summary 中解释判断依据；匹配后按对应预设执行。综合任务可使用 workflow:null 按需组织任务 DAG；不要强行塞入四个预设或默认执行文献综述。用户提出单项问题时只选择必要专家。计划版本化，转向须重新登记并确认。", serde_json::to_string_pretty(workflows())?)
+    } else if let Some(profile) = workflows().get(study.workflow_mode()) {
+        format!("原版预设工作流（界面与计划校验共用此定义）：\n{}\n必须按预设骨架生成本课题任务 DAG，补充任务简报、实际输入与产物路径。必需角色和依赖不能省略；非必需专家按需选择。不得将任务重解释为其他会诊。", serde_json::to_string_pretty(profile)?)
+    } else {
+        "历史研究模式：按已有计划继续，不自动改变研究模式。".into()
+    };
+    let instruction = format!("{instruction}\n{workflow}");
     Ok(Some(format!("\n<research-study>\nStudy: {}\nMode: {}\nObjective: {}\nartifactRoot: {}\ncodeRoot: 当前会话独立 Git worktree\n{}\n{}\n当前计划与决策用 orx research status 查询。\n</research-study>",study.id,study.mode,study.objective,root.display(),instruction,GUIDE)))
 }
 pub fn run_contract(store: &Store, args: &crate::ExpRunArgs) -> Result<RunContract> {
@@ -201,7 +247,7 @@ fn run_options(args: &crate::ExpRunArgs, settings_hash: &str) -> serde_json::Val
 pub fn export_package(store: &Store, study: &Study, published: bool) -> Result<Vec<u8>> {
     if published {
         let scope = store.research_package_scope(study)?;
-        study.require_gate("G4", &scope)?;
+        study.require_gate(delivery_gate(study.workflow_mode()), &scope)?;
     }
     let root = store.research_root(study)?;
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));

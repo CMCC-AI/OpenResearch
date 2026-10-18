@@ -1,0 +1,410 @@
+{
+  "literature": {
+    "code": "W1",
+    "title": "系统文献综述",
+    "purpose": "围绕主题形成可追溯的文献综述、证据综合与研究空白。",
+    "inputs": "研究主题、范围、已有论文及期望交付。",
+    "deliverables": "检索策略、文献证据、综合分析、中文综述与研究包。",
+    "allowsExperiments": false,
+    "deliveryGate": "G4",
+    "rules": "G1 锁定综述范围。逐篇深读可并行。跳过方法专家组和实验专家组；不得以文献原文声明冒充实际运行结果。",
+    "steps": [
+      {
+        "title": "接管目标与材料",
+        "description": "识别需求、盘点实际可用的材料，形成研究范围与任务计划。",
+        "roles": [
+          "as-intent-router",
+          "as-asset-auditor",
+          "as-research-planner"
+        ]
+      },
+      {
+        "title": "检索与逐篇深读",
+        "description": "制定检索策略、执行检索，对入选论文逐篇提取有位置依据的证据。",
+        "roles": [
+          "as-literature-strategist",
+          "as-literature-researcher",
+          "as-paper-evidence-analyst"
+        ]
+      },
+      {
+        "title": "综合与写作",
+        "description": "综合主题、共识、争议和 Gap，再形成大纲与正文。",
+        "roles": [
+          "as-research-synthesizer",
+          "as-outline-architect",
+          "as-evidence-writer"
+        ]
+      },
+      {
+        "title": "独立验证",
+        "description": "独立审稿后核验引用；阻塞问题退回对应上游任务。",
+        "roles": [
+          "as-independent-reviewer",
+          "as-quality-citation-auditor"
+        ]
+      },
+      {
+        "title": "确认与归档",
+        "description": "用户确认结论、证据、失败与局限后，交付中文研究包。",
+        "roles": [
+          "as-research-package-curator"
+        ]
+      }
+    ],
+    "requiredRoles": [
+      "as-literature-strategist",
+      "as-literature-researcher",
+      "as-paper-evidence-analyst",
+      "as-research-synthesizer",
+      "as-outline-architect",
+      "as-evidence-writer",
+      "as-independent-reviewer",
+      "as-quality-citation-auditor",
+      "as-research-package-curator"
+    ],
+    "forbiddenRoles": [
+      "as-methodology-designer",
+      "as-experiment-designer",
+      "as-code-data-engineer",
+      "as-experiment-operator",
+      "as-experiment-diagnostician",
+      "as-result-analyst"
+    ],
+    "dependencies": [
+      [
+        "as-literature-strategist",
+        "as-literature-researcher"
+      ],
+      [
+        "as-literature-researcher",
+        "as-paper-evidence-analyst"
+      ],
+      [
+        "as-paper-evidence-analyst",
+        "as-research-synthesizer"
+      ],
+      [
+        "as-research-synthesizer",
+        "as-outline-architect"
+      ],
+      [
+        "as-outline-architect",
+        "as-evidence-writer"
+      ],
+      [
+        "as-evidence-writer",
+        "as-independent-reviewer"
+      ],
+      [
+        "as-independent-reviewer",
+        "as-quality-citation-auditor"
+      ],
+      [
+        "as-quality-citation-auditor",
+        "as-research-package-curator"
+      ]
+    ],
+    "triggers": "用户希望对主题开展系统综述、领域调研、研究进展或 Gap 分析，并以综合文献为主要交付时触发；单篇论文解读不强制走完整综述。"
+  },
+  "reproduction": {
+    "code": "W2",
+    "title": "论文复现",
+    "purpose": "依据论文、代码和真实运行证据，检验论文结果能否复现。",
+    "inputs": "目标论文、代码版本、数据、硬件与资源限制。",
+    "deliverables": "复现方案、代码、运行日志、原文与实测对比、复现报告与研究包。",
+    "allowsExperiments": true,
+    "deliveryGate": "G4",
+    "rules": "接管时审计代码版本、硬件和可行性；G1 确认复现目标。先提取原文声明与指标，设计复现口径并实现代码。运行前通过原生 prepare-run 绑定版本、命令和资源，取得 G2/G3 批准。失败时调用实验诊断专家，限定 REFINE 重试；PIVOT 必须新建计划，条件不可得则 STOP。原文数值与本次实测必须分开呈现。",
+    "steps": [
+      {
+        "title": "接管目标与材料",
+        "description": "识别需求、盘点实际可用的材料，形成研究范围与任务计划。",
+        "roles": [
+          "as-intent-router",
+          "as-asset-auditor",
+          "as-research-planner"
+        ]
+      },
+      {
+        "title": "审计条件与复现口径",
+        "description": "检查可行性，提取论文声明、指标与实验设置，锁定复现方案。",
+        "roles": [
+          "as-feasibility-advisor",
+          "as-paper-evidence-analyst",
+          "as-experiment-designer"
+        ]
+      },
+      {
+        "title": "实现与真实运行",
+        "description": "实现可复现代码；用户确认资源与方案后执行，失败时按需诊断。",
+        "roles": [
+          "as-code-data-engineer",
+          "as-experiment-operator",
+          "as-experiment-diagnostician"
+        ]
+      },
+      {
+        "title": "对比与报告",
+        "description": "分析真实结果并与论文数值对比，形成复现报告。",
+        "roles": [
+          "as-result-analyst",
+          "as-outline-architect",
+          "as-evidence-writer",
+          "as-figure-citation-editor"
+        ]
+      },
+      {
+        "title": "独立验证",
+        "description": "独立审稿后核验引用；阻塞问题退回对应上游任务。",
+        "roles": [
+          "as-independent-reviewer",
+          "as-quality-citation-auditor"
+        ]
+      },
+      {
+        "title": "确认与归档",
+        "description": "用户确认结论、证据、失败与局限后，交付中文研究包。",
+        "roles": [
+          "as-research-package-curator"
+        ]
+      }
+    ],
+    "requiredRoles": [
+      "as-feasibility-advisor",
+      "as-paper-evidence-analyst",
+      "as-experiment-designer",
+      "as-code-data-engineer",
+      "as-experiment-operator",
+      "as-result-analyst",
+      "as-outline-architect",
+      "as-evidence-writer",
+      "as-figure-citation-editor",
+      "as-independent-reviewer",
+      "as-quality-citation-auditor",
+      "as-research-package-curator"
+    ],
+    "forbiddenRoles": [],
+    "dependencies": [
+      [
+        "as-feasibility-advisor",
+        "as-paper-evidence-analyst"
+      ],
+      [
+        "as-paper-evidence-analyst",
+        "as-experiment-designer"
+      ],
+      [
+        "as-experiment-designer",
+        "as-code-data-engineer"
+      ],
+      [
+        "as-code-data-engineer",
+        "as-experiment-operator"
+      ],
+      [
+        "as-experiment-operator",
+        "as-result-analyst"
+      ],
+      [
+        "as-result-analyst",
+        "as-outline-architect"
+      ],
+      [
+        "as-outline-architect",
+        "as-evidence-writer"
+      ],
+      [
+        "as-evidence-writer",
+        "as-figure-citation-editor"
+      ],
+      [
+        "as-figure-citation-editor",
+        "as-independent-reviewer"
+      ],
+      [
+        "as-independent-reviewer",
+        "as-quality-citation-auditor"
+      ],
+      [
+        "as-quality-citation-auditor",
+        "as-research-package-curator"
+      ]
+    ],
+    "triggers": "用户提供目标论文或代码，明确要复现、验证或比较论文结果，且需要真实运行时触发；只讨论复现可行性时先评估材料，不假定执行授权。"
+  },
+  "analysis": {
+    "code": "W3",
+    "title": "实验数据分析报告",
+    "purpose": "接管已有实验数据和日志，分析结果并形成有证据支撑的报告。",
+    "inputs": "已有实验数据、日志、运行配置、评价口径与报告要求。",
+    "deliverables": "资产审计、结果分析、图表、中文分析报告和研究包。",
+    "allowsExperiments": false,
+    "deliveryGate": "G4",
+    "rules": "资产审计优先，确认已有数据与日志的真实性和评价口径。按资产审计 → 结果分析 → 大纲 → 正文 → 图表引用编辑 → 独立审稿推进。按通用研究诚信规范完成引用审计。G1 确认范围，G4 确认交付；不自动补跑实验。",
+    "steps": [
+      {
+        "title": "接管目标与材料",
+        "description": "识别需求、盘点实际可用的材料，形成研究范围与任务计划。",
+        "roles": [
+          "as-intent-router",
+          "as-asset-auditor",
+          "as-research-planner"
+        ]
+      },
+      {
+        "title": "分析已有结果",
+        "description": "按已有指标分析效应、不确定性、负结果和证据等级。",
+        "roles": [
+          "as-result-analyst"
+        ]
+      },
+      {
+        "title": "报告写作与编辑",
+        "description": "先形成证据绑定的大纲，再写正文并检查图表和引用。",
+        "roles": [
+          "as-outline-architect",
+          "as-evidence-writer",
+          "as-figure-citation-editor"
+        ]
+      },
+      {
+        "title": "独立验证",
+        "description": "独立审稿后核验引用；阻塞问题退回对应上游任务。",
+        "roles": [
+          "as-independent-reviewer",
+          "as-quality-citation-auditor"
+        ]
+      },
+      {
+        "title": "确认与归档",
+        "description": "用户确认结论、证据、失败与局限后，交付中文研究包。",
+        "roles": [
+          "as-research-package-curator"
+        ]
+      }
+    ],
+    "requiredRoles": [
+      "as-asset-auditor",
+      "as-result-analyst",
+      "as-outline-architect",
+      "as-evidence-writer",
+      "as-figure-citation-editor",
+      "as-independent-reviewer",
+      "as-quality-citation-auditor",
+      "as-research-package-curator"
+    ],
+    "forbiddenRoles": [
+      "as-experiment-operator"
+    ],
+    "dependencies": [
+      [
+        "as-asset-auditor",
+        "as-result-analyst"
+      ],
+      [
+        "as-result-analyst",
+        "as-outline-architect"
+      ],
+      [
+        "as-outline-architect",
+        "as-evidence-writer"
+      ],
+      [
+        "as-evidence-writer",
+        "as-figure-citation-editor"
+      ],
+      [
+        "as-figure-citation-editor",
+        "as-independent-reviewer"
+      ],
+      [
+        "as-independent-reviewer",
+        "as-quality-citation-auditor"
+      ],
+      [
+        "as-quality-citation-auditor",
+        "as-research-package-curator"
+      ]
+    ],
+    "triggers": "用户已有实验数据或日志，希望分析结论并形成报告时触发；材料缺失时先澄清，不生成虚构分析。"
+  },
+  "proposal": {
+    "code": "W4",
+    "title": "Idea 到实验方案",
+    "purpose": "将研究想法转化为可执行、可检验的实验方案。",
+    "inputs": "研究想法、已有论文与材料、数据和算力条件。",
+    "deliverables": "可行性评估、新颖性分析、方法设计与 Experiment Plan。",
+    "allowsExperiments": false,
+    "deliveryGate": "G3",
+    "rules": "识别意图并评估可行性，G1 确认范围。快速检索与综合文献验证新颖性，再进行方法与实验设计。方案须写明假设、可反驳条件、数据划分、基线、指标、重复次数、统计方法、成功标准、停止条件和预算。最后通过 orx research package 请求 G3 确认方案并交付；此批准不授权运行实验，不要求自动进入写作、审稿或实验执行。",
+    "steps": [
+      {
+        "title": "接管目标与材料",
+        "description": "识别需求、盘点实际可用的材料，形成研究范围与任务计划。",
+        "roles": [
+          "as-intent-router",
+          "as-asset-auditor",
+          "as-research-planner"
+        ]
+      },
+      {
+        "title": "可行性与新颖性",
+        "description": "评估资源条件，用检索策略、论文发现和综合分析检验新颖性。",
+        "roles": [
+          "as-feasibility-advisor",
+          "as-literature-strategist",
+          "as-literature-researcher",
+          "as-research-synthesizer"
+        ]
+      },
+      {
+        "title": "方法与实验设计",
+        "description": "将 Idea 形式化为可证伪假设，设计基线、指标与验证协议。",
+        "roles": [
+          "as-methodology-designer",
+          "as-experiment-designer"
+        ]
+      },
+      {
+        "title": "确认并交付方案",
+        "description": "由用户通过 G3 确认 Experiment Plan；交付后停止，不自动开始实验。",
+        "roles": []
+      }
+    ],
+    "requiredRoles": [
+      "as-feasibility-advisor",
+      "as-literature-strategist",
+      "as-literature-researcher",
+      "as-research-synthesizer",
+      "as-methodology-designer",
+      "as-experiment-designer"
+    ],
+    "forbiddenRoles": [
+      "as-experiment-operator"
+    ],
+    "dependencies": [
+      [
+        "as-feasibility-advisor",
+        "as-literature-strategist"
+      ],
+      [
+        "as-literature-strategist",
+        "as-literature-researcher"
+      ],
+      [
+        "as-literature-researcher",
+        "as-research-synthesizer"
+      ],
+      [
+        "as-research-synthesizer",
+        "as-methodology-designer"
+      ],
+      [
+        "as-methodology-designer",
+        "as-experiment-designer"
+      ]
+    ],
+    "triggers": "用户有研究 Idea，希望形成方法、假设和可执行实验方案，以方案而非真实实验结果为交付时触发。"
+  }
+}

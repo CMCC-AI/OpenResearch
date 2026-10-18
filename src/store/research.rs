@@ -23,6 +23,8 @@ pub struct TaskSpec {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlanInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
     pub summary: String,
     pub tasks: Vec<TaskSpec>,
 }
@@ -59,6 +61,8 @@ pub struct ResearchTask {
 #[serde(rename_all = "camelCase")]
 pub struct ResearchPlan {
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
     pub summary: String,
     pub tasks: Vec<ResearchTask>,
 }
@@ -176,11 +180,25 @@ impl Study {
         });
         Ok(())
     }
+    /// Automatic team studies select a route per versioned plan; manual studies keep their explicit route.
+    pub fn workflow_mode(&self) -> &str {
+        if self.mode == "team" {
+            self.plans
+                .last()
+                .and_then(|p| p.workflow.as_deref())
+                .unwrap_or("team")
+        } else {
+            &self.mode
+        }
+    }
     pub fn plan_scope(&self) -> Result<String> {
         let plan = self.plan()?;
-        Ok(serde_json::to_string(
-            &serde_json::json!({"objective":self.objective,"version":plan.version,"summary":plan.summary,"tasks":plan.tasks.iter().map(|t| &t.spec).collect::<Vec<_>>()}),
-        )?)
+        let mut scope = serde_json::json!({"objective":self.objective,"version":plan.version,"summary":plan.summary,"tasks":plan.tasks.iter().map(|t| &t.spec).collect::<Vec<_>>()});
+        // Preserve existing approval hashes when deserializing older plans.
+        if let Some(workflow) = &plan.workflow {
+            scope["workflow"] = serde_json::json!(workflow);
+        }
+        Ok(serde_json::to_string(&scope)?)
     }
     pub fn ready(&self, id: &str) -> Result<()> {
         self.ensure_active()?;
@@ -229,6 +247,14 @@ pub fn read_artifact(root: &Path, relative: &str) -> Result<Vec<u8>> {
     Ok(std::fs::read(path)?)
 }
 pub fn validate_plan(input: &PlanInput, mode: &str) -> Result<()> {
+    if let Some(workflow) = &input.workflow {
+        if !crate::local::research::workflows().contains_key(workflow)
+            || (mode != "team" && mode != workflow)
+        {
+            return Err(anyhow!("计划流程必须是有效预设，且与用户指定的流程一致"));
+        }
+    }
+    let mode = input.workflow.as_deref().unwrap_or(mode);
     if input.summary.trim().is_empty()
         || input.summary.len() > 24000
         || input.tasks.is_empty()
@@ -269,8 +295,15 @@ pub fn validate_plan(input: &PlanInput, mode: &str) -> Result<()> {
         {
             return Err(anyhow!("产物路径越界或在多个任务间重复"));
         }
-        if mode != "team" && task.role == "as-experiment-operator" {
-            return Err(anyhow!("会诊模式仅分析材料；运行实验请发起专家团研究"));
+        if mode != "team"
+            && !crate::local::research::workflows()
+                .get(mode)
+                .is_some_and(|w| w.allows_experiments)
+            && task.role == "as-experiment-operator"
+        {
+            return Err(anyhow!(
+                "所选流程不运行实验；需要真实复现请新建论文复现流程"
+            ));
         }
     }
     let mut visited = HashSet::new();
@@ -323,6 +356,44 @@ pub fn validate_plan(input: &PlanInput, mode: &str) -> Result<()> {
                         "审查任务必须依赖待审材料，归档必须依赖审查: {} -> {}",
                         upstream.id,
                         task.id
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(profile) = crate::local::research::workflows().get(mode) {
+        for required in &profile.required_roles {
+            if !input.tasks.iter().any(|t| &t.role == required) {
+                return Err(anyhow!("{} 计划缺少预设专家: {required}", profile.title));
+            }
+        }
+        for task in &input.tasks {
+            if profile.forbidden_roles.contains(&task.role) {
+                return Err(anyhow!("{} 跳过专家: {}", profile.title, task.role));
+            }
+            let mut ancestors: HashSet<&str> = task.depends_on.iter().map(String::as_str).collect();
+            loop {
+                let before = ancestors.len();
+                for candidate in &input.tasks {
+                    if ancestors.contains(candidate.id.as_str()) {
+                        ancestors.extend(candidate.depends_on.iter().map(String::as_str));
+                    }
+                }
+                if ancestors.len() == before {
+                    break;
+                }
+            }
+            for [before, after] in &profile.dependencies {
+                if &task.role == after
+                    && input
+                        .tasks
+                        .iter()
+                        .filter(|t| &t.role == before)
+                        .any(|t| !ancestors.contains(t.id.as_str()))
+                {
+                    return Err(anyhow!(
+                        "{} 预设依赖缺失: {before} -> {after}",
+                        profile.title
                     ));
                 }
             }
@@ -397,7 +468,7 @@ impl Store {
         Ok(value)
     }
     pub fn research_create(&self, session: &str, mode: &str, objective: &str) -> Result<Study> {
-        if !["team", "design", "diagnosis", "review"].contains(&mode)
+        if !(mode == "team" || crate::local::research::workflows().contains_key(mode))
             || objective.trim().is_empty()
             || objective.len() > 24000
         {
@@ -487,6 +558,7 @@ impl Store {
             let version = study.plans.last().map_or(1, |p| p.version + 1);
             study.plans.push(ResearchPlan {
                 version,
+                workflow: input.workflow,
                 summary: input.summary,
                 tasks: input
                     .tasks
@@ -744,7 +816,7 @@ impl Store {
     pub fn research_package_scope(&self, study: &Study) -> Result<String> {
         let plan = study.plan()?;
         if plan.tasks.iter().any(|t| t.state != "completed") {
-            return Err(anyhow!("全部计划任务必须通过验收后才能申请 G4"));
+            return Err(anyhow!("全部计划任务必须通过验收后才能申请交付确认"));
         }
         let evidence_digest = digest(&serde_json::to_vec(&study.claims)?);
         for task in &plan.tasks {
@@ -802,11 +874,11 @@ impl Store {
                 .ok_or_else(|| anyhow!("闸门不存在"))?
                 .gate
                 .clone();
-            if gate == "G4" {
+            if gate == crate::local::research::delivery_gate(study.workflow_mode()) {
                 study.require_gate("G1", &study.plan_scope()?)?;
                 let scope = self.research_package_scope(study)?;
                 if digest(scope.as_bytes()) != hash {
-                    return Err(anyhow!("交付内容已变化，请重新申请 G4"));
+                    return Err(anyhow!("交付内容已变化，请重新申请确认"));
                 }
             }
             let d = study
@@ -901,6 +973,7 @@ mod tests {
     }
     fn plan() -> PlanInput {
         PlanInput {
+            workflow: None,
             summary: "baseline comparison, CPU only, one run".into(),
             tasks: vec![
                 spec("design", "as-experiment-designer", &[]),
@@ -943,6 +1016,191 @@ mod tests {
         store
             .research_finish(&study.id, task, true, "checked".into())
             .unwrap();
+    }
+    fn preset_plan(mode: &str) -> PlanInput {
+        let profile = &crate::local::research::workflows()[mode];
+        PlanInput {
+            workflow: None,
+            summary: format!("{}: actual scope and evidence", profile.title),
+            tasks: profile
+                .required_roles
+                .iter()
+                .enumerate()
+                .map(|(index, role)| {
+                    let dependencies: Vec<&str> = profile.required_roles[..index]
+                        .iter()
+                        .map(String::as_str)
+                        .collect();
+                    spec(role, role, &dependencies)
+                })
+                .collect(),
+        }
+    }
+    #[test]
+    fn automatic_team_routes_are_versioned_and_validate_the_selected_preset() {
+        let (_dir, store, study) = setup();
+        let context = crate::local::research::turn_context(&store, "lead")
+            .unwrap()
+            .unwrap();
+        assert!(context.contains("自动判断模式") && context.contains("不要求用户选择工作流"));
+        for code in ["W1", "W2", "W3", "W4"] {
+            assert!(context.contains(code));
+        }
+        for mode in ["literature", "reproduction", "analysis", "proposal"] {
+            let mut input = preset_plan(mode);
+            input.workflow = Some(mode.into());
+            assert!(validate_plan(&input, "team").is_ok());
+            let mut missing = input.clone();
+            missing.tasks.pop();
+            assert!(validate_plan(&missing, "team").is_err());
+            store.research_set_plan(&study.id, input).unwrap();
+            let saved = store.research_study(&study.id).unwrap();
+            assert_eq!(saved.mode, "team");
+            assert_eq!(saved.workflow_mode(), mode);
+            assert!(saved
+                .plan_scope()
+                .unwrap()
+                .contains(&format!("\"workflow\":\"{mode}\"")));
+            assert_eq!(
+                crate::local::research::delivery_gate(saved.workflow_mode()),
+                if mode == "proposal" { "G3" } else { "G4" }
+            );
+        }
+        let mut input = preset_plan("proposal");
+        input.workflow = Some("proposal".into());
+        assert!(validate_plan(&input, "literature").is_err());
+        input.workflow = Some("unknown".into());
+        assert!(validate_plan(&input, "team").is_err());
+        // Composite research is still supported; it need not fit a preset.
+        store.research_set_plan(&study.id, plan()).unwrap();
+        let saved = store.research_study(&study.id).unwrap();
+        assert_eq!(saved.workflow_mode(), "team");
+        assert_eq!(saved.plans.len(), 5);
+    }
+    #[test]
+    fn older_plans_keep_their_approval_scope_without_a_routed_workflow() {
+        let (_dir, store, study) = setup();
+        store.research_set_plan(&study.id, plan()).unwrap();
+        let saved = store.research_study(&study.id).unwrap();
+        assert!(!saved.plan_scope().unwrap().contains("workflow"));
+        let legacy_json = serde_json::to_value(saved.plan().unwrap()).unwrap();
+        assert!(legacy_json.get("workflow").is_none());
+        let decoded: ResearchPlan = serde_json::from_value(legacy_json).unwrap();
+        assert!(decoded.workflow.is_none());
+    }
+    #[test]
+    fn original_presets_enforce_roles_dependencies_and_execution_boundaries() {
+        for mode in ["literature", "reproduction", "analysis", "proposal"] {
+            let p = preset_plan(mode);
+            assert!(validate_plan(&p, mode).is_ok(), "{mode}");
+            let mut missing = p.clone();
+            missing.tasks.pop();
+            assert!(
+                validate_plan(&missing, mode).is_err(),
+                "{mode}: missing role"
+            );
+            let mut unordered = p.clone();
+            unordered.tasks[1].depends_on.clear();
+            assert!(
+                validate_plan(&unordered, mode).is_err(),
+                "{mode}: missing dependency"
+            );
+            if mode != "reproduction" {
+                let mut execution = p.clone();
+                execution
+                    .tasks
+                    .push(spec("run", "as-experiment-operator", &[]));
+                assert!(
+                    validate_plan(&execution, mode).is_err(),
+                    "{mode}: no execution"
+                );
+            }
+        }
+        let mut parallel = preset_plan("literature");
+        parallel.tasks.push(spec(
+            "second-paper",
+            "as-paper-evidence-analyst",
+            &["as-literature-researcher"],
+        ));
+        assert!(validate_plan(&parallel, "literature").is_err());
+        for task in &mut parallel.tasks {
+            if matches!(
+                task.role.as_str(),
+                "as-research-synthesizer" | "as-independent-reviewer"
+            ) {
+                task.depends_on.push("second-paper".into());
+            }
+        }
+        assert!(validate_plan(&parallel, "literature").is_ok());
+        let mut literature = preset_plan("literature");
+        literature
+            .tasks
+            .insert(0, spec("method", "as-methodology-designer", &[]));
+        assert!(validate_plan(&literature, "literature").is_err());
+    }
+    #[test]
+    fn proposal_delivery_uses_g3_and_rejects_changed_artifacts() {
+        let (_dir, store, mut study) = setup();
+        study.mode = "proposal".into();
+        store.research_save(&study).unwrap();
+        let p = preset_plan("proposal");
+        let ids: Vec<_> = p.tasks.iter().map(|t| t.id.clone()).collect();
+        store.research_set_plan(&study.id, p).unwrap();
+        approve(&store, &study, "G1");
+        for (index, id) in ids.iter().enumerate() {
+            bind(&store, &study, id, &format!("expert-{index}"));
+            finish(&store, &study, id);
+        }
+        let study = store.research_study(&study.id).unwrap();
+        let scope = store.research_package_scope(&study).unwrap();
+        store
+            .research_update(&study.id, |s| s.request_gate("G3", scope.clone()))
+            .unwrap();
+        approve(&store, &study, "G3");
+        let study = store.research_study(&study.id).unwrap();
+        assert!(crate::local::research::export_package(&store, &study, true).is_ok());
+        assert!(!study.decisions.iter().any(|d| d.gate == "G4"));
+        let context = crate::local::research::turn_context(&store, "lead")
+            .unwrap()
+            .unwrap();
+        assert!(context.contains("W4") && context.contains("Experiment Plan"));
+        std::fs::write(
+            store
+                .research_root(&study)
+                .unwrap()
+                .join(format!("{}.md", ids.last().unwrap())),
+            "changed plan",
+        )
+        .unwrap();
+        assert!(crate::local::research::export_package(&store, &study, true).is_err());
+        assert!(store
+            .research_decide(
+                &study.id,
+                &study.decisions.last().unwrap().id,
+                &digest(scope.as_bytes()),
+                true,
+                String::new()
+            )
+            .is_err());
+    }
+    #[test]
+    fn presets_are_persisted_and_legacy_studies_remain_readable() {
+        let (_dir, store, study) = setup();
+        assert_eq!(store.research_study(&study.id).unwrap().mode, "team");
+        for mode in ["literature", "reproduction", "analysis", "proposal"] {
+            let id = format!("lead-{mode}");
+            store.conn.execute("INSERT INTO chat_sessions(id,project_id,harness,created_at,updated_at) VALUES(?1,'project','codex',1,1)", [&id]).unwrap();
+            let created = store.research_create(&id, mode, "topic").unwrap();
+            assert_eq!(store.research_for_session(&id).unwrap().unwrap().mode, mode);
+            assert!(crate::local::research::turn_context(&store, &id)
+                .unwrap()
+                .unwrap()
+                .contains(&crate::local::research::workflows()[mode].code));
+            assert!(store.research_study(&created.id).unwrap().plans.is_empty());
+        }
+        for mode in ["design", "diagnosis", "review"] {
+            assert!(store.research_create("lead", mode, "topic").is_err());
+        }
     }
     #[test]
     fn plan_rejects_cycles_unknown_experts_and_early_review() {
