@@ -15,15 +15,15 @@ type AccountSetting = "compute" | "settings";
 export function AccountMenu({ onSettings, connectionInfo }: {
   onSettings?: (tab: AccountSetting) => void; connectionInfo?: ReactNode;
 }) {
-  const { user, logout } = useAuthSession();
+  const { user, logout, canAccessResearch } = useAuthSession();
   const runtime = useRuntime();
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const trigger = useRef<HTMLButtonElement>(null);
   const menuId = useId();
   const menu = usePopover(trigger);
-  const projects = useQuery({ ...listProjectsQuery(), enabled: menu.open && Boolean(user) && !onSettings });
-  const saved = useQuery({ ...getUiStateQuery(), enabled: menu.open && Boolean(user) && !onSettings });
+  const projects = useQuery({ ...listProjectsQuery(), enabled: canAccessResearch && menu.open && Boolean(user) && !onSettings });
+  const saved = useQuery({ ...getUiStateQuery(), enabled: canAccessResearch && menu.open && Boolean(user) && !onSettings });
   useEffect(() => {
     if (menu.open) menu.ref.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
   }, [menu.open, menu.ref]);
@@ -52,9 +52,9 @@ export function AccountMenu({ onSettings, connectionInfo }: {
       const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
       items[next]?.focus();
     }}>
-      {([{ id: "compute", label: m.settings_page_compute(), Icon: Cpu }, { id: "settings", label: m.settings_page_settings(), Icon: Settings }] as const).map(({ id, label, Icon }) => <MenuItem key={id} role="menuitem" onClick={() => { menu.setOpen(false); onSettings ? onSettings(id) : go(`settings/${id}`); }}><span className="flex items-center gap-2.5"><Icon size={15} />{label}</span></MenuItem>)}
+      {canAccessResearch && ([{ id: "compute", label: m.settings_page_compute(), Icon: Cpu }, { id: "settings", label: m.settings_page_settings(), Icon: Settings }] as const).map(({ id, label, Icon }) => <MenuItem key={id} role="menuitem" onClick={() => { menu.setOpen(false); onSettings ? onSettings(id) : go(`settings/${id}`); }}><span className="flex items-center gap-2.5"><Icon size={15} />{label}</span></MenuItem>)}
       <div className="my-1 border-t border-border-variant" />
-      <details className="px-2 py-1 text-sm text-subtext"><summary role="menuitem" className="cursor-pointer rounded-md py-1 focus-visible:outline-2 focus-visible:outline-primary">连接状态与版本</summary>{connectionInfo ?? <WorkspaceConnection runtime={runtime} />}</details>
+      <details className="px-2 py-1 text-sm text-subtext"><summary role="menuitem" className="cursor-pointer rounded-md py-1 focus-visible:outline-2 focus-visible:outline-primary">连接状态与版本</summary>{canAccessResearch ? connectionInfo ?? <WorkspaceConnection runtime={runtime} /> : <p className="text-xs">MobileSci {runtime.version}</p>}</details>
       <div className="my-1 border-t border-border-variant" />
       {user && <MenuItem role="menuitem" onClick={() => { menu.setOpen(false); void logout(); }}><span className="flex items-center gap-2.5"><LogOut size={15} />退出登录</span></MenuItem>}
     </div>

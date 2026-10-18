@@ -14,7 +14,7 @@
     "executor:local": "node src/local-executor.mjs",
     "test": "node --test test/*.test.mjs",
     "format:check": "prettier --check 'src/*.mjs' 'test/*.mjs' 'public/*' package.json compose*.yaml",
-    "test:integration": "node --test test/integration.mjs test/accounts.integration.mjs"
+    "test:integration": "node --test test/integration.mjs test/accounts.integration.mjs test/cases.integration.mjs"
   },
   "dependencies": {
     "nodemailer": "10.1.1",

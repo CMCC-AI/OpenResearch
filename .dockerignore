@@ -13,3 +13,6 @@ target
 
 # Exclude personal runtime data and deployment credentials
 .mobilesci-run
+
+# Local package-manager cache
+.pnpm-store/

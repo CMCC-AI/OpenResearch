@@ -1,3 +1,6 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
@@ -94,6 +97,42 @@ test(
       assert.equal(user.status, 201);
       await pool.query(
         "UPDATE platform_users SET is_admin=true WHERE email='admin@test.invalid'",
+      );
+      await t.test(
+        "storage access is authenticated, read-only and distinct from research ownership",
+        async () => {
+          assert.equal((await request("/storage")).status, 401);
+          const local = await request("/storage", { cookie: admin.cookie });
+          assert.deepEqual(local.data, {
+            managed: false,
+            canInspect: false,
+            readOnly: true,
+          });
+          config.researchOwnerEmail = "researcher@test.invalid";
+          try {
+            const owner = await request("/storage", { cookie: user.cookie });
+            assert.equal(owner.status, 200);
+            assert.deepEqual(owner.data, {
+              managed: true,
+              canInspect: false,
+              readOnly: true,
+            });
+            for (const method of ["POST", "PUT", "DELETE"]) {
+              assert.equal(
+                (
+                  await request("/storage", {
+                    method,
+                    cookie: user.cookie,
+                    data: { path: "/tmp/other" },
+                  })
+                ).status,
+                405,
+              );
+            }
+          } finally {
+            delete config.researchOwnerEmail;
+          }
+        },
       );
       await t.test(
         "registration signs in and cannot self-assign administration",
@@ -292,6 +331,60 @@ test(
               ).status,
             );
           assert.deepEqual(statuses, [200, 200, 200, 429]);
+        },
+      );
+      await t.test(
+        "offline administrator grant preserves password and is audited once",
+        async () => {
+          const account = "promoted@test.invalid";
+          const registered = await signup(account);
+          assert.equal(registered.status, 201);
+          const before = (
+            await pool.query(
+              "SELECT password_hash,password_version FROM platform_users WHERE email=$1",
+              [account],
+            )
+          ).rows[0];
+          const grant = (address) =>
+            promisify(execFile)(
+              process.execPath,
+              [
+                fileURLToPath(new URL("../src/admin.mjs", import.meta.url)),
+                "grant-admin",
+                address,
+              ],
+              {
+                env: { ...process.env, DATABASE_URL: url.href },
+              },
+            );
+          await grant(account);
+          await grant(account);
+          const after = (
+            await pool.query(
+              "SELECT password_hash,password_version FROM platform_users WHERE email=$1",
+              [account],
+            )
+          ).rows[0];
+          assert.deepEqual(after, before);
+          assert.equal(
+            (await request("/me", { cookie: registered.cookie })).data.isAdmin,
+            true,
+          );
+          assert.equal((await login(account)).status, 200);
+          assert.equal(
+            (
+              await pool.query(
+                "SELECT count(*)::int n FROM audit_events WHERE action='account.admin.grant'",
+              )
+            ).rows[0].n,
+            1,
+          );
+          await assert.rejects(grant("missing@test.invalid"));
+          await pool.query(
+            "UPDATE platform_users SET disabled=true WHERE email=$1",
+            [account],
+          );
+          await assert.rejects(grant(account));
         },
       );
     } finally {

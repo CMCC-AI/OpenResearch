@@ -1,5 +1,7 @@
 import { accountRoutes } from "./accounts.mjs";
 import { resetMailer } from "./mail.mjs";
+import { featuredCaseRoutes } from "./featured-cases.mjs";
+import { storageAccess, storageSettings } from "./storage.mjs";
 import http from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
@@ -194,40 +196,28 @@ export async function createPlatform(
     check(rows[0], 401, "请先登录");
     return rows[0];
   }
-  async function member(
-    user,
-    workspace,
-    roles = ["owner", "editor", "viewer"],
-    db = pool,
-  ) {
+  // Private research access is determined only by immutable user identity.
+  // Legacy membership rows are retained for rollback, but never grant access.
+  async function spaceOwner(user, workspace, db = pool) {
     check(/^[0-9a-f-]{36}$/.test(workspace), 404, "工作空间不存在");
-    if (config.privateSpaces) {
-      const owner = await db.query(
-        "SELECT id FROM workspaces WHERE id=$1 AND created_by=$2",
-        [workspace, user],
-      );
-      check(owner.rows.length, 404, "工作空间不存在");
-    }
     const { rows } = await db.query(
-      "SELECT role FROM memberships WHERE workspace_id=$1 AND user_id=$2",
+      "SELECT id FROM workspaces WHERE id=$1 AND created_by=$2",
       [workspace, user],
     );
-    check(rows[0], 404, "工作空间不存在");
-    check(roles.includes(rows[0].role), 403, "当前角色没有此权限");
-    return rows[0].role;
+    check(rows.length, 404, "工作空间不存在");
   }
   async function access(req, workspace, websocket = false) {
     const s = await session(req);
-    const role = await member(s.user_id, workspace);
+    await spaceOwner(s.user_id, workspace);
     const url = new URL(req.url, config.origin);
     check(
-      permitted(role, req.method, url.pathname),
+      permitted(req.method, url.pathname),
       403,
-      "此操作未对当前角色开放",
+      "此操作不允许通过科研网关访问",
     );
     if (websocket || !["GET", "HEAD"].includes(req.method))
       sameOrigin(req, workspaceOrigin(config, workspace));
-    return { s, role };
+    return { s };
   }
   async function newSession(db, user, host, parent = null) {
     const secret = token();
@@ -292,9 +282,9 @@ export async function createPlatform(
       `SELECT g.id,g.user_id,g.workspace_id,g.expires_at,u.name,u.email
        FROM sso_grants g JOIN platform_sessions s ON s.token_hash=g.root_session_hash
        JOIN platform_users u ON u.id=g.user_id
-       LEFT JOIN memberships m ON m.workspace_id=g.workspace_id AND m.user_id=g.user_id
+       LEFT JOIN workspaces w ON w.id=g.workspace_id AND w.created_by=g.user_id
        WHERE g.id=$1 AND g.user_id=$2 AND g.expires_at>now() AND s.expires_at>now()
-       AND NOT u.disabled AND (g.workspace_id IS NULL OR m.user_id IS NOT NULL)`,
+       AND NOT u.disabled AND (g.workspace_id IS NULL OR w.id IS NOT NULL)`,
       [grantId, subject],
     );
     check(rows[0], 401, "SSO session expired");
@@ -345,6 +335,14 @@ export async function createPlatform(
     audit,
     tunnels,
   });
+  const featuredCases = featuredCaseRoutes({
+    config,
+    pool,
+    session,
+    json,
+    audit,
+    limit,
+  });
   const server = http.createServer(async (req, res) => {
     res.setHeader("cache-control", "no-store");
     res.setHeader("referrer-policy", "no-referrer");
@@ -375,6 +373,7 @@ export async function createPlatform(
       const requestedWorkspace = localDockerSsoBridge
         ? null
         : hostWorkspace(config, req.headers.host);
+      if (await featuredCases(req, res, path, requestedWorkspace)) return;
       if (requestedWorkspace) {
         const workspace = requestedWorkspace;
         if (path === "/_platform/enter" && req.method === "GET")
@@ -397,7 +396,7 @@ export async function createPlatform(
               [rows[0].session_hash],
             );
             check(root.rows[0], 401, "请重新登录");
-            await member(root.rows[0].user_id, workspace, undefined, db);
+            await spaceOwner(root.rows[0].user_id, workspace, db);
             return newSession(
               db,
               root.rows[0].user_id,
@@ -412,21 +411,27 @@ export async function createPlatform(
           return res.end();
         }
         const s = await session(req);
-        const role = await member(s.user_id, workspace);
+        await spaceOwner(s.user_id, workspace);
         if (path === "/api/auth/sso/authorize" && req.method === "GET")
           return await authorizeDeepLiterature(req, res, s, workspace);
         if (path === "/_platform/context" && req.method === "GET")
           return json(res, {
             workspace,
-            role,
             online: tunnels.has(workspace),
             portal: config.origin.origin,
             privateSpaces: !!config.privateSpaces,
+            storage: storageAccess(config, s, true),
             deepLiteratureUrl:
               config.deepLiterature?.webUrl ||
               config.deepLiterature?.origin ||
               null,
-            user: { id: s.user_id, name: s.name, email: s.email },
+            user: {
+              id: s.user_id,
+              name: s.name,
+              email: s.email,
+              isAdmin: s.is_admin,
+            },
+            canAccessResearch: true,
           });
         if (path === "/_platform/logout" && req.method === "POST") {
           sameOrigin(req, workspaceOrigin(config, workspace));
@@ -593,6 +598,7 @@ export async function createPlatform(
         return json(res, { code: 200, data: { ok: true } });
       }
       const browserSessionPath = [
+        "/api/platform/catalog-session",
         "/api/platform/browser-session",
         "/api/platform/browser-logout",
       ].includes(path);
@@ -608,15 +614,26 @@ export async function createPlatform(
           return res.end();
         }
         const s = await session(req);
-        if (path === "/api/platform/browser-session" && req.method === "GET") {
-          if (config.researchOwnerEmail)
-            check(
-              s.email === config.researchOwnerEmail,
-              403,
-              "该账号无权访问此研究空间",
-            );
+        if (
+          [
+            "/api/platform/browser-session",
+            "/api/platform/catalog-session",
+          ].includes(path) &&
+          req.method === "GET"
+        ) {
+          const canAccessResearch =
+            !config.researchOwnerEmail || s.email === config.researchOwnerEmail;
+          if (path === "/api/platform/browser-session")
+            check(canAccessResearch, 403, "该账号无权访问此研究空间");
           return json(res, {
-            user: { id: s.user_id, email: s.email, name: s.name },
+            user: {
+              id: s.user_id,
+              email: s.email,
+              name: s.name,
+              isAdmin: s.is_admin,
+            },
+            canAccessResearch,
+            storage: storageAccess(config, s),
             deepLiteratureUrl:
               config.deepLiterature?.webUrl ||
               config.deepLiterature?.origin ||
@@ -712,63 +729,14 @@ export async function createPlatform(
         res.setHeader("set-cookie", sessionCookie(secret, config.secure));
         return json(res, { ok: true }, 201);
       }
-      if (path === "/api/platform/invites/accept" && req.method === "POST") {
-        check(!config.privateSpaces, 403, "私人空间不支持邀请");
-        await limit(
-          `invite-ip:${hash(req.socket.remoteAddress || "")}`,
-          20,
-          900,
-        );
-        const b = await input(req);
-        let existing = null;
-        try {
-          existing = await session(req);
-        } catch (error) {
-          if (error.status !== 401) throw error;
-        }
-        const pwd = existing ? null : await passwordHash(b.password);
-        await transaction(pool, async (db) => {
-          const { rows } = await db.query(
-            `DELETE FROM workspace_invites WHERE token_hash=$1 AND expires_at>now() RETURNING *`,
-            [hash(text(b.token, 128))],
-          );
-          check(rows[0], 400, "邀请已过期或已使用");
-          const invite = rows[0];
-          // Lock membership changes against the owner having been removed since issuance.
-          await db.query("SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", [
-            invite.workspace_id,
-          ]);
-          await member(invite.created_by, invite.workspace_id, ["owner"], db);
-          let user;
-          if (existing) {
-            check(existing.email === invite.email, 403, "请使用受邀邮箱登录");
-            user = existing.user_id;
-          } else {
-            const found = await db.query(
-              "SELECT id FROM platform_users WHERE email=$1",
-              [invite.email],
-            );
-            check(
-              !found.rows.length,
-              409,
-              "该邮箱已有账户，请先登录再接受邀请",
-            );
-            user = id();
-            await db.query(
-              "INSERT INTO platform_users(id,email,name,password_hash) VALUES($1,$2,$3,$4)",
-              [user, invite.email, text(b.name), pwd],
-            );
-          }
-          await db.query(
-            "INSERT INTO memberships(workspace_id,user_id,role) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",
-            [invite.workspace_id, user, invite.role],
-          );
-          await audit(db, user, invite.workspace_id, "invite.accept");
-        });
-        return json(res, { ok: true });
-      }
+      if (path === "/api/platform/invites/accept")
+        throw new HttpError(404, "团队邀请功能已移除");
       const s = await session(req);
       await limit(`portal:${s.user_id}`, 180, 60);
+      if (path === "/api/platform/storage") {
+        check(req.method === "GET", 405, "服务器存储仅支持查看");
+        return json(res, await storageSettings(config, s));
+      }
       if (await accounts.admin(req, res, path, s)) return;
       if (path === "/api/platform/capabilities" && req.method === "GET")
         return json(res, {
@@ -816,10 +784,6 @@ export async function createPlatform(
             "INSERT INTO workspaces(id,name,created_by) VALUES($1,$2,$3)",
             [workspace, "我的科研空间", s.user_id],
           );
-          await db.query("INSERT INTO memberships VALUES($1,$2,'owner')", [
-            workspace,
-            s.user_id,
-          ]);
           await db.query(
             "INSERT INTO workspace_runtimes(workspace_id) VALUES($1)",
             [workspace],
@@ -882,8 +846,8 @@ export async function createPlatform(
       if (path === "/api/platform/workspaces") {
         if (req.method === "GET") {
           const { rows } = await pool.query(
-            `SELECT w.id,w.name,m.role,r.last_seen,r.expires_at AS credential_expires_at,rt.status AS runtime_status,rt.error AS runtime_error FROM workspaces w JOIN memberships m ON m.workspace_id=w.id LEFT JOIN runners r ON r.workspace_id=w.id LEFT JOIN workspace_runtimes rt ON rt.workspace_id=w.id WHERE m.user_id=$1 AND ($2::boolean=false OR w.created_by=$1) ORDER BY w.created_at`,
-            [s.user_id, !!config.privateSpaces],
+            `SELECT w.id,w.name,r.last_seen,r.expires_at AS credential_expires_at,rt.status AS runtime_status,rt.error AS runtime_error FROM workspaces w LEFT JOIN runners r ON r.workspace_id=w.id LEFT JOIN workspace_runtimes rt ON rt.workspace_id=w.id WHERE w.created_by=$1 ORDER BY w.created_at`,
+            [s.user_id],
           );
           return json(
             res,
@@ -922,10 +886,6 @@ export async function createPlatform(
             "INSERT INTO workspaces(id,name,created_by) VALUES($1,$2,$3)",
             [workspace, text(b.name), s.user_id],
           );
-          await db.query(`INSERT INTO memberships VALUES($1,$2,'owner')`, [
-            workspace,
-            s.user_id,
-          ]);
           await audit(db, s.user_id, workspace, "workspace.create");
           if (managed)
             await db.query(
@@ -946,7 +906,7 @@ export async function createPlatform(
           await db.query("SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", [
             workspace,
           ]);
-          await member(s.user_id, workspace, ["owner"], db);
+          await spaceOwner(s.user_id, workspace, db);
           await db.query("UPDATE workspaces SET name=$2 WHERE id=$1", [
             workspace,
             name,
@@ -964,7 +924,7 @@ export async function createPlatform(
             [workspace],
           );
           check(found.rows[0], 404, "工作空间不存在");
-          await member(s.user_id, workspace, ["owner"], db);
+          await spaceOwner(s.user_id, workspace, db);
           check(b.name === found.rows[0].name, 409, "空间名称不匹配");
           await db.query(
             "UPDATE workspace_runtimes SET desired='deleted',checked_at=NULL WHERE workspace_id=$1",
@@ -1011,21 +971,16 @@ export async function createPlatform(
         return json(res, { ok: true });
       }
       const match = path.match(
-        /^\/api\/platform\/workspaces\/([0-9a-f-]{36})\/(launch|members|invites|runner|runtime|audit)(?:\/([0-9a-f-]{36}))?$/,
+        /^\/api\/platform\/workspaces\/([0-9a-f-]{36})\/(launch|runner|runtime|audit)$/,
       );
       check(match, 404, "接口不存在");
-      const [, workspace, action, target] = match;
+      const [, workspace, action] = match;
       check(
-        !config.privateSpaces ||
-          !["members", "invites", "runner"].includes(action),
+        !config.privateSpaces || action !== "runner",
         403,
-        "私人空间不允许共享或外部执行器配置",
+        "私人空间的连接由平台管理",
       );
-      await member(
-        s.user_id,
-        workspace,
-        action === "launch" ? undefined : ["owner"],
-      );
+      await spaceOwner(s.user_id, workspace);
       if (action === "runtime") {
         if (req.method === "POST") {
           check(config.managed, 409, "平台托管暂未启用");
@@ -1033,7 +988,7 @@ export async function createPlatform(
             await db.query("SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", [
               workspace,
             ]);
-            await member(s.user_id, workspace, ["owner"], db);
+            await spaceOwner(s.user_id, workspace, db);
             const result = await db.query(
               "UPDATE workspace_runtimes SET status='queued',error=NULL,checked_at=NULL WHERE workspace_id=$1 AND desired='running' AND status='failed' RETURNING workspace_id",
               [workspace],
@@ -1067,112 +1022,6 @@ export async function createPlatform(
           ticket,
         });
       }
-      if (action === "members" && req.method === "GET") {
-        const { rows } = await pool.query(
-          "SELECT u.id,u.email,u.name,m.role FROM memberships m JOIN platform_users u ON u.id=m.user_id WHERE m.workspace_id=$1 ORDER BY u.email",
-          [workspace],
-        );
-        return json(res, rows);
-      }
-      if (
-        action === "members" &&
-        target &&
-        ["DELETE", "PATCH"].includes(req.method)
-      ) {
-        const next = req.method === "PATCH" ? (await input(req)).role : null;
-        check(next === null || ["owner", "editor", "viewer"].includes(next));
-        await transaction(pool, async (db) => {
-          await db.query("SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", [
-            workspace,
-          ]);
-          await member(s.user_id, workspace, ["owner"], db);
-          const old = await member(target, workspace, undefined, db);
-          if (old === "owner" && next !== "owner") {
-            const count = await db.query(
-              `SELECT count(*)::int AS n FROM memberships WHERE workspace_id=$1 AND role='owner'`,
-              [workspace],
-            );
-            check(count.rows[0].n > 1, 409, "必须保留至少一位管理员");
-          }
-          if (next)
-            await db.query(
-              "UPDATE memberships SET role=$3 WHERE workspace_id=$1 AND user_id=$2",
-              [workspace, target, next],
-            );
-          else
-            await db.query(
-              "DELETE FROM memberships WHERE workspace_id=$1 AND user_id=$2",
-              [workspace, target],
-            );
-          await db.query(
-            "DELETE FROM workspace_invites WHERE workspace_id=$1 AND created_by=$2",
-            [workspace, target],
-          );
-          await audit(
-            db,
-            s.user_id,
-            workspace,
-            next ? `member.${next}` : "member.remove",
-            target,
-          );
-        });
-        // Fail closed for all active streams; reconnect re-evaluates current membership.
-        tunnels.get(workspace)?.close();
-        return json(res, { ok: true });
-      }
-      if (action === "invites" && req.method === "GET") {
-        const { rows } = await pool.query(
-          "SELECT email,role,expires_at FROM workspace_invites WHERE workspace_id=$1 ORDER BY expires_at DESC",
-          [workspace],
-        );
-        return json(res, rows);
-      }
-      if (action === "invites" && req.method === "DELETE") {
-        const b = await input(req);
-        await transaction(pool, async (db) => {
-          await db.query("SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", [
-            workspace,
-          ]);
-          await member(s.user_id, workspace, ["owner"], db);
-          await db.query(
-            "DELETE FROM workspace_invites WHERE workspace_id=$1 AND email=$2",
-            [workspace, email(b.email)],
-          );
-          await audit(
-            db,
-            s.user_id,
-            workspace,
-            "invite.revoke",
-            email(b.email),
-          );
-        });
-        return json(res, { ok: true });
-      }
-      if (action === "invites" && req.method === "POST") {
-        const b = await input(req);
-        check(["editor", "viewer"].includes(b.role));
-        const secret = token();
-        await transaction(pool, async (db) => {
-          await db.query("SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", [
-            workspace,
-          ]);
-          await member(s.user_id, workspace, ["owner"], db);
-          await db.query(
-            `DELETE FROM workspace_invites WHERE workspace_id=$1 AND email=$2`,
-            [workspace, email(b.email)],
-          );
-          await db.query(
-            `INSERT INTO workspace_invites VALUES($1,$2,$3,$4,now()+interval '24 hours',$5)`,
-            [hash(secret), workspace, email(b.email), b.role, s.user_id],
-          );
-          await audit(db, s.user_id, workspace, "invite.create");
-        });
-        return json(
-          res,
-          { url: `${config.origin.origin}/#invite=${secret}` },
-          201,
-        );
-      }
       if (action === "runner" && req.method === "GET") {
         const { rows } = await pool.query(
           "SELECT last_seen,expires_at FROM runners WHERE workspace_id=$1",
@@ -1191,7 +1040,7 @@ export async function createPlatform(
           await db.query("SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", [
             workspace,
           ]);
-          await member(s.user_id, workspace, ["owner"], db);
+          await spaceOwner(s.user_id, workspace, db);
           await db.query(
             `INSERT INTO runners(id,workspace_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval '90 days') ON CONFLICT(workspace_id) DO UPDATE SET token_hash=excluded.token_hash,expires_at=excluded.expires_at,last_seen=NULL`,
             [id(), workspace, hash(secret)],
@@ -1210,7 +1059,7 @@ export async function createPlatform(
           await db.query("SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", [
             workspace,
           ]);
-          await member(s.user_id, workspace, ["owner"], db);
+          await spaceOwner(s.user_id, workspace, db);
           await db.query("DELETE FROM runners WHERE workspace_id=$1", [
             workspace,
           ]);

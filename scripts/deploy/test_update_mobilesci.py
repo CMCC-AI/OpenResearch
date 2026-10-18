@@ -61,7 +61,7 @@ class UpdateBundleTests(unittest.TestCase):
             update.verify_bundle(self.bundle(corrupt=True))
 
     def test_traversal_and_symlinks_are_rejected_before_extraction(self):
-        for name in ['../outside', '/tmp/outside']:
+        for name in ['../outside', '/tmp/outside', 'C:/outside', '..\\outside']:
             with self.subTest(name=name), self.assertRaises(ValueError):
                 update.verify_bundle(self.bundle(tarfile.TarInfo(name)))
         link = tarfile.TarInfo('link')
@@ -76,6 +76,43 @@ class UpdateBundleTests(unittest.TestCase):
         (output / 'latest.json').write_text(json.dumps({'file': bundle.name, 'sha256': update.digest(bundle), 'fingerprint': 'same'}))
         with patch.object(update, 'OUTPUT', output), patch.object(update, 'fingerprint', return_value='same'), patch.object(update, 'run', side_effect=AssertionError('unexpected command')):
             self.assertEqual(update.prepare(), bundle)
+
+    def test_package_contains_platform_dependencies_and_migrations(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'Cargo.toml').write_text('version = "0.2.19"\n')
+            for name in ['ui/dist/index.html', 'packages/platform/src/server.mjs', 'packages/platform/public/index.html', 'packages/platform/migrations/004.sql', 'packages/platform/package.json', 'packages/platform/package-lock.json', 'scripts/deploy/update-server.py']:
+                file = root / name
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text('test')
+
+            def fake_run(args, **kwargs):
+                if args[:2] == ['docker', 'cp']:
+                    destination = Path(args[-1])
+                    if destination.name == 'node_modules':
+                        destination.mkdir()
+                        (destination / 'package.json').write_text('{}')
+                    else:
+                        destination.write_bytes(b'\x7fELFtest')
+
+            def output(args, **kwargs):
+                if args[:3] == ['docker', 'image', 'inspect']:
+                    return 'amd64\n'
+                return 'test-id\n'
+
+            with patch.object(update, 'ROOT', root), patch.object(update, 'OUTPUT', root / 'output'), patch.object(update, 'fingerprint', return_value='test-source'), patch.object(update, 'run', side_effect=fake_run), patch.object(update.subprocess, 'check_output', side_effect=output):
+                bundle = update.prepare('test-image')
+                manifest = update.verify_bundle(bundle)
+                for name in ['platform/package.json', 'platform/package-lock.json', 'platform/migrations/004.sql']:
+                    self.assertIn(name, manifest['files'])
+                self.assertTrue(all('\\' not in name for name in manifest['files']))
+                with tarfile.open(bundle) as archive:
+                    self.assertEqual(archive.getmember('workbench/orx').mode, 0o755)
+                    self.assertIn('COPY --chmod=755 orx', archive.extractfile('workbench/Dockerfile').read().decode())
+                    dockerfile = archive.extractfile('platform/Dockerfile').read().decode()
+                    self.assertIn('COPY node_modules ./node_modules', dockerfile)
+                    self.assertNotIn('RUN npm', dockerfile)
+                    self.assertIn('COPY migrations ./migrations', dockerfile)
 
 
 if __name__ == '__main__':

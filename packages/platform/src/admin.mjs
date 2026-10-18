@@ -6,6 +6,23 @@ try {
   if (command === "migrate") {
     await migrate(pool);
     console.log("Platform schema ready");
+  } else if (command === "grant-admin") {
+    await transaction(pool, async (db) => {
+      const { rows } = await db.query(
+        "SELECT id,is_admin FROM platform_users WHERE email=$1 AND NOT disabled FOR UPDATE",
+        [email(address)],
+      );
+      check(rows[0], 404, "Enabled account not found");
+      if (rows[0].is_admin) return;
+      await db.query("UPDATE platform_users SET is_admin=true WHERE id=$1", [
+        rows[0].id,
+      ]);
+      await db.query(
+        "INSERT INTO audit_events(actor_id,action,resource) VALUES($1,'account.admin.grant',$2)",
+        [rows[0].id, "offline-cli"],
+      );
+    });
+    console.log("System administrator granted; password unchanged");
   } else if (
     ["create-user", "create-admin", "reset-password"].includes(command)
   ) {
@@ -49,7 +66,7 @@ try {
     console.log("Account updated; password not logged");
   } else
     throw new Error(
-      "Usage: admin.mjs migrate | create-user EMAIL NAME | create-admin EMAIL NAME | reset-password EMAIL (password via stdin)",
+      "Usage: admin.mjs migrate | grant-admin EMAIL | create-user EMAIL NAME | create-admin EMAIL NAME | reset-password EMAIL (password via stdin)",
     );
 } catch (error) {
   console.error(error.code || error.message);

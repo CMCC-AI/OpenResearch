@@ -31,3 +31,6 @@ ui/package-lock.json
 # Python test and deployment bytecode caches
 __pycache__/
 *.py[cod]
+
+# Local package-manager cache
+.pnpm-store/

@@ -11,10 +11,14 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as CapabilitiesRouteImport } from './routes/capabilities'
+import { Route as CasesRouteImport } from './routes/cases'
 import { Route as DiscoverRouteImport } from './routes/discover'
 import { Route as LiteratureRouteImport } from './routes/literature'
 import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as RemoteLaunchRouteImport } from './routes/remote-launch'
+import { Route as CasesIndexRouteImport } from './routes/cases.index'
+import { Route as CasesCaseIdRouteImport } from './routes/cases.$caseId'
+import { Route as CasesManageRouteImport } from './routes/cases.manage'
 import { Route as ProjectsIndexRouteImport } from './routes/projects.index'
 import { Route as ProjectsProjectIdRouteImport } from './routes/projects.$projectId'
 import { Route as ProjectsProjectIdIndexRouteImport } from './routes/projects.$projectId.index'
@@ -31,6 +35,11 @@ const IndexRoute = IndexRouteImport.update({
 const CapabilitiesRoute = CapabilitiesRouteImport.update({
   id: '/capabilities',
   path: '/capabilities',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CasesRoute = CasesRouteImport.update({
+  id: '/cases',
+  path: '/cases',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DiscoverRoute = DiscoverRouteImport.update({
@@ -52,6 +61,21 @@ const RemoteLaunchRoute = RemoteLaunchRouteImport.update({
   id: '/remote-launch',
   path: '/remote-launch',
   getParentRoute: () => rootRouteImport,
+} as any)
+const CasesIndexRoute = CasesIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => CasesRoute,
+} as any)
+const CasesCaseIdRoute = CasesCaseIdRouteImport.update({
+  id: '/$caseId',
+  path: '/$caseId',
+  getParentRoute: () => CasesRoute,
+} as any)
+const CasesManageRoute = CasesManageRouteImport.update({
+  id: '/manage',
+  path: '/manage',
+  getParentRoute: () => CasesRoute,
 } as any)
 const ProjectsIndexRoute = ProjectsIndexRouteImport.update({
   id: '/',
@@ -95,11 +119,15 @@ const ProjectsProjectIdTasksNewRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/capabilities': typeof CapabilitiesRoute
+  '/cases': typeof CasesRouteWithChildren
   '/discover': typeof DiscoverRoute
   '/literature': typeof LiteratureRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/remote-launch': typeof RemoteLaunchRoute
+  '/cases/$caseId': typeof CasesCaseIdRoute
+  '/cases/manage': typeof CasesManageRoute
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
+  '/cases/': typeof CasesIndexRoute
   '/projects/': typeof ProjectsIndexRoute
   '/projects/$projectId/skills': typeof ProjectsProjectIdSkillsRoute
   '/projects/$projectId/': typeof ProjectsProjectIdIndexRoute
@@ -113,6 +141,9 @@ export interface FileRoutesByTo {
   '/discover': typeof DiscoverRoute
   '/literature': typeof LiteratureRoute
   '/remote-launch': typeof RemoteLaunchRoute
+  '/cases/$caseId': typeof CasesCaseIdRoute
+  '/cases/manage': typeof CasesManageRoute
+  '/cases': typeof CasesIndexRoute
   '/projects': typeof ProjectsIndexRoute
   '/projects/$projectId/skills': typeof ProjectsProjectIdSkillsRoute
   '/projects/$projectId': typeof ProjectsProjectIdIndexRoute
@@ -124,11 +155,15 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/capabilities': typeof CapabilitiesRoute
+  '/cases': typeof CasesRouteWithChildren
   '/discover': typeof DiscoverRoute
   '/literature': typeof LiteratureRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/remote-launch': typeof RemoteLaunchRoute
+  '/cases/$caseId': typeof CasesCaseIdRoute
+  '/cases/manage': typeof CasesManageRoute
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
+  '/cases/': typeof CasesIndexRoute
   '/projects/': typeof ProjectsIndexRoute
   '/projects/$projectId/skills': typeof ProjectsProjectIdSkillsRoute
   '/projects/$projectId/': typeof ProjectsProjectIdIndexRoute
@@ -141,11 +176,15 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/capabilities'
+    | '/cases'
     | '/discover'
     | '/literature'
     | '/projects'
     | '/remote-launch'
+    | '/cases/$caseId'
+    | '/cases/manage'
     | '/projects/$projectId'
+    | '/cases/'
     | '/projects/'
     | '/projects/$projectId/skills'
     | '/projects/$projectId/'
@@ -159,6 +198,9 @@ export interface FileRouteTypes {
     | '/discover'
     | '/literature'
     | '/remote-launch'
+    | '/cases/$caseId'
+    | '/cases/manage'
+    | '/cases'
     | '/projects'
     | '/projects/$projectId/skills'
     | '/projects/$projectId'
@@ -169,11 +211,15 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/capabilities'
+    | '/cases'
     | '/discover'
     | '/literature'
     | '/projects'
     | '/remote-launch'
+    | '/cases/$caseId'
+    | '/cases/manage'
     | '/projects/$projectId'
+    | '/cases/'
     | '/projects/'
     | '/projects/$projectId/skills'
     | '/projects/$projectId/'
@@ -185,6 +231,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CapabilitiesRoute: typeof CapabilitiesRoute
+  CasesRoute: typeof CasesRouteWithChildren
   DiscoverRoute: typeof DiscoverRoute
   LiteratureRoute: typeof LiteratureRoute
   ProjectsRoute: typeof ProjectsRouteWithChildren
@@ -205,6 +252,13 @@ declare module '@tanstack/react-router' {
       path: '/capabilities'
       fullPath: '/capabilities'
       preLoaderRoute: typeof CapabilitiesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/cases': {
+      id: '/cases'
+      path: '/cases'
+      fullPath: '/cases'
+      preLoaderRoute: typeof CasesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/discover': {
@@ -234,6 +288,27 @@ declare module '@tanstack/react-router' {
       fullPath: '/remote-launch'
       preLoaderRoute: typeof RemoteLaunchRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/cases/': {
+      id: '/cases/'
+      path: '/'
+      fullPath: '/cases/'
+      preLoaderRoute: typeof CasesIndexRouteImport
+      parentRoute: typeof CasesRoute
+    }
+    '/cases/$caseId': {
+      id: '/cases/$caseId'
+      path: '/$caseId'
+      fullPath: '/cases/$caseId'
+      preLoaderRoute: typeof CasesCaseIdRouteImport
+      parentRoute: typeof CasesRoute
+    }
+    '/cases/manage': {
+      id: '/cases/manage'
+      path: '/manage'
+      fullPath: '/cases/manage'
+      preLoaderRoute: typeof CasesManageRouteImport
+      parentRoute: typeof CasesRoute
     }
     '/projects/': {
       id: '/projects/'
@@ -287,6 +362,20 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface CasesRouteChildren {
+  CasesCaseIdRoute: typeof CasesCaseIdRoute
+  CasesManageRoute: typeof CasesManageRoute
+  CasesIndexRoute: typeof CasesIndexRoute
+}
+
+const CasesRouteChildren: CasesRouteChildren = {
+  CasesCaseIdRoute: CasesCaseIdRoute,
+  CasesManageRoute: CasesManageRoute,
+  CasesIndexRoute: CasesIndexRoute,
+}
+
+const CasesRouteWithChildren = CasesRoute._addFileChildren(CasesRouteChildren)
+
 interface ProjectsProjectIdRouteChildren {
   ProjectsProjectIdSkillsRoute: typeof ProjectsProjectIdSkillsRoute
   ProjectsProjectIdIndexRoute: typeof ProjectsProjectIdIndexRoute
@@ -323,6 +412,7 @@ const ProjectsRouteWithChildren = ProjectsRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CapabilitiesRoute: CapabilitiesRoute,
+  CasesRoute: CasesRouteWithChildren,
   DiscoverRoute: DiscoverRoute,
   LiteratureRoute: LiteratureRoute,
   ProjectsRoute: ProjectsRouteWithChildren,

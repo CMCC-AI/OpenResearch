@@ -5,14 +5,14 @@ import test from "node:test";
 import React from "react";
 import ts from "typescript";
 
-function authGate(pathname, user, loading = false) {
+function authGate(pathname, user, loading = false, canAccessResearch = true) {
   let stateIndex = 0;
   const source = readFileSync(new URL("../src/product/AuthSession.tsx", import.meta.url), "utf8");
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports = {};
   const mocks = {
     "../appBasePath": appBase,
-    react: { ...React, useState: () => { const values = [loading, user, null]; return [values[stateIndex++], () => {}]; }, useEffect: () => {}, useCallback: (fn) => fn, useMemo: (fn) => fn() },
+    react: { ...React, useState: () => { const values = [loading, user, canAccessResearch, null, null]; return [values[stateIndex++], () => {}]; }, useEffect: () => {}, useCallback: (fn) => fn, useMemo: (fn) => fn() },
     "react/jsx-runtime": jsx,
     "@tanstack/react-router": { Navigate: "Navigate", useRouterState: ({ select }) => select({ location: { pathname } }) },
     "../components/ui": { Spinner: "Spinner" },
@@ -49,4 +49,14 @@ test("authentication loading does not flash the introduction for a signed-in ses
 test("subpath authentication uses the same protected-page gate", () => {
   assert.equal(authGate("/mobilesci/discover", null).type, "Navigate");
   assert.equal(authGate("/mobilesci/", {id:"user"}).props.to, "/projects");
+});
+
+test("catalog-only users browse public cases without entering the private research workspace", () => {
+  const reader={id:"reader"};
+  assert.equal(authGate("/",reader,false,false).props.to,"/cases");
+  assert.equal(authGate("/projects/private-project",reader,false,false).props.to,"/cases");
+  assert.equal(authGate("/mobilesci/projects",reader,false,false).props.to,"/cases");
+  assert.notEqual(authGate("/cases/case-id",reader,false,false).type,"Navigate");
+  assert.notEqual(authGate("/mobilesci/cases",reader,false,false).type,"Navigate");
+  assert.equal(authGate("/cases",null).props.to,"/");
 });

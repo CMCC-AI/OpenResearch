@@ -4,6 +4,7 @@ COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
 COPY linux ./linux
 COPY ui/dist ./ui/dist
+COPY ui/src/researchWorkflows.json ./ui/src/researchWorkflows.json
 COPY agent-skills ./agent-skills
 COPY demo ./demo
 COPY SYSTEM_PROMPT.md SKILL.md ./

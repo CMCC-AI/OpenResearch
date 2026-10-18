@@ -26,43 +26,22 @@ test("cancelling an overloaded stream does not crash the gateway", () => {
   assert.ok(terminated);
   assert.equal(tunnel.pending.size, 0);
 });
-test("viewer cannot mutate, spawn terminals, inspect credentials or use internal callbacks", () => {
-  for (const [method, path] of [
-    ["POST", "/api/projects"],
-    ["GET", "/api/projects/x/terminal"],
-    ["GET", "/api/settings/env"],
-    ["GET", "/api/overleaf/settings"],
-    ["POST", "/api/internal/permissions"],
-    ["GET", "/api/files/abs"],
-  ])
-    assert.equal(permitted("viewer", method, path), false);
-  for (const path of [
-    "/api/projects",
-    "/api/runs/a/log",
-    "/api/chat/sessions/a/messages",
-    "/api/events",
-  ])
-    assert.equal(permitted("viewer", "GET", path), true);
-});
-test("gateway blocks administration and path confusion for all roles", () => {
-  for (const role of ["owner", "editor", "viewer"])
+test("private space gateway blocks machine administration and path confusion", () => {
+  for (const method of ["GET", "POST", "DELETE"])
     for (const path of [
       "/api/internal/permissions",
       "/api/remote/sessions",
       "/api/update",
       "/api/settings/data-dir",
       "/api/git/install",
+      "/api/settings/ssh",
       "/api/projects/%2e%2e/settings/env",
       "//api/projects",
       "/api/projects\\foo",
     ])
-      assert.equal(permitted(role, "GET", path), false);
-  for (const role of ["owner", "editor", "viewer"])
-    assert.equal(permitted(role, "POST", "/api/git/install"), false);
-  assert.equal(
-    permitted("editor", "POST", "/api/chat/sessions/x/message"),
-    true,
-  );
+      assert.equal(permitted(method, path), false);
+  assert.equal(permitted("POST", "/api/chat/sessions/x/message"), true);
+  assert.equal(permitted("GET", "/api/events"), true);
 });
 test("passwords salted and verified using bounded scrypt", async () => {
   const password = "a strong test password";

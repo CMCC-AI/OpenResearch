@@ -288,7 +288,7 @@ export function ProjectsHome({
               </div>)}
             </div>
           </section>
-          <ResearchCases onSelect={(prompt) => { setDraft(prompt); document.getElementById("research-objective")?.focus(); }} />
+          <ResearchCases />
         </div>
       </div>
 

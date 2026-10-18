@@ -118,9 +118,9 @@ export function workspaceEntryOrigin(req, origin) {
     "请求来源不受信任",
   );
 }
-// A workspace is a trust boundary: its members can access all its research projects.
+// A private space is a trust boundary: only its creator can access research.
 // Never expose machine administration or internal callback endpoints through the gateway.
-export function permitted(role, method, path) {
+export function permitted(method, path) {
   if (!/^\/api\/[a-zA-Z0-9/_.,-]+$/.test(path)) return false;
   if (/^\/api\/(internal|remote|update|overleaf)(\/|$)/.test(path))
     return false;
@@ -133,15 +133,5 @@ export function permitted(role, method, path) {
     path.endsWith("/file/open")
   )
     return false;
-  if (role === "owner" || role === "editor") return true;
-  if (
-    role !== "viewer" ||
-    !["GET", "HEAD"].includes(method) ||
-    path.endsWith("/terminal")
-  )
-    return false;
-  // Explicit read surfaces only: some upstream GET routes perform work or expose secrets.
-  return /^\/api\/(health|projects(?:\/activity)?|projects\/[^/]+(?:\/(?:experiments|runs|git|code-tree|working-tree|ui-state|file|file\/raw|files|files\/file))?|runs\/[^/]+(?:\/(?:log|logs|diff))?|experiments\/[^/]+\/(?:diff|commits)|papers\/(?:search|discover|resolve)|deep-literature\/(?:status|papers)|events|chat\/sessions(?:\/[^/]+\/(?:messages|worktree))?|chat\/attachments\/[^/]+|harnesses|agent\/status|compute\/backends|instances|settings\/(?:ui-state|profile|git|lit-sources))$/.test(
-    path,
-  );
+  return true;
 }

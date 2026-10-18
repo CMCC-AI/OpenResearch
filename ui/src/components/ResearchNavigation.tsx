@@ -10,6 +10,7 @@ import { deleteChatSession, renameChatSession, setChatSessionArchived, type Chat
 import { ProjectInfoCard } from "./ProjectInfoCard";
 import { SessionFilterMenu, SessionRow, type SessionFilter } from "./NativeSidebarRows";
 import { m } from "../paraglide/messages.js";
+import { useOptionalAuthSession } from "../product/AuthSession";
 import { IconButton, Button, showAlert } from "./ui";
 
 export function ResearchNavigationActions({ onNewChat, shortcut }: { onNewChat: () => void; shortcut?: string }) {
@@ -28,6 +29,7 @@ function storedIds(key: string): string[] {
 
 export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
   const navigate = useNavigate();
+  const canPublish = useOptionalAuthSession()?.user?.isAdmin === true;
   const projects = useQuery({ ...listProjectsQuery(), enabled });
   const state = useQuery({ ...getUiStateQuery(), enabled });
   const activity = useQuery({ ...listProjectActivityQuery(), enabled });
@@ -68,7 +70,7 @@ export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
           const rows = matching(query.data ?? []);
           const limit = limits[project.id] ?? 6;
           return <section key={project.id} aria-label={`项目 ${project.name}`}>
-            <div className={sidebarClasses.project}><ProjectInfoCard onNewChat={() => go("tasks/new", project.id)} onOpen={() => void navigate({ to: "/projects/$projectId", params: { projectId: project.id } })} project={project} chatCount={activity.data?.find((row) => row.projectId === project.id)?.totalAgents} collapsed={collapsed.includes(project.id)} busy={rows.some((session) => session.busy)} onToggleCollapsed={() => toggleId(project.id, collapsed, setCollapsed, "sidebar-collapsed-projects")} pinned={pinned.includes(project.id)} onPin={() => toggleId(project.id, pinned, setPinned, "sidebar-pinned-projects")} onRemoved={() => void projects.refetch()} /></div>
+            <div className={sidebarClasses.project}><ProjectInfoCard onNewChat={() => go("tasks/new", project.id)} onOpen={() => void navigate({ to: "/projects/$projectId", params: { projectId: project.id } })} onFeature={canPublish ? () => void navigate({ to: "/cases/manage", search: { project: project.id } }) : undefined} project={project} chatCount={activity.data?.find((row) => row.projectId === project.id)?.totalAgents} collapsed={collapsed.includes(project.id)} busy={rows.some((session) => session.busy)} onToggleCollapsed={() => toggleId(project.id, collapsed, setCollapsed, "sidebar-collapsed-projects")} pinned={pinned.includes(project.id)} onPin={() => toggleId(project.id, pinned, setPinned, "sidebar-pinned-projects")} onRemoved={() => void projects.refetch()} /></div>
             {!collapsed.includes(project.id) && <div className={sidebarClasses.indent}>{query.isPending ? <p className={`m-0 ${sidebarClasses.status}`}>正在读取会话…</p> : query.error ? <Button size="small" onClick={() => void query.refetch()}>重试会话列表</Button> : !rows.length ? <p className={`m-0 ${sidebarClasses.status}`}>{filter === "archived" ? m.chat_no_archived_sessions() : m.chat_no_sessions_yet()}</p> : rows.slice(0, limit).map(renderSession)}{rows.length > limit && <ResearchNavigationMore indented={false} onClick={() => setLimits((current) => ({ ...current, [project.id]: limit + 6 }))} />}</div>}
           </section>;
         })}

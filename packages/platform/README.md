@@ -8,7 +8,7 @@
 
 产品说明：[个人版产品主线](../../docs/ai-for-science/product-experience.md)；认证说明：[统一登录](../../docs/ai-for-science/unified-login.md)。
 
-工作空间、成员角色、执行器通道和本机 Docker 托管实现暂作为内部兼容能力保留。相关 API 和部署文件不是当前个人版交付入口；需要继续内部验证时见[多用户架构与部署](../../docs/ai-for-science/multi-user-platform.md)。
+团队邀请、成员管理和 Owner/Editor/Viewer 授权已经移除。工作空间仅作为私人研究环境的隔离单位，所有访问统一验证 `workspaces.created_by` 与当前用户 ID；系统管理员也没有其他用户私人空间的访问特权。执行器通道和 Docker 托管仍用于私人空间运行。旧成员和邀请表只保留历史记录及回滚兼容，不再授予权限。详见[私人空间权限](../../docs/product/private-space-permissions.md)。
 
 ## 开发
 
@@ -32,7 +32,7 @@ node --env-file=.env --test test/integration.mjs
 npm audit --omit=dev --audit-level=high
 ```
 
-集成测试只在指定数据库内创建随机临时 schema，最后清理自身 schema；不要指向生产。当前同时覆盖个人注册、无工作空间 SSO、退出撤权，以及保留的工作空间兼容接口。
+集成测试只在指定数据库内创建随机临时 schema，最后清理自身 schema；不要指向生产。当前同时覆盖个人注册、无工作空间 SSO、退出撤权，以及私人空间归属、旧成员失权和团队接口不可访问。
 
 ## 上线边界
 
@@ -41,3 +41,7 @@ npm audit --omit=dev --audit-level=high
 ## 账号管理
 
 注册自动登录、邮件找回密码、密码显隐和系统管理员用户概况见 [账号管理说明](../../docs/product/account-management.md)。SMTP 凭据仅写入本地 `.env`；未配置时邮件找回明确禁用。
+
+## 精选案例
+
+系统管理员可以从有权访问的已有项目生成研究对话与成果文件快照，经审核后供所有登录用户只读浏览。草稿与下架内容保持私有，案例权限不开放原科研空间。追加迁移 `005.sql` 保存副本，不修改原项目、账号或密码；无需新增环境变量。入口、限额与接口见 [精选案例说明](../../docs/product/featured-cases.md)。`npm run test:integration` 包含案例发布、文件下载和权限回归测试，仍只允许使用独立测试数据库。

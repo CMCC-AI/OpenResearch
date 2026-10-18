@@ -57,7 +57,6 @@ async function hostedHome(capabilities) {
 }
 
 let resetToken = new URLSearchParams(location.hash.slice(1)).get("reset");
-const invite = new URLSearchParams(location.hash.slice(1)).get("invite");
 const continuePath = new URLSearchParams(location.search).get("continue");
 const safeContinue =
   continuePath &&
@@ -65,7 +64,7 @@ const safeContinue =
   !continuePath.startsWith("//")
     ? continuePath
     : null;
-if (invite || resetToken)
+if (resetToken)
   history.replaceState(null, "", location.pathname + location.search);
 
 const esc = (value) =>
@@ -233,7 +232,6 @@ function authentication(mode = "login") {
   </section>`;
   bindForm("#auth-form", async (data) => {
     await api(registering ? "/register" : "/login", "POST", data);
-    if (invite) await acceptInvite();
     await load();
   });
   if (!registering)
@@ -241,15 +239,6 @@ function authentication(mode = "login") {
       recovery("forgot");
   document.querySelector("#auth-switch").onclick = () =>
     authentication(registering ? "login" : "register");
-}
-
-async function acceptInvite() {
-  try {
-    await api("/invites/accept", "POST", { token: invite });
-    notice("邀请已接受");
-  } catch (error) {
-    notice(error.message);
-  }
 }
 
 function passwordDialog() {
@@ -405,8 +394,6 @@ async function load() {
   renderAccount();
 }
 
-(resetToken ? Promise.resolve(recovery("reset")) : load())
-  .then(async () => {
-    if (invite && me) await acceptInvite();
-  })
-  .catch((error) => notice(error.message));
+(resetToken ? Promise.resolve(recovery("reset")) : load()).catch((error) =>
+  notice(error.message),
+);

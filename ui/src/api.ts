@@ -7,6 +7,7 @@ import { withoutResearchLocation, withoutResearchWorkspace, type GlobalWorkspace
 import { m } from "./paraglide/messages.js";
 import { getLocale } from "./paraglide/runtime.js";
 import { fmtNumber } from "./i18n";
+import { httpErrorMessage } from "./httpError";
 
 export { fmtNumber } from "./i18n";
 
@@ -131,11 +132,11 @@ const writeScopes = new WeakMap<Response, ReturnType<typeof workspaceScope>>();
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    let message = text;
+    let message = httpErrorMessage(res.status, res.headers.get("content-type") || "", text, m.api_proxy_error({ status: String(res.status) }));
     try {
       const parsed: unknown = JSON.parse(text);
       if (typeof parsed === "object" && parsed !== null) {
-        if ("error" in parsed && typeof parsed.error === "string") message = parsed.error;
+        if ("error" in parsed && typeof parsed.error === "string") message = httpErrorMessage(res.status, "", parsed.error, m.api_proxy_error({ status: String(res.status) }));
         if (
           res.status === 409 &&
           "code" in parsed &&
@@ -152,7 +153,7 @@ async function json<T>(res: Response): Promise<T> {
       }
     } catch (error) {
       if (error instanceof FileChangedError) throw error;
-      // non-JSON body — show it raw
+      // Keep proxy HTML out of the user-facing error message.
     }
     throw new Error(message || `HTTP ${res.status}`);
   }

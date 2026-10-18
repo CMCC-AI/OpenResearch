@@ -40,13 +40,20 @@ import { RemoteStopDialog } from "./components/RemoteStopDialog";
 import { SshConnectTerminal } from "./components/SshConnectTerminal";
 import { resetGlobalWorkspace } from "./workspacePersistence";
 import { clearProjectWorkspaceCache } from "./useProjectWorkspace";
-import { AuthSessionProvider } from "./product/AuthSession";
+import { AuthSessionProvider, useAuthSession } from "./product/AuthSession";
 
 const REMOTE_FAVICON =
   "data:image/svg+xml," +
   encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="8" fill="#3b82f6"/><path d="M15.375 16.782v63.843a4 4 0 0 0 4 4h63.843c3.564 0 5.348-4.309 2.829-6.828L22.203 13.953c-2.52-2.52-6.828-.735-6.828 2.829" fill="#fff"/></svg>');
 
 const RuntimeContext = createContext<RuntimeInfo | null>(null);
+
+function LocalResearchEffects() {
+  const { user, canAccessResearch, loading } = useAuthSession();
+  const locale = useLocale();
+  useQuery({ ...reportLocaleQuery(locale), enabled: !loading && Boolean(user) && canAccessResearch });
+  return !loading && user && canAccessResearch ? <QueryEvents /> : null;
+}
 
 function workspaceKey(runtime: RuntimeInfo): string {
   return runtime.kind === "local" ? "local" : `${runtime.session.id}:${runtime.session.installPaths?.database ?? ""}`;
@@ -409,8 +416,7 @@ export function RuntimeRoot() {
   });
   useQuery({
     ...reportLocaleQuery(locale),
-    enabled: !launchPlaceholder && (runtime?.kind === "local" ||
-      (runtime?.kind === "ssh" && runtime.session.status === "connected")),
+    enabled: !launchPlaceholder && runtime?.kind === "ssh" && runtime.session.status === "connected",
   });
   useEffect(() => {
     if (launchPlaceholder) return;
@@ -468,7 +474,7 @@ export function RuntimeRoot() {
       </main>
     );
   }
-  if (runtime.kind === "local") return <RuntimeContext key={workspaceScope()[1]} value={runtime}><QueryEvents /><AuthSessionProvider runtime={runtime}><Outlet /></AuthSessionProvider></RuntimeContext>;
+  if (runtime.kind === "local") return <RuntimeContext key={workspaceScope()[1]} value={runtime}><AuthSessionProvider runtime={runtime}><LocalResearchEffects /><Outlet /></AuthSessionProvider></RuntimeContext>;
   const keepWorkspace = workspaceMounted.current &&
     (runtime.session.status !== "disconnected" || runtime.session.error !== null);
   if (!keepWorkspace && runtime.session.status !== "connected") {

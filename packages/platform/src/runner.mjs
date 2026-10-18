@@ -81,7 +81,7 @@ export function connectRunner({
       const target = new URL(msg.path, local);
       check(
         target.origin === local.origin &&
-          permitted("editor", msg.method || "GET", target.pathname),
+          permitted(msg.method || "GET", target.pathname),
         403,
       );
       if (msg.type === "http") {

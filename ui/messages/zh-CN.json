@@ -1288,5 +1288,10 @@
   "sidebar_filter": "筛选",
   "sidebar_group_by": "分组方式",
   "sidebar_one_list": "单一列表",
-  "chat_spawned_by_agent": " · 由另一个智能体创建"
+  "chat_spawned_by_agent": " · 由另一个智能体创建",
+  "storage_managed_title": "存储由服务器统一管理",
+  "storage_managed_description": "研究数据、运行日志和产物保存在服务器上。存储位置和数据迁移由平台管理员统一维护。",
+  "storage_managed_admin_note": "系统管理员可查看当前目录。目录迁移仅通过服务器维护操作执行。",
+  "storage_managed_unavailable": "暂时无法读取存储信息，请重试或联系平台管理员。",
+  "api_proxy_error": "请求未能完成（HTTP {status}），请重试或联系平台管理员。"
 }

@@ -113,6 +113,10 @@ import {
   type InstalledCli,
 } from "../api";
 import { onDataDirMove } from "../events";
+import { appBasePath } from "../appBasePath";
+import { isCloudWorkspace } from "../product/CloudWorkspace";
+import { useOptionalAuthSession } from "../product/AuthSession";
+import { storageMode, type StoragePolicy } from "../storagePolicy";
 import { releaseNotesUrl, useRestartApp, useUpdateStatus } from "./UpdateBanner";
 import { useThemePreference, type ThemePreference } from "../theme";
 import { m } from "../paraglide/messages.js";
@@ -3374,6 +3378,43 @@ type MoveState =
   | { kind: "error"; message: string };
 
 function StorageTab() {
+  const session = useOptionalAuthSession();
+  const mode = storageMode(session?.storage, !!appBasePath || isCloudWorkspace(), session?.loading ?? false);
+  if (mode === "loading") return <LoadingRow><Spinner /> {m.settings_page_loading()}</LoadingRow>;
+  if (mode === "managed") return <ManagedStorageTab accountUrl={session?.accountUrl ?? ""} userId={session?.user?.id ?? ""} canInspect={session?.storage?.canInspect === true} />;
+  return <LocalStorageTab />;
+}
+
+function ManagedStorageTab({ accountUrl, userId, canInspect }: { accountUrl: string; userId: string; canInspect: boolean }) {
+  const query = useQuery({
+    queryKey: ["managedStorage", accountUrl, userId],
+    enabled: canInspect && !!accountUrl && !!userId,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+    queryFn: async ({ signal }): Promise<StoragePolicy> => {
+      const response = await fetch(`${accountUrl}/api/platform/storage`, { credentials: "include", cache: "no-store", signal });
+      if (!response.ok || !response.headers.get("content-type")?.includes("application/json")) throw new Error(m.storage_managed_unavailable());
+      const data = await response.json() as StoragePolicy;
+      if (!data.managed || !data.canInspect || typeof data.current !== "string") throw new Error(m.storage_managed_unavailable());
+      return data;
+    },
+  });
+  return <>
+    <h2>{m.settings_page_storage()}</h2>
+    <div className={SETTINGS_CARD_CLASS_NAME}>
+      <h3>{m.storage_managed_title()}</h3>
+      <p className="text-sm leading-relaxed text-subtext">{m.storage_managed_description()}</p>
+      {canInspect && <>
+        <p className="text-sm text-subtext">{m.storage_managed_admin_note()}</p>
+        {query.isPending ? <LoadingRow><Spinner /> {m.settings_page_loading()}</LoadingRow> : query.isError ? <p role="alert" className="text-sm text-subtext">{m.storage_managed_unavailable()}</p> : query.data?.current ? <div className={KV_CLASS_NAME}><span className="k">{m.settings_page_current()}</span><span className="v break-all">{query.data.current}</span></div> : null}
+        <button type="button" disabled={query.isFetching} onClick={() => void query.refetch()} className="mt-3 inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm"><RefreshCw size={14} />{m.settings_page_refresh()}</button>
+      </>}
+    </div>
+  </>;
+}
+
+function LocalStorageTab() {
   const settingsOptions = getDataDirQuery();
   const settingsQuery = useQuery(settingsOptions);
   const settings = settingsQuery.data ?? null;

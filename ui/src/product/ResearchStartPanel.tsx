@@ -58,12 +58,4 @@ export function ResearchStartPanel({ draft, onDraftChange, attachments, onAttach
   </section>;
 }
 
-const cases = [
-  { title: "从论文到可信复现", category: "计算机科学", description: "构建可复现的实验方案，记录结果并验证差异。", Icon: FileText, prompt: "我想复现一篇论文。请先帮我明确所需论文、代码、数据与资源，再制定可验证的复现方案。" },
-  { title: "从想法到最小实验", category: "人工智能", description: "将研究想法转化为最小实验，验证关键假设。", Icon: Code2, prompt: "我有一个研究想法，希望将它转化为可检验假设，并设计一个最小实验。请先和我澄清目标、条件与成功标准。" },
-  { title: "多篇论文形成研究综述", category: "跨学科研究", description: "对齐多篇论文的证据，形成结构化综述与洞见。", Icon: Database, prompt: "我想针对一个主题整理多篇论文，形成有来源依据的研究综述。请先帮我确定研究范围与文献筛选标准。" },
-];
-
-export function ResearchCases({ onSelect }: { onSelect: (prompt: string) => void }) {
-  return <section aria-labelledby="research-cases-title" className="min-w-0"><h2 id="research-cases-title" className="mt-0 mb-4 text-xl font-semibold">精选案例</h2><div className="grid grid-cols-3 gap-4 [@media((max-width:_1100px))]:grid-cols-1">{cases.map(({ title, category, description, Icon, prompt }) => <button key={title} onClick={() => onSelect(prompt)} className="min-w-0 rounded-xl border border-border bg-background p-4 text-start hover:border-primary"><div className="mb-4 flex h-28 items-center justify-center rounded-lg bg-primary-subtle text-primary"><Icon size={42} /></div><span className="mb-2 block font-semibold">{title}</span><span className="mb-4 block text-sm leading-relaxed text-subtext">{description}</span><span className="flex items-center justify-between text-xs text-primary"><span>{category} · 示例课题</span><ArrowRight size={15} /></span></button>)}</div><p className="text-xs text-muted">点击案例填入研究目标，可编辑后创建自己的项目。</p></section>;
-}
+export { ResearchCases } from "./FeaturedCases";

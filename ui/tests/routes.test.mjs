@@ -38,6 +38,8 @@ function loadModule(filename, api = {}, remembered = null) {
       if (id === "../product/CapabilitiesPage") return { CapabilitiesPage: () => null };
       if (id === "../product/DiscoverPage") return { DiscoverPage: () => null };
       if (id === "../product/LiteraturePage") return { LiteraturePage: () => null };
+      if (id === "../product/FeaturedCases") return { CasesPage: () => null, CaseDetailPage: () => null };
+      if (id === "../product/ManageCasesPage") return { ManageCasesPage: () => null };
       if (id.startsWith("./routes/")) return load(new URL(`${id}.tsx`, url));
       throw new Error(`Unexpected dependency: ${id}`);
     }, exports);
@@ -79,6 +81,16 @@ test("real file routes distinguish task/new, task IDs, project index, and settin
 test("hidden configuration tabs are rejected by the settings route guard", () => {
   const { Route } = loadModule("routes/projects.$projectId.settings.$tab.tsx");
   for (const tab of ["environment", "%65nvironment"]) assert.throws(() => Route.options.beforeLoad({ params: { tab } }), routing.isNotFound);
+});
+
+test("case browsing, existing-project publication, and case IDs use independent routes", async () => {
+  for (const [path,id] of [["/cases","/cases/"],["/cases/manage?project=existing","/cases/manage"],["/cases/public-id","/cases/$caseId"]]) {
+    const router=await match(path);
+    assert.equal(router.state.matches.at(-1).routeId,id);
+    if(path.includes("manage"))assert.equal(router.state.matches.at(-1).search.project,"existing");
+  }
+  const {Route}=loadModule("routes/cases.manage.tsx");
+  assert.deepEqual(Route.options.validateSearch({project:"../../private"}),{project:undefined});
 });
 
 test("product start links preserve new-project and alphaXiv paper intent", async () => {

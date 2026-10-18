@@ -7,7 +7,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { createPool, migrate } from "../src/db.mjs";
 import { createPlatform, configuration } from "../src/server.mjs";
 import { connectRunner } from "../src/runner.mjs";
-import { id, passwordHash, pkce } from "../src/security.mjs";
+import { id, passwordHash, pkce, token, hash } from "../src/security.mjs";
 
 test(
   "PostgreSQL multi-user authorization and outbound executor",
@@ -523,93 +523,39 @@ test(
         assert.equal(entered.status, 303, JSON.stringify(entered.data));
         return { ...entered, ticket };
       }
-      await t.test(
-        "workspace settings and invitation lifecycle respect ownership",
-        async () => {
-          const route = `/api/platform/workspaces/${a}`;
-          assert.equal(
-            (
-              await request(route, {
-                method: "PATCH",
-                cookie: bob,
-                data: { name: "Forbidden" },
-              })
-            ).status,
-            404,
-          );
-          assert.equal(
-            (
-              await request(route, {
-                method: "PATCH",
-                cookie: alice,
-                data: { name: "  " },
-              })
-            ).status,
-            400,
-          );
-          assert.equal(
-            (
-              await request(route, {
-                method: "PATCH",
-                cookie: alice,
-                data: { name: "Renamed research" },
-              })
-            ).data.name,
-            "Renamed research",
-          );
-          const issued = await request(`${route}/invites`, {
-            method: "POST",
-            cookie: alice,
-            data: { email: "withdrawn@test.invalid", role: "viewer" },
-          });
-          const invitations = await request(`${route}/invites`, {
-            cookie: alice,
-          });
-          assert.equal(invitations.data.length, 1);
-          assert.deepEqual(Object.keys(invitations.data[0]).sort(), [
-            "email",
-            "expires_at",
-            "role",
-          ]);
-          assert.equal(
-            (
-              await request(`${route}/invites`, {
-                method: "DELETE",
-                cookie: bob,
-                data: { email: "withdrawn@test.invalid" },
-              })
-            ).status,
-            404,
-          );
-          assert.equal(
-            (
-              await request(`${route}/invites`, {
-                method: "DELETE",
-                cookie: alice,
-                data: { email: "withdrawn@test.invalid" },
-              })
-            ).status,
-            200,
-          );
-          const secret = new URLSearchParams(
-            new URL(issued.data.url).hash.slice(1),
-          ).get("invite");
-          assert.equal(
-            (
-              await request("/api/platform/invites/accept", {
-                method: "POST",
-                cookie: alice,
-                data: { token: secret },
-              })
-            ).status,
-            400,
-          );
-          assert.equal(
-            (await request(`${route}/invites`, { cookie: alice })).data.length,
-            0,
-          );
-        },
-      );
+      await t.test("private space settings respect ownership", async () => {
+        const route = `/api/platform/workspaces/${a}`;
+        assert.equal(
+          (
+            await request(route, {
+              method: "PATCH",
+              cookie: bob,
+              data: { name: "Forbidden" },
+            })
+          ).status,
+          404,
+        );
+        assert.equal(
+          (
+            await request(route, {
+              method: "PATCH",
+              cookie: alice,
+              data: { name: "  " },
+            })
+          ).status,
+          400,
+        );
+        assert.equal(
+          (
+            await request(route, {
+              method: "PATCH",
+              cookie: alice,
+              data: { name: "Renamed research" },
+            })
+          ).data.name,
+          "Renamed research",
+        );
+      });
       const aSession = await enter(alice, a),
         bSession = await enter(bob, b);
       await t.test(
@@ -715,7 +661,7 @@ test(
                   data: { email: "bob@test.invalid", role: "editor" },
                 })
               ).status,
-              403,
+              404,
             );
             assert.equal(
               (
@@ -725,7 +671,7 @@ test(
                   data: { token: "unused" },
                 })
               ).status,
-              403,
+              404,
             );
             // Even an old shared membership must not expose another user's private space.
             await pool.query("INSERT INTO memberships VALUES($1,$2,'viewer')", [
@@ -976,175 +922,133 @@ test(
           );
         },
       );
-      let viewer;
       await t.test(
-        "legacy invitation can still create an account",
+        "retired team APIs cannot grant access, even to administrators",
         async () => {
-          const issued = await request(
-            `/api/platform/workspaces/${a}/invites`,
-            {
-              method: "POST",
+          // Legacy rows and already-issued sessions must not bypass creator ownership.
+          await pool.query("INSERT INTO memberships VALUES($1,$2,'owner')", [
+            a,
+            users.bob,
+          ]);
+          await pool.query(
+            "UPDATE platform_users SET is_admin=true WHERE id=$1",
+            [users.bob],
+          );
+          const legacyToken = token();
+          const legacyCookie = `orx_session=${legacyToken}`;
+          await pool.query(
+            "INSERT INTO platform_sessions(token_hash,user_id,host,expires_at) VALUES($1,$2,$3,now()+interval '1 hour')",
+            [hash(legacyToken), users.bob, aHost],
+          );
+          const legacyGrant = id();
+          await pool.query(
+            "INSERT INTO sso_grants(id,client,root_session_hash,user_id,workspace_id,expires_at) VALUES($1,'deeplit',$2,$3,$4,now()+interval '1 hour')",
+            [legacyGrant, hash(legacyToken), users.bob, a],
+          );
+          try {
+            for (const cookie of [alice, bob]) {
+              for (const method of ["GET", "POST", "PATCH", "DELETE"]) {
+                for (const suffix of [
+                  "members",
+                  `members/${users.bob}`,
+                  "invites",
+                ]) {
+                  assert.equal(
+                    (
+                      await request(`/api/platform/workspaces/${a}/${suffix}`, {
+                        method,
+                        cookie,
+                        data: { email: "carol@test.invalid", role: "owner" },
+                      })
+                    ).status,
+                    404,
+                  );
+                }
+              }
+            }
+            for (const cookie of [undefined, alice, bob]) {
+              assert.equal(
+                (
+                  await request("/api/platform/invites/accept", {
+                    method: "POST",
+                    cookie,
+                    data: { token: "legacy", name: "Carol", password },
+                  })
+                ).status,
+                404,
+              );
+            }
+            for (const role of ["owner", "editor", "viewer"]) {
+              await pool.query(
+                "UPDATE memberships SET role=$3 WHERE workspace_id=$1 AND user_id=$2",
+                [a, users.bob, role],
+              );
+              const list = await request("/api/platform/workspaces", {
+                cookie: bob,
+              });
+              assert(!list.data.some((w) => w.id === a));
+              assert.equal(
+                (
+                  await request(`/api/platform/workspaces/${a}/launch`, {
+                    method: "POST",
+                    cookie: bob,
+                  })
+                ).status,
+                404,
+              );
+              for (const path of [
+                "/api/projects",
+                "/_platform/context",
+                "/api/events",
+              ]) {
+                assert.equal(
+                  (await request(path, { host: aHost, cookie: legacyCookie }))
+                    .status,
+                  404,
+                );
+              }
+            }
+            assert.equal(
+              (
+                await request("/api/auth/sso/session", {
+                  method: "POST",
+                  data: { subject: users.bob, sessionId: legacyGrant },
+                  headers: {
+                    "x-sso-client-secret": config.deepLiterature.secret,
+                  },
+                })
+              ).status,
+              401,
+            );
+            const ownerList = await request("/api/platform/workspaces", {
               cookie: alice,
-              data: { email: "carol@test.invalid", role: "viewer" },
-            },
-          );
-          const invite = new URLSearchParams(
-            new URL(issued.data.url).hash.slice(1),
-          ).get("invite");
-          const accepted = await request("/api/platform/invites/accept", {
-            method: "POST",
-            data: { token: invite, name: "Carol", password },
-          });
-          assert.equal(accepted.status, 200);
-          const carol = await login("carol");
-          const list = await request("/api/platform/workspaces", {
-            cookie: carol,
-          });
-          assert.deepEqual(
-            list.data.map((w) => [w.id, w.role]),
-            [[a, "viewer"]],
-          );
-          assert.equal(
-            (
-              await request(`/api/platform/workspaces/${b}/launch`, {
-                method: "POST",
-                cookie: carol,
-              })
-            ).status,
-            404,
-          );
-          assert.equal(
-            (await request("/api/platform/login", { method: "POST", data: [] }))
-              .status,
-            400,
-          );
+            });
+            assert(ownerList.data.some((w) => w.id === a));
+            assert(!("role" in ownerList.data[0]));
+            // Ownership works without any old membership record.
+            await pool.query(
+              "DELETE FROM memberships WHERE workspace_id=$1 AND user_id=$2",
+              [a, users.alice],
+            );
+            assert.equal(
+              (
+                await request("/api/projects", {
+                  host: aHost,
+                  cookie: aSession.cookie,
+                })
+              ).status,
+              200,
+            );
+          } finally {
+            await pool.query(
+              "UPDATE platform_users SET is_admin=false WHERE id=$1",
+              [users.bob],
+            );
+          }
         },
       );
       await t.test(
-        "one-use email-bound invitation and read-only role",
-        async () => {
-          const r = await request(`/api/platform/workspaces/${a}/invites`, {
-            method: "POST",
-            cookie: alice,
-            data: { email: "bob@test.invalid", role: "viewer" },
-          });
-          assert.equal(r.status, 201);
-          const invite = new URLSearchParams(
-            new URL(r.data.url).hash.slice(1),
-          ).get("invite");
-          assert.equal(
-            (
-              await request("/api/platform/invites/accept", {
-                method: "POST",
-                cookie: alice,
-                data: { token: invite },
-              })
-            ).status,
-            403,
-          );
-          assert.equal(
-            (
-              await request("/api/platform/invites/accept", {
-                method: "POST",
-                cookie: bob,
-                data: { token: invite },
-              })
-            ).status,
-            200,
-          );
-          assert.equal(
-            (
-              await request("/api/platform/invites/accept", {
-                method: "POST",
-                cookie: bob,
-                data: { token: invite },
-              })
-            ).status,
-            400,
-          );
-          viewer = await enter(bob, a);
-          assert.equal(
-            (
-              await request("/api/projects", {
-                host: aHost,
-                cookie: viewer.cookie,
-              })
-            ).status,
-            200,
-          );
-          assert.equal(
-            (
-              await request("/api/projects", {
-                host: aHost,
-                cookie: viewer.cookie,
-                method: "POST",
-                origin: `http://${aHost}`,
-                data: {},
-              })
-            ).status,
-            403,
-          );
-          assert.equal(
-            (
-              await request("/api/settings/env", {
-                host: aHost,
-                cookie: viewer.cookie,
-              })
-            ).status,
-            403,
-          );
-          assert.equal(
-            (
-              await request(`/api/platform/workspaces/${a}/runner`, {
-                method: "POST",
-                cookie: bob,
-              })
-            ).status,
-            403,
-          );
-          assert.equal(
-            (
-              await request("/api/settings/ui-state", {
-                method: "POST",
-                host: aHost,
-                cookie: viewer.cookie,
-                origin: `http://${aHost}`,
-                data: { workspace: { lastLocation: "/discover" } },
-              })
-            ).status,
-            200,
-          );
-          assert.equal(
-            (
-              await request("/api/settings/ui-state", {
-                host: aHost,
-                cookie: aSession.cookie,
-              })
-            ).data.workspace,
-            null,
-          );
-          assert.equal(
-            (
-              await request("/api/settings/ui-state", {
-                host: aHost,
-                cookie: viewer.cookie,
-              })
-            ).data.workspace.lastLocation,
-            "/discover",
-          );
-          assert.equal(
-            (
-              await request(
-                `/api/platform/workspaces/${a}/members/${users.alice}`,
-                { method: "DELETE", cookie: alice },
-              )
-            ).status,
-            409,
-          );
-        },
-      );
-      await t.test(
-        "terminal relayed for editor and rejected for viewer",
+        "terminal relayed only for the private space owner",
         async () => {
           const target = `ws://127.0.0.1:${port}/api/projects/p/terminal`;
           const ws = new WebSocket(target, {
@@ -1163,17 +1067,18 @@ test(
           const denied = new WebSocket(target, {
             headers: {
               host: aHost,
-              cookie: viewer.cookie,
+              cookie: bSession.cookie,
               origin: `http://${aHost}`,
             },
           });
           denied.on("error", () => {});
           sockets.push(denied);
           const [error] = await once(denied, "error");
-          assert.match(error.message, /403/);
+          assert.match(error.message, /401/);
         },
       );
       let streaming;
+      const streamSession = await enter(await login("alice"), a);
       await t.test("SSE uses authorized tunnel", async () => {
         streaming = await new Promise((resolve, reject) => {
           const req = http.get(
@@ -1181,7 +1086,7 @@ test(
               host: "127.0.0.1",
               port,
               path: "/api/events",
-              headers: { host: aHost, cookie: viewer.cookie },
+              headers: { host: aHost, cookie: streamSession.cookie },
             },
             (res) => {
               res.once("data", (data) => {
@@ -1194,7 +1099,7 @@ test(
         });
       });
       await t.test(
-        "member removal closes streams and denies new requests",
+        "owner logout closes streams and denies new requests",
         async () => {
           const closed = new Promise((resolve) => {
             streaming.res.on("error", () => {});
@@ -1202,10 +1107,12 @@ test(
           });
           assert.equal(
             (
-              await request(
-                `/api/platform/workspaces/${a}/members/${users.bob}`,
-                { method: "DELETE", cookie: alice },
-              )
+              await request("/_platform/logout", {
+                method: "POST",
+                host: aHost,
+                origin: `http://${aHost}`,
+                cookie: streamSession.cookie,
+              })
             ).status,
             200,
           );
@@ -1214,19 +1121,10 @@ test(
             (
               await request("/api/projects", {
                 host: aHost,
-                cookie: viewer.cookie,
+                cookie: streamSession.cookie,
               })
             ).status,
-            404,
-          );
-          assert.equal(
-            (
-              await request(`/api/platform/workspaces/${a}/launch`, {
-                method: "POST",
-                cookie: bob,
-              })
-            ).status,
-            404,
+            401,
           );
         },
       );

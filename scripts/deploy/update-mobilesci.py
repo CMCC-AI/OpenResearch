@@ -5,7 +5,8 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+import re
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import shlex
 import shutil
 import subprocess
@@ -20,6 +21,8 @@ SSH_OPTIONS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-o', 'ServerAl
 
 
 def run(args, **kwargs):
+    if os.name == 'nt':
+        args = [shutil.which(str(args[0])) or args[0], *args[1:]]
     print('+', shlex.join(map(str, args)), flush=True)
     return subprocess.run(list(map(str, args)), check=True, **kwargs)
 
@@ -30,19 +33,19 @@ def digest(path):
 
 def fingerprint():
     value = hashlib.sha256()
-    for name in ['Cargo.toml', 'Cargo.lock', 'build.rs', 'SYSTEM_PROMPT.md', 'SKILL.md', 'src', 'ui/src', 'ui/dist', 'linux', 'agent-skills', 'demo', 'packages/platform/Dockerfile.executor', 'packages/platform/public', 'packages/platform/src', 'scripts/deploy/update-server.py']:
+    for name in ['Cargo.toml', 'Cargo.lock', 'build.rs', 'SYSTEM_PROMPT.md', 'SKILL.md', 'src', 'ui/src', 'ui/dist', 'linux', 'agent-skills', 'demo', 'packages/platform/Dockerfile.executor', 'packages/platform/package.json', 'packages/platform/package-lock.json', 'packages/platform/migrations', 'packages/platform/public', 'packages/platform/src', 'scripts/deploy/update-server.py', 'scripts/deploy/update-mobilesci.py']:
         path = ROOT / name
         for file in sorted(path.rglob('*') if path.is_dir() else [path]):
             if file.is_file():
-                value.update(str(file.relative_to(ROOT)).encode())
+                value.update(file.relative_to(ROOT).as_posix().encode())
                 value.update(bytes.fromhex(digest(file)))
     return value.hexdigest()
 
 
 def safe_extract(archive, destination):
     for member in archive.getmembers():
-        path = Path(member.name)
-        if path.is_absolute() or '..' in path.parts or not (member.isfile() or member.isdir()):
+        path = PurePosixPath(member.name)
+        if path.is_absolute() or PureWindowsPath(member.name).drive or '\\' in member.name or '..' in path.parts or not (member.isfile() or member.isdir()):
             raise ValueError('不安全的部署包路径或链接：' + member.name)
     archive.extractall(destination)
 
@@ -77,21 +80,29 @@ def prepare(image=None):
             print('复用已准备的更新包：' + str(bundle), flush=True)
             return bundle
     if image is None:
-        run(['pnpm', 'build'], cwd=ROOT / 'ui')
+        run(['pnpm', 'run', 'build'], cwd=ROOT / 'ui')
     with tempfile.TemporaryDirectory(prefix='mobilesci-update-') as temp:
         work = Path(temp)
         if image is None:
-            baseline = work / 'baseline'
-            baseline.mkdir()
             archive = subprocess.check_output(['git', 'archive', 'HEAD'], cwd=ROOT)
-            # This trusted git archive may contain tracked skill symlinks. Git
-            # controls its paths; unlike uploaded bundles it is not untrusted.
-            with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
-                tar.extractall(baseline)
-            run(['docker', 'buildx', 'build', '--platform', 'linux/amd64', '--target', 'build', '--load', '-f', baseline / 'packages/platform/Dockerfile.executor', 'packages/platform/public', 'packages/platform/src', '-t', 'mobilesci-update-build:base', baseline])
-            (work / 'Dockerfile').write_text('FROM mobilesci-update-build:base AS build\nCOPY src /src/src\nCOPY ui/dist /src/ui/dist\nCOPY Cargo.toml Cargo.lock build.rs /src/\nCOPY linux /src/linux\nCOPY agent-skills /src/agent-skills\nCOPY demo /src/demo\nCOPY SYSTEM_PROMPT.md SKILL.md /src/\nRUN cargo build --release --locked\nFROM scratch\nCOPY --from=build /src/target/release/orx /orx\nCMD ["/orx"]\n')
+            # Include the current deployment Dockerfile without changing the source snapshot.
+            with tarfile.open(fileobj=io.BytesIO(archive)) as source_tar:
+                buffer = io.BytesIO()
+                with tarfile.open(fileobj=buffer, mode='w', format=tarfile.USTAR_FORMAT) as target_tar:
+                    for member in source_tar:
+                        member.pax_headers = {}
+                        if member.name == 'packages/platform/Dockerfile.executor':
+                            data = (ROOT / member.name).read_bytes()
+                            member.size = len(data)
+                            target_tar.addfile(member, io.BytesIO(data))
+                        else:
+                            target_tar.addfile(member, source_tar.extractfile(member) if member.isfile() else None)
+                archive = buffer.getvalue()
+            # Stream tracked Linux symlinks directly to Docker, including on Windows.
+            run(['docker', 'build', '--platform', 'linux/amd64', '--target', 'build', '-f', 'packages/platform/Dockerfile.executor', '-t', 'mobilesci-update-build:base', '-'], input=archive)
+            (work / 'Dockerfile').write_text('FROM mobilesci-update-build:base AS build\nCOPY src /src/src\nCOPY ui/dist /src/ui/dist\nCOPY ui/src/researchWorkflows.json /src/ui/src/researchWorkflows.json\nCOPY Cargo.toml Cargo.lock build.rs /src/\nCOPY linux /src/linux\nCOPY agent-skills /src/agent-skills\nCOPY demo /src/demo\nCOPY SYSTEM_PROMPT.md SKILL.md /src/\nRUN cargo build --release --locked\nFROM scratch\nCOPY --from=build /src/target/release/orx /orx\nCMD ["/orx"]\n')
             image = 'mobilesci-update-binary:' + source[:12]
-            run(['docker', 'buildx', 'build', '--platform', 'linux/amd64', '--load', '-f', work / 'Dockerfile', '-t', image, ROOT])
+            run(['docker', 'build', '--platform', 'linux/amd64', '-f', work / 'Dockerfile', '-t', image, ROOT])
             binary_path = '/orx'
         else:
             # Explicitly selected locally built image; never read remote images.
@@ -113,17 +124,38 @@ def prepare(image=None):
         shutil.copytree(ROOT / 'ui/dist', package / 'platform/dist')
         shutil.copytree(ROOT / 'packages/platform/public', package / 'platform/public')
         shutil.copytree(ROOT / 'packages/platform/src', package / 'platform/src')
+        shutil.copytree(ROOT / 'packages/platform/migrations', package / 'platform/migrations')
+        for name in ['package.json', 'package-lock.json']:
+            shutil.copy2(ROOT / 'packages/platform' / name, package / 'platform' / name)
+        # Resolve Linux dependencies locally: production hosts need no registry access.
+        dependencies = work / 'platform-dependencies'
+        dependencies.mkdir()
+        for name in ['package.json', 'package-lock.json']:
+            shutil.copy2(ROOT / 'packages/platform' / name, dependencies / name)
+        (dependencies / 'Dockerfile').write_text('FROM node:22-alpine AS dependencies\nWORKDIR /deps\nCOPY package.json package-lock.json ./\nRUN npm ci --omit=dev --ignore-scripts\nFROM scratch\nCOPY --from=dependencies /deps/node_modules /node_modules\nCMD ["/unused"]\n')
+        dependency_image = 'mobilesci-update-platform-dependencies:' + digest(dependencies / 'package-lock.json')[:12]
+        run(['docker', 'build', '--platform', 'linux/amd64', '-t', dependency_image, dependencies])
+        container = subprocess.check_output(['docker', 'create', '--platform', 'linux/amd64', dependency_image], text=True).strip()
+        try:
+            run(['docker', 'cp', container + ':/node_modules', package / 'platform/node_modules'])
+        finally:
+            run(['docker', 'rm', container])
         for service in ['workbench', 'platform']:
-            copy = 'COPY orx /usr/local/bin/orx' if service == 'workbench' else 'COPY dist /app/ui/dist\nCOPY public /app/platform/public\nCOPY src /app/platform/src'
+            copy = 'COPY --chmod=755 orx /usr/local/bin/orx' if service == 'workbench' else 'WORKDIR /app/platform\nCOPY package.json package-lock.json ./\nCOPY node_modules ./node_modules\nCOPY migrations ./migrations\nCOPY dist /app/ui/dist\nCOPY public ./public\nCOPY src ./src'
             (package / service / 'Dockerfile').write_text('ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n' + copy + '\n')
         shutil.copy2(ROOT / 'scripts/deploy/update-server.py', package / 'update-server.py')
         source = fingerprint()
-        manifest = {'format': 1, 'architecture': 'linux/amd64', 'fingerprint': source, 'files': {str(file.relative_to(package)): digest(file) for file in sorted(package.rglob('*')) if file.is_file()}}
+        version = re.search(r'^version = "([^"]+)"', (ROOT / 'Cargo.toml').read_text(), re.MULTILINE).group(1)
+        manifest = {'format': 1, 'architecture': 'linux/amd64', 'version': version, 'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(), 'fingerprint': source, 'files': {file.relative_to(package).as_posix(): digest(file) for file in sorted(package.rglob('*')) if file.is_file()}}
         (package / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
         bundle = OUTPUT / (time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-' + source[:12] + '.tgz')
+        def linux_permissions(member):
+            if member.name == 'workbench/orx':
+                member.mode = 0o755
+            return member
         with tarfile.open(bundle, 'w:gz') as archive:
             for file in sorted(package.rglob('*')):
-                archive.add(file, arcname=str(file.relative_to(package)), recursive=False)
+                archive.add(file, arcname=file.relative_to(package).as_posix(), recursive=False, filter=linux_permissions)
         bundle.chmod(0o600)
         verify_bundle(bundle)
         latest.write_text(json.dumps({'file': bundle.name, 'sha256': digest(bundle), 'fingerprint': source}, indent=2) + '\n')

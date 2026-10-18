@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowRight, Folder, FolderOpen, MessageCircle, MoreHorizontal, Pin, Plus, Settings, Trash2, X } from "lucide-react";
+import { ArrowRight, Folder, FolderOpen, MessageCircle, MoreHorizontal, Pin, Plus, Settings, Star, Trash2, X } from "lucide-react";
 import { deleteProject, revealFileInManager, updateProject, type Project } from "../api";
 import { m } from "../paraglide/messages.js";
 import { Button, IconButton, Input, MenuItem, Tooltip, showAlert } from "./ui";
@@ -11,7 +11,7 @@ function deleteExplanation(project: Project) {
   return `${m.projects_delete_from_app({ name: project.name })}\n\n${synced ? m.projects_home_local_and_github_kept() : m.projects_home_local_folder_kept()}`;
 }
 
-export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleCollapsed, onRemoved, onNewChat, onOpen, pinned, onPin }: {
+export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleCollapsed, onRemoved, onNewChat, onOpen, onFeature, pinned, onPin }: {
   project: Project;
   chatCount: number | undefined;
   collapsed: boolean;
@@ -20,6 +20,7 @@ export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleC
   onRemoved: () => void;
   onNewChat?: () => void;
   onOpen?: () => void;
+  onFeature?: () => void;
   pinned: boolean;
   onPin: () => void;
 }) {
@@ -99,6 +100,7 @@ export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleC
       </div>
       <MenuItem role="menuitem" onClick={() => { onPin(); menuRef.current?.hidePopover(); }}><span className="flex items-center gap-2"><Pin size={16} />{pinned ? m.sidebar_unpin_project() : m.sidebar_pin_project()}</span></MenuItem>
       <MenuItem role="menuitem" onClick={edit}><span className="flex items-center gap-2"><Settings size={16} />{m.activity_edit()}</span></MenuItem>
+      {onFeature && <MenuItem role="menuitem" disabled={busy} onClick={() => { menuRef.current?.hidePopover(); onFeature(); }}><span className="flex items-center gap-2"><Star size={16} />添加到精选案例</span></MenuItem>}
       <MenuItem role="menuitem" onClick={() => {
         menuRef.current?.hidePopover();
         void revealFileInManager(project.id, ".").catch((err: unknown) => showAlert(err instanceof Error ? err.message : String(err), "error"));
