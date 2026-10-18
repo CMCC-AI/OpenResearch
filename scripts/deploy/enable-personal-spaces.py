@@ -220,6 +220,11 @@ def main(package, capacity):
             '--label', 'com.docker.compose.oneoff=False',
             '--label', 'openresearch.provisioner=true', image, 'node', 'src/provisioner.mjs')
         provisioner_created=True
+        # Fail closed: remove direct access to shared research before admitting
+        # ordinary accounts. Never enable private identities behind the old proxy.
+        release_file('nginx.conf', desired_gateway)
+        run('docker', 'exec', gateway, 'nginx', '-t')
+        run('docker', 'exec', gateway, 'nginx', '-s', 'reload')
         config = dict(old['Config'])
         config['Env'] = [k + '=' + v for k, v in {**existing, **changes}.items()]
         run('docker', 'stop', '-t', '30', platform)
@@ -236,22 +241,20 @@ def main(package, capacity):
                 if attempt == 44:
                     raise
                 time.sleep(1)
-        release_file('nginx.conf', desired_gateway)
-        run('docker', 'exec', gateway, 'nginx', '-t')
-        run('docker', 'exec', gateway, 'nginx', '-s', 'reload')
         release_file('compose.yaml', desired_compose)
         print('PERSONAL ROUTING ENABLED: ' + stamp, flush=True)
         print('Original research owner retained; new users use private Docker volumes', flush=True)
         print('Rollback metadata: ' + str(root), flush=True)
     except BaseException:
-        release_file('nginx.conf', nginx)
-        release_file('compose.yaml', compose)
-        run('docker', 'exec', gateway, 'nginx', '-s', 'reload')
+        # Restore owner-only admission before restoring the shared-data proxy.
         if created:
             run('docker', 'rm', '-f', created)
         if switched:
             run('docker', 'rename', rollback, platform)
             run('docker', 'start', platform)
+        release_file('nginx.conf', nginx)
+        release_file('compose.yaml', compose)
+        run('docker', 'exec', gateway, 'nginx', '-s', 'reload')
         if provisioner_created:
             run('docker','stop',provisioner)
             run('docker','rename',provisioner,provisioner+'-failed-'+stamp.lower())
