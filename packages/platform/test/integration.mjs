@@ -1034,6 +1034,45 @@ test(
             ws.send("own terminal");
             assert.equal((await message)[0].toString(), "own terminal");
             ws.close();
+            const temporaryUser = (
+              await request("/api/platform/me", { cookie: created.cookie })
+            ).data.id;
+            const temporaryToken = token();
+            const publicOrigin = new URL("http://61.136.101.179:20281");
+            await pool.query(
+              "INSERT INTO platform_sessions(token_hash,user_id,host,expires_at) VALUES($1,$2,$3,now()+interval '1 hour')",
+              [hash(temporaryToken), temporaryUser, publicOrigin.host],
+            );
+            const previousOrigin = config.origin;
+            config.origin = publicOrigin;
+            try {
+              const removed = await request(
+                `/api/platform/workspaces/${initial.data.id}`,
+                {
+                  method: "DELETE",
+                  cookie: `orx_session=${temporaryToken}`,
+                  host: publicOrigin.host,
+                  origin: publicOrigin.origin,
+                  data: { name: "我的科研空间" },
+                },
+              );
+              assert.equal(removed.status, 200, JSON.stringify(removed.data));
+            } finally {
+              config.origin = previousOrigin;
+            }
+            assert.equal(
+              (await request("/api/platform/me", { cookie: created.cookie }))
+                .status,
+              401,
+            );
+            assert.equal(
+              (await request("/api/projects", { cookie: alice })).status,
+              200,
+            );
+            assert.equal(
+              (await request("/api/projects", { cookie: bob })).status,
+              200,
+            );
           } finally {
             config.sharedOriginSpaces = false;
             config.privateSpaces = false;

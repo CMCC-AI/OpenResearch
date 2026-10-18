@@ -1021,10 +1021,17 @@ export async function createPlatform(
             "UPDATE workspace_runtimes SET desired='deleted',checked_at=NULL WHERE workspace_id=$1",
             [workspace],
           );
-          const sessions = await db.query(
-            "DELETE FROM platform_sessions WHERE host=$1 RETURNING token_hash",
-            [new URL(workspaceOrigin(config, workspace)).host],
-          );
+          // Shared-origin spaces have no UUID subdomain, and deleting one user's
+          // space must never revoke every account on the shared origin.
+          const sessions = config.sharedOriginSpaces
+            ? await db.query(
+                "DELETE FROM platform_sessions WHERE user_id=$1 RETURNING token_hash",
+                [s.user_id],
+              )
+            : await db.query(
+                "DELETE FROM platform_sessions WHERE host=$1 RETURNING token_hash",
+                [new URL(workspaceOrigin(config, workspace)).host],
+              );
           await db.query("DELETE FROM launch_tickets WHERE workspace_id=$1", [
             workspace,
           ]);
