@@ -52,7 +52,8 @@ test(
         });
         return {
           status: res.status,
-          data: await res.json(),
+          data: res.status === 204 ? null : await res.json(),
+          headers: res.headers,
           cookie: res.headers.get("set-cookie")?.split(";")[0],
         };
       }
@@ -187,6 +188,74 @@ test(
             ).status,
             405,
           );
+        },
+      );
+      await t.test(
+        "unified administration accepts only the configured app origin and live administrators",
+        async () => {
+          const allowed = await request("/admin/users", {
+            cookie: admin.cookie,
+            source: config.appOrigin,
+          });
+          assert.equal(allowed.status, 200);
+          assert.equal(
+            allowed.headers.get("access-control-allow-origin"),
+            config.appOrigin,
+          );
+          assert.equal(
+            allowed.headers.get("access-control-allow-credentials"),
+            "true",
+          );
+          assert.equal(
+            (
+              await request("/admin/users", {
+                method: "OPTIONS",
+                source: config.appOrigin,
+              })
+            ).status,
+            204,
+          );
+          assert.equal(
+            (
+              await request("/admin/users", {
+                cookie: admin.cookie,
+                source: "https://foreign.test",
+              })
+            ).status,
+            403,
+          );
+          assert.equal(
+            (
+              await request("/admin/users", {
+                cookie: user.cookie,
+                source: config.appOrigin,
+              })
+            ).status,
+            403,
+          );
+          assert.equal(
+            (await request("/admin/users", { source: config.appOrigin }))
+              .status,
+            401,
+          );
+          await pool.query(
+            "UPDATE platform_users SET is_admin=false WHERE email='admin@test.invalid'",
+          );
+          try {
+            assert.equal(
+              (
+                await request("/admin/users", {
+                  cookie: admin.cookie,
+                  source: config.appOrigin,
+                })
+              ).status,
+              403,
+            );
+          } finally {
+            await pool.query(
+              "UPDATE platform_users SET is_admin=true WHERE email='admin@test.invalid'",
+            );
+          }
         },
       );
       await t.test(

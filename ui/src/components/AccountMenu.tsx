@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronUp, Cpu, LogOut, Settings, UserRound } from "lucide-react";
+import { ChevronUp, Cpu, LogOut, Settings, ShieldCheck, UserRound } from "lucide-react";
 import { useAuthSession } from "../product/AuthSession";
 import { useRuntime } from "../RemoteRuntime";
 import { getUiStateQuery, listProjectsQuery } from "../queries/projects";
@@ -52,6 +52,7 @@ export function AccountMenu({ onSettings, connectionInfo }: {
       const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
       items[next]?.focus();
     }}>
+      {user?.isAdmin && <MenuItem role="menuitem" onClick={() => { menu.setOpen(false); void navigate({ to: "/admin/users" }); }}><span className="flex items-center gap-2.5"><ShieldCheck size={15} />系统管理</span></MenuItem>}
       {canAccessResearch && ([{ id: "compute", label: m.settings_page_compute(), Icon: Cpu }, { id: "settings", label: m.settings_page_settings(), Icon: Settings }] as const).map(({ id, label, Icon }) => <MenuItem key={id} role="menuitem" onClick={() => { menu.setOpen(false); onSettings ? onSettings(id) : go(`settings/${id}`); }}><span className="flex items-center gap-2.5"><Icon size={15} />{label}</span></MenuItem>)}
       <div className="my-1 border-t border-border-variant" />
       <details className="px-2 py-1 text-sm text-subtext"><summary role="menuitem" className="cursor-pointer rounded-md py-1 focus-visible:outline-2 focus-visible:outline-primary">连接状态与版本</summary>{canAccessResearch ? connectionInfo ?? <WorkspaceConnection runtime={runtime} /> : <p className="text-xs">MobileSci {runtime.version}</p>}</details>

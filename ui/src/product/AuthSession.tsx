@@ -28,7 +28,7 @@ type AuthSessionValue = {
 };
 
 const AuthSessionContext = createContext<AuthSessionValue | null>(null);
-const protectedPrefixes = ["/projects", "/discover", "/literature", "/capabilities", "/cases"];
+const protectedPrefixes = ["/projects", "/discover", "/literature", "/capabilities", "/cases", "/admin"];
 
 export function AuthSessionProvider({
   runtime,
@@ -123,7 +123,7 @@ export function AuthSessionProvider({
   if ((protectedRoute || pathname === "/") && loading)
     return <main className="app flex h-full items-center justify-center bg-background"><Spinner /></main>;
   if (protectedRoute && !user) return <Navigate to="/" replace />;
-  if (user && !canAccessResearch && protectedRoute && !pathname.startsWith("/cases")) return <Navigate to="/cases" replace />;
+  if (user && !canAccessResearch && protectedRoute && !pathname.startsWith("/cases") && !pathname.startsWith("/admin")) return <Navigate to="/cases" replace />;
   if (pathname === "/" && user) return <Navigate to={canAccessResearch ? "/projects" : "/cases"} replace />;
   return <AuthSessionContext value={value}>{children}</AuthSessionContext>;
 }

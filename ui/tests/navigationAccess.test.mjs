@@ -60,3 +60,9 @@ test("catalog-only users browse public cases without entering the private resear
   assert.notEqual(authGate("/mobilesci/cases",reader,false,false).type,"Navigate");
   assert.equal(authGate("/cases",null).props.to,"/");
 });
+
+test("administration requires login and permits administrators without private research access", () => {
+  assert.equal(authGate("/admin/users",null).props.to,"/");
+  assert.equal(authGate("/mobilesci/admin/cases",null).props.to,"/");
+  assert.notEqual(authGate("/admin/users",{id:"admin",isAdmin:true},false,false).type,"Navigate");
+});

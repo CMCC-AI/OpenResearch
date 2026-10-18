@@ -28,9 +28,9 @@ function components(rows=[detail],admin=false,queryResult=null) {
 test("published cards open the case record, with no template or private project action",()=>{
   const {ResearchCases}=components();const html=renderToStaticMarkup(React.createElement(ResearchCases));
   assert.ok(html.includes('href="/cases/case-1"'));assert.ok(html.includes("一个真实项目"));
-  assert.equal(html.includes("填入研究目标"),false);assert.equal(html.includes("从论文到可信复现"),false);assert.equal(html.includes("管理案例"),false);
+  assert.equal(html.includes("填入研究目标"),false);assert.equal(html.includes("从论文到可信复现"),false);assert.equal(html.includes("管理精选案例"),false);
   const empty=components([]);assert.ok(renderToStaticMarkup(React.createElement(empty.ResearchCases)).includes("暂时没有已发布"));
-  const admin=components([detail],true);assert.ok(renderToStaticMarkup(React.createElement(admin.ResearchCases)).includes("管理案例"));
+  const admin=components([detail],true);assert.ok(renderToStaticMarkup(React.createElement(admin.ResearchCases)).includes("管理精选案例"));
 });
 test("the public transcript renders every record as inert text and only offers snapshot downloads",()=>{
   const {CaseTranscript}=components();const html=renderToStaticMarkup(React.createElement(CaseTranscript,{detail}));

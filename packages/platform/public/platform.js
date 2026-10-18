@@ -281,87 +281,15 @@ async function administration() {
       '<section class="card"><h1>无权访问系统管理</h1><p>此页面仅对系统管理员开放。</p><a href="/">返回主页</a></section>';
     return;
   }
-  app.innerHTML = `<section class="card admin-panel"><div class="hero"><div><span class="eyebrow">系统管理</span><h1>注册用户</h1><p class="muted">查看账号注册和登录情况，不展示密码或科研内容。</p></div><button id="admin-workbench">进入科研主页</button></div>
-    <div id="user-summary" class="admin-summary"></div>
-    <form id="user-search" class="admin-search"><label>搜索用户<input name="q" type="search" maxlength="120" placeholder="姓名或邮箱"></label><button type="submit">搜索</button></form>
-    <p id="users-status" role="status"></p><div class="table-scroll"><table><thead><tr><th>姓名</th><th>邮箱</th><th>角色</th><th>状态</th><th>注册时间</th><th>最近登录</th><th>空间数</th></tr></thead><tbody id="users-body"></tbody></table></div>
-    <div class="admin-pagination"><button id="users-prev">上一页</button><span id="users-page"></span><button id="users-next">下一页</button></div></section>`;
-  document.querySelector("#admin-workbench").onclick = async () => {
-    try {
-      const capabilities = await api("/capabilities");
-      if (capabilities.privateSpaces) await hostedHome(capabilities);
-      else location.assign(capabilities.openResearchAppUrl);
-    } catch (error) {
-      notice(error.message);
-    }
-  };
-  let page = 1,
-    query = "",
-    loading = false;
-  const date = (v) => (v ? new Date(v).toLocaleString("zh-CN") : "尚未登录");
-  async function refresh() {
-    if (loading) return;
-    loading = true;
-    document.querySelector("#users-status").textContent = "正在加载…";
-    document.querySelector("#user-search button").disabled = true;
-    document.querySelector("#users-prev").disabled = true;
-    document.querySelector("#users-next").disabled = true;
-    try {
-      const result = await api(
-        `/admin/users?page=${page}&q=${encodeURIComponent(query)}`,
-      );
-      document.querySelector("#user-summary").innerHTML = [
-        ["注册用户", result.summary.total],
-        ["正常账号", result.summary.enabled],
-        ["停用账号", result.summary.disabled],
-        ["管理员", result.summary.admins],
-      ]
-        .map(
-          ([label, value]) =>
-            `<div><span>${label}</span><strong>${value}</strong></div>`,
-        )
-        .join("");
-      document.querySelector("#users-body").innerHTML = result.users
-        .map(
-          (u) =>
-            `<tr><td>${esc(u.name)}</td><td>${esc(u.email)}</td><td>${u.is_admin ? "管理员" : "普通用户"}</td><td>${u.disabled ? "已停用" : "正常"}</td><td>${esc(date(u.created_at))}</td><td>${esc(date(u.last_login_at))}</td><td>${u.workspace_count}</td></tr>`,
-        )
-        .join("");
-      document.querySelector("#users-status").textContent = result.total
-        ? `共找到 ${result.total} 位用户`
-        : "没有匹配的用户";
-      document.querySelector("#users-page").textContent =
-        `第 ${page} / ${Math.max(1, Math.ceil(result.total / result.pageSize))} 页`;
-      document.querySelector("#users-prev").disabled = page === 1;
-      document.querySelector("#users-next").disabled =
-        page * result.pageSize >= result.total;
-    } catch (error) {
-      document.querySelector("#users-status").textContent = error.message;
-    } finally {
-      loading = false;
-      document.querySelector("#user-search button").disabled = false;
-    }
-  }
-  document.querySelector("#user-search").onsubmit = (event) => {
-    event.preventDefault();
-    if (loading) return;
-    query = new FormData(event.currentTarget).get("q");
-    page = 1;
-    void refresh();
-  };
-  document.querySelector("#users-prev").onclick = () => {
-    if (!loading) {
-      page--;
-      void refresh();
-    }
-  };
-  document.querySelector("#users-next").onclick = () => {
-    if (!loading) {
-      page++;
-      void refresh();
-    }
-  };
-  await refresh();
+  const capabilities = await api("/capabilities");
+  const destination = new URL(capabilities.openResearchAppUrl);
+  destination.pathname = destination.pathname.replace(
+    /\/projects\/?$/,
+    "/admin/users",
+  );
+  destination.search = "";
+  destination.hash = "";
+  location.replace(destination.href);
 }
 
 async function load() {

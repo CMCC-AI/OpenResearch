@@ -343,6 +343,20 @@ export async function createPlatform(
     audit,
     limit,
   });
+  async function adminUsers(req, res, origin, currentSession = null) {
+    browserSessionOrigin(req, origin);
+    res.setHeader("access-control-allow-origin", origin);
+    res.setHeader("access-control-allow-credentials", "true");
+    res.setHeader("vary", "Origin");
+    if (req.method === "OPTIONS") {
+      res.setHeader("access-control-allow-methods", "GET, OPTIONS");
+      res.writeHead(204);
+      return res.end();
+    }
+    const s = currentSession || (await session(req));
+    await limit(`admin-users:${s.user_id}`, 180, 60);
+    await accounts.admin(req, res, "/api/platform/admin/users", s);
+  }
   const server = http.createServer(async (req, res) => {
     res.setHeader("cache-control", "no-store");
     res.setHeader("referrer-policy", "no-referrer");
@@ -412,6 +426,13 @@ export async function createPlatform(
         }
         const s = await session(req);
         await spaceOwner(s.user_id, workspace);
+        if (path === "/api/platform/admin/users")
+          return await adminUsers(
+            req,
+            res,
+            workspaceOrigin(config, workspace),
+            s,
+          );
         if (path === "/api/auth/sso/authorize" && req.method === "GET")
           return await authorizeDeepLiterature(req, res, s, workspace);
         if (path === "/_platform/context" && req.method === "GET")
@@ -596,6 +617,13 @@ export async function createPlatform(
         for (const tunnel of tunnels.values())
           for (const row of children.rows) tunnel.revokeSession(row.token_hash);
         return json(res, { code: 200, data: { ok: true } });
+      }
+      if (path === "/api/platform/admin/users") {
+        const origin =
+          !req.headers.origin || req.headers.origin === config.origin.origin
+            ? config.origin.origin
+            : config.appOrigin;
+        return await adminUsers(req, res, origin);
       }
       const browserSessionPath = [
         "/api/platform/catalog-session",

@@ -10,12 +10,16 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AdminRouteImport } from './routes/admin'
 import { Route as CapabilitiesRouteImport } from './routes/capabilities'
 import { Route as CasesRouteImport } from './routes/cases'
 import { Route as DiscoverRouteImport } from './routes/discover'
 import { Route as LiteratureRouteImport } from './routes/literature'
 import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as RemoteLaunchRouteImport } from './routes/remote-launch'
+import { Route as AdminIndexRouteImport } from './routes/admin.index'
+import { Route as AdminCasesRouteImport } from './routes/admin.cases'
+import { Route as AdminUsersRouteImport } from './routes/admin.users'
 import { Route as CasesIndexRouteImport } from './routes/cases.index'
 import { Route as CasesCaseIdRouteImport } from './routes/cases.$caseId'
 import { Route as CasesManageRouteImport } from './routes/cases.manage'
@@ -30,6 +34,11 @@ import { Route as ProjectsProjectIdTasksNewRouteImport } from './routes/projects
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminRoute = AdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CapabilitiesRoute = CapabilitiesRouteImport.update({
@@ -61,6 +70,21 @@ const RemoteLaunchRoute = RemoteLaunchRouteImport.update({
   id: '/remote-launch',
   path: '/remote-launch',
   getParentRoute: () => rootRouteImport,
+} as any)
+const AdminIndexRoute = AdminIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AdminRoute,
+} as any)
+const AdminCasesRoute = AdminCasesRouteImport.update({
+  id: '/cases',
+  path: '/cases',
+  getParentRoute: () => AdminRoute,
+} as any)
+const AdminUsersRoute = AdminUsersRouteImport.update({
+  id: '/users',
+  path: '/users',
+  getParentRoute: () => AdminRoute,
 } as any)
 const CasesIndexRoute = CasesIndexRouteImport.update({
   id: '/',
@@ -118,15 +142,19 @@ const ProjectsProjectIdTasksNewRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRouteWithChildren
   '/capabilities': typeof CapabilitiesRoute
   '/cases': typeof CasesRouteWithChildren
   '/discover': typeof DiscoverRoute
   '/literature': typeof LiteratureRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/remote-launch': typeof RemoteLaunchRoute
+  '/admin/cases': typeof AdminCasesRoute
+  '/admin/users': typeof AdminUsersRoute
   '/cases/$caseId': typeof CasesCaseIdRoute
   '/cases/manage': typeof CasesManageRoute
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
+  '/admin/': typeof AdminIndexRoute
   '/cases/': typeof CasesIndexRoute
   '/projects/': typeof ProjectsIndexRoute
   '/projects/$projectId/skills': typeof ProjectsProjectIdSkillsRoute
@@ -141,8 +169,11 @@ export interface FileRoutesByTo {
   '/discover': typeof DiscoverRoute
   '/literature': typeof LiteratureRoute
   '/remote-launch': typeof RemoteLaunchRoute
+  '/admin/cases': typeof AdminCasesRoute
+  '/admin/users': typeof AdminUsersRoute
   '/cases/$caseId': typeof CasesCaseIdRoute
   '/cases/manage': typeof CasesManageRoute
+  '/admin': typeof AdminIndexRoute
   '/cases': typeof CasesIndexRoute
   '/projects': typeof ProjectsIndexRoute
   '/projects/$projectId/skills': typeof ProjectsProjectIdSkillsRoute
@@ -154,15 +185,19 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/admin': typeof AdminRouteWithChildren
   '/capabilities': typeof CapabilitiesRoute
   '/cases': typeof CasesRouteWithChildren
   '/discover': typeof DiscoverRoute
   '/literature': typeof LiteratureRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/remote-launch': typeof RemoteLaunchRoute
+  '/admin/cases': typeof AdminCasesRoute
+  '/admin/users': typeof AdminUsersRoute
   '/cases/$caseId': typeof CasesCaseIdRoute
   '/cases/manage': typeof CasesManageRoute
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
+  '/admin/': typeof AdminIndexRoute
   '/cases/': typeof CasesIndexRoute
   '/projects/': typeof ProjectsIndexRoute
   '/projects/$projectId/skills': typeof ProjectsProjectIdSkillsRoute
@@ -175,15 +210,19 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/admin'
     | '/capabilities'
     | '/cases'
     | '/discover'
     | '/literature'
     | '/projects'
     | '/remote-launch'
+    | '/admin/cases'
+    | '/admin/users'
     | '/cases/$caseId'
     | '/cases/manage'
     | '/projects/$projectId'
+    | '/admin/'
     | '/cases/'
     | '/projects/'
     | '/projects/$projectId/skills'
@@ -198,8 +237,11 @@ export interface FileRouteTypes {
     | '/discover'
     | '/literature'
     | '/remote-launch'
+    | '/admin/cases'
+    | '/admin/users'
     | '/cases/$caseId'
     | '/cases/manage'
+    | '/admin'
     | '/cases'
     | '/projects'
     | '/projects/$projectId/skills'
@@ -210,15 +252,19 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/admin'
     | '/capabilities'
     | '/cases'
     | '/discover'
     | '/literature'
     | '/projects'
     | '/remote-launch'
+    | '/admin/cases'
+    | '/admin/users'
     | '/cases/$caseId'
     | '/cases/manage'
     | '/projects/$projectId'
+    | '/admin/'
     | '/cases/'
     | '/projects/'
     | '/projects/$projectId/skills'
@@ -230,6 +276,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AdminRoute: typeof AdminRouteWithChildren
   CapabilitiesRoute: typeof CapabilitiesRoute
   CasesRoute: typeof CasesRouteWithChildren
   DiscoverRoute: typeof DiscoverRoute
@@ -245,6 +292,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin': {
+      id: '/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AdminRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/capabilities': {
@@ -288,6 +342,27 @@ declare module '@tanstack/react-router' {
       fullPath: '/remote-launch'
       preLoaderRoute: typeof RemoteLaunchRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/admin/': {
+      id: '/admin/'
+      path: '/'
+      fullPath: '/admin/'
+      preLoaderRoute: typeof AdminIndexRouteImport
+      parentRoute: typeof AdminRoute
+    }
+    '/admin/cases': {
+      id: '/admin/cases'
+      path: '/cases'
+      fullPath: '/admin/cases'
+      preLoaderRoute: typeof AdminCasesRouteImport
+      parentRoute: typeof AdminRoute
+    }
+    '/admin/users': {
+      id: '/admin/users'
+      path: '/users'
+      fullPath: '/admin/users'
+      preLoaderRoute: typeof AdminUsersRouteImport
+      parentRoute: typeof AdminRoute
     }
     '/cases/': {
       id: '/cases/'
@@ -362,6 +437,20 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface AdminRouteChildren {
+  AdminCasesRoute: typeof AdminCasesRoute
+  AdminUsersRoute: typeof AdminUsersRoute
+  AdminIndexRoute: typeof AdminIndexRoute
+}
+
+const AdminRouteChildren: AdminRouteChildren = {
+  AdminCasesRoute: AdminCasesRoute,
+  AdminUsersRoute: AdminUsersRoute,
+  AdminIndexRoute: AdminIndexRoute,
+}
+
+const AdminRouteWithChildren = AdminRoute._addFileChildren(AdminRouteChildren)
+
 interface CasesRouteChildren {
   CasesCaseIdRoute: typeof CasesCaseIdRoute
   CasesManageRoute: typeof CasesManageRoute
@@ -411,6 +500,7 @@ const ProjectsRouteWithChildren = ProjectsRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AdminRoute: AdminRouteWithChildren,
   CapabilitiesRoute: CapabilitiesRoute,
   CasesRoute: CasesRouteWithChildren,
   DiscoverRoute: DiscoverRoute,

@@ -74,3 +74,7 @@ node --env-file=.env src/admin.mjs create-admin admin@example.org admin < /path/
 验证包括注册自动会话、前端直接跳转、密码显隐、普通用户越权拒绝、管理员只读分页、
 邮件配置缺失提示、邮件发送失败、令牌摘要存储、重置并发单次使用、过期、旧链接失效、
 会话撤销和 CSRF 检查。所有集成用例使用独立 PostgreSQL schema 和模拟邮件，不发送真实邮件。
+
+## 系统管理统一入口
+
+系统管理员登录后进入 `/admin/users`（MobileSci 子路径部署为 `/mobilesci/admin/users`），侧栏在“用户管理”和“精选案例管理”之间切换。用户管理提供注册统计、姓名或邮箱搜索、账号角色与状态、登录时间及空间数量的只读查看；精选案例管理复用已有快照审核发布流程。科研账号菜单提供“系统管理”入口，项目“添加到精选案例”会直接打开后台案例栏目并选中项目。旧 `/_account/login?admin=1` 和 `/cases/manage` 链接继续兼容。

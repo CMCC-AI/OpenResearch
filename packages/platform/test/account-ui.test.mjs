@@ -119,15 +119,22 @@ test("administrator lands on user management and normal users have no management
       email: "admin@test.invalid",
       isAdmin: true,
     },
-    "/api/platform/admin/users?page=1&q=": {
-      summary: { total: 0, enabled: 0, disabled: 0, admins: 1 },
-      users: [],
-      total: 0,
-      pageSize: 25,
+    "/api/platform/capabilities": {
+      openResearchAppUrl: "http://localhost:4791/mobilesci/projects",
     },
   });
   await b.ui.load();
-  assert.match(b.node("#app").innerHTML, /注册用户/);
-  assert.ok(b.calls.includes("/api/platform/admin/users?page=1&q="));
-  assert.deepEqual(b.redirects, []);
+  assert.deepEqual(b.redirects, [
+    "http://localhost:4791/mobilesci/admin/users",
+  ]);
+  assert.ok(
+    !b.calls.some((path) => path.startsWith("/api/platform/admin/users")),
+  );
+  const ordinary = browser({
+    "/api/platform/me": { name: "Reader", isAdmin: false },
+  });
+  ordinary.context.location.search = "?admin=1";
+  await ordinary.ui.load();
+  assert.match(ordinary.node("#app").innerHTML, /仅对系统管理员开放/);
+  assert.deepEqual(ordinary.redirects, []);
 });

@@ -19,7 +19,7 @@ export function ResearchCases({ fullPage = false }: { fullPage?: boolean }) {
   const query = useQuery({ queryKey: ["featured-cases", base, user?.id], queryFn: () => caseRequest<{ cases: FeaturedCase[] }>(base, "cases"), enabled: Boolean(base && user), staleTime: 10000, refetchInterval: 30000 });
   const rows = fullPage ? query.data?.cases : query.data?.cases.slice(0, 6);
   return <section aria-labelledby="research-cases-title" className="min-w-0">
-    <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h2 id="research-cases-title" className="m-0 text-xl font-semibold">精选案例</h2><div className="flex gap-4 text-sm">{!fullPage && <Link to="/cases" className="text-primary">查看全部</Link>}{user?.isAdmin && <Link to="/cases/manage" className="text-primary">管理案例</Link>}</div></div>
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h2 id="research-cases-title" className="m-0 text-xl font-semibold">精选案例</h2><div className="flex gap-4 text-sm">{!fullPage && <Link to="/cases" className="text-primary">查看全部</Link>}{user?.isAdmin && <Link to="/admin/cases" className="text-primary">管理精选案例</Link>}</div></div>
     <p className="mb-5 text-sm text-subtext">查看真实项目的完整研究对话与成果文件，了解研究如何一步步推进。</p>
     {query.isPending && <p className="text-sm text-muted">正在读取案例…</p>}
     {query.error && <p role="alert" className="text-sm text-accent-red">{query.error.message} <Button size="small" onClick={() => void query.refetch()}>重试</Button></p>}

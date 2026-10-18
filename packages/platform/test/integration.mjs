@@ -1020,6 +1020,26 @@ test(
               ).status,
               401,
             );
+            const ownAdministration = await request(
+              "/api/platform/admin/users",
+              {
+                host: bHost,
+                cookie: bSession.cookie,
+                origin: `http://${bHost}`,
+              },
+            );
+            assert.equal(ownAdministration.status, 200);
+            assert.equal(ownAdministration.data.summary.admins, 1);
+            assert.equal(
+              (
+                await request("/api/platform/admin/users", {
+                  host: aHost,
+                  cookie: legacyCookie,
+                  origin: `http://${aHost}`,
+                })
+              ).status,
+              404,
+            );
             const ownerList = await request("/api/platform/workspaces", {
               cookie: alice,
             });
