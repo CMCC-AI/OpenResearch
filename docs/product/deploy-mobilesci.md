@@ -200,3 +200,9 @@ ssh -p 20280 ubuntu@61.136.101.179 \
 部署前验证：355 项 UI 测试、19 项平台单元测试、34 项独立数据库集成测试、23 项 Linux 部署测试与 16 项 Linux 启动测试通过；UI 类型检查、国际化、样式检查、平台格式检查和生产前端构建通过。Rust 源码沿用先前全量验证版本，本次重新构建包含新前端的 Linux 发布二进制。
 
 用户明确指定将已有 `owner@research.local` 授予系统管理员；部署后使用离线 `grant-admin` 命令执行，保持密码与研究入口账号不变。
+
+部署已完成：代码提交 `499a6c53274a1c5618def1220d5801fcdd6ac191`，发布号 `20261018T102218Z`。更新包 `.mobilesci-run/updates/20261018T102114Z-6a072109a6fe.tgz`，SHA-256 为 `dd6ed07df06b2705df02d91c2258fd15dccaa7aa73304c237a33c804abec0528`。服务器日志 `/home/ubuntu/.mobilesci-updates/dd6ed07df06b2705/deploy.log`；账号备份与回滚元数据 `/home/ubuntu/.mobilesci-sidebar-upgrade-20261018T102218Z/`；科研备份 `/opt/mobilesci/state/research/state/backups/sidebar-20261018T102218Z.db`。
+
+线上切换前活跃任务、实验、队列、会话租约与派发均为零；SQLite 副本迁移及原表记录数验证通过，PostgreSQL 备份格式验证通过并应用 `005.sql`。两服务 env、Mounts、HostConfig 与更新前完全一致，运行容器源码标签、后端二进制及 632 个平台文件 SHA-256 与发布包一致。`owner@research.local` 已通过离线命令授予系统管理员，授权前后密码哈希和密码版本完全一致；原密码登录成功，验证会话已退出撤销。
+
+管理员身份、原研究访问、案例管理及公共案例列表、托管存储 JSON 和旧团队接口 404 验证通过。匿名研究、案例、案例管理和存储接口均返回 401；公共精选案例仍为 0 个，没有发布真实研究内容或调用模型。`/mobilesci/` 与 `/deepxiv/` 返回 200；`mobilesci.service` 为 active/enabled。当前部署继续使用原指定账号研究实例，自动每用户托管实例仍未启用。
