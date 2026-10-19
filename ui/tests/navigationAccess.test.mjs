@@ -75,3 +75,13 @@ test("only research pages prepare private compute; cases and administration rema
  assert.equal(research.props.children.key,user.id);
  for(const path of ["/cases","/admin/users","/admin/cases","/literature"])assert.equal(authGate(path,user,false,true,true).props.children,"page");
 });
+
+
+test("workspace settings keep login, research access, and private runtime gates", () => {
+  for (const path of ["/settings/settings", "/settings/compute", "/mobilesci/settings/instances"]) {
+    assert.equal(authGate(path, null).props.to, "/");
+    assert.equal(authGate(path, { id: "reader" }, false, false).props.to, "/cases");
+    assert.equal(authGate(path, { id: "user" }, false, true, true).props.children.type, "PersonalResearchGate");
+    assert.equal(authGate(path, { id: "user" }).props.children, "page");
+  }
+});

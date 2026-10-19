@@ -26,6 +26,7 @@ import { Route as CasesCaseIdRouteImport } from './routes/cases.$caseId'
 import { Route as CasesManageRouteImport } from './routes/cases.manage'
 import { Route as ProjectsIndexRouteImport } from './routes/projects.index'
 import { Route as ProjectsProjectIdRouteImport } from './routes/projects.$projectId'
+import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
 import { Route as ProjectsProjectIdIndexRouteImport } from './routes/projects.$projectId.index'
 import { Route as ProjectsProjectIdSkillsRouteImport } from './routes/projects.$projectId.skills'
 import { Route as ProjectsProjectIdSettingsTabRouteImport } from './routes/projects.$projectId.settings.$tab'
@@ -117,6 +118,11 @@ const ProjectsProjectIdRoute = ProjectsProjectIdRouteImport.update({
   path: '/$projectId',
   getParentRoute: () => ProjectsRoute,
 } as any)
+const SettingsTabRoute = SettingsTabRouteImport.update({
+  id: '/settings/$tab',
+  path: '/settings/$tab',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProjectsProjectIdIndexRoute = ProjectsProjectIdIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -161,6 +167,7 @@ export interface FileRoutesByFullPath {
   '/cases/$caseId': typeof CasesCaseIdRoute
   '/cases/manage': typeof CasesManageRoute
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
+  '/settings/$tab': typeof SettingsTabRoute
   '/admin/': typeof AdminIndexRoute
   '/cases/': typeof CasesIndexRoute
   '/projects/': typeof ProjectsIndexRoute
@@ -181,6 +188,7 @@ export interface FileRoutesByTo {
   '/admin/users': typeof AdminUsersRoute
   '/cases/$caseId': typeof CasesCaseIdRoute
   '/cases/manage': typeof CasesManageRoute
+  '/settings/$tab': typeof SettingsTabRoute
   '/admin': typeof AdminIndexRoute
   '/cases': typeof CasesIndexRoute
   '/projects': typeof ProjectsIndexRoute
@@ -206,6 +214,7 @@ export interface FileRoutesById {
   '/cases/$caseId': typeof CasesCaseIdRoute
   '/cases/manage': typeof CasesManageRoute
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
+  '/settings/$tab': typeof SettingsTabRoute
   '/admin/': typeof AdminIndexRoute
   '/cases/': typeof CasesIndexRoute
   '/projects/': typeof ProjectsIndexRoute
@@ -232,6 +241,7 @@ export interface FileRouteTypes {
     | '/cases/$caseId'
     | '/cases/manage'
     | '/projects/$projectId'
+    | '/settings/$tab'
     | '/admin/'
     | '/cases/'
     | '/projects/'
@@ -252,6 +262,7 @@ export interface FileRouteTypes {
     | '/admin/users'
     | '/cases/$caseId'
     | '/cases/manage'
+    | '/settings/$tab'
     | '/admin'
     | '/cases'
     | '/projects'
@@ -276,6 +287,7 @@ export interface FileRouteTypes {
     | '/cases/$caseId'
     | '/cases/manage'
     | '/projects/$projectId'
+    | '/settings/$tab'
     | '/admin/'
     | '/cases/'
     | '/projects/'
@@ -295,6 +307,7 @@ export interface RootRouteChildren {
   LiteratureRoute: typeof LiteratureRoute
   ProjectsRoute: typeof ProjectsRouteWithChildren
   RemoteLaunchRoute: typeof RemoteLaunchRoute
+  SettingsTabRoute: typeof SettingsTabRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -418,6 +431,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsProjectIdRouteImport
       parentRoute: typeof ProjectsRoute
     }
+    '/settings/$tab': {
+      id: '/settings/$tab'
+      path: '/settings/$tab'
+      fullPath: '/settings/$tab'
+      preLoaderRoute: typeof SettingsTabRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/projects/$projectId/': {
       id: '/projects/$projectId/'
       path: '/'
@@ -528,6 +548,7 @@ const rootRouteChildren: RootRouteChildren = {
   LiteratureRoute: LiteratureRoute,
   ProjectsRoute: ProjectsRouteWithChildren,
   RemoteLaunchRoute: RemoteLaunchRoute,
+  SettingsTabRoute: SettingsTabRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

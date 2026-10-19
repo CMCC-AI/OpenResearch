@@ -6012,7 +6012,7 @@ export function ChatPanel({
   }, [sidebarGrouping, railOpen, embedded, lastVisibleIndex, sidebarRows.length, flatSessions.hasNextPage, flatSessions.isFetching, flatSessions.isError, flatSessions.fetchNextPage]);
 
   const rail = (
-    <ProductSidebar onCollapse={onCollapseRail} onSettings={readOnly ? undefined : onSelectMainView} connectionInfo={<WorkspaceConnection runtime={runtime} />}>
+    <ProductSidebar onCollapse={onCollapseRail} connectionInfo={<WorkspaceConnection runtime={runtime} />}>
       <ResearchNavigationActions disabled={Boolean(readOnly)} active={newChatVisible} onNewChat={startNewTask} shortcut={isApple ? "⌘ ⇧ ↵" : "Ctrl + Shift + ↵"} />
       <div className={sidebarClasses.heading}>
         <div className={sidebarClasses.label}>

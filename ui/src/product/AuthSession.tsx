@@ -29,7 +29,7 @@ type AuthSessionValue = {
 };
 
 const AuthSessionContext = createContext<AuthSessionValue | null>(null);
-const protectedPrefixes = ["/projects", "/discover", "/literature", "/capabilities", "/cases", "/admin"];
+const protectedPrefixes = ["/settings", "/projects", "/discover", "/literature", "/capabilities", "/cases", "/admin"];
 
 export function AuthSessionProvider({
   runtime,

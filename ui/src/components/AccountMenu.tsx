@@ -1,39 +1,23 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { ChevronUp, Cpu, LogOut, Settings, ShieldCheck, UserRound } from "lucide-react";
 import { useAuthSession } from "../product/AuthSession";
 import { useRuntime } from "../RemoteRuntime";
-import { getUiStateQuery, listProjectsQuery } from "../queries/projects";
-import { parseDestination } from "../workspaceState";
 import { m } from "../paraglide/messages.js";
 import { usePopover } from "./ModelPicker";
 import { MenuItem } from "./ui";
 import { WorkspaceConnection } from "./WorkspaceConnection";
 
-type AccountSetting = "compute" | "settings";
-export function AccountMenu({ onSettings, connectionInfo }: {
-  onSettings?: (tab: AccountSetting) => void; connectionInfo?: ReactNode;
-}) {
+export function AccountMenu({ connectionInfo }: { connectionInfo?: ReactNode }) {
   const { user, logout, canAccessResearch } = useAuthSession();
   const runtime = useRuntime();
   const navigate = useNavigate();
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
   const trigger = useRef<HTMLButtonElement>(null);
   const menuId = useId();
   const menu = usePopover(trigger);
-  const projects = useQuery({ ...listProjectsQuery(), enabled: canAccessResearch && menu.open && Boolean(user) && !onSettings });
-  const saved = useQuery({ ...getUiStateQuery(), enabled: canAccessResearch && menu.open && Boolean(user) && !onSettings });
   useEffect(() => {
     if (menu.open) menu.ref.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
   }, [menu.open, menu.ref]);
-  const destination = parseDestination(pathname);
-  const remembered = parseDestination((saved.data?.workspace?.lastLocation ?? "").split("?")[0]);
-  const projectId = destination?.projectId ?? remembered?.projectId ?? projects.data?.[0]?.id;
-  const go = (suffix: string) => {
-    if (projectId) void navigate({ href: `/projects/${encodeURIComponent(projectId)}/${suffix}` });
-    else void navigate({ to: "/projects", search: { new: true } });
-  };
   if (!user && runtime.kind !== "ssh") return null;
   const userName = user?.name ?? "工作区用户";
   const userEmail = user?.email ?? "远程连接";
@@ -53,7 +37,7 @@ export function AccountMenu({ onSettings, connectionInfo }: {
       items[next]?.focus();
     }}>
       {user?.isAdmin && <MenuItem role="menuitem" onClick={() => { menu.setOpen(false); void navigate({ to: "/admin/users" }); }}><span className="flex items-center gap-2.5"><ShieldCheck size={15} />系统管理</span></MenuItem>}
-      {canAccessResearch && ([{ id: "compute", label: m.settings_page_compute(), Icon: Cpu }, { id: "settings", label: m.settings_page_settings(), Icon: Settings }] as const).map(({ id, label, Icon }) => <MenuItem key={id} role="menuitem" onClick={() => { menu.setOpen(false); onSettings ? onSettings(id) : go(`settings/${id}`); }}><span className="flex items-center gap-2.5"><Icon size={15} />{label}</span></MenuItem>)}
+      {canAccessResearch && ([{ id: "compute", label: m.settings_page_compute(), Icon: Cpu }, { id: "settings", label: m.settings_page_settings(), Icon: Settings }] as const).map(({ id, label, Icon }) => <MenuItem key={id} role="menuitem" onClick={() => { menu.setOpen(false); void navigate({ to: "/settings/$tab", params: { tab: id } }); }}><span className="flex items-center gap-2.5"><Icon size={15} />{label}</span></MenuItem>)}
       <div className="my-1 border-t border-border-variant" />
       <details className="px-2 py-1 text-sm text-subtext"><summary role="menuitem" className="cursor-pointer rounded-md py-1 focus-visible:outline-2 focus-visible:outline-primary">连接状态与版本</summary>{canAccessResearch ? connectionInfo ?? <WorkspaceConnection runtime={runtime} /> : <p className="text-xs">MobileSci {runtime.version}</p>}</details>
       <div className="my-1 border-t border-border-variant" />

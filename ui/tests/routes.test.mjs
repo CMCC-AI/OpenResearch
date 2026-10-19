@@ -35,6 +35,7 @@ function loadModule(filename, api = {}, remembered = null) {
       if (id === "../RemoteRuntime") return { RuntimeRoot: () => null, useRuntime: () => ({ kind: "local" }) };
       if (id === "../routePages") return { ResumeGlobal: () => null, ResumeProject: () => null, ProjectsPage: () => null };
       if (id === "../product/LandingPage") return { LandingPage: () => null };
+      if (id === "../product/WorkspaceSettingsPage") return { WorkspaceSettingsPage: () => null };
       if (id === "../product/CapabilitiesPage") return { CapabilitiesPage: () => null };
       if (id === "../product/DiscoverPage") return { DiscoverPage: () => null };
       if (id === "../product/LiteraturePage") return { LiteraturePage: () => null };
@@ -68,6 +69,9 @@ test("real file routes distinguish task/new, task IDs, project index, and settin
     ["/projects/p", "/projects/$projectId/"],
     ["/projects/p/tasks/new", "/projects/$projectId/tasks/new"],
     ["/projects/p/tasks/old", "/projects/$projectId/tasks/$sessionId"],
+    ["/settings/settings", "/settings/$tab"],
+    ["/settings/compute", "/settings/$tab"],
+    ["/settings/instances", "/settings/$tab"],
     ["/projects/p/settings/git", "/projects/$projectId/settings/$tab"],
     ["/remote-launch", "/remote-launch"],
   ]) {
@@ -75,7 +79,7 @@ test("real file routes distinguish task/new, task IDs, project index, and settin
     assert.equal(router.state.matches.at(-1).routeId, routeId, path);
     assert.equal(router.state.matches.at(-1).status, "success", path);
   }
-  for (const path of ["/projects/p/skills", "/projects/p/settings/environment", "/projects/p/settings/unknown", "/projects/p/tasks/%00"]) {
+  for (const path of ["/settings/git", "/settings/environment", "/settings/unknown", "/projects/p/skills", "/projects/p/settings/environment", "/projects/p/settings/unknown", "/projects/p/tasks/%00"]) {
     const invalid = await match(path);
     assert(invalid.state.matches.some((route) => route.status === "notFound" || route.globalNotFound), `${path}: ${JSON.stringify(invalid.state.matches.map(({ status, globalNotFound, routeId }) => ({ status, globalNotFound, routeId })))}`);
   }

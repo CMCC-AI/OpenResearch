@@ -680,3 +680,38 @@
   .new-chat-starter-wrap > .new-chat-starter-card:hover,
   .new-chat-starter-wrap > .new-chat-starter-card:focus-visible { transform: none; }
 }
+
+/* Research team palette from Figma 1071:637. */
+:root {
+  --research-team-text: #3c4055;
+  --research-team-subtext: #757b83;
+  --research-team-border: #eaedf6;
+  --research-team-canvas: #fafcfe;
+  --research-team-icon: #ebf0f8;
+  --research-team-tab: #f4f8ff;
+  --research-team-stat-experts: #f4f7ff;
+  --research-team-stat-tasks: #fffcf3;
+  --research-team-stat-artifacts: #f1fdff;
+  --research-team-stat-stage: #f8f8f9;
+  --research-team-artifact: #1ccbea;
+  --research-team-amber: #ea911c;
+  --research-team-green: #14de50;
+  --research-team-track: #ebf0f8;
+  --research-team-shadow: 0 4px 4px rgb(15 13 47 / 5%);
+}
+:root[data-theme="dark"] {
+  --research-team-text: var(--text);
+  --research-team-subtext: var(--subtext);
+  --research-team-border: var(--border-variant);
+  --research-team-canvas: var(--canvas);
+  --research-team-icon: var(--surface);
+  --research-team-tab: var(--surface);
+  --research-team-stat-experts: var(--accent-blue-subtle);
+  --research-team-stat-tasks: var(--accent-amber-subtle);
+  --research-team-stat-artifacts: var(--accent-teal-subtle);
+  --research-team-stat-stage: var(--surface);
+  --research-team-artifact: var(--accent-teal);
+  --research-team-amber: var(--accent-amber);
+  --research-team-green: var(--accent-green);
+  --research-team-track: var(--surface);
+}
