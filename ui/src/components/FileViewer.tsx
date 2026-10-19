@@ -1,3 +1,4 @@
+import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import {
   setScopedQueryData,
   queryClient,
@@ -315,7 +316,8 @@ export function FileViewer({
     !viaPrunedWorktree;
   const unsafeRemoteEdit = editableText && data.version === undefined;
   const hasDraft = editState !== null && isDirtyFileBuffer(editState);
-  const editable = !unsafeRemoteEdit && (
+  const readOnly = useReadOnlyWorkspace();
+  const editable = !readOnly && !unsafeRemoteEdit && (
     (editableText && typeof data.version === "string") || hasDraft
   );
   // The editor replaces the read-only view for editable files — except markdown,
@@ -427,7 +429,7 @@ export function FileViewer({
     try {
       if (data.truncated && !showingEditor) {
         // WebKit requires the clipboard write to start during the click.
-        const content = fetch(rawFileUrl(filePath)).then(async (response) => {
+        const content = fetch(rawFileUrl(filePath), { credentials: "include" }).then(async (response) => {
           if (!response.ok) throw new Error();
           return new Blob([await response.text()], { type: "text/plain" });
         });
@@ -700,7 +702,7 @@ export function FileViewer({
               data-tip-align="end"
               aria-label={m.file_viewer_open_in_default_editor()}
               aria-description={osActionBlocker ?? undefined}
-              disabled={openEditor.busy || osActionBlocker != null}
+              disabled={Boolean(readOnly) || openEditor.busy || osActionBlocker != null}
               onClick={() => void openEditor.trigger()}
             >
               {openEditor.busy ? <Spinner /> : <ExternalLink size={13} />}
@@ -711,7 +713,7 @@ export function FileViewer({
               data-tip-align="end"
               aria-label={m.file_viewer_reveal_in_file_manager()}
               aria-description={osActionBlocker ?? undefined}
-              disabled={revealManager.busy || osActionBlocker != null}
+              disabled={Boolean(readOnly) || revealManager.busy || osActionBlocker != null}
               onClick={() => void revealManager.trigger()}
             >
               {revealManager.busy ? <Spinner /> : <FolderOpen size={13} />}

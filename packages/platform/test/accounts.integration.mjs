@@ -595,6 +595,177 @@ test(
         },
       );
       await t.test(
+        "role changes and account deletion revoke access and preserve ownership",
+        async () => {
+          await pool.query("DELETE FROM auth_limits");
+          const target = await signup("managed-account@test.invalid");
+          const reader = await signup("managed-reader@test.invalid");
+          const targetId = (await request("/me", { cookie: target.cookie }))
+            .data.id;
+          const adminId = (await request("/me", { cookie: admin.cookie })).data
+            .id;
+          // Browser writes preflight the exact route before sending credentials.
+          for (const action of ["password", "role", "delete"]) {
+            const preflight = await request(
+              `/admin/users/${targetId}/${action}`,
+              {
+                method: "OPTIONS",
+                source: config.appOrigin,
+              },
+            );
+            assert.equal(preflight.status, 204);
+            assert.equal(
+              preflight.headers.get("access-control-allow-origin"),
+              config.appOrigin,
+            );
+            assert.match(
+              preflight.headers.get("access-control-allow-methods"),
+              /POST/,
+            );
+          }
+          const role = `/admin/users/${targetId}/role`;
+          const remove = `/admin/users/${targetId}/delete`;
+          const change = (
+            path,
+            data,
+            cookie = admin.cookie,
+            source = config.appOrigin,
+          ) =>
+            request(path, {
+              method: "POST",
+              cookie,
+              source,
+              data: { adminPassword: password, ...data },
+            });
+          assert.equal(
+            (await change(role, { isAdmin: true }, reader.cookie)).status,
+            403,
+          );
+          assert.equal(
+            (
+              await change(
+                role,
+                { isAdmin: true },
+                admin.cookie,
+                "https://evil.test",
+              )
+            ).status,
+            403,
+          );
+          assert.equal((await change(role, { isAdmin: "true" })).status, 400);
+          assert.equal(
+            (await change(role, { isAdmin: true, adminPassword: "incorrect" }))
+              .status,
+            403,
+          );
+          assert.equal(
+            (await change(`/admin/users/${adminId}/role`, { isAdmin: false }))
+              .status,
+            400,
+          );
+          assert.equal(
+            (
+              await change(`/admin/users/${adminId}/delete`, {
+                email: "admin@test.invalid",
+              })
+            ).status,
+            400,
+          );
+          assert.equal((await change(role, { isAdmin: true })).status, 200);
+          assert.equal(
+            (await request("/me", { cookie: target.cookie })).status,
+            401,
+          );
+          const promoted = await login("managed-account@test.invalid");
+          assert.equal(
+            (await request("/me", { cookie: promoted.cookie })).data.isAdmin,
+            true,
+          );
+          assert.equal(
+            (await request("/admin/users", { cookie: promoted.cookie })).status,
+            200,
+          );
+          assert.equal((await change(role, { isAdmin: false })).status, 200);
+          assert.equal(
+            (await request("/admin/users", { cookie: promoted.cookie })).status,
+            401,
+          );
+          const demoted = await login("managed-account@test.invalid");
+          assert.equal(
+            (await request("/admin/users", { cookie: demoted.cookie })).status,
+            403,
+          );
+          const before = (
+            await request("/admin/users", { cookie: admin.cookie })
+          ).data;
+          assert.equal(
+            (await change(remove, { email: "wrong@test.invalid" })).status,
+            400,
+          );
+          assert.equal(
+            (
+              await change(
+                remove,
+                { email: "managed-account@test.invalid" },
+                reader.cookie,
+              )
+            ).status,
+            403,
+          );
+          const recovery = token();
+          await pool.query(
+            "INSERT INTO password_reset_tokens(token_hash,user_id,password_version,expires_at) VALUES($1,$2,0,now()+interval '1 hour')",
+            [hash(recovery), targetId],
+          );
+          assert.equal(
+            (await change(remove, { email: "managed-account@test.invalid" }))
+              .status,
+            200,
+          );
+          assert.equal(
+            (await request("/me", { cookie: demoted.cookie })).status,
+            401,
+          );
+          assert.equal(
+            (await login("managed-account@test.invalid")).status,
+            401,
+          );
+          assert.equal((await redeem(recovery)).status, 400);
+          assert.equal((await change(role, { isAdmin: true })).status, 404);
+          assert.equal(
+            (await change(remove, { email: "managed-account@test.invalid" }))
+              .status,
+            404,
+          );
+          const after = (
+            await request("/admin/users", { cookie: admin.cookie })
+          ).data;
+          assert.equal(after.total, before.total - 1);
+          assert.equal(after.summary.total, before.summary.total - 1);
+          assert.ok(!after.users.some((row) => row.id === targetId));
+          assert.equal(
+            (
+              await pool.query(
+                "SELECT count(*)::int n FROM personal_spaces WHERE user_id=$1",
+                [targetId],
+              )
+            ).rows[0].n,
+            1,
+          );
+          const actions = (
+            await pool.query(
+              "SELECT action FROM audit_events WHERE resource=$1 ORDER BY id",
+              [targetId],
+            )
+          ).rows.map((row) => row.action);
+          assert.deepEqual(actions, [
+            "account.role.admin",
+            "account.role.user",
+            "account.delete",
+          ]);
+        },
+      );
+      await t.test(
         "existing accounts receive one logical space without automatically allocating compute",
         async () => {
           const legacy = id();

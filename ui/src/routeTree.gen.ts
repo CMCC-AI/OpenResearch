@@ -19,6 +19,7 @@ import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as RemoteLaunchRouteImport } from './routes/remote-launch'
 import { Route as AdminIndexRouteImport } from './routes/admin.index'
 import { Route as AdminCasesRouteImport } from './routes/admin.cases'
+import { Route as AdminOpencodeRouteImport } from './routes/admin.opencode'
 import { Route as AdminUsersRouteImport } from './routes/admin.users'
 import { Route as CasesIndexRouteImport } from './routes/cases.index'
 import { Route as CasesCaseIdRouteImport } from './routes/cases.$caseId'
@@ -79,6 +80,11 @@ const AdminIndexRoute = AdminIndexRouteImport.update({
 const AdminCasesRoute = AdminCasesRouteImport.update({
   id: '/cases',
   path: '/cases',
+  getParentRoute: () => AdminRoute,
+} as any)
+const AdminOpencodeRoute = AdminOpencodeRouteImport.update({
+  id: '/opencode',
+  path: '/opencode',
   getParentRoute: () => AdminRoute,
 } as any)
 const AdminUsersRoute = AdminUsersRouteImport.update({
@@ -150,6 +156,7 @@ export interface FileRoutesByFullPath {
   '/projects': typeof ProjectsRouteWithChildren
   '/remote-launch': typeof RemoteLaunchRoute
   '/admin/cases': typeof AdminCasesRoute
+  '/admin/opencode': typeof AdminOpencodeRoute
   '/admin/users': typeof AdminUsersRoute
   '/cases/$caseId': typeof CasesCaseIdRoute
   '/cases/manage': typeof CasesManageRoute
@@ -170,6 +177,7 @@ export interface FileRoutesByTo {
   '/literature': typeof LiteratureRoute
   '/remote-launch': typeof RemoteLaunchRoute
   '/admin/cases': typeof AdminCasesRoute
+  '/admin/opencode': typeof AdminOpencodeRoute
   '/admin/users': typeof AdminUsersRoute
   '/cases/$caseId': typeof CasesCaseIdRoute
   '/cases/manage': typeof CasesManageRoute
@@ -193,6 +201,7 @@ export interface FileRoutesById {
   '/projects': typeof ProjectsRouteWithChildren
   '/remote-launch': typeof RemoteLaunchRoute
   '/admin/cases': typeof AdminCasesRoute
+  '/admin/opencode': typeof AdminOpencodeRoute
   '/admin/users': typeof AdminUsersRoute
   '/cases/$caseId': typeof CasesCaseIdRoute
   '/cases/manage': typeof CasesManageRoute
@@ -218,6 +227,7 @@ export interface FileRouteTypes {
     | '/projects'
     | '/remote-launch'
     | '/admin/cases'
+    | '/admin/opencode'
     | '/admin/users'
     | '/cases/$caseId'
     | '/cases/manage'
@@ -238,6 +248,7 @@ export interface FileRouteTypes {
     | '/literature'
     | '/remote-launch'
     | '/admin/cases'
+    | '/admin/opencode'
     | '/admin/users'
     | '/cases/$caseId'
     | '/cases/manage'
@@ -260,6 +271,7 @@ export interface FileRouteTypes {
     | '/projects'
     | '/remote-launch'
     | '/admin/cases'
+    | '/admin/opencode'
     | '/admin/users'
     | '/cases/$caseId'
     | '/cases/manage'
@@ -357,6 +369,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminCasesRouteImport
       parentRoute: typeof AdminRoute
     }
+    '/admin/opencode': {
+      id: '/admin/opencode'
+      path: '/opencode'
+      fullPath: '/admin/opencode'
+      preLoaderRoute: typeof AdminOpencodeRouteImport
+      parentRoute: typeof AdminRoute
+    }
     '/admin/users': {
       id: '/admin/users'
       path: '/users'
@@ -439,12 +458,14 @@ declare module '@tanstack/react-router' {
 
 interface AdminRouteChildren {
   AdminCasesRoute: typeof AdminCasesRoute
+  AdminOpencodeRoute: typeof AdminOpencodeRoute
   AdminUsersRoute: typeof AdminUsersRoute
   AdminIndexRoute: typeof AdminIndexRoute
 }
 
 const AdminRouteChildren: AdminRouteChildren = {
   AdminCasesRoute: AdminCasesRoute,
+  AdminOpencodeRoute: AdminOpencodeRoute,
   AdminUsersRoute: AdminUsersRoute,
   AdminIndexRoute: AdminIndexRoute,
 }

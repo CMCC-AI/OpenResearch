@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { listProjectActivityQuery } from "../queries/projects";
 import { m } from "../paraglide/messages.js";
 import { autoDir } from "../i18n";
-import { ArrowRight, Folder, Trash2 } from "lucide-react";
+import { ArrowRight, ChevronRight, Folder, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   deleteProject,
@@ -271,20 +271,20 @@ export function ProjectsHome({
   }
 
   return (
-    <div className="home flex-1 min-h-0 overflow-y-auto [scrollbar-gutter:stable_both-edges] bg-canvas">
-      <div className="home-inner max-w-290 my-0 mx-auto pt-12 px-6 pb-16 [@media((max-width:_960px))]:pt-6 [@media((max-width:_960px))]:px-4">
+    <div className="home research-home flex-1 min-h-0 overflow-y-auto [scrollbar-gutter:stable_both-edges] bg-canvas">
+      <div className="home-inner research-home-inner max-w-294 my-0 mx-auto pt-10 px-7 pb-16 [@media((max-width:_960px))]:px-5 max-sm:px-4">
         {existingProject && <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-background p-3 text-sm"><span>继续研究：{existingProject.name}</span><Button size="small" onClick={() => void navigate({ to: "/projects", search: {} })}>切换为新建项目</Button></div>}
         <ResearchStartPanel workMode={workMode} onWorkModeChange={setWorkMode} draft={draft} onDraftChange={setDraft} attachments={attachments} onAttachmentsChange={setAttachments} onStart={() => existingProject ? onResume(existingProject, { draft, attachments, annotations: [], workMode }) : setModalOpen(true)} onError={(message) => showAlert(message, "error")} />
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-6 [@media((max-width:_960px))]:grid-cols-1">
+        <div className="research-home-sections grid grid-cols-[minmax(0,1.05fr)_minmax(0,1.8fr)] gap-8 [@media((max-width:_1200px))]:grid-cols-1">
           <section aria-labelledby="continue-research-title" className="min-w-0">
-            <h2 id="continue-research-title" className="mt-0 mb-4 text-xl font-semibold">继续研究</h2>
-            <div className="overflow-hidden rounded-xl border border-border bg-background">
-              {projects.length === 0 ? <p className="p-4 text-sm text-muted">尚无研究项目，从上方创建第一个项目。</p> : [...projects].sort((a, b) => (activityByProject[b.id]?.lastMessageAt ?? b.updatedAt) - (activityByProject[a.id]?.lastMessageAt ?? a.updatedAt)).map((p) => <div key={p.id} className="flex items-center gap-3 border-b border-border-variant p-4 last:border-b-0">
-                <Folder size={22} className="shrink-0 text-primary" />
-                <button onClick={() => onOpen(p.id)} className="flex min-w-0 flex-1 flex-col gap-1 text-start"><span className="w-full truncate font-medium">{p.name}</span><span className="text-xs text-muted">更新于 {timeAgo(activityByProject[p.id]?.lastMessageAt ?? p.updatedAt)} · {activityByProject[p.id]?.totalAgents ?? 0} 个研究会话</span></button>
+            <h2 id="continue-research-title" className="product-page-section-title mt-0 mb-5 flex items-center gap-2">继续研究<ChevronRight size={20} className="text-muted" /></h2>
+            <div className="research-recent-list flex flex-col gap-1">
+              {projects.length === 0 ? <p className="p-4 text-base text-muted">尚无研究项目，从上方创建第一个项目。</p> : [...projects].sort((a, b) => (activityByProject[b.id]?.lastMessageAt ?? b.updatedAt) - (activityByProject[a.id]?.lastMessageAt ?? a.updatedAt)).map((p) => <div key={p.id} className="research-recent-item group flex items-center gap-2 rounded-xl border border-transparent p-2.5">
+                <span className="research-project-icon grid size-10 shrink-0 place-items-center rounded-lg"><Folder size={20} className="text-primary" /></span>
+                <button onClick={() => onOpen(p.id)} className="flex min-w-0 flex-1 flex-col gap-1 text-start"><span className="w-full truncate text-base font-normal">{p.name}</span><span className="text-sm text-muted">更新于 {timeAgo(activityByProject[p.id]?.lastMessageAt ?? p.updatedAt)} · {activityByProject[p.id]?.totalAgents ?? 0} 个研究会话</span></button>
                 {activityByProject[p.id]?.activeAgents > 0 && <LiveDot />}
-                <button onClick={() => onOpen(p.id)} aria-label={`继续研究 ${p.name}`} className="shrink-0 text-primary"><ArrowRight size={16} /></button>
-                <button onClick={() => { setDeleteError(null); setProjectPendingDelete(p); }} disabled={deleting === p.id} aria-label={`删除项目 ${p.name}`} className="shrink-0 text-muted hover:text-accent-red"><Trash2 size={14} /></button>
+                <button onClick={() => onOpen(p.id)} aria-label={`继续研究 ${p.name}`} className="research-recent-action shrink-0 text-primary"><ArrowRight size={16} /></button>
+                <button onClick={() => { setDeleteError(null); setProjectPendingDelete(p); }} disabled={deleting === p.id} aria-label={`删除项目 ${p.name}`} className="research-recent-action shrink-0 text-muted hover:text-accent-red"><Trash2 size={14} /></button>
               </div>)}
             </div>
           </section>

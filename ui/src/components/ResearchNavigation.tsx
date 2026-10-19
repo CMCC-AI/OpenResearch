@@ -1,8 +1,9 @@
 import { useState } from "react";
+import newChatIcon from "../assets/workbench/new-chat.svg";
 import { sidebarClasses } from "../sidebarLayout";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { FolderPlus, Plus } from "lucide-react";
+import { FolderPlus } from "lucide-react";
 import { listProjectsQuery, getUiStateQuery, listProjectActivityQuery } from "../queries/projects";
 import { listChatSessionsQuery } from "../queries/chat";
 import { parseDestination } from "../workspaceState";
@@ -13,8 +14,8 @@ import { m } from "../paraglide/messages.js";
 import { useOptionalAuthSession } from "../product/AuthSession";
 import { IconButton, Button, showAlert } from "./ui";
 
-export function ResearchNavigationActions({ onNewChat, shortcut }: { onNewChat: () => void; shortcut?: string }) {
-  return <nav aria-label="研究导航" className="rail-nav flex shrink-0 flex-col gap-0.5 py-2"><button type="button" title={shortcut ?? m.chat_panel_new_chat()} aria-label={m.chat_panel_new_chat()} aria-keyshortcuts="Meta+Shift+Enter Control+Shift+Enter" data-onboarding="new-session" onClick={onNewChat} className="rail-nav-item flex items-center gap-2.5 rounded-md px-2.5 py-2 text-start text-sm text-text hover:bg-surface"><Plus size={15} className="shrink-0" /><span className="research-nav-label">{m.chat_panel_new_chat()}</span></button></nav>;
+export function ResearchNavigationActions({ onNewChat, shortcut, disabled = false, active = false }: { onNewChat: () => void; shortcut?: string; disabled?: boolean; active?: boolean }) {
+  return <nav aria-label="研究导航" className="rail-nav flex shrink-0 flex-col gap-0.5 py-2"><button disabled={disabled} type="button" title={shortcut ?? m.chat_panel_new_chat()} aria-label={m.chat_panel_new_chat()} aria-current={active ? "page" : undefined} aria-keyshortcuts="Meta+Shift+Enter Control+Shift+Enter" data-onboarding="new-session" onClick={onNewChat} className={`rail-nav-item flex items-center gap-2.5 rounded-xl px-2.5 py-2 text-start text-sm text-text hover:bg-surface ${active ? "bg-background text-primary shadow-hairline" : ""}`}><img src={newChatIcon} width={18} height={18} alt="" className="shrink-0" /><span className="research-nav-label">{m.chat_panel_new_chat()}</span></button></nav>;
 }
 
 export function ResearchNavigationMore({ onClick, indented = true }: { onClick: () => void; indented?: boolean }) {

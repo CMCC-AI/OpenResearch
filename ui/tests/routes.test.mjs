@@ -40,6 +40,7 @@ function loadModule(filename, api = {}, remembered = null) {
       if (id === "../product/LiteraturePage") return { LiteraturePage: () => null };
       if (id === "../product/FeaturedCases") return { CasesPage: () => null, CaseDetailPage: () => null };
       if (id === "../product/AdminLayout") return { AdminLayout: () => null };
+      if (id === "../product/AdminOpenCodePage") return { AdminOpenCodePage: () => null };
       if (id === "../product/AdminUsersPage") return { AdminUsersPage: () => null };
       if (id === "../product/ManageCasesPage") return { ManageCasesPage: () => null };
       if (id.startsWith("./routes/")) return load(new URL(`${id}.tsx`, url));
@@ -86,7 +87,7 @@ test("hidden configuration tabs are rejected by the settings route guard", () =>
 });
 
 test("case browsing, existing-project publication, and case IDs use independent routes", async () => {
-  for (const [path,id] of [["/admin/users","/admin/users"],["/admin/cases?project=existing","/admin/cases"],["/cases","/cases/"],["/cases/manage?project=existing","/cases/manage"],["/cases/public-id","/cases/$caseId"]]) {
+  for (const [path,id] of [["/admin/opencode","/admin/opencode"],["/admin/users","/admin/users"],["/admin/cases?project=existing","/admin/cases"],["/cases","/cases/"],["/cases/manage?project=existing","/cases/manage"],["/cases/public-id","/cases/$caseId"]]) {
     const router=await match(path);
     assert.equal(router.state.matches.at(-1).routeId,id);
     if(path.includes("manage") || path.includes("/admin/cases"))assert.equal(router.state.matches.at(-1).search.project,"existing");

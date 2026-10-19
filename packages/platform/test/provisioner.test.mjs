@@ -120,3 +120,28 @@ test("preserved original research uses a connector while new accounts get disjoi
   assert.notEqual(ordinary.HostConfig.NetworkMode, "host");
   assert(ordinary.Env.includes("RUNNER_ISOLATION_ACK=dedicated-workspace"));
 });
+
+test("web-managed OpenCode mounts a read-only directory for atomic updates", () => {
+  const configured = runtimeConfig(workspace, {
+    ...env,
+    MANAGED_OPENCODE_LIVE_CONFIG_DIR: "/srv/config",
+    MANAGED_OPENCODE_CONFIG_FILE: "/srv/config/opencode.json",
+  });
+  assert(
+    configured.HostConfig.Binds.includes(
+      "/srv/config:/home/node/.config/opencode:ro",
+    ),
+  );
+  assert(
+    !configured.HostConfig.Binds.some((bind) =>
+      bind.startsWith("/srv/config/opencode.json:"),
+    ),
+  );
+  assert(!configured.Env.some((value) => value.startsWith("OPENCODE_CONFIG=")));
+  assert.throws(() =>
+    runtimeConfig(workspace, {
+      ...env,
+      MANAGED_OPENCODE_LIVE_CONFIG_DIR: "/srv/config:rw",
+    }),
+  );
+});

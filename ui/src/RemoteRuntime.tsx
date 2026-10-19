@@ -51,8 +51,9 @@ const RuntimeContext = createContext<RuntimeInfo | null>(null);
 function LocalResearchEffects() {
   const { user, canAccessResearch, loading } = useAuthSession();
   const locale = useLocale();
-  useQuery({ ...reportLocaleQuery(locale), enabled: !loading && Boolean(user) && canAccessResearch });
-  return !loading && user && canAccessResearch ? <QueryEvents /> : null;
+  const isCase = useLocation({ select: (location) => stripAppBase(location.pathname).startsWith("/cases/") });
+  useQuery({ ...reportLocaleQuery(locale), enabled: !isCase && !loading && Boolean(user) && canAccessResearch });
+  return !isCase && !loading && user && canAccessResearch ? <QueryEvents /> : null;
 }
 
 function workspaceKey(runtime: RuntimeInfo): string {

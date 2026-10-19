@@ -1,26 +1,30 @@
 import { stripAppBase } from "../appBasePath";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
-import { BookOpen, Boxes, Home, Library, PanelLeft, Star } from "lucide-react";
-import { BrandMark } from "../components/Wordmark";
+import { PanelLeft, Search, Star } from "lucide-react";
+import brand from "../assets/workbench/brand.svg";
+import newProject from "../assets/workbench/new-project.svg";
+import discover from "../assets/workbench/discover.svg";
+import literature from "../assets/workbench/literature.svg";
+import capabilities from "../assets/workbench/capabilities.svg";
 import { IconButton } from "../components/ui";
 import { ResearchProjectNavigation } from "../components/ResearchNavigation";
 import { AccountMenu } from "../components/AccountMenu";
 import { useAuthSession } from "./AuthSession";
 
 const productLinks = [
-  { to: "/projects" as const, label: "新建项目", Icon: Home },
-  { to: "/discover" as const, label: "论文发现", Icon: BookOpen },
-  { to: "/literature" as const, label: "论文精读", Icon: Library },
-  { to: "/capabilities" as const, label: "能力中心", Icon: Boxes },
-  { to: "/cases" as const, label: "精选案例", Icon: Star },
+  { to: "/projects" as const, label: "新建项目", image: newProject },
+  { to: "/discover" as const, label: "论文发现", image: discover },
+  { to: "/literature" as const, label: "论文精读", image: literature },
+  { to: "/capabilities" as const, label: "能力中心", image: capabilities },
+  { to: "/cases" as const, label: "精选案例", image: null },
 ];
 
-export function ProductWordmark({ compact = false }: { compact?: boolean }) {
+export function ProductWordmark({ compact = false, heading = false }: { compact?: boolean; heading?: boolean }) {
   return <Link to="/projects" className="no-underline text-text" aria-label="MobileSci 科研首页">
-    <span className="inline-flex items-center gap-2 font-semibold tracking-[-0.03em]">
-      <span className="h-8 w-8 [&_svg]:h-full [&_svg]:w-full"><BrandMark /></span>
-      {!compact && <span className="product-brand-text flex flex-col leading-tight"><span>MobileSci</span><small className="text-xs font-normal tracking-normal text-muted">AI for Science</small></span>}
+    <span className={`product-brand inline-flex items-center gap-3 font-semibold ${heading ? "product-brand-heading" : ""}`}>
+      <img src={brand} width={heading ? 56 : 38} height={heading ? 56 : 38} alt="" className="shrink-0" />
+      {!compact && <span className={`product-brand-text ${heading ? "product-brand-heading-text" : "text-2xl"}`}>MobileSci</span>}
     </span>
   </Link>;
 }
@@ -29,25 +33,27 @@ export function ProductSidebar({ children, connectionInfo, onCollapse, onSetting
   const pathname = useRouterState({ select: (state) => stripAppBase(state.location.pathname) });
   const { user, canAccessResearch } = useAuthSession();
   const [mobileOpen, setMobileOpen] = useState(false);
-  return <aside className={`product-sidebar session-rail [&_.rail-body]:ps-1 [&_.rail-body]:pe-1 flex w-64 min-h-0 shrink-0 flex-col border-e border-border-variant bg-background px-3 py-4 mac-titlebar:pt-10 win-titlebar:pt-10 ${mobileOpen ? "[@media((max-width:_820px))]:absolute [@media((max-width:_820px))]:inset-y-0 [@media((max-width:_820px))]:start-0 [@media((max-width:_820px))]:z-40" : ""} ${children || mobileOpen ? "" : "[@media((max-width:_820px))]:w-16 [@media((max-width:_820px))]:px-2 [@media((max-width:_820px))]:[&_.product-brand-text]:hidden [@media((max-width:_820px))]:[&_.research-nav-label]:hidden [@media((max-width:_820px))]:[&_.research-projects]:hidden"}`}>
+  return <aside className={`product-sidebar session-rail [&_.rail-body]:ps-1 [&_.rail-body]:pe-1 flex w-70 min-h-0 shrink-0 flex-col px-3 py-4 mac-titlebar:pt-10 win-titlebar:pt-10 ${mobileOpen ? "[@media((max-width:_820px))]:absolute [@media((max-width:_820px))]:inset-y-0 [@media((max-width:_820px))]:start-0 [@media((max-width:_820px))]:z-40" : ""} ${children || mobileOpen ? "" : "[@media((max-width:_820px))]:w-16 [@media((max-width:_820px))]:px-2 [@media((max-width:_820px))]:[&_.product-brand-text]:hidden [@media((max-width:_820px))]:[&_.research-nav-label]:hidden [@media((max-width:_820px))]:[&_.research-projects]:hidden"}`}>
     <div className={`flex shrink-0 items-center justify-between gap-1 px-2 pb-4 ${!children && !mobileOpen ? "[@media((max-width:_820px))]:flex-col [@media((max-width:_820px))]:px-0 [@media((max-width:_820px))]:gap-2" : ""}`}><ProductWordmark />{!children && <button type="button" aria-label={mobileOpen ? "收起项目导航" : "展开历史项目"} aria-expanded={mobileOpen} onClick={() => setMobileOpen((value) => !value)} className="hidden [@media((max-width:_820px))]:block"><PanelLeft size={17} /></button>}{onCollapse && <IconButton size="small" aria-label="收起导航" title="收起导航" onClick={onCollapse}><PanelLeft size={17} /></IconButton>}</div>
-    <nav aria-label="MobileSci 菜单" className="flex shrink-0 flex-col gap-0.5 pb-2">{productLinks.filter(({ to }) => canAccessResearch || to === "/cases").map(({ to, label, Icon }) => {
+    <nav aria-label="MobileSci 菜单" className="product-navigation flex shrink-0 flex-col gap-1 pb-4">{productLinks.filter(({ to }) => canAccessResearch || to === "/cases").map(({ to, label, image }) => {
       const active = pathname === to || pathname.startsWith(`${to}/`);
-      return <Link key={to} to={to} title={label} aria-label={label} aria-current={active ? "page" : undefined} className={`flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm no-underline ${active ? "bg-primary-subtle text-primary font-medium" : "text-subtext hover:bg-surface hover:text-text"}`}><Icon size={15} className="shrink-0" /><span className="research-nav-label">{label}</span></Link>;
+      return <Link key={to} to={to} title={label} aria-label={label} aria-current={active ? "page" : undefined} className="product-nav-item flex h-9 items-center gap-2.5 rounded-xl px-3 text-sm font-medium text-text no-underline">{image ? <img src={image} width={18} height={18} alt="" className="shrink-0" /> : <Star size={18} className="shrink-0" />}<span className="research-nav-label">{label}</span></Link>;
     })}</nav>
-    <div aria-label="OpenResearch 项目与会话" className="mt-1 flex min-h-0 flex-1 flex-col border-t border-border-variant pt-2">{children ?? (canAccessResearch ? <ResearchProjectNavigation enabled={Boolean(user)} /> : <p className="px-2 text-xs text-subtext">浏览管理员发布的公共案例，原项目保持独立访问权限。</p>)}</div>
+    <div aria-label="OpenResearch 项目与会话" className="product-research-navigation flex min-h-0 flex-1 flex-col border-t border-border-variant pt-2">{children ?? (canAccessResearch ? <ResearchProjectNavigation enabled={Boolean(user)} /> : <p className="px-2 text-xs text-subtext">浏览管理员发布的公共案例，原项目保持独立访问权限。</p>)}</div>
     <AccountMenu onSettings={onSettings} connectionInfo={connectionInfo} />
   </aside>;
 }
 
 export function ProductHeader({ title }: { title: ReactNode }) {
-  return <header className="product-header flex h-16 shrink-0 items-center justify-between border-b border-border-variant bg-background px-6">
-    <div className="min-w-0 text-sm text-subtext">{title}</div>
+  const { canAccessResearch } = useAuthSession();
+  return <header className="product-header flex h-16 shrink-0 items-center justify-between gap-4 border-b border-border-variant px-6">
+    <div className="product-header-title min-w-0 text-sm">{title}</div>
+    {canAccessResearch && <Link to="/discover" className="product-paper-search inline-flex h-10 w-50 shrink-0 items-center gap-3 rounded-full border border-border-variant px-4 text-sm text-subtext no-underline hover:text-primary max-sm:w-10 max-sm:justify-center max-sm:px-0" aria-label="搜索论文"><Search size={16} /><span className="max-sm:hidden">搜索论文</span></Link>}
   </header>;
 }
 
 export function PlatformFrame({ title, children }: { title: string; children: ReactNode }) {
-  return <div className="flex h-full min-h-0 overflow-hidden bg-canvas">
+  return <div className="product-frame flex h-full min-h-0 overflow-hidden">
     <ProductSidebar />
     <div className="flex min-w-0 flex-1 flex-col"><ProductHeader title={title} />{children}</div>
   </div>;

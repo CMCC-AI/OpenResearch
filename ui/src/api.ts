@@ -1,3 +1,4 @@
+import { projectRequest, projectAssetUrl } from "./readOnlyApi";
 // Typed client for the orx up local HTTP API (/api/*). All wire JSON is camelCase.
 
 import { workspaceScope, isCurrentScope, replaceWorkspace } from "./queries/client";
@@ -163,10 +164,10 @@ async function json<T>(res: Response): Promise<T> {
   return data;
 }
 
-const get = <T>(url: string, signal?: AbortSignal) => fetch(url, { signal }).then((r) => json<T>(r));
+const get = <T>(url: string, signal?: AbortSignal) => projectRequest(url, { signal }).then((r) => json<T>(r));
 async function writeResponse(url: string, init: RequestInit): Promise<Response> {
   const scope = workspaceScope();
-  const response = await fetch(url, init);
+  const response = await projectRequest(url, init);
   if (!isCurrentScope(scope)) throw new DOMException("Workspace changed", "AbortError");
   writeScopes.set(response, scope);
   if (response.ok) invalidateWrite(url, scope);
@@ -559,7 +560,7 @@ export const getProjectFile = (projectId: string, path: string, opts: CheckoutRe
 
 /** Byte-exact checkout file for browser-native media rendering or download. */
 export const projectFileUrl = (projectId: string, path: string, opts: CheckoutRef = {}) =>
-  `/api/projects/${projectId}/file/raw?${checkoutQuery(opts, new URLSearchParams({ path }))}`;
+  projectAssetUrl(`/api/projects/${projectId}/file/raw?${checkoutQuery(opts, new URLSearchParams({ path }))}`);
 
 /** A file read by absolute path, outside the project's checkout and artifacts
  * (e.g. `/Users/me/.ssh/config`). Same capped/decoded body as `ProjectFile`;
@@ -575,7 +576,7 @@ export const getAbsoluteFile = (path: string, signal?: AbortSignal) =>
 
 /** Byte-exact absolute-path file for browser-native media rendering or download. */
 export const absoluteFileUrl = (path: string) =>
-  `/api/files/abs/raw?path=${encodeURIComponent(path)}`;
+  projectAssetUrl(`/api/files/abs/raw?path=${encodeURIComponent(path)}`);
 
 /** Overwrite a text file in the project's live checkout (worktree when
  * `sessionId` is given, else the hub clone). Committed branch trees are
@@ -1387,7 +1388,7 @@ export const manageArtifactFile = (projectId: string, path: string, action: File
 
 /** Raw artifact bytes served by the compatibility `/files` API. */
 export const artifactUrl = (projectId: string, path: string) =>
-  `/api/projects/${projectId}/files/file?path=${encodeURIComponent(path)}`;
+  projectAssetUrl(`/api/projects/${projectId}/files/file?path=${encodeURIComponent(path)}`);
 
 export interface FileTextBody {
   content: string;
@@ -1416,7 +1417,7 @@ export const getArtifactFileText = (
   path: string,
   signal?: AbortSignal,
 ): Promise<FileTextBody | null> => {
-  return fetch(artifactUrl(projectId, path), { signal,
+  return fetch(artifactUrl(projectId, path), { signal, credentials: "include",
     headers: { Range: `bytes=0-${FILE_PREVIEW_BYTES - 1}` },
   }).then((r) => {
     if (r.status === 404) return null;
@@ -1445,7 +1446,7 @@ export const getArtifactFileMetadata = (
   path: string,
   signal?: AbortSignal,
 ): Promise<ArtifactFileMetadata | null> =>
-  fetch(artifactUrl(projectId, path), { signal, method: "HEAD" }).then((r) => {
+  fetch(artifactUrl(projectId, path), { signal, method: "HEAD", credentials: "include" }).then((r) => {
     if (r.status === 404) return null;
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const presentation = r.headers.get("x-openresearch-presentation");
@@ -2179,7 +2180,7 @@ export interface ChatTextAnnotation {
 
 /** Image parts store a server-minted file name; this is where it's served. */
 export const chatAttachmentUrl = (name: string) =>
-  `/api/chat/attachments/${encodeURIComponent(name)}`;
+  projectAssetUrl(`/api/chat/attachments/${encodeURIComponent(name)}`);
 
 /** Returns immediately; the turn streams over /api/events (chat.* events). */
 export const sendChatMessage = (
@@ -2355,7 +2356,7 @@ export const decideResearchGate = (studyId: string, decisionId: string, scopeHas
   post<{ ok: boolean; resumeError?: string | null }>(`/api/research/studies/${studyId}/decisions/${decisionId}`, { scopeHash, approved, reason });
 export const stopResearchStudy = (studyId: string) => post<{ ok: boolean }>(`/api/research/studies/${studyId}/stop`, {});
 export async function downloadResearchPackage(studyId: string, approved: boolean) {
-  const response = await fetch(`/api/research/studies/${studyId}/package?approved=${approved}`);
+  const response = await fetch(projectAssetUrl(`/api/research/studies/${studyId}/package?approved=${approved}`), { credentials: "include" });
   if (!response.ok) await json(response);
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);

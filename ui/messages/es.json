@@ -141,6 +141,7 @@
   "chat_panel_waited_for_an_experiment_run": "Esperó a una ejecución de experimento",
   "chat_panel_waiting_for_your_input": "Esperando tu respuesta…",
   "chat_panel_what_should_we_research": "¿Qué investigamos?",
+  "chat_panel_empty_description": "Reúne la experiencia de investigación con archivos, terminales, experimentos y resultados. Mantén la conversación a mano para avanzar en cada estudio.",
   "chat_panel_you_mid_task": "Tú, durante la tarea",
   "closable_tab_close_tab": "Cerrar pestaña",
   "code_browser_header_changes": "Cambios",

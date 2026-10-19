@@ -113,6 +113,182 @@ test(
         expectedFileCount: 1,
       };
       await t.test(
+        "native project copies retain API records and safely serve the original files",
+        async () => {
+          const content = Buffer.from("original project file\n");
+          const name = `native-${createHash("sha256").update(content).digest("hex")}.txt`;
+          const workspace = {
+            version: 1,
+            projectId: "private-project",
+            sessionId: "source-session",
+            responses: {
+              "/api/projects": {
+                projects: [{ id: "private-project", name: "原项目" }],
+              },
+              "/api/chat/sessions?projectId=private-project": {
+                sessions: [
+                  {
+                    id: "source-session",
+                    projectId: "private-project",
+                    busy: false,
+                  },
+                ],
+              },
+              "/api/chat/sessions/source-session/messages": {
+                messages: [
+                  {
+                    id: "original",
+                    role: "assistant",
+                    createdAt: 1,
+                    completedAt: 2,
+                    parts: [
+                      {
+                        id: "part",
+                        type: "text",
+                        text: "original structured reply",
+                      },
+                    ],
+                  },
+                ],
+                queued: [],
+                activeLeafId: "original",
+              },
+            },
+            assets: {
+              "/api/projects/private-project/file/raw?path=report.txt": name,
+            },
+          };
+          const created = await request("/api/platform/admin/cases", {
+            method: "POST",
+            cookie: admin,
+            data: {
+              ...draft,
+              snapshot: { workspace, sessions: [] },
+              expectedFileCount: 1,
+            },
+          });
+          assert.equal(created.status, 201);
+          const id = created.data.id;
+          assert.equal(
+            (
+              await request(`/api/platform/cases/${id}/assets`, {
+                cookie: reader,
+                name,
+              })
+            ).status,
+            404,
+          );
+          assert.equal(
+            (
+              await request(`/api/platform/admin/cases/${id}/files`, {
+                method: "POST",
+                cookie: admin,
+                name,
+                bytes: content,
+              })
+            ).status,
+            201,
+          );
+          let current = (
+            await request(`/api/platform/admin/cases/${id}`, { cookie: admin })
+          ).data;
+          assert.deepEqual(
+            current.snapshot.workspace.responses,
+            workspace.responses,
+          );
+          assert.equal(
+            (
+              await request(`/api/platform/admin/cases/${id}/publish`, {
+                method: "POST",
+                cookie: admin,
+                data: { revision: current.revision, reviewed: true },
+              })
+            ).status,
+            200,
+          );
+          const file = await request(`/api/platform/cases/${id}/assets`, {
+            cookie: reader,
+            name,
+          });
+          assert.equal(file.status, 200);
+          assert.deepEqual(file.bytes, content);
+          const head = await request(`/api/platform/cases/${id}/assets`, {
+            method: "HEAD",
+            cookie: reader,
+            name,
+          });
+          assert.equal(head.status, 200);
+          assert.equal(
+            Number(head.headers.get("content-length")),
+            content.length,
+          );
+          const range = await fetch(
+            `${origin}/api/platform/cases/${id}/assets?name=${name}`,
+            { headers: { origin, cookie: reader, range: "bytes=0-7" } },
+          );
+          assert.equal(range.status, 206);
+          assert.equal(await range.text(), "original");
+          current = (
+            await request(`/api/platform/admin/cases/${id}`, { cookie: admin })
+          ).data;
+          assert.equal(
+            (
+              await request(`/api/platform/admin/cases/${id}/native`, {
+                method: "POST",
+                cookie: reader,
+                data: { revision: current.revision, workspace, assets: [] },
+              })
+            ).status,
+            403,
+          );
+          assert.equal(
+            (
+              await request(`/api/platform/admin/cases/${id}/native`, {
+                method: "POST",
+                cookie: admin,
+                data: {
+                  revision: current.revision,
+                  workspace,
+                  assets: [{ name, content: content.toString("base64") }],
+                },
+              })
+            ).status,
+            200,
+          );
+          current = (
+            await request(`/api/platform/admin/cases/${id}`, { cookie: admin })
+          ).data;
+          assert.equal(
+            (
+              await request(`/api/platform/admin/cases/${id}/unpublish`, {
+                method: "POST",
+                cookie: admin,
+                data: { revision: current.revision },
+              })
+            ).status,
+            200,
+          );
+          assert.equal(
+            (
+              await request(`/api/platform/cases/${id}/assets`, {
+                cookie: reader,
+                name,
+              })
+            ).status,
+            404,
+          );
+          assert.equal(
+            (
+              await request(`/api/platform/admin/cases/${id}`, {
+                method: "DELETE",
+                cookie: admin,
+              })
+            ).status,
+            200,
+          );
+        },
+      );
+      await t.test(
         "ordinary accounts enter the catalog without gaining shared research access",
         async () => {
           const catalog = await request("/api/platform/catalog-session", {

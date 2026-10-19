@@ -1,3 +1,4 @@
+import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { type Experiment, type Run, runDisplayStatus, fmtNumber } from "../api";
 import { activeWorkspaceRuns } from "../workspaceRuns";
 import { statusLabel } from "./StatusBadge";
@@ -35,10 +36,11 @@ export function WorkspaceTools({ expanded, experiments, runs, onOpenExperiment, 
   onSideChat?: () => void;
   onOpenSession?: (sessionId: string) => void;
 }) {
+  const readOnly = useReadOnlyWorkspace();
   const experimentRows = activeWorkspaceRuns(experiments, runs, sessionId);
   const moreTrigger = useRef<HTMLButtonElement>(null);
   const more = usePopover(moreTrigger);
-  const compute = useQuery({ ...getComputeSettingsQuery(projectId), enabled: expanded });
+  const compute = useQuery({ ...getComputeSettingsQuery(projectId), enabled: expanded && (!readOnly || readOnly.native) });
   const defaultBackend = compute.data?.configuredDefaultBackend ?? compute.data?.defaultBackend;
   const computeLabel = defaultBackend ? TARGET_LABELS[defaultBackend]() : compute.isPending ? "…" : compute.isError ? m.model_picker_unavailable() : m.settings_not_set();
   const items = [
@@ -56,13 +58,13 @@ export function WorkspaceTools({ expanded, experiments, runs, onOpenExperiment, 
               <Icon size={15} />
             </IconButton>
           ))}
-          <div className="relative">
+          {<div className="relative">
             <IconButton ref={moreTrigger} active={activeView === "terminal" || more.open} className="text-text [&.active]:text-text" data-tip={more.open ? undefined : m.workspace_more_tools()} data-tip-align="end" aria-label={m.workspace_more_tools()} aria-expanded={more.open} aria-haspopup="menu" onClick={() => more.setOpen((open) => !open)}>
               <MoreHorizontal size={15} />
             </IconButton>
             {more.open && (
               <div ref={more.ref} role="menu" className="absolute end-0 top-[calc(100%_+_4px)] z-50 flex min-w-40 flex-col rounded-lg border border-border bg-background p-1.5 shadow-menu">
-                <MenuItem role="menuitem" onClick={() => { more.setOpen(false); onTerminal(); }}>
+                <MenuItem disabled={Boolean(readOnly)} role="menuitem" onClick={() => { more.setOpen(false); onTerminal(); }}>
                   <span className="flex items-center gap-2.5"><Terminal size={15} />{m.workspace_terminal()}</span>
                 </MenuItem>
                 {onSideChat && (
@@ -72,7 +74,7 @@ export function WorkspaceTools({ expanded, experiments, runs, onOpenExperiment, 
                 )}
               </div>
             )}
-          </div>
+          </div>}
         </nav>
       ) : (
         <nav aria-label={m.workspace_tools_heading()} className="workspace-tools-card flex w-60 flex-col gap-0.5 rounded-xl border border-border bg-background px-1.5 py-2 shadow-elevated">
@@ -85,7 +87,7 @@ export function WorkspaceTools({ expanded, experiments, runs, onOpenExperiment, 
               <span className="flex items-center gap-4"><Icon size={15} />{itemLabel}</span>
             </MenuItem>
           ))}
-          <MenuItem className="py-1" onClick={onCompute}>
+          {<MenuItem disabled={Boolean(readOnly)} className="py-1" onClick={onCompute}>
             <span className="flex min-w-0 flex-col gap-0.5">
               <span className="flex items-center gap-4 text-sm text-text"><Cpu size={15} className="shrink-0" />{m.workspace_default_compute()}</span>
               <span className="flex items-center gap-1.5 ps-[31px] text-menu text-subtext">
@@ -93,15 +95,15 @@ export function WorkspaceTools({ expanded, experiments, runs, onOpenExperiment, 
                 <span className="wrap-anywhere">{computeLabel}</span>
               </span>
             </span>
-          </MenuItem>
+          </MenuItem>}
           <div className="mt-2 border-t border-border/50 pt-3">
             <h2 className="m-0 px-2 pt-1 pb-2 text-sm font-normal text-subtext">{m.workspace_this_worktree()}</h2>
             <MenuItem className="min-h-7 py-1" onClick={onFiles}>
               <span className="flex items-center gap-4"><FolderOpen size={15} />{m.app_files()}</span>
             </MenuItem>
-            <MenuItem className="min-h-7 py-1" onClick={onTerminal}>
+            {<MenuItem disabled={Boolean(readOnly)} className="min-h-7 py-1" onClick={onTerminal}>
               <span className="flex items-center gap-4"><Terminal size={15} />{m.workspace_terminal()}</span>
-            </MenuItem>
+            </MenuItem>}
             {onSideChat && (
               <MenuItem className="min-h-7 py-1" onClick={onSideChat}>
                 <span className="flex items-center gap-4"><MessagesSquare size={15} />{m.side_chat_open()}</span>

@@ -1,3 +1,4 @@
+import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { m } from "../paraglide/messages.js";
 import { ltr } from "../i18n";
 import { useLocale } from "../locale";
@@ -409,6 +410,7 @@ export const Md = memo(function Md({
   resolveFilePath,
   resolveImageSrc,
   predict = false,
+  inert: inertProp = false,
 }: {
   text: string;
   onOpenFile?: (
@@ -422,12 +424,17 @@ export const Md = memo(function Md({
   resolveFilePath?: (path: string) => string | null;
   resolveImageSrc?: (src: string) => string | null;
   predict?: boolean;
+  /** Public snapshots must never resolve private files or load embedded content. */
+  inert?: boolean;
 }) {
   useLocale();
+  const readOnly = useReadOnlyWorkspace();
+  const inert = Boolean(readOnly && !readOnly.native) || inertProp;
   const chatImageSrc = useContext(ImageResolverContext);
   const imageSrc = resolveImageSrc ?? chatImageSrc;
   // Callers pass fresh callbacks; a new `img` type would remount every image.
   const img = useMemo(() => ({ node: _node, src, alt, className, ...rest }: any) => {
+    if (inert) return <span className="text-sm text-subtext">{alt || src}</span>;
     if (!src || typeof src !== "string") return null;
     const resolved = imageSrc ? imageSrc(src) : src;
     if (!resolved) return null;
@@ -448,18 +455,19 @@ export const Md = memo(function Md({
         className={`block max-w-full h-auto my-3 rounded-sm border border-border cursor-zoom-in focus-visible:outline-2 focus-visible:outline-primary ${className ?? ""}`}
      />
     );
-  }, [resolveImageSrc, chatImageSrc, imageSrc]);
+  }, [resolveImageSrc, chatImageSrc, imageSrc, inert]);
   const components: Record<string, (props: any) => ReactNode> = useMemo(() => ({
     "image-carousel": ({ children }) => <ImageCarousel>{children}</ImageCarousel>,
     "file-mention": (props) => {
       const cited = splitLineSuffix(props.path);
       const line = (props.lines && firstCitedLine(props.lines)) || cited.line;
-      return <FileChip path={cited.path} line={line} exp={props.exp} onOpenFile={onOpenFile} />;
+      return <FileChip path={cited.path} line={line} exp={props.exp} onOpenFile={inert ? undefined : onOpenFile} />;
     },
     "run-mention": (props) => (
-      <RunChip id={props.id} label={props.label} onOpenRun={onOpenRun} />
+      <RunChip id={props.id} label={props.label} onOpenRun={inert ? undefined : onOpenRun} />
     ),
     a: ({ node: _node, href, children, "data-figure-src": figureSrc, "data-cited-href": citedHref, ...rest }) => {
+      if (inert) return <span>{children}</span>;
       const figure = typeof figureSrc === "string" ? chatImageTarget(figureSrc) : null;
       if (figure && onOpenFile) {
         const localPath = figure.source === "artifact" ? `artifacts/${figure.path}` : figure.path;
@@ -486,7 +494,7 @@ export const Md = memo(function Md({
     ...stableComponents,
     img,
     ...mdCodeComponents,
-  }), [onOpenFile, onOpenRun, resolveFilePath, img]);
+  }), [onOpenFile, onOpenRun, resolveFilePath, img, inert]);
 
   return (
     <div dir="auto" data-streaming={predict || undefined} className="md min-w-0 wrap-anywhere text-text leading-[1.62] [&_>_*:first-child]:mt-0 [&_>_*:last-child]:mb-0 [&_p]:my-2.5 [&_p]:mx-0 [&_strong]:text-text [&_strong]:font-semibold [&_pre]:bg-surface [&_pre]:border [&_pre]:border-border-muted [&_pre]:rounded-md [&_pre]:py-2 [&_pre]:px-3 [&_pre]:overflow-x-auto [&_pre]:text-sm [&_pre]:text-text [&_code]:font-mono [&_code]:text-sm [&_code]:font-normal [&_code]:text-primary [&_code]:bg-surface [&_code]:border [&_code]:border-border-variant [&_code]:rounded-xs [&_code]:py-px [&_code]:px-[5px] [&_.katex]:text-prose-emphasis [&_.katex-display]:my-3 [&_.katex-display]:mx-0 [&_.katex-display]:overflow-x-auto [&_.katex-display]:overflow-y-hidden [&_.katex-display]:py-0.5 [&_.katex-display]:px-0 [&_.file-chip]:inline-flex [&_.file-chip]:items-center [&_.file-chip]:gap-1 [&_.file-chip]:max-w-full [&_.file-chip]:my-0 [&_.file-chip]:mx-px [&_.file-chip]:py-0 [&_.file-chip]:px-1.5 [&_.file-chip]:align-baseline [&_.file-chip]:font-mono [&_.file-chip]:text-sm [&_.file-chip]:font-medium [&_.file-chip]:text-text [&_.file-chip]:bg-panel [&_.file-chip]:border [&_.file-chip]:border-border-variant [&_.file-chip]:rounded-xs [&_.file-chip]:cursor-pointer [&_.file-chip:hover:not(:disabled)]:bg-surface [&_.file-chip:hover:not(:disabled)]:text-primary [&_.file-chip_svg]:flex-none [&_.file-chip_svg]:opacity-60 [&_.file-chip-label]:min-w-0 [&_.file-chip-label]:overflow-hidden [&_.file-chip-label]:text-ellipsis [&_.file-chip-label]:whitespace-nowrap [&_.run-chip_svg]:opacity-100 [&_.run-chip_svg]:text-primary [&_pre_code]:bg-none [&_pre_code]:bg-transparent [&_pre_code]:border-0 [&_pre_code]:text-inherit [&_pre_code]:p-0 [&_pre_code]:font-normal [&_h1]:text-text [&_h1]:text-prose-emphasis [&_h1]:font-semibold [&_h1]:mt-3 [&_h1]:mx-0 [&_h1]:mb-1.5 [&_h2]:text-text [&_h2]:text-prose-emphasis [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mx-0 [&_h2]:mb-1.5 [&_h3]:text-text [&_h3]:text-prose-emphasis [&_h3]:font-semibold [&_h3]:mt-3 [&_h3]:mx-0 [&_h3]:mb-1.5 [&_h4]:text-text [&_h4]:text-prose-emphasis [&_h4]:font-semibold [&_h4]:mt-3 [&_h4]:mx-0 [&_h4]:mb-1.5 [&_ul]:my-1.5 [&_ul]:mx-0 [&_ul]:ps-5.5 [&_ol]:my-1.5 [&_ol]:mx-0 [&_ol]:ps-5.5 [&_li::marker]:text-text [&_a]:text-primary [&_table]:border-collapse [&_table]:block [&_table]:w-max [&_table]:max-w-full [&_table]:text-sm [&_table]:my-2.5 [&_table]:mx-0 [&_table]:border [&_table]:border-border [&_table]:rounded-md [&_table]:overflow-x-auto [&_th]:border-b [&_th]:border-b-border-variant [&_th]:py-2 [&_th]:px-3.5 [&_th]:text-start [&_th]:text-text [&_th]:break-normal [&_th]:break-words [&_td]:border-b [&_td]:border-b-border-variant [&_td]:py-2 [&_td]:px-3.5 [&_td]:text-start [&_td]:text-text [&_td]:break-normal [&_td]:break-words [&_tr:last-child_td]:border-b-0 [&_thead_th]:bg-surface [&_thead_th]:font-medium [&_thead_th]:text-text [&_thead_th]:border-b [&_thead_th]:border-b-border [&_tbody_tr:hover_td]:bg-surface [&_blockquote]:my-1.5 [&_blockquote]:mx-0 [&_blockquote]:pt-0.5 [&_blockquote]:pe-0 [&_blockquote]:pb-0.5 [&_blockquote]:ps-2.5 [&_blockquote]:border-s-[3px] [&_blockquote]:border-s-border [&_blockquote]:text-subtext [:is(&,_.openresearch-diff,_.file-view)_.token.comment]:italic [:is(&,_.openresearch-diff,_.file-view)_.token.prolog]:italic [:is(&,_.openresearch-diff,_.file-view)_.token.cdata]:italic [:is(&,_.openresearch-diff,_.file-view)_.token.operator]:text-syntax-cyan [:is(&,_.openresearch-diff,_.file-view)_.token.entity]:text-syntax-cyan [:is(&,_.openresearch-diff,_.file-view)_.token.url]:text-syntax-cyan [:is(&,_.openresearch-diff,_.file-view)_.token.comment]:text-syntax-comment [:is(&,_.openresearch-diff,_.file-view)_.token.prolog]:text-syntax-comment [:is(&,_.openresearch-diff,_.file-view)_.token.cdata]:text-syntax-comment [:is(&,_.openresearch-diff,_.file-view)_.token.punctuation]:text-syntax-text [:is(&,_.openresearch-diff,_.file-view)_.token.property]:text-syntax-red [:is(&,_.openresearch-diff,_.file-view)_.token.tag]:text-syntax-red [:is(&,_.openresearch-diff,_.file-view)_.token.deleted]:text-syntax-red [:is(&,_.openresearch-diff,_.file-view)_.token.constant]:text-syntax-orange [:is(&,_.openresearch-diff,_.file-view)_.token.symbol]:text-syntax-orange [:is(&,_.openresearch-diff,_.file-view)_.token.boolean]:text-syntax-orange [:is(&,_.openresearch-diff,_.file-view)_.token.number]:text-syntax-orange [:is(&,_.openresearch-diff,_.file-view)_.token.selector]:text-syntax-green [:is(&,_.openresearch-diff,_.file-view)_.token.attr-name]:text-syntax-green [:is(&,_.openresearch-diff,_.file-view)_.token.char]:text-syntax-green [:is(&,_.openresearch-diff,_.file-view)_.token.inserted]:text-syntax-green [:is(&,_.openresearch-diff,_.file-view)_.token.string]:text-syntax-green [:is(&,_.openresearch-diff,_.file-view)_.token.builtin]:text-syntax-yellow [:is(&,_.openresearch-diff,_.file-view)_.token.atrule]:text-syntax-orange [:is(&,_.openresearch-diff,_.file-view)_.token.attr-value]:text-syntax-orange [:is(&,_.openresearch-diff,_.file-view)_.token.keyword]:text-syntax-purple [:is(&,_.openresearch-diff,_.file-view)_.token.function]:text-syntax-blue [:is(&,_.openresearch-diff,_.file-view)_.token.decorator]:text-syntax-blue [:is(&,_.openresearch-diff,_.file-view)_.token.def]:text-syntax-blue [:is(&,_.openresearch-diff,_.file-view)_.token.class-name]:text-syntax-yellow [:is(&,_.openresearch-diff,_.file-view)_.token.namespace]:text-syntax-yellow [:is(&,_.openresearch-diff,_.file-view)_.token.regex]:text-syntax-green [:is(&,_.openresearch-diff,_.file-view)_.token.important]:text-syntax-red [:is(&,_.openresearch-diff,_.file-view)_.token.variable]:text-syntax-red [:is(&,_.openresearch-diff,_.file-view)_.token.parameter]:text-syntax-text">

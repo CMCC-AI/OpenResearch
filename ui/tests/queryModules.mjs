@@ -17,6 +17,7 @@ export function queryModules(api, { nativeClient = false, onChatEvent = () => ()
     new Function("require", "exports", code)((id) => {
       if (id === "@tanstack/react-query") return query;
       if (id === "react") return react;
+      if (id === "../readOnlyApi") return { getReadOnlyApi:()=>null };
       if (id === "../api") return api;
       if (id === "../events") return { onChatEvent };
       if (id.startsWith("./")) return load(id.slice(2));

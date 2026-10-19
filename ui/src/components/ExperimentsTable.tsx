@@ -1,3 +1,4 @@
+import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { WorkspaceEmptyState } from "./WorkspaceEmptyState";
 import { m } from "../paraglide/messages.js";
 import { ltr } from "../i18n";
@@ -30,6 +31,7 @@ export function ExperimentsTable({
   onArchive: (id: string, direction: "ancestors" | "descendants" | "only", archived: boolean) => void;
   onCancel: (runId: string) => Promise<void>;
 }) {
+  const readOnly = useReadOnlyWorkspace();
   const [pendingCancellation, setPendingCancellation] = useState<ReadonlySet<string>>(new Set());
   const [cancelError, setCancelError] = useState<string | null>(null);
   const runsByExperiment = new Map<string, Run[]>();
@@ -168,7 +170,7 @@ export function ExperimentsTable({
                   <FolderTree size={15} />
                   {m.experiments_table_code()}
                 </Button>
-                {liveRun && (
+                {!readOnly && liveRun && (
                   <Button
                     size="small"
                     variant="danger"
@@ -180,12 +182,12 @@ export function ExperimentsTable({
                     {cancelling ? m.common_stopping() : m.common_stop()}
                   </Button>
                 )}
-                <ArchiveMenu
+                {!readOnly && <ArchiveMenu
                   id={experiment.id}
                   name={experiment.title || experiment.slug}
                   actions={archiveActions.get(experiment.id)!}
                   onArchive={onArchive}
-                />
+                />}
               </div>
             </div>
           );

@@ -20,7 +20,7 @@ export function InlineHtmlFigure({ source, url, fallbackUrl, name, resolveSrc }:
       for (const candidate of [url, fallbackUrl]) {
         if (!candidate) continue;
         try {
-          const response = await fetch(candidate, { signal: controller.signal });
+          const response = await fetch(candidate, { signal: controller.signal, credentials: "include" });
           if (!response.ok || !response.headers.get("content-type")?.startsWith("text/html")) continue;
           const html = await response.text();
           if (!controller.signal.aborted) setDocument({ html, url: candidate, fallback: candidate !== url });

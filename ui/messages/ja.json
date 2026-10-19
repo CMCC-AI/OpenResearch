@@ -141,6 +141,7 @@
   "chat_panel_waited_for_an_experiment_run": "実験の実行を待機しました",
   "chat_panel_waiting_for_your_input": "入力を待っています…",
   "chat_panel_what_should_we_research": "何を研究しましょうか？",
+  "chat_panel_empty_description": "研究の専門知識をファイル、ターミナル、実験、成果物と連携。会話をすぐ呼び出せるようにして、研究を効率よく進めましょう。",
   "chat_panel_you_mid_task": "作業途中のあなた",
   "closable_tab_close_tab": "タブを閉じる",
   "code_browser_header_changes": "変更",

@@ -98,7 +98,7 @@ export function sameOrigin(req, origin) {
 export function browserSessionOrigin(req, origin) {
   if (req.headers.origin !== undefined) return sameOrigin(req, origin);
   check(
-    req.method === "GET" &&
+    ["GET", "HEAD"].includes(req.method) &&
       req.headers.host === new URL(origin).host &&
       [undefined, "same-origin", "none"].includes(
         req.headers["sec-fetch-site"],

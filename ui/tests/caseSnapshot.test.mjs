@@ -9,5 +9,7 @@ test("snapshot includes every saved message, tool output, reasoning and nested a
   assert.equal(result.length,3);assert.equal(result[1].parentId,"message-1");assert.equal(result[2].parentId,"message-1");
   for(const part of parts)assert.ok(result[1].content.includes(JSON.stringify(part,null,2)));
   assert.equal(result[2].content,"<script>plain text</script>");assert.equal(result[0].id,"message-1");
+  assert.deepEqual(result[1].parts,parts);
+  result[1].parts[0].state.output="changed copy";assert.equal(parts[0].state.output,"complete results");
   assert.equal(input[0].id,"private-1");
 });

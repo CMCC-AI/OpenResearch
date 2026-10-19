@@ -125,7 +125,13 @@ export function safeLocation(value: unknown): string | null {
   return value;
 }
 
-export function taskLocation(projectId: string, sessionId: string | null, pane?: Pane | null): string {
+export function taskLocation(projectId: string, sessionId: string | null, pane?: Pane | null, caseId?: string, casePreview = false): string {
+  if (caseId) {
+    const query = new URLSearchParams({ ...(sessionId ? {session:sessionId} : {}) });
+    if (pane) query.set("pane", JSON.stringify(pane));
+    if (casePreview) query.set("preview", "true");
+    return `/cases/${encodeURIComponent(caseId)}?${query}`;
+  }
   const path = `/projects/${encodeURIComponent(projectId)}/tasks/${sessionId ? encodeURIComponent(sessionId) : "new"}`;
   return pane ? `${path}?${new URLSearchParams({ pane: JSON.stringify(pane) })}` : path;
 }

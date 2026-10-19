@@ -1,7 +1,8 @@
+import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { createClientTurnId } from "../clientTurnId";
 import { SessionFilterMenu, SessionRow, TitleReveal, TITLE_REVEAL_CLEAR_MS, type SessionFilter } from "./NativeSidebarRows";
 import { ResearchNavigationActions, ResearchNavigationMore } from "./ResearchNavigation";
-import { ProductSidebar } from "../product/ProductNav";
+import { ProductSidebar, ProductWordmark } from "../product/ProductNav";
 import { isDemoProjectId } from "../api";
 import { ResearchPanel } from "./ResearchPanel";
 import { WorkModeSwitch, type WorkMode } from "./WorkModeSwitch";
@@ -90,6 +91,11 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { BrandMark } from "./Wordmark";
+import starterCardBackground from "../assets/workbench/new-chat-card-background.png";
+import starterResearchImage from "../assets/workbench/new-chat-card-research.png";
+import starterLiteratureImage from "../assets/workbench/new-chat-card-literature.png";
+import starterBaselineImage from "../assets/workbench/new-chat-card-baseline.png";
+import starterExperimentImage from "../assets/workbench/new-chat-card-experiment.png";
 import {
   type SidebarChatCursor,
   cancelQueuedMessage,
@@ -2919,6 +2925,7 @@ function ForkControls({
   onEdit: () => void;
   editDisabled: boolean;
 }) {
+  const readOnly = useReadOnlyWorkspace();
   const many = count > 1;
   const sentAt = new Date(createdAt);
   const copy = () => copyToClipboard(text);
@@ -2959,14 +2966,14 @@ function ForkControls({
           <Copy size={13} />
         </IconButton>
       </div>
-      <IconButton size="small"
+      {!readOnly && <IconButton size="small"
         title={m.chat_panel_edit_and_re_send()}
         aria-label={m.chat_panel_edit_and_re_send()}
         disabled={editDisabled}
         onClick={onEdit}
       >
         <Pencil size={13} />
-      </IconButton>
+      </IconButton>}
     </div>
   );
 }
@@ -3031,6 +3038,7 @@ export const Message = memo(function Message({
   onSelectFork: (leafId: string) => void;
 }) {
   useLocale();
+  const readOnly = useReadOnlyWorkspace();
   // Editing re-asks as a new fork rather than rewriting history, so the original
   // stays reachable through the pager.
   const [editDraft, setEditDraft] = useState<string | null>(null);
@@ -3045,7 +3053,7 @@ export const Message = memo(function Message({
     // they were typed. Unknown commands (or skills removed since) stay plain text.
     const isCommand = (name: string) => !!skills?.some((s) => s.name === canonicalSkillName(name));
     // Optimistic parts carry a data URL; server parts carry a file name.
-    const attachments = message.parts
+    const attachments = (readOnly && !readOnly.native ? [] : message.parts)
       .filter((p) => p.type === "image" && p.text)
       .map(attachmentPartView);
     const images = attachments.filter((a) => !a.isPdf);
@@ -3113,6 +3121,7 @@ export const Message = memo(function Message({
         )}
         <div dir="auto" className="msg-user max-w-full bg-panel rounded-[16px] py-2.5 px-[15px] text-base whitespace-pre-wrap wrap-anywhere [&_.skill-chip]:align-baseline">
           <MessageWithChips text={text} isCommand={isCommand} />
+          {readOnly && !readOnly.native && message.parts.filter((part) => part.type === "image").map((part) => <div key={part.id} className="mt-2 text-sm text-subtext">附件：{part.name || "原会话附件"}（请在已公开文件中查看）</div>)}
           {images.length > 0 && (
             <div className="msg-images flex flex-wrap gap-1.5 mt-2 [&_img]:max-w-55 [&_img]:max-h-40 [&_img]:border [&_img]:border-border-variant [&_img]:rounded-xs [&_img]:block">
               {images.map((a, i) => (
@@ -3730,7 +3739,7 @@ function useTranscriptAnnouncement(messages: ChatMessage[]): TranscriptAnnouncem
   return announcement;
 }
 
-const Transcript = memo(function Transcript({
+export const Transcript = memo(function Transcript({
   messages,
   scrollRef,
   scrollToEndRef,
@@ -3924,7 +3933,12 @@ function inSideChat(target: EventTarget | null): boolean {
 // --- panel -------------------------------------------------------------------
 
 // The four starter prompts progress starting point → gap → baseline → experiment.
-const STARTER_ICONS = [BookOpen, Search, SquareTerminal, FlaskConical];
+const STARTER_ILLUSTRATIONS = [
+  starterResearchImage,
+  starterLiteratureImage,
+  starterBaselineImage,
+  starterExperimentImage,
+];
 // Shown for a blank project when prompts tailored to its researcher aren't available.
 const blankStarterPrompts = (): StarterPrompt[] => [
   { title: m.chat_panel_starter_blank_1_title(), prompt: m.chat_panel_starter_blank_1_prompt() },
@@ -3932,15 +3946,8 @@ const blankStarterPrompts = (): StarterPrompt[] => [
   { title: m.chat_panel_starter_blank_3_title(), prompt: m.chat_panel_starter_blank_3_prompt() },
   { title: m.chat_panel_starter_blank_4_title(), prompt: m.chat_panel_starter_blank_4_prompt() },
 ];
-// One outline colour per step so the four boxes read as distinct choices.
-const STARTER_TONES = [
-  { box: "border-accent-blue/45", icon: "text-accent-blue" },
-  { box: "border-accent-green/45", icon: "text-accent-green" },
-  { box: "border-accent-amber/45", icon: "text-accent-amber" },
-  { box: "border-primary/45", icon: "text-primary" },
-];
 const STARTER_GRID_CLASS =
-  "mt-7 grid w-full max-w-readable grid-cols-1 gap-3 sm:grid-cols-2";
+  "new-chat-starter-grid mt-3 grid w-full grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4";
 
 /** Reconcile the settings attached to a selected model without treating the
  * catalog as an allowlist. The picker deliberately accepts free-form ids, so
@@ -4069,6 +4076,7 @@ export function ChatPanel({
   /** Middle-pane content when a settings section is active. */
   children?: React.ReactNode;
 }) {
+  const readOnly = useReadOnlyWorkspace();
   const setChatSessionPermissionModeMutation = useMutation({ mutationFn: (args: Parameters<typeof setChatSessionPermissionMode>) => setChatSessionPermissionMode(...args) });
   const setChatSessionPlanModeMutation = useMutation({ mutationFn: (args: Parameters<typeof setChatSessionPlanMode>) => setChatSessionPlanMode(...args) });
   const setChatSessionAutonomyMutation = useMutation({ mutationFn: (args: Parameters<typeof setChatSessionAutonomy>) => setChatSessionAutonomy(...args) });
@@ -4969,7 +4977,7 @@ export function ChatPanel({
   }, [projectId, state.busySessions, sessions, activeId, mainView]);
 
   const busy = activeId ? state.busySessions.has(activeId) : false;
-  const canFork = !busy && !!activeHarness?.agentReady;
+  const canFork = !readOnly && !busy && !!activeHarness?.agentReady;
   const hasPendingTailTool = busy && streamTailTool(messages) != null;
   const hasStreamingText = busy && streamTailIsText(messages);
   // Messages the user parked behind the running turn (oldest first). Populated
@@ -5170,6 +5178,8 @@ export function ChatPanel({
   const starterHarness = composerSelection?.harness ?? null;
   const starterModel = composerSelection?.model ?? null;
   const historyError = !historyQuery.data ? historyQuery.error : null;
+  const newChatVisible = mainView === "chat" && !embedded && !threadMounted && !activeSession?.sideParentSessionId
+    && !contentLoading && !contentError && !historyLoading && !historyError;
   const starterVisible = mainView === "chat" && !embedded && !threadMounted && !contentLoading && !contentError && !historyLoading && !historyError;
   const starterQuery = useQuery({
     ...getProjectStarterPromptsQuery(projectId, starterHarness ?? "claude-code", starterModel, getLocale()),
@@ -6002,8 +6012,8 @@ export function ChatPanel({
   }, [sidebarGrouping, railOpen, embedded, lastVisibleIndex, sidebarRows.length, flatSessions.hasNextPage, flatSessions.isFetching, flatSessions.isError, flatSessions.fetchNextPage]);
 
   const rail = (
-    <ProductSidebar onCollapse={onCollapseRail} onSettings={onSelectMainView} connectionInfo={<WorkspaceConnection runtime={runtime} />}>
-      <ResearchNavigationActions onNewChat={startNewTask} shortcut={isApple ? "⌘ ⇧ ↵" : "Ctrl + Shift + ↵"} />
+    <ProductSidebar onCollapse={onCollapseRail} onSettings={readOnly ? undefined : onSelectMainView} connectionInfo={<WorkspaceConnection runtime={runtime} />}>
+      <ResearchNavigationActions disabled={Boolean(readOnly)} active={newChatVisible} onNewChat={startNewTask} shortcut={isApple ? "⌘ ⇧ ↵" : "Ctrl + Shift + ↵"} />
       <div className={sidebarClasses.heading}>
         <div className={sidebarClasses.label}>
           {sidebarGrouping === "projects" ? m.projects_home_projects() : m.chat_all_sessions()}
@@ -6046,8 +6056,9 @@ export function ChatPanel({
                 {row.kind === "project" ? (
                   <div className={sidebarClasses.project}>
                     <ProjectInfoCard
-                      onNewChat={() => { if (project.id === projectId) startNewTask(); else void navigate({ to: "/projects/$projectId/tasks/new", params: { projectId: project.id } }); }}
-                      onOpen={() => void navigate({ to: "/projects/$projectId", params: { projectId: project.id } })}
+                      readOnly={Boolean(readOnly)}
+                      onNewChat={readOnly ? undefined : () => { if (project.id === projectId) startNewTask(); else void navigate({ to: "/projects/$projectId/tasks/new", params: { projectId: project.id } }); }}
+                      onOpen={() => readOnly ? onActiveSessionChange(activeId || readOnly.initialSessionId || null) : void navigate({ to: "/projects/$projectId", params: { projectId: project.id } })}
                       project={project}
                       chatCount={projectActivity.find((activity) => activity.projectId === project.id)?.totalAgents}
                       collapsed={row.collapsed}
@@ -6069,6 +6080,7 @@ export function ChatPanel({
                 ) : s ? (
                   <div className={sidebarGrouping === "projects" ? sidebarClasses.indent : undefined}>
                     <SessionRow
+                      readOnly={Boolean(readOnly)}
                       key={s.id}
                       session={s}
                       active={s.id === activeId && mainView === "chat"}
@@ -6148,7 +6160,9 @@ export function ChatPanel({
     </ProductSidebar>
   );
 
-  const headerClass = `chat-header flex items-center gap-2 py-0 px-4 bg-background shrink-0 h-12 relative z-4 w-full max-w-readable my-0 mx-auto [&::after]:content-[''] [&::after]:absolute [&::after]:top-full [&::after]:start-0 [&::after]:end-0 [&::after]:h-6 [&::after]:bg-[linear-gradient(to_bottom,_var(--base),_transparent)] [&::after]:pointer-events-none`;
+  const headerClass = newChatVisible
+    ? "new-chat-header flex h-16 shrink-0 items-center justify-between gap-4 border-b border-border-variant px-6"
+    : "chat-header flex items-center gap-2 py-0 px-4 bg-background shrink-0 h-12 relative z-4 w-full max-w-readable my-0 mx-auto [&::after]:content-[''] [&::after]:absolute [&::after]:top-full [&::after]:start-0 [&::after]:end-0 [&::after]:h-6 [&::after]:bg-[linear-gradient(to_bottom,_var(--base),_transparent)] [&::after]:pointer-events-none";
   const railReopen = !railOpen && !embedded && (
     <IconButton
       title={m.chat_panel_show_sidebar()}
@@ -6178,13 +6192,21 @@ export function ChatPanel({
   return (
     <>
       {railOpen && rail}
-      <section data-side-chat={embedded || undefined} className={`chat-pane flex-1 min-w-0 flex flex-col bg-background min-h-0 ${embedded ? "" : "mt-5"}`}>
+      <section data-side-chat={embedded || undefined} className={`chat-pane flex-1 min-w-0 flex flex-col bg-background min-h-0 ${newChatVisible ? "new-chat-shell" : embedded ? "" : "mt-5"}`}>
         {/* Header — session title on the left, end-pane view switchers on the
           right, fading into the chat below (sessions live in the rail). */}
         <div className={railOpen || embedded ? "contents" : "grid shrink-0 grid-cols-[2rem_minmax(0,1fr)_2rem] mac-titlebar:grid-cols-[6rem_minmax(0,1fr)_6rem] items-center"}>
           {railReopen}
           <div className={headerClass}>
-          <div className="flex min-w-0 flex-1 items-center gap-2">
+          {newChatVisible ? (
+            <>
+              <span className="new-chat-header-title min-w-0 truncate" title={projectName}>{projectName}</span>
+              <button type="button" className="new-chat-header-search" aria-label="搜索论文" onClick={() => void navigate({ to: "/discover" })}>
+                <Search size={16} aria-hidden="true" />
+                <span>搜索论文</span>
+              </button>
+            </>
+          ) : <div className="flex min-w-0 flex-1 items-center gap-2">
             {activeSession && <>
               {activeSession.title?.trim() ? (
                 <PaperTitle variant="header" className="flex-initial" title={activeSession.title.trim()}>
@@ -6200,6 +6222,7 @@ export function ChatPanel({
               </span>
             </>}
           </div>
+          }
           {onOpenDemoWelcome && (
             <IconButton
               data-tip={m.chat_panel_about_this_demo()}
@@ -6245,77 +6268,85 @@ export function ChatPanel({
             <p className="m-0 text-balance">{m.side_chat_empty()}</p>
           </div>
         ) : !threadMounted ? (
-          <div className="chat-empty flex-1 flex flex-col items-center justify-center text-text p-8 text-center [&_h2]:m-0 [&_h2]:text-5xl [&_h2]:font-medium [&_h2]:tracking-[-0.015em] [&_h2]:text-text">
-            <div className="chat-empty-mark w-10.5 h-10.5 mb-5.5 [&_svg]:block [&_svg]:w-full [&_svg]:h-full">
+          <div className={`chat-empty ${newChatVisible ? "new-chat-content" : "flex-1 flex flex-col items-center justify-center text-text p-8 text-center [&_h2]:m-0 [&_h2]:text-5xl [&_h2]:font-medium [&_h2]:tracking-[-0.015em] [&_h2]:text-text"}`}>
+            {!newChatVisible && <div className="chat-empty-mark w-10.5 h-10.5 mb-5.5 [&_svg]:block [&_svg]:w-full [&_svg]:h-full">
               <BrandMark />
-            </div>
-            <h2>{m.chat_panel_what_should_we_research()}</h2>
-            {starterLoading && (
-              <>
-                <div className={STARTER_GRID_CLASS} aria-hidden="true">
-                  {STARTER_ICONS.map((Icon, index) => (
-                    <div
-                      key={index}
-                      className={`flex min-h-22 animate-pulse flex-col items-start justify-center gap-2.5 rounded-xl border bg-background px-5 py-4 ${STARTER_TONES[index].box}`}
-                    >
-                      <span className={`flex w-full items-center gap-2.5 ${STARTER_TONES[index].icon}`}>
-                        <Icon size={17} />
-                        <span className="h-3.5 w-2/5 rounded bg-panel" />
-                      </span>
-                      <span className="h-3 w-4/5 rounded bg-panel" />
-                    </div>
-                  ))}
-                </div>
-                <LoadingRow className="mt-3" role="status">
-                  <Spinner />
-                  <span>{m.chat_panel_starter_generating()}</span>
-                </LoadingRow>
-              </>
-            )}
-            {starterPrompts && starterPrompts.length > 0 && (
-              <div className={STARTER_GRID_CLASS} role="group" aria-label={m.chat_panel_starter_prompts()}>
-                {starterPrompts.map((item, index) => {
-                  const Icon = STARTER_ICONS[index];
-                  const tone = STARTER_TONES[index];
-                  const pickStarter = (edit: boolean) => {
-                    captureUiEvent({ name: "project_starter_clicked", slot: index + 1 });
-                    captureUiEvent({
-                      name: "first_action",
-                      surface: telemetrySurface,
-                      action: "starter_click",
-                    });
-                    // Don't auto-send past an unavailable agent or a non-empty composer.
-                    const composerEmpty = !draft.trim() && attachments.length === 0 && annotations.length === 0;
-                    if (edit || !activeHarness?.agentReady || !composerEmpty) applyStarterPrompt(item.prompt);
-                    else void send({ starter: item.prompt });
-                  };
-                  return (
-                    <div key={index} className="relative min-w-0">
-                      <button
-                        type="button"
-                        className={`flex h-full min-h-22 w-full min-w-0 cursor-pointer flex-col items-start justify-center gap-1.5 rounded-xl border bg-background py-4 ps-5 pe-11 text-start font-sans transition-colors duration-120 ease-standard hover:bg-surface ${tone.box}`}
-                        onClick={() => pickStarter(false)}
-                      >
-                        <span className="flex items-center gap-2.5 text-base font-medium text-text">
-                          <Icon size={17} className={tone.icon} />
-                          {item.title}
-                        </span>
-                        <span className="w-full truncate text-sm text-subtext">{item.prompt}</span>
-                      </button>
-                      <IconButton
-                        size="small"
-                        className="absolute end-2.5 top-2.5 [&:hover:not(:disabled)]:bg-surface-bright"
-                        aria-label={m.chat_panel_starter_edit({ title: item.title })}
-                        title={m.chat_panel_starter_edit({ title: item.title })}
-                        onClick={() => pickStarter(true)}
-                      >
-                        <Pencil size={13} />
-                      </IconButton>
-                    </div>
-                  );
-                })}
+            </div>}
+            <div className={newChatVisible ? "new-chat-intro" : ""}>
+              <div className="flex flex-wrap items-center gap-4">
+                {newChatVisible && <ProductWordmark heading />}
+                <h2 className="product-page-title">{m.chat_panel_what_should_we_research()}</h2>
               </div>
-            )}
+              {newChatVisible && <p className="product-page-description">{m.chat_panel_empty_description()}</p>}
+            </div>
+            <div className={newChatVisible ? "new-chat-starters-section" : ""}>
+              {newChatVisible && <h3>{getLocale() === "zh-CN" ? "猜你想问" : m.chat_panel_starter_prompts()}</h3>}
+              {starterLoading && (
+                <>
+                  <div className={STARTER_GRID_CLASS} aria-hidden="true">
+                    {STARTER_ILLUSTRATIONS.map((illustration, index) => (
+                      <div key={index} className="new-chat-starter-card new-chat-starter-loading animate-pulse">
+                        <span className="new-chat-starter-visual"><img src={illustration} alt="" /></span>
+                        <span className="h-3.5 w-2/3 rounded bg-panel" />
+                        <span className="mt-3 h-3 w-full rounded bg-panel" />
+                        <span className="mt-2 h-3 w-4/5 rounded bg-panel" />
+                      </div>
+                    ))}
+                  </div>
+                  <LoadingRow className="mt-3" role="status">
+                    <Spinner />
+                    <span>{m.chat_panel_starter_generating()}</span>
+                  </LoadingRow>
+                </>
+              )}
+              {starterPrompts && starterPrompts.length > 0 && (
+                <div className={STARTER_GRID_CLASS} role="group" aria-label={m.chat_panel_starter_prompts()}>
+                  {starterPrompts.map((item, index) => {
+                    const pickStarter = (edit: boolean) => {
+                      captureUiEvent({ name: "project_starter_clicked", slot: index + 1 });
+                      captureUiEvent({
+                        name: "first_action",
+                        surface: telemetrySurface,
+                        action: "starter_click",
+                      });
+                      // Don't auto-send past an unavailable agent or a non-empty composer.
+                      const composerEmpty = !draft.trim() && attachments.length === 0 && annotations.length === 0;
+                      if (edit || !activeHarness?.agentReady || !composerEmpty) applyStarterPrompt(item.prompt);
+                      else void send({ starter: item.prompt });
+                    };
+                    return (
+                      <div key={index} className="new-chat-starter-wrap relative min-w-0">
+                        <button
+                          type="button"
+                          className="new-chat-starter-card"
+                          style={{ backgroundImage: `linear-gradient(180deg, rgb(255 255 255 / 8%) 16%, rgb(255 255 255 / 78%) 100%), url(${starterCardBackground})` }}
+                          onClick={() => pickStarter(false)}
+                        >
+                          <span className="new-chat-starter-visual" aria-hidden="true">
+                            <img src={STARTER_ILLUSTRATIONS[index % STARTER_ILLUSTRATIONS.length]} alt="" />
+                          </span>
+                          <span className="new-chat-starter-title">
+                            <span className="truncate">{item.title}</span>
+                            <ArrowUpRight size={16} aria-hidden="true" />
+                          </span>
+                          <span className="new-chat-starter-rule" />
+                          <span className="new-chat-starter-description">{item.prompt}</span>
+                        </button>
+                        <IconButton
+                          size="small"
+                          className="new-chat-starter-edit absolute end-2 top-2 opacity-0 transition-opacity focus-visible:opacity-100"
+                          aria-label={m.chat_panel_starter_edit({ title: item.title })}
+                          title={m.chat_panel_starter_edit({ title: item.title })}
+                          onClick={() => pickStarter(true)}
+                        >
+                          <Pencil size={13} />
+                        </IconButton>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         ) : (
           <div
@@ -6349,11 +6380,11 @@ export function ChatPanel({
                   runExperimentName={runExperimentName}
                   onOpenExperiment={onOpenExperiment}
                   experimentName={experimentName}
-                  onRespond={respond}
+                  onRespond={readOnly ? undefined : respond}
                   onOpenPlan={openPlan}
                   onOpenSubagent={openSubagent}
                   recoveringTurnId={recoveringTurnId}
-                  onRecover={recoverFailedTurn}
+                  onRecover={readOnly ? undefined : recoverFailedTurn}
                   skills={transcriptSkills}
                 />
               </ChatImageScope>
@@ -6389,7 +6420,7 @@ export function ChatPanel({
 
         {/* Docked while a plan awaits a decision, so the approval controls never
           scroll away. Actions mirror the (now compact) inline card's wire. */}
-        <div inert={contentLoading || Boolean(contentError) || historyLoading} className="composer px-3 pb-5 shrink-0 relative z-4 bg-background w-full max-w-readable my-0 mx-auto [&_textarea]:border-0 [&_textarea]:bg-none [&_textarea]:bg-transparent [&_textarea]:resize-none [&_textarea]:pt-2.5 [&_textarea]:px-3 [&_textarea]:pb-1 [&_textarea]:text-base [&_textarea]:field-sizing-content [&_textarea]:min-h-18 [&_textarea]:max-h-45">
+        <div inert={contentLoading || Boolean(contentError) || historyLoading} className={`composer ${newChatVisible ? "new-chat-composer" : "px-3 pb-5 max-w-readable"} shrink-0 relative z-4 bg-background w-full my-0 mx-auto [&_textarea]:border-0 [&_textarea]:bg-none [&_textarea]:bg-transparent [&_textarea]:resize-none [&_textarea]:pt-2.5 [&_textarea]:px-3 [&_textarea]:pb-1 [&_textarea]:text-base [&_textarea]:field-sizing-content [&_textarea]:min-h-18 [&_textarea]:max-h-45`}>
           {threadMounted && (
             <IconButton
               className={`absolute bottom-full left-1/2 z-5 mb-6 h-9 w-9 -translate-x-1/2 rounded-full border border-border bg-background shadow-control transition-opacity duration-150 ease-standard ${transcriptAtBottom ? "opacity-0" : "opacity-100"}`}
@@ -6521,18 +6552,6 @@ export function ChatPanel({
               </IconButton>
             </div>
           )}
-          {!embedded && !activeId && onNewProject && (
-            <ComposerProjectPicker
-              projects={sidebarProjects}
-              activity={projectActivity}
-              projectId={projectId}
-              projectName={projectName}
-              onNewProject={onNewProject}
-              onSelect={(id) => {
-                if (id !== projectId) void navigate({ to: "/projects/$projectId/tasks/new", params: { projectId: id } });
-              }}
-            />
-          )}
           {!embedded && !isDemoProjectId(projectId) && (activeId ? <ResearchPanel onOpenResearch={onOpenResearch} key={activeId} onOpenSession={openSpawnedSession} sessionId={activeId} disabled={!composerSelection || busy} onStartWorkflow={async (mode) => {
             if (!composerSelection) return;
             const objective = `${researchModes[mode]}：${draft.trim() || "请接管项目材料，明确研究目标与交付，并按需求判断执行路径；缺少材料时先澄清。"}`;
@@ -6544,6 +6563,7 @@ export function ChatPanel({
             const session = await openNewSession(composerSelection, false, objective, mode);
             await sendChatMessage(session.id, objective, {}, images.length ? images : undefined);
           }} /> : null)}
+          <fieldset disabled={Boolean(readOnly)} className="contents">
           <div className={`composer-box relative flex flex-col border ${bashActive ? "border-accent-amber" : "border-border"} rounded-lg bg-background shadow-elevated`} data-onboarding="composer">
             {activeHarness && !activeHarness.agentReady && (
               <div className="composer-harness-warning py-2 px-3 text-subtext text-sm leading-normal border-b border-b-border-variant [&_strong]:text-accent-amber [&_strong]:font-medium [&_code]:font-mono [&_code]:text-text">
@@ -6646,7 +6666,7 @@ export function ChatPanel({
                 {settingsError}
               </div>
             )}
-            {!embedded && !isDemoProjectId(projectId) && (!activeId || researchState.data) && <div className="px-3 pt-3 pb-1"><WorkModeSwitch value={currentWorkMode} onChange={setResearchMode} readOnly={Boolean(activeId)} activeWorkflow={researchState.data?.study?.plans.at(-1)?.workflow} /></div>}
+            {!newChatVisible && !embedded && !isDemoProjectId(projectId) && (!activeId || researchState.data) && <div className="px-3 pt-3 pb-1"><WorkModeSwitch value={currentWorkMode} onChange={setResearchMode} readOnly={Boolean(activeId)} activeWorkflow={researchState.data?.study?.plans.at(-1)?.workflow} /></div>}
             <div className={`composer-input relative flex overflow-hidden [&_textarea]:flex-1 ${bashActive ? "[&_textarea]:font-mono [&_textarea]:text-sm" : ""}`}>
               <textarea
                 dir="auto"
@@ -6796,6 +6816,7 @@ export function ChatPanel({
                 textareaRef={composerRef}
               />
             </div>
+            {newChatVisible && !isDemoProjectId(projectId) && <div className="new-chat-work-mode"><WorkModeSwitch value={currentWorkMode} onChange={setResearchMode} activeWorkflow={researchState.data?.study?.plans.at(-1)?.workflow} /></div>}
             <div className="composer-actions flex min-w-0 justify-end items-center gap-2 pt-1.5 px-2 pb-2">
               <div className="option-picker relative inline-flex shrink-0" ref={dataSources.ref}>
                 <IconButton
@@ -6909,6 +6930,20 @@ export function ChatPanel({
                 />
                 <ContextMeter usage={openSession?.contextUsage} />
               </div>
+              {!embedded && !activeId && onNewProject && (
+                <div className={newChatVisible ? "new-chat-project-picker" : ""}>
+                  <ComposerProjectPicker
+                    projects={sidebarProjects}
+                    activity={projectActivity}
+                    projectId={projectId}
+                    projectName={projectName}
+                    onNewProject={onNewProject}
+                    onSelect={(id) => {
+                      if (id !== projectId) void navigate({ to: "/projects/$projectId/tasks/new", params: { projectId: id } });
+                    }}
+                  />
+                </div>
+              )}
               {busy && !pendingQuestion ? (
                 // Stop whenever the turn is busy and typed text has nowhere to
                 // go — actively streaming, or held on a plan/permission card
@@ -6937,6 +6972,7 @@ export function ChatPanel({
               )}
             </div>
           </div>
+          </fieldset>
         </div>
       </section>
     </>

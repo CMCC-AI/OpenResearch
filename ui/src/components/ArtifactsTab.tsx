@@ -1,3 +1,4 @@
+import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { WorkspaceEmptyState } from "./WorkspaceEmptyState";
 import { useQuery } from "@tanstack/react-query";
 import { queryClient } from "../queries/client";
@@ -251,6 +252,7 @@ function PreviewPane({
   onDelete: (path: string) => void;
   artifactEntries: ArtifactEntry[];
 }) {
+  const readOnly = useReadOnlyWorkspace();
   const kind = previewKind(entry);
   const version = useFileVersion(artifactUrl(projectId, entry.path));
   const { text, binary, truncated, error, wantsText } = useTextBody(projectId, entry, kind, version);
@@ -341,6 +343,7 @@ function PreviewPane({
         </IconButtonLink>
         <IconButton
           size="small"
+          disabled={Boolean(readOnly)}
           data-tip={m.artifacts_tab_delete_artifact()}
           data-tip-align="end"
           aria-label={m.artifacts_tab_delete_artifact()}
@@ -391,6 +394,7 @@ function TreeRows({
   onRename: (path: string, name: string) => void;
   onCancelRename: () => void;
 }) {
+  const readOnly = useReadOnlyWorkspace();
   return (
     <div className="flex w-full max-w-full min-w-0 flex-col items-stretch">
       {entries.map((e) => {
@@ -413,6 +417,7 @@ function TreeRows({
                 <span className="file-tree-name flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{e.name}</span>
                 <IconButton size="small"
                   className="ft-row-delete opacity-35 focus-visible:opacity-100"
+                  disabled={Boolean(readOnly)}
                   data-tip={m.artifacts_tab_delete_folder()}
                   data-tip-align="end"
                   aria-label={m.artifact_delete_folder_label({ name: ltr(e.name) })}
@@ -532,6 +537,7 @@ export function ArtifactsTab({
   // tracks what the user closed instead.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => initialCollapsed(project.id));
   const [treeWidth, setTreeWidth] = useState(initialTreeWidth);
+  const readOnly = useReadOnlyWorkspace();
   const [contextMenu, setContextMenu] = useState<FileContextMenuTarget | null>(null);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const treeRef = useRef<HTMLDivElement>(null);
@@ -635,7 +641,7 @@ export function ArtifactsTab({
       onDelete={remove}
       renamingPath={renamingPath}
       onContextMenu={(event, path) => {
-        setContextMenu(fileContextMenuTarget(event, path));
+        if (!readOnly) setContextMenu(fileContextMenuTarget(event, path));
       }}
       onRename={(path, name) => {
         setRenamingPath(null);

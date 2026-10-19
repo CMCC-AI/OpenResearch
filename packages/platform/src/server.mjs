@@ -2,6 +2,7 @@ import {
   ensurePersonalSpace,
   preparePersonalSpace,
 } from "./personal-spaces.mjs";
+import { opencodeSettings } from "./opencode-settings.mjs";
 import { accountRoutes } from "./accounts.mjs";
 import { resetMailer } from "./mail.mjs";
 import { featuredCaseRoutes } from "./featured-cases.mjs";
@@ -131,6 +132,7 @@ export function configuration(env = process.env) {
     );
   return {
     origin,
+    opencodeConfigFile: env.OPENCODE_ADMIN_CONFIG_FILE || "",
     sendPasswordReset: resetMailer(env),
     appOrigin: appOrigin.origin,
     appEntry: `${appOrigin.origin}${appPath}`,
@@ -229,6 +231,12 @@ export async function createPlatform(
       403,
       "此操作不允许通过科研网关访问",
     );
+    if (
+      config.opencodeConfigFile &&
+      /^\/api\/local-models(?:\/|$)/.test(url.pathname) &&
+      !["GET", "HEAD"].includes(req.method)
+    )
+      check(s.is_admin, 403, "仅系统管理员可配置 OpenCode 模型");
     if (websocket || !["GET", "HEAD"].includes(req.method))
       sameOrigin(req, workspaceOrigin(config, workspace));
     return { s };
@@ -244,6 +252,12 @@ export async function createPlatform(
     await spaceOwner(s.user_id, workspace);
     const path = new URL(req.url, config.origin).pathname;
     check(permitted(req.method, path), 403, "此操作不允许通过科研网关访问");
+    if (
+      config.opencodeConfigFile &&
+      /^\/api\/local-models(?:\/|$)/.test(path) &&
+      !["GET", "HEAD"].includes(req.method)
+    )
+      check(s.is_admin, 403, "仅系统管理员可配置 OpenCode 模型");
     if (websocket || !["GET", "HEAD"].includes(req.method))
       sameOrigin(req, config.origin.origin);
     return { s, workspace };
@@ -372,6 +386,7 @@ export async function createPlatform(
     audit,
     limit,
   });
+  const modelSettings = opencodeSettings(config.opencodeConfigFile);
   async function adminUsers(req, res, origin, currentSession = null) {
     browserSessionOrigin(req, origin);
     res.setHeader("access-control-allow-origin", origin);
@@ -385,7 +400,24 @@ export async function createPlatform(
     }
     const s = currentSession || (await session(req));
     await limit(`admin-users:${s.user_id}`, 180, 60);
-    await accounts.admin(req, res, new URL(req.url, config.origin).pathname, s);
+    const path = new URL(req.url, config.origin).pathname;
+    if (path === "/api/platform/admin/opencode") {
+      check(s.is_admin, 403, "仅系统管理员可配置 OpenCode 模型");
+      check(["GET", "POST"].includes(req.method), 405);
+      if (req.method === "GET") return json(res, await modelSettings.read());
+      const settings = await input(req);
+      const saved = await modelSettings.save(settings, async () => {
+        await audit(
+          pool,
+          s.user_id,
+          null,
+          "opencode.config.update",
+          settings.providerId,
+        );
+      });
+      return json(res, saved);
+    }
+    await accounts.admin(req, res, path, s);
   }
   const server = http.createServer(async (req, res) => {
     res.setHeader("cache-control", "no-store");
@@ -457,7 +489,7 @@ export async function createPlatform(
         const s = await session(req);
         await spaceOwner(s.user_id, workspace);
         if (
-          /^\/api\/platform\/admin\/users(?:\/[0-9a-f-]{36}\/password)?$/.test(
+          /^\/api\/platform\/admin\/(?:users(?:\/[0-9a-f-]{36}\/(?:password|role|delete))?|opencode)$/.test(
             path,
           )
         )
@@ -676,7 +708,7 @@ export async function createPlatform(
         return json(res, { code: 200, data: { ok: true } });
       }
       if (
-        /^\/api\/platform\/admin\/users(?:\/[0-9a-f-]{36}\/password)?$/.test(
+        /^\/api\/platform\/admin\/(?:users(?:\/[0-9a-f-]{36}\/(?:password|role|delete))?|opencode)$/.test(
           path,
         )
       ) {

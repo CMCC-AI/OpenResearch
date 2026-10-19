@@ -1,3 +1,4 @@
+import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { FolderOpen } from "lucide-react";
 import { WorkspaceEmptyState } from "./WorkspaceEmptyState";
 import { isImmutableQuery } from "../queries/invalidation";
@@ -77,6 +78,7 @@ export function WorktreeTab({
   ) => void;
   canRenameFile: (path: string) => boolean;
 }) {
+  const readOnly = useReadOnlyWorkspace();
   const projectId = project.id;
   const sessions = useQuery(listChatSessionsQuery(projectId));
   const busy = sessions.data?.some((session) => session.id === sessionId && session.busy) ?? false;
@@ -124,7 +126,7 @@ export function WorktreeTab({
     liveWorktree
       ? onOpenFile(path, sessionId, undefined, intent)
       : onOpenFile(path, undefined, project.baselineBranch, intent);
-  const canManageFiles = tree?.root === "worktree";
+  const canManageFiles = !readOnly && tree?.root === "worktree";
   const manage = async (path: string, action: Parameters<typeof manageProjectFile>[2]) => {
     try {
       await manageProjectFile(projectId, path, action, {

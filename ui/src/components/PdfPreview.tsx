@@ -121,6 +121,7 @@ export default function PdfPreview({
 
     const task = getDocument({
       url,
+      withCredentials: true,
       worker,
       cMapUrl: `${ASSETS}cmaps/`,
       standardFontDataUrl: `${ASSETS}standard_fonts/`,

@@ -128,6 +128,88 @@ export function accountRoutes({
     async admin(req, res, path, session) {
       if (!path.startsWith("/api/platform/admin/")) return false;
       check(session.is_admin, 403, "仅系统管理员可访问");
+      const managementRoute = path.match(
+        /^\/api\/platform\/admin\/users\/([0-9a-f-]{36})\/(role|delete)$/,
+      );
+      if (managementRoute) {
+        check(req.method === "POST", 405);
+        const [, target, action] = managementRoute;
+        check(
+          target !== session.user_id,
+          400,
+          "不能删除当前账号或变更自己的系统角色",
+        );
+        await limit(`admin-manage:${session.user_id}`, 20, 900);
+        const b = await input(req);
+        if (action === "role")
+          check(typeof b.isAdmin === "boolean", 400, "请选择有效的系统角色");
+        const revoked = await transaction(pool, async (db) => {
+          const locked = await db.query(
+            "SELECT id,email,password_hash,is_admin,disabled,deleted_at FROM platform_users WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE",
+            [[session.user_id, target]],
+          );
+          const actor = locked.rows.find((row) => row.id === session.user_id);
+          check(
+            actor?.is_admin && !actor.disabled,
+            403,
+            "管理员权限已变更，请重新登录",
+          );
+          check(
+            await verifyPassword(b.adminPassword, actor.password_hash),
+            403,
+            "管理员当前密码不正确",
+          );
+          const user = locked.rows.find(
+            (row) => row.id === target && !row.deleted_at,
+          );
+          check(user, 404, "用户不存在或已删除");
+          if (action === "delete")
+            check(
+              b.email === user.email,
+              400,
+              "请输入目标用户的完整邮箱以确认删除",
+            );
+          const sessions = await db.query(
+            "SELECT token_hash FROM platform_sessions WHERE user_id=$1",
+            [target],
+          );
+          if (action === "role") {
+            check(!user.disabled, 400, "停用账号不能调整系统角色");
+            await db.query(
+              "UPDATE platform_users SET is_admin=$2 WHERE id=$1",
+              [target, b.isAdmin],
+            );
+          } else {
+            // Retain ownership and audit references; deletion permanently blocks account access.
+            await db.query(
+              "UPDATE platform_users SET disabled=true,is_admin=false,deleted_at=now(),password_version=password_version+1 WHERE id=$1",
+              [target],
+            );
+          }
+          await db.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [
+            target,
+          ]);
+          await db.query("DELETE FROM platform_sessions WHERE user_id=$1", [
+            target,
+          ]);
+          await audit(
+            db,
+            session.user_id,
+            null,
+            action === "delete"
+              ? "account.delete"
+              : b.isAdmin
+                ? "account.role.admin"
+                : "account.role.user",
+            target,
+          );
+          return sessions.rows;
+        });
+        for (const tunnel of tunnels.values())
+          for (const row of revoked) tunnel.revokeSession(row.token_hash);
+        json(res, { ok: true });
+        return true;
+      }
       const passwordRoute = path.match(
         /^\/api\/platform\/admin\/users\/([0-9a-f-]{36})\/password$/,
       );
@@ -140,7 +222,7 @@ export function accountRoutes({
         const revoked = await transaction(pool, async (db) => {
           // Lock in stable order, including the actor, against revocation and concurrent resets.
           const locked = await db.query(
-            "SELECT id,password_hash,is_admin,disabled FROM platform_users WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE",
+            "SELECT id,password_hash,is_admin,disabled,deleted_at FROM platform_users WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE",
             [[session.user_id, target]],
           );
           const actor = locked.rows.find((row) => row.id === session.user_id);
@@ -155,7 +237,7 @@ export function accountRoutes({
             "管理员当前密码不正确",
           );
           check(
-            locked.rows.some((row) => row.id === target),
+            locked.rows.some((row) => row.id === target && !row.deleted_at),
             404,
             "用户不存在",
           );
@@ -208,14 +290,14 @@ export function accountRoutes({
         const summary = await db.query(`SELECT count(*)::int AS total,
           count(*) FILTER(WHERE NOT disabled)::int AS enabled,
           count(*) FILTER(WHERE disabled)::int AS disabled,
-          count(*) FILTER(WHERE is_admin)::int AS admins FROM platform_users`);
+          count(*) FILTER(WHERE is_admin)::int AS admins FROM platform_users WHERE deleted_at IS NULL`);
         const filtered = await db.query(
-          "SELECT count(*)::int AS total FROM platform_users WHERE email ILIKE $1 OR name ILIKE $1",
+          "SELECT count(*)::int AS total FROM platform_users WHERE deleted_at IS NULL AND (email ILIKE $1 OR name ILIKE $1)",
           [`%${q}%`],
         );
         const users = await db.query(
           `SELECT u.id,u.email,u.name,u.is_admin,u.disabled,u.created_at,u.last_login_at
-          FROM platform_users u WHERE u.email ILIKE $1 OR u.name ILIKE $1
+          FROM platform_users u WHERE u.deleted_at IS NULL AND (u.email ILIKE $1 OR u.name ILIKE $1)
           ORDER BY u.created_at DESC,u.id LIMIT 25 OFFSET $2`,
           [`%${q}%`, (page - 1) * 25],
         );

@@ -83,6 +83,7 @@ export function runtimeConfig(workspace, env) {
   if (!/^[0-9a-f-]{36}$/.test(workspace)) throw new Error("Invalid workspace");
   if (!env.MANAGED_EXECUTOR_IMAGE)
     throw new Error("MANAGED_EXECUTOR_IMAGE is required");
+  const liveConfigDirectory = env.MANAGED_OPENCODE_LIVE_CONFIG_DIR;
   const configFile = env.MANAGED_OPENCODE_CONFIG_FILE;
   if (configFile && (!configFile.startsWith("/") || /[:\n\r]/.test(configFile)))
     throw new Error(
@@ -91,7 +92,7 @@ export function runtimeConfig(workspace, env) {
   const legacy = workspace === env.MANAGED_LEGACY_WORKSPACE;
   const sharedDirectory = env.MANAGED_OPENCODE_CONFIG_DIR;
   const authFile = env.MANAGED_OPENCODE_AUTH_FILE;
-  for (const path of [sharedDirectory, authFile])
+  for (const path of [sharedDirectory, authFile, liveConfigDirectory])
     if (path && (!path.startsWith("/") || /[:\n\r]/.test(path)))
       throw Error("Managed configuration must be an absolute host path");
   return {
@@ -139,7 +140,10 @@ export function runtimeConfig(workspace, env) {
         ...(!legacy && authFile
           ? [`${authFile}:/run/orx-seed/auth.json:ro`]
           : []),
-        ...(!legacy && configFile
+        ...(!legacy && liveConfigDirectory
+          ? [`${liveConfigDirectory}:/home/node/.config/opencode:ro`]
+          : []),
+        ...(!legacy && configFile && !liveConfigDirectory
           ? [`${configFile}:/home/node/.config/opencode/opencode.json:ro`]
           : []),
       ],

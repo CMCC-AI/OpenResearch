@@ -11,7 +11,8 @@ function deleteExplanation(project: Project) {
   return `${m.projects_delete_from_app({ name: project.name })}\n\n${synced ? m.projects_home_local_and_github_kept() : m.projects_home_local_folder_kept()}`;
 }
 
-export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleCollapsed, onRemoved, onNewChat, onOpen, onFeature, pinned, onPin }: {
+export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleCollapsed, onRemoved, onNewChat, onOpen, onFeature, pinned, onPin, readOnly = false }: {
+  readOnly?: boolean;
   project: Project;
   chatCount: number | undefined;
   collapsed: boolean;
@@ -72,7 +73,8 @@ export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleC
       {collapsed ? <Folder size={15} className="shrink-0" /> : <FolderOpen size={15} className="shrink-0" />}<span className="truncate">{project.name}</span>
       {busy && <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-primary animate-[or-pulse_1.2s_infinite]" />}
     </button>
-    {onOpen && <IconButton size="small" aria-label={`继续研究 ${project.name}`} onClick={onOpen}><ArrowRight size={15} /></IconButton>}
+    {onOpen && <IconButton size="small" aria-label={`${readOnly ? "查看项目" : "继续研究"} ${project.name}`} onClick={onOpen}><ArrowRight size={15} /></IconButton>}
+    {!readOnly && <>
     <IconButton ref={triggerRef} size="small" className={`text-text group-hover:opacity-100 group-focus-within:opacity-100 ${menuOpen ? "bg-surface opacity-100" : "opacity-0"}`}
       aria-label={m.sidebar_project_details({ name: project.name })} aria-controls={menuId} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => {
           if (menuRef.current?.matches(":popover-open")) menuRef.current.hidePopover();
@@ -109,6 +111,7 @@ export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleC
       <MenuItem role="menuitem" danger disabled={deleting} onClick={() => void remove()}><span className="flex items-center gap-2"><Trash2 size={16} />{m.projects_home_delete_project_action()}</span></MenuItem>
     </div>
     {editing && createPortal(<EditProjectDialog project={project} onClose={() => setEditing(false)} onRemoved={onRemoved} />, document.body)}
+    </>}
   </>;
 }
 

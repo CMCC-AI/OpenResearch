@@ -24,6 +24,33 @@ test("only administrators can mount management content",()=>{
 test("administrators share user and case navigation independently of research access",()=>{
   const html=layout({id:"admin",name:"管理员",email:"admin@test.invalid",isAdmin:true});
   assert.match(html,/href="\/admin\/users"/);assert.match(html,/href="\/admin\/cases" aria-current="page"/);
+  assert.match(html,/href="\/admin\/opencode"/);
   assert.match(html,/protected-management-content/);assert.match(html,/查看公共案例/);assert(!html.includes("返回科研工作台"));
   assert.match(layout({id:"admin",isAdmin:true},true),/返回科研工作台/);
+});
+
+function researchSidebar(user, canAccessResearch = true) {
+  const code = ts.transpileModule(readFileSync(new URL("../src/product/ProductNav.tsx", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+  const exports = {};
+  const mocks = {
+    "@tanstack/react-router": { Link: ({ to, children, ...props }) => React.createElement("a", { href: to, ...props }, children), useRouterState: ({ select }) => select({ location: { pathname: "/mobilesci/projects" } }) },
+    "./AuthSession": { useAuthSession: () => ({ user, canAccessResearch }) },
+    "../appBasePath": { stripAppBase: (path) => path.replace(/^\/mobilesci/, "") },
+    "../components/Wordmark": { BrandMark: () => null },
+    "../components/ui": { IconButton: () => null },
+    "../components/ResearchNavigation": { ResearchProjectNavigation: () => null },
+    "../components/AccountMenu": { AccountMenu: () => null },
+  };
+  new Function("require", "exports", code)((id) => id in mocks ? mocks[id] : /\.(svg|png)$/.test(id) ? { default: id } : require(id), exports);
+  return renderToStaticMarkup(React.createElement(exports.ProductSidebar));
+}
+
+test("research sidebar keeps administration inside the account menu", () => {
+  for (const access of [true, false]) {
+    for (const user of [null, { id: "reader", isAdmin: false }, { id: "admin", isAdmin: true }]) {
+      const html = researchSidebar(user, access);
+      assert.ok(!html.includes('/admin/users'));
+      assert.ok(!html.includes('系统管理'));
+    }
+  }
 });

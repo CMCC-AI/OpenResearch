@@ -4,7 +4,10 @@ services:
     environment:
       MANAGED_EXECUTORS: "true"
       PRIVATE_USER_SPACES: "true"
+      OPENCODE_ADMIN_CONFIG_FILE: /run/orx-opencode/opencode.json
       MANAGED_CAPACITY: ${MANAGED_CAPACITY:-4}
+    volumes:
+      - ${MANAGED_OPENCODE_CONFIG_DIRECTORY:-/srv/openresearch/config}:/run/orx-opencode
   provisioner:
     build:
       context: ../..
@@ -16,7 +19,7 @@ services:
       PLATFORM_ORIGIN: ${PLATFORM_ORIGIN}
       MANAGED_CONNECT_URL: ${PLATFORM_ORIGIN}
       MANAGED_EXECUTOR_IMAGE: ${MANAGED_EXECUTOR_IMAGE:-openresearch-managed-executor:hosted}
-      MANAGED_OPENCODE_CONFIG_FILE: ${MANAGED_OPENCODE_CONFIG_FILE:?Set absolute host path to administrator OpenCode configuration}
+      MANAGED_OPENCODE_LIVE_CONFIG_DIR: ${MANAGED_OPENCODE_CONFIG_DIRECTORY:-/srv/openresearch/config}
       ORX_DEEP_LITERATURE_URL: ${DEEPLIT_ORIGIN:?Set HTTPS Deep Literature origin}
       ORX_DEEP_LITERATURE_WEB_URL: ${DEEPLIT_ORIGIN}
     volumes:

@@ -141,6 +141,7 @@
   "chat_panel_waited_for_an_experiment_run": "실험 실행 대기 완료",
   "chat_panel_waiting_for_your_input": "입력을 기다리는 중…",
   "chat_panel_what_should_we_research": "무엇을 연구할까요?",
+  "chat_panel_empty_description": "연구 전문가의 역량을 파일, 터미널, 실험, 산출물과 연결하세요. 대화를 곁에 두고 각 연구를 효율적으로 진행할 수 있습니다.",
   "chat_panel_you_mid_task": "작업 중인 사용자",
   "closable_tab_close_tab": "탭 닫기",
   "code_browser_header_changes": "변경 사항",

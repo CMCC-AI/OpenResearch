@@ -400,6 +400,8 @@ export function harnessSetupPath(h: Harness, setup: HarnessSetupCommands | undef
 }
 
 function HarnessesTab({ remote }: { remote: boolean }) {
+  const authSession = useOptionalAuthSession();
+  const canConfigureModels = (!appBasePath && !isCloudWorkspace()) || !!authSession?.user?.isAdmin;
   const harnessesOptions = getHarnessesQuery();
   const { data: harnesses = null } = useQuery(harnessesOptions);
   const [active, setActive] = useState<HarnessId | null>(null);
@@ -526,7 +528,7 @@ function HarnessesTab({ remote }: { remote: boolean }) {
               <CommandRunTerminal run={setupRun.run} onComplete={() => load(true, true)} onClose={setupRun.clear} />
             </div>
           )}
-          {h.id === "opencode" && <LocalModelSetup installed={h.installed} />}
+          {h.id === "opencode" && canConfigureModels && <LocalModelSetup installed={h.installed} />}
         </div>
       )}
     </>

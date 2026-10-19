@@ -126,6 +126,7 @@ export function SessionRow({
   onRename,
   onSetArchived,
   onDelete,
+  readOnly = false,
 }: {
   session: ChatSession;
   active: boolean;
@@ -141,6 +142,7 @@ export function SessionRow({
   onRename: (title: string) => void;
   onSetArchived: (archived: boolean) => void;
   onDelete: () => void;
+  readOnly?: boolean;
 }) {
   const { open, setOpen, ref } = usePopover();
   const title = session.title?.trim() || "Untitled";
@@ -241,7 +243,7 @@ export function SessionRow({
           unread && <span className="unread-dot" />
         )}
       </span>
-      <button
+      {!readOnly && <button
         className="session-menu-btn"
         title={m.chat_panel_session_options()}
         aria-label={m.chat_panel_session_options()}
@@ -251,8 +253,8 @@ export function SessionRow({
         }}
       >
         <MoreHorizontal size={14} />
-      </button>
-      {open && (
+      </button>}
+      {!readOnly && open && (
         <div className="option-menu absolute bottom-[calc(100%_+_8px)] start-0 max-h-95 flex flex-col bg-background border border-border rounded-lg shadow-menu z-50 overflow-hidden min-w-47.5 p-1.5 [&.align-right]:start-auto [&.align-right]:end-0 [&.drop-down]:bottom-auto [&.drop-down]:top-[calc(100%_+_4px)] [&.session-menu]:start-auto [&.session-menu]:end-1.5 [&.session-menu]:top-[calc(100%_-_2px)] [&.session-menu]:min-w-35 drop-down session-menu">
           <MenuItem
             onClick={(e) => {

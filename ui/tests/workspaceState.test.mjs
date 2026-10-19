@@ -28,6 +28,16 @@ const panes = [
   { kind: "side", sessionId: "session" },
 ];
 
+test("case navigation retains the selected session, native pane and draft preview", () => {
+  const pane = { kind: "home", view: "research" };
+  const url = new URL(taskLocation("project", "expert session", pane, "case-id", true), "http://localhost");
+  assert.equal(url.pathname, "/cases/case-id");
+  assert.equal(url.searchParams.get("session"), "expert session");
+  assert.equal(url.searchParams.get("preview"), "true");
+  assert.deepEqual(JSON.parse(url.searchParams.get("pane")), pane);
+  assert.equal(new URL(taskLocation("project", "session", null, "case-id"), "http://localhost").searchParams.has("preview"), false);
+});
+
 test("every pane variant round-trips through a concrete task URL", () => {
   for (const pane of panes) {
     assert.deepEqual(parsePane(pane), pane);

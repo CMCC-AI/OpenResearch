@@ -250,6 +250,7 @@ impl OpenCode {
             info.auth_method = Some("apiKey");
         }
 
+        let configured = configured_providers(&config);
         let local = local_providers(&config);
         // Snapshot defers the local-server liveness probes with the catalog.
         let available = if snapshot {
@@ -267,11 +268,18 @@ impl OpenCode {
         }
         models.retain(|model| {
             available.contains(&model.id)
+                || (!is_local(model)
+                    && configured.iter().any(|id| *id == model_provider(&model.id)))
                 || (info.authenticated && !is_local(model))
                 || (public_models.contains(&model.id)
                     && provider_enabled(&config, "opencode")
                     && !is_local(model))
         });
+        if !info.authenticated && !configured.is_empty() {
+            info.authenticated = true;
+            info.auth_method = Some("thirdParty");
+            info.account = Some(configured.join(", "));
+        }
         // Onboarding and the composer seed their selection from the first model.
         let default = config.get("model").and_then(Value::as_str);
         models.sort_by_key(|model| {
@@ -690,6 +698,38 @@ fn is_auth_rejection(output: &str) -> bool {
 /// The `provider` half of an opencode `provider/model` id.
 fn model_provider(id: &str) -> &str {
     id.split_once('/').map(|(p, _)| p).unwrap_or(id)
+}
+
+// Administrator-managed providers can carry credentials in the global config
+// without an auth.json entry. Explicit custom endpoints can also be anonymous.
+// Keep only those providers' models in the catalog.
+fn configured_providers(config: &Value) -> Vec<&str> {
+    config
+        .get("provider")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter(|(id, provider)| {
+            let has_key = provider
+                .pointer("/options/apiKey")
+                .and_then(Value::as_str)
+                .is_some_and(|key| !key.trim().is_empty() && !key.contains('{'));
+            let has_custom_models = provider
+                .pointer("/options/baseURL")
+                .and_then(Value::as_str)
+                .is_some_and(|endpoint| !endpoint.trim().is_empty())
+                && provider
+                    .get("models")
+                    .and_then(Value::as_object)
+                    .is_some_and(|models| !models.is_empty());
+            let is_local = provider
+                .pointer("/options/baseURL")
+                .and_then(Value::as_str)
+                .is_some_and(is_loopback_url);
+            provider_enabled(config, id) && !is_local && (has_key || has_custom_models)
+        })
+        .map(|(id, _)| id.as_str())
+        .collect()
 }
 
 fn local_providers(config: &Value) -> Vec<(&str, &Value)> {
@@ -2895,5 +2935,27 @@ opencode/unknown
         );
 
         std::fs::remove_dir_all(script.parent().unwrap()).ok();
+    }
+}
+
+#[cfg(test)]
+mod managed_provider_tests {
+    use super::*;
+
+    #[test]
+    fn configured_credentials_only_enable_their_own_available_providers() {
+        let config = serde_json::json!({
+            "provider": {
+                "company": { "options": { "apiKey": "test-key" } },
+                "anonymous": { "options": { "baseURL": "https://models.example/v1" }, "models": { "custom": {} } },
+                "local": { "options": { "baseURL": "http://localhost:1234/v1", "apiKey": "test-key" }, "models": { "custom": {} } },
+                "disabled": { "options": { "apiKey": "test-key" } },
+                "empty": { "options": { "apiKey": " " } },
+                "unresolved": { "options": { "apiKey": "{env:MISSING}" } }
+            },
+            "disabled_providers": ["disabled"]
+        });
+        assert_eq!(configured_providers(&config), vec!["anonymous", "company"]);
+        assert!(configured_providers(&serde_json::json!({})).is_empty());
     }
 }

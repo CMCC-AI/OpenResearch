@@ -1,3 +1,4 @@
+import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, useReactFlow, type Edge, type Node, type NodeProps } from "@xyflow/react";
@@ -46,6 +47,7 @@ export function ResearchTeamDagDialog({ study, runs, actions, onClose, onDetails
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
+  const readOnly = useReadOnlyWorkspace();
   useDialogFocus(ref, onClose);
   const [grouped, setGrouped] = useState(embedded);
   const [actual, setActual] = useState(false);
@@ -83,11 +85,11 @@ export function ResearchTeamDagDialog({ study, runs, actions, onClose, onDetails
         {!grouped && actual && !tasks.length ? <p className="p-8 text-center text-sm text-subtext">尚未登记任务计划。切换“专家团全景”可查看所有专家与参考流程。</p> : <ReactFlow key={`${study?.id ?? "preview"}-${study?.plans.at(-1)?.version ?? 0}-${actual}-${grouped}`} nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.08, minZoom: grouped ? 0.8 : 0.25, maxZoom: 1 }} minZoom={0.25} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} onNodeClick={(_, node) => setSelected(node.id)} proOptions={{ hideAttribution: true }}><Background /><Controls showInteractive={false} /><div className="absolute right-3 top-3 z-10"><LocateCurrent ids={currentIds} /></div></ReactFlow>}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-3 px-3 py-2"><span className="text-xs text-subtext">{progress.completed}/{progress.total} 已验收</span><div className="h-1.5 flex-1 rounded-full bg-surface" role="progressbar" aria-label="专家任务验收进度" aria-valuemin={0} aria-valuemax={progress.total || 1} aria-valuenow={progress.completed}><div className="h-full rounded-full bg-primary" style={{ width: `${progress.total ? progress.completed / progress.total * 100 : 0}%` }} /></div><span className="text-xs text-subtext">蓝：执行中 · 绿：已验收 · 橙：待处理 · 灰：未安排</span></div>
-      {pending.length > 0 && <button type="button" onClick={onDetails} className="shrink-0 border-t border-border px-3 py-2 text-start text-xs text-accent-amber">等待你确认：{pending.map((decision) => gateNames[decision.gate]).join("、")} · 点击查看并确认</button>}
+      {pending.length > 0 && <button type="button" onClick={onDetails} className="shrink-0 border-t border-border px-3 py-2 text-start text-xs text-accent-amber">{readOnly ? "发布时待确认：" : "等待你确认："}{pending.map((decision) => gateNames[decision.gate]).join("、")}{readOnly ? " · 查看历史记录" : " · 点击查看并确认"}</button>}
       <section className="max-h-60 shrink-0 overflow-y-auto border-t border-border p-3" aria-label="专家执行详情">
         {stageSelection ? <div><strong className="text-sm">{stageSelection.title}</strong><p className="mt-1 text-xs text-subtext">{stageSelection.description}</p><p className="mt-2 text-xs text-subtext">参考专家：{stageSelection.roles.map((role) => expertRoles[role]).join("、") || "主理人提交，用户确认"}</p>{stageSelection.tasks.length ? stageSelection.tasks.map((task) => study && <TaskDetails key={task.id} study={study} task={task} runs={runs} onOpenSession={onOpenSession} />) : <p className="mt-2 text-xs text-subtext">尚未安排专家任务，或此环节为人工确认。参考专家不代表已调用。</p>}<Button size="small" className="mt-2" onClick={() => { setGrouped(false); setActual(false); setSelected(null); }}>展开专家全景</Button></div> : !selection ? <p className="text-xs text-subtext">点击任一专家，查看本次职责、任务状态、会话与产物；滚轮缩放，拖动画布浏览。</p> : !selection.tasks.length ? <p className="text-sm text-subtext">{expertRoles[selection.role]} · {selection.label}。参考流程不代表已调用该专家。</p> : selection.tasks.map((task: ResearchTask) => study && <TaskDetails key={task.id} study={study} task={task} runs={runs} onOpenSession={onOpenSession ? (id) => { onClose(); onOpenSession(id); } : undefined} />)}
       </section>
-      <footer className="flex shrink-0 flex-wrap gap-2 border-t border-border p-3"><Button size="small" onClick={onDetails}>查看分工与人工确认</Button>{actions}</footer>
+      <footer className="flex shrink-0 flex-wrap gap-2 border-t border-border p-3"><Button size="small" onClick={onDetails}>{readOnly ? "查看分工与确认记录" : "查看分工与人工确认"}</Button>{actions}</footer>
     </div>;
   return embedded ? content : createPortal(<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3 sm:p-5" onClick={onClose}>{content}</div>, document.body);
 }

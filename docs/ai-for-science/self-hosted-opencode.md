@@ -10,7 +10,11 @@
 
 ## 管理员部署
 
-先准备 OpenCode 全局配置文件 `/srv/openresearch/config/opencode.json`，配置企业允许的模型及 endpoint。必须是已有的普通文件，容器 UID 1000 可读取；不能使用登录在管理员 HOME 下的个人 auth.json 作为所有用户的授权。配置只读挂载到每个容器的 XDG 全局配置路径，保留 OpenResearch 原有项目及会话配置合并机制。
+先准备 OpenCode 共享配置目录 `/srv/openresearch/config`，目录归容器 UID/GID `1000:1000` 所有且可读写（建议权限 `0700`）。可沿用已有的 `opencode.json`，也可在部署后由系统管理员进入「系统管理 → OpenCode 模型接入」，填写接口类型、供应商 ID、服务地址、API Key 和模型 ID，点击「保存模型接入」。支持 OpenAI 兼容、OpenAI 和 Anthropic 接口。API Key 不回显，留空保留同一供应商已有密钥；无需认证的服务可留空。
+
+平台将配置原子保存到该目录中的 `opencode.json`，保留其他供应商、权限等已有配置，仅更新所填供应商及默认模型。已有文件必须是有效的 JSON 对象；含注释的 JSON/JSONC 需先由管理员转换。保存只校验配置字段，不发送模型请求，也不代表供应商鉴权已成功。不能使用登录在管理员 HOME 下的个人 auth.json 作为所有用户的授权。
+
+平台可写入共享目录，科研空间将其只读挂载到 XDG 全局配置目录，保留 OpenResearch 原有项目及会话配置合并机制。新启动的 OpenCode 进程读取新配置；已有进程不会被强制重启。回到工作台重新检测 OpenCode 以刷新可用模型，已有对话中的模型选择仍然保留。
 
 共享配置中的模型凭据可被空间里的程序读取，因此不要填写供应商主密钥。推荐连接公司内部模型代理，由代理保管主密钥和控制费用。本版没有实现逐用户模型代理凭据签发或用量账本；要求精确用户计量时需后续接入。
 
@@ -22,7 +26,7 @@ OPENRESEARCH_APP_ORIGIN=https://research.example.org
 PLATFORM_DB_PASSWORD=<数据库密码>
 DEEPLIT_ORIGIN=https://literature.example.org
 DEEPLIT_SSO_CLIENT_SECRET=<至少32字符的随机秘密>
-MANAGED_OPENCODE_CONFIG_FILE=/srv/openresearch/config/opencode.json
+MANAGED_OPENCODE_CONFIG_DIRECTORY=/srv/openresearch/config
 MANAGED_EXECUTOR_IMAGE=openresearch-managed-executor:hosted
 MANAGED_CAPACITY=4
 ```
@@ -34,6 +38,8 @@ docker build -f packages/platform/Dockerfile.executor --build-arg OPENCODE_VERSI
 cd packages/platform
 docker compose -f compose.yaml -f compose.hosted.yaml up -d --build
 ```
+
+从旧部署升级时，将 `MANAGED_OPENCODE_CONFIG_FILE` 改为 `MANAGED_OPENCODE_CONFIG_DIRECTORY`，值为原文件所在目录。已有科研空间容器的挂载不会随平台重建改变，需在维护窗口由管理员重建这些执行器容器并保留 `orx-managed-<workspace UUID>` 数据卷，再由 provisioner 恢复连接；仅重启旧容器不能更新挂载。部署配置中的目录必须与 Docker 宿主机上的绝对路径一致。该目录将整体只读挂载到科研空间，请仅放置需要共享的 OpenCode 配置文件。
 
 运行容器需要能够通过 HTTPS 访问平台根域和文献域。注意公司网络的域名解析、可信 CA 和回环访问条件。不要在服务器使用本机开发用的 `compose.managed.yaml` 或发布 PostgreSQL 的 `compose.dev.yaml`。
 

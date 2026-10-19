@@ -1,3 +1,4 @@
+import { getReadOnlyApi } from "../readOnlyApi";
 import { QueryClient, type QueryFilters, type QueryKey, type DataTag } from "@tanstack/react-query";
 
 export const queryClient = new QueryClient({
@@ -18,7 +19,7 @@ export const subscribeWorkspace = (listener: () => void) => {
   return () => { listeners.delete(listener); };
 };
 export const replaceWorkspace = () => { if (identity !== null) activateWorkspace(identity, true); };
-export const workspaceScope = () => ["workspace", generation] as const;
+export const workspaceScope = () => ["workspace", getReadOnlyApi()?.id ?? generation] as const;
 export const workspaceKey = (family: string, ...args: readonly unknown[]) =>
   [...workspaceScope(), family, ...args] as const;
 
@@ -33,7 +34,7 @@ export function activateWorkspace(next: string, replace = false) {
   return true;
 }
 
-export const isCurrentScope = (scope: readonly unknown[]) => scope[1] === generation;
+export const isCurrentScope = (scope: readonly unknown[]) => scope[1] === workspaceScope()[1];
 
 export async function cancelAndRemove(filters: QueryFilters) {
   await queryClient.cancelQueries(filters, { revert: false });

@@ -59,7 +59,7 @@ async function inlineAssets(assets: Asset[], signal: AbortSignal) {
     if (signal.aborted) return;
     if (inlined.size >= MAX_INLINE_FILES) continue;
     inlined.set(url, null);
-    const response = await fetch(url, { signal }).catch(() => null);
+    const response = await fetch(url, { signal, credentials: "include" }).catch(() => null);
     if (!response?.ok) continue;
     const type = response.headers.get("content-type") ?? "";
     const size = Number(response.headers.get("content-length"));
@@ -145,6 +145,7 @@ async function completeSource(
   if (!truncated) return { text: html, partial: false };
   const response = await fetch(url, {
     signal,
+    credentials: "include",
     headers: { Range: `bytes=0-${MAX_DOCUMENT_BYTES - 1}` },
   }).catch(() => null);
   const body = response?.ok ? await response.text().catch(() => null) : null;

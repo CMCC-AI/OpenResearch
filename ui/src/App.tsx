@@ -1,3 +1,4 @@
+import { useReadOnlyWorkspace } from "./components/ReadOnlyWorkspace";
 import { readHarnesses } from "./queries/settings";
 import {
   setScopedQueryData,
@@ -25,7 +26,7 @@ import {
   getTaskWorkspace,
   parseDestination,
   safeLocation,
-  taskLocation,
+  taskLocation as projectTaskLocation,
   type Pane,
   type TaskWorkspace,
 } from "./workspaceState";
@@ -257,11 +258,14 @@ function useStableStringMap(next: Map<string, string>): Map<string, string> {
 const errorText = (error: unknown) => ltr(error instanceof Error ? error.message : String(error));
 
 export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo; projectId: string; pane?: Pane }) {
+  const readOnly = useReadOnlyWorkspace();
+  const taskLocation = (project: string, session: string | null, view?: Pane | null) => projectTaskLocation(project, session, view, readOnly?.caseId, readOnly?.preview);
   const updateUiStateMutation = useMutation({ mutationFn: updateUiState });
 
   const router = useRouter();
   const location = useRouterState({ select: (state) => state.location });
-  const destination = parseDestination(location.pathname);
+  const searchSession = new URLSearchParams(location.searchStr).get("session");
+  const destination = readOnly?.native ? { kind: "task" as const, projectId, sessionId: searchSession || readOnly.initialSessionId } : parseDestination(location.pathname);
   const mainView = destination?.kind === "skills" ? "skills" : destination?.kind === "settings" ? destination.section ?? "settings" : "chat";
   const rememberedSessionRef = useRef<string | null>(null);
   const rememberedProjectRef = useRef(projectId);
@@ -317,7 +321,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   }, [router, projectId]);
 
   const locale = useLocale();
-  const { status: updateStatus } = useUpdateStatus(runtime.kind === "local");
+  const { status: updateStatus } = useUpdateStatus(runtime.kind === "local" && !readOnly);
   const projectsOptions = useMemo(() => listProjectsQuery(), [projectId]);
   const projectsQuery = useQuery(projectsOptions);
   const projects = projectsQuery.data ?? null;
@@ -1742,7 +1746,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
       {runtime.kind === "local" && <OfflineBanner />}
       {runtime.kind === "local" && <UpdateBanner status={updateStatus} />}
       {workspaceError && <div role="alert" className="flex items-center gap-2 px-4 mac-titlebar:ps-20 win-titlebar:pe-36 py-2 text-subtext"><span>{workspaceError}</span><Button onClick={retryWorkspace}>{m.app_retry()}</Button></div>}
-      <div className={`app-body workspace-body relative grid flex-1 min-h-0 grid-rows-[4rem_minmax(0,1fr)] [&>.product-sidebar]:row-span-2 [&>.product-sidebar]:row-start-1 [&>.chat-pane]:row-start-2 [&>.right-pane]:row-start-2 ${railOpen ? "grid-cols-[16rem_minmax(0,1fr)_auto]" : "grid-cols-[minmax(0,1fr)_auto]"} ${workspaceCardVisible ? "workspace-card-visible" : ""}`}>
+      <div className={`app-body workspace-body relative grid flex-1 min-h-0 grid-rows-[4rem_minmax(0,1fr)] [&>.product-sidebar]:row-span-2 [&>.product-sidebar]:row-start-1 [&>.chat-pane]:row-start-2 [&>.right-pane]:row-start-2 ${railOpen ? "grid-cols-[17.5rem_minmax(0,1fr)_auto]" : "grid-cols-[minmax(0,1fr)_auto]"} ${workspaceCardVisible ? "workspace-card-visible" : ""}`}>
         <div className="workspace-global-header min-w-0" style={{ gridColumn: railOpen ? "2 / -1" : "1 / -1", gridRow: 1 }}><ProductHeader title={<nav aria-label="当前位置" className="flex min-w-0 items-center gap-2"><Link to="/projects" className="shrink-0 text-subtext no-underline hover:text-primary">科研首页</Link><span aria-hidden="true">/</span><Link to="/projects/$projectId" params={{ projectId }} className="truncate text-subtext no-underline hover:text-primary">{activeProject.name}</Link><span aria-hidden="true">/</span><span className="shrink-0 text-text">{mainView === "chat" ? "研究工作区" : mainView === "skills" ? "自定义能力" : "项目设置"}</span></nav>} /></div>
         {projectId && (
           <ChatPanel
@@ -1754,7 +1758,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             onCollapseRail={() => setRailOpen(false)}
             railOpen={railOpen}
             onShowRail={() => setRailOpen(true)}
-            onNewProject={() => void router.navigate({ to: "/projects", search: { new: true } })}
+            onNewProject={readOnly ? undefined : () => void router.navigate({ to: "/projects", search: { new: true } })}
             mainView={mainView}
             onSelectMainView={selectMainView}
             onOpenFile={openChatFile}
@@ -1765,8 +1769,8 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             onOpenResearch={openResearchTab}
             onOpenPlan={openPlanTab}
             onOpenSubagent={openSubagentTab}
-            onOpenSideChat={(parentSessionId, question) => void startSideChat(parentSessionId, question)}
-            onRunSetup={runtime.kind === "ssh" ? undefined : runSetup}
+            onOpenSideChat={readOnly ? undefined : (parentSessionId, question) => void startSideChat(parentSessionId, question)}
+            onRunSetup={runtime.kind === "ssh" || readOnly ? undefined : runSetup}
             composerFocusNonce={composerFocusNonce}
             runtime={runtime}
             onOpenDemoWelcome={
@@ -1813,7 +1817,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             onTerminal={openTerminalTab}
             onArtifacts={openArtifactsTab}
             onExperiments={() => openExperimentsTab()}
-            onSideChat={activeSessionId ? () => void startSideChat(activeSessionId, "") : undefined}
+            onSideChat={!readOnly && activeSessionId ? () => void startSideChat(activeSessionId, "") : undefined}
           />
         )}
         {mainView === "chat" && panelOpen && (
@@ -2203,7 +2207,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
                       }
                       runtime={runtime}
                       activeSessionId={sideTab.sessionId}
-                      onOpenSideChat={(parentSessionId, question) => void startSideChat(parentSessionId, question)}
+                      onOpenSideChat={readOnly ? undefined : (parentSessionId, question) => void startSideChat(parentSessionId, question)}
                       onActiveSessionChange={(sessionId, options) => {
                         // Null after a delete drops the tab; anything else (`/resume`) is the main chat's.
                         const deleted = !queryClient.getQueryData(listChatSessionsQuery(projectId).queryKey)
