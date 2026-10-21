@@ -141,7 +141,7 @@ export function reducer(state: ChatState, action: Exclude<Action, { type: "busy"
         : [];
       // Data URLs stand in until the server's copy arrives with file names.
       action.attachments.forEach((a, i) =>
-        parts.push({ id: `img${i}`, type: "image", text: a.url, name: a.name }),
+        parts.push({ id: `img${i}`, type: a.url ? "image" : "pending-material", text: a.url, name: a.name }),
       );
       action.annotations.forEach((annotation, i) =>
         parts.push({

@@ -4,10 +4,29 @@ services:
     environment:
       MANAGED_EXECUTORS: "true"
       PRIVATE_USER_SPACES: "true"
-      OPENCODE_ADMIN_CONFIG_FILE: /run/orx-opencode/opencode.json
+      OPENCODE_ADMIN_URL: http://opencode-admin:4970
       MANAGED_CAPACITY: ${MANAGED_CAPACITY:-4}
+    depends_on:
+      opencode-admin: { condition: service_started }
+  opencode-admin:
+    image: ${MANAGED_EXECUTOR_IMAGE:-openresearch-managed-executor:hosted}
+    command: [opencode, serve, --pure, --hostname, 0.0.0.0, --port, "4970"]
+    environment:
+      HOME: /tmp/opencode-admin
+      XDG_CONFIG_HOME: /run/orx-config
+      XDG_DATA_HOME: /tmp/opencode-admin/data
+      XDG_STATE_HOME: /tmp/opencode-admin/state
+      XDG_CACHE_HOME: /tmp/opencode-admin/cache
+      OPENCODE_CONFIG_PROJECT_DISABLE: "1"
+      OPENCODE_DISABLE_AUTOUPDATE: "1"
     volumes:
-      - ${MANAGED_OPENCODE_CONFIG_DIRECTORY:-/srv/openresearch/config}:/run/orx-opencode
+      - ${MANAGED_OPENCODE_CONFIG_DIRECTORY:-/srv/openresearch/config}:/run/orx-config/opencode
+    tmpfs: ["/tmp:uid=1000,gid=1000,mode=0700"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    restart: unless-stopped
   provisioner:
     build:
       context: ../..

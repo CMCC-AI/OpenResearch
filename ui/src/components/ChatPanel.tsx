@@ -1,3 +1,8 @@
+import { MaterialChip } from "./MaterialChip";
+import { resolveStarterPrompts } from "../starterPrompts";
+import { isNewChatLayout, isChatLayoutPending } from "../chatLayout";
+import { ChatLoadingShell } from "./ChatLoadingShell";
+import { pendingMaterials, droppedMaterials, prepareMaterialAttachments, validateMaterialFiles } from "../materialUploads";
 import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { createClientTurnId } from "../clientTurnId";
 import { SessionFilterMenu, SessionRow, TitleReveal, TITLE_REVEAL_CLEAR_MS, type SessionFilter } from "./NativeSidebarRows";
@@ -69,7 +74,8 @@ import {
   MessagesSquare,
   MoreHorizontal,
   PanelLeft,
-  Paperclip,
+  FileUp,
+  FolderUp,
   Pencil,
   Search,
   SquareTerminal,
@@ -3131,6 +3137,8 @@ export const Message = memo(function Message({
               ))}
             </div>
           )}
+          {message.parts.filter(p => p.type === "pending-material").map(p => <span key={p.id} className="mt-2 text-xs text-subtext">{p.name} · 正在发送</span>)}
+          {message.parts.filter(p => p.type === "material" && p.text).map(p => <MaterialChip key={p.id} id={p.text!} />)}
           {files.length > 0 && (
             <div className="msg-files flex flex-wrap gap-1.5 mt-2">
               {files.map((a, i) => (
@@ -4176,6 +4184,8 @@ export function ChatPanel({
   }
   // Pasted/dropped/uploaded attachments waiting in the composer, as data URLs.
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [uploadingMaterials, setUploadingMaterials] = useState(false);
+  const uploadingMaterialsRef = useRef(false);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [imageRefusedFor, setImageRefusedFor] = useState<string | null>(null);
   // Unsent composer content belongs to the scope it was typed in — stash on
@@ -4227,6 +4237,7 @@ export function ChatPanel({
   const planModeOverrideRef = useRef<boolean | null>(null);
   const queuedPlanOverrideSeen = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
   const [state, dispatch, historyQuery] = useChatState(projectId, mainView === "chat" ? activeId : null);
   const { data: harnesses = EMPTY_HARNESSES } = useQuery(getHarnessesQuery());
   const [selection, setSelection] = useState<ModelSelection | null>(preferredAgent);
@@ -4352,56 +4363,25 @@ export function ChatPanel({
     return true;
   }
 
-  /** Queue files (upload button, clipboard paste, or drag-drop) as composer
-   * attachments — images and PDFs, which the harness reads off disk by path. */
-  function addFiles(files: File[]) {
-    // Per-file and total caps keep the base64-inflated (~33%) request body
-    // under the backend's 64 MB limit — a single 30 MB file or a batch summing
-    // to 40 MB both stay clear once encoded.
-    const MAX_BYTES = 30 * 1024 * 1024;
-    const TOTAL_BYTES = 40 * 1024 * 1024;
+  async function uploadSendMaterials(pending: ComposerAttachment[]) {
+    if (uploadingMaterialsRef.current) throw new Error("材料正在上传，请稍候。");
+    uploadingMaterialsRef.current = true;
+    setUploadingMaterials(pending.some(a => a.file));
+    try { return await prepareMaterialAttachments(projectId, pending); }
+    finally { uploadingMaterialsRef.current = false; setUploadingMaterials(false); }
+  }
+
+  /** Materials remain files in the draft; transfer happens separately before sending. */
+  function addMaterialEntries(entries: ComposerAttachment[]) {
     setAttachError(null);
-    setImageRefusedFor(null);
-    let total = attachments.reduce((n, a) => n + a.size, 0);
-    for (const file of files) {
-      if (!/^(image\/(png|jpeg|gif|webp)|application\/pdf)$/.test(file.type)) continue;
-      if (noImageInputError && file.type.startsWith("image/")) {
-        setImageRefusedFor(selectedModel?.id ?? null);
-        continue;
-      }
-      if (file.size > MAX_BYTES) {
-        setAttachError(m.chat_attachment_too_large({ name: ltr(file.name) }));
-        continue;
-      }
-      if (total + file.size > TOTAL_BYTES) {
-        setAttachError(m.chat_attachments_total_too_large());
-        continue;
-      }
-      total += file.size;
-      const scope = composerScopeRef.current;
-      const attachmentStashKey = stashKey;
-      const reader = new FileReader();
-      reader.onload = () => {
-        const attachment = {
-          dataUrl: reader.result as string,
-          mediaType: file.type,
-          name: file.name,
-          size: file.size,
-        };
-        // The decode is async — if the composer moved on, the file belongs to
-        // the scope it was pasted into, not whatever chat is now showing.
-        if (composerScopeRef.current.projectId === scope.projectId && composerScopeRef.current.activeId === scope.activeId) {
-          setAttachments((cur) => [...cur, attachment]);
-          return;
-        }
-        const stash = composerStashRef.current.get(attachmentStashKey) ?? EMPTY_COMPOSER_STASH;
-        composerStashRef.current.set(attachmentStashKey, {
-          ...stash,
-          attachments: [...stash.attachments, attachment],
-        });
-      };
-      reader.readAsDataURL(file);
-    }
+    setAttachments(current => {
+      try { validateMaterialFiles(entries.map(a => ({ name: a.name || "file", size: a.size })), current); return [...current, ...entries]; }
+      catch (error) { setAttachError(error instanceof Error ? error.message : String(error)); return current; }
+    });
+  }
+  function addFiles(files: File[]) {
+    try { addMaterialEntries(pendingMaterials(files)); }
+    catch (error) { setAttachError(error instanceof Error ? error.message : String(error)); }
   }
 
   function onComposerPaste(e: React.ClipboardEvent) {
@@ -5178,18 +5158,21 @@ export function ChatPanel({
   const starterHarness = composerSelection?.harness ?? null;
   const starterModel = composerSelection?.model ?? null;
   const historyError = !historyQuery.data ? historyQuery.error : null;
-  const newChatVisible = mainView === "chat" && !embedded && !threadMounted && !activeSession?.sideParentSessionId
-    && !contentLoading && !contentError && !historyLoading && !historyError;
+  const newChatVisible = isNewChatLayout({
+    mainView, embedded, activeId, historyLoaded: Boolean(historyQuery.data),
+    hasMessages: messages.length > 0, busy, sideChat: Boolean(activeSession?.sideParentSessionId),
+  });
+  const layoutPending = isChatLayoutPending({
+    mainView, embedded, hasMessages: messages.length > 0, busy, contentLoading, historyLoading,
+  });
   const starterVisible = mainView === "chat" && !embedded && !threadMounted && !contentLoading && !contentError && !historyLoading && !historyError;
   const starterQuery = useQuery({
     ...getProjectStarterPromptsQuery(projectId, starterHarness ?? "claude-code", starterModel, getLocale()),
     enabled: starterVisible && starterHarness !== null,
     subscribed: starterVisible && starterHarness !== null,
   });
-  const starterPrompts = starterQuery.data?.blank
-    ? blankStarterPrompts()
-    : (starterQuery.data?.prompts ?? null);
-  const starterLoading = starterHarness !== null && starterQuery.isPending;
+  const starterPrompts = resolveStarterPrompts(starterQuery.data, blankStarterPrompts());
+  const starterLoading = starterQuery.isFetching;
   // The demo project is the only surface that isn't a user-created project.
   const telemetrySurface: FirstActionSurface =
     projectId === DEMO_PROJECT_ID ? "demo" : "project";
@@ -5280,7 +5263,7 @@ export function ChatPanel({
         action: "typed_prompt",
       });
     }
-    if (preparingSend.current) return;
+    if (preparingSend.current || uploadingMaterialsRef.current) return;
     const planRequested = !!composerCommand;
     const toggledPlanMode = !planActive;
     const independentPlanMode = effectiveCommandPlanMode(
@@ -5375,6 +5358,8 @@ export function ChatPanel({
         mediaType: attachment.mediaType,
         name: attachment.name,
         dataUrl: attachment.dataUrl,
+        size: attachment.size,
+        lastModified: attachment.file?.lastModified,
       })),
       annotations: wireAnnotations,
       settings: effective
@@ -5427,12 +5412,8 @@ export function ChatPanel({
         }
         : {};
       if (inSourceScope()) setSessionOverride({});
-      const images: ChatImageAttachment[] = pending.map((a) => ({
-        mediaType: a.mediaType,
-        dataBase64: a.dataUrl.slice(a.dataUrl.indexOf(",") + 1),
-        name: a.name,
-      }));
       try {
+        const images: ChatImageAttachment[] = await uploadSendMaterials(pending);
         const sendBusy = () =>
           sendChatMessage(
             sid,
@@ -5447,7 +5428,8 @@ export function ChatPanel({
         if (response.turn?.existing) await reseedSession(sid);
         if (inSourceScope()) setRecoveryOverrides(EMPTY_RECOVERY_OVERRIDES);
         if (pendingClientTurn.current?.id === clientTurnId) pendingClientTurn.current = null;
-      } catch {
+      } catch (error) {
+        setAttachError(error instanceof Error ? error.message : String(error));
         // Never reached the turn — restore the composer so a retry is one keypress.
         clearFailedPlanCommand();
         restoreComposer();
@@ -5496,7 +5478,7 @@ export function ChatPanel({
         type: "optimisticUser",
         sessionId: sid,
         text: text || m.chat_asked_about_selection(),
-        attachments: pending.map((a) => ({ url: a.dataUrl, mediaType: a.mediaType, name: a.name })),
+        attachments: pending.map((a) => ({ url: a.file ? "" : a.dataUrl, mediaType: a.mediaType, name: a.name })),
         annotations: pendingAnnotations,
       });
       dispatch({ type: "busy", sessionId: sid, busy: true });
@@ -5518,11 +5500,7 @@ export function ChatPanel({
         }
         : {};
       if (inSourceScope()) setSessionOverride({});
-      const images: ChatImageAttachment[] = pending.map((a) => ({
-        mediaType: a.mediaType,
-        dataBase64: a.dataUrl.slice(a.dataUrl.indexOf(",") + 1),
-        name: a.name,
-      }));
+      const images: ChatImageAttachment[] = await uploadSendMaterials(pending);
       const targetSessionId = sid;
       if (!targetSessionId) throw new Error(m.chat_session_not_created());
       const sendTurn = () =>
@@ -6160,9 +6138,7 @@ export function ChatPanel({
     </ProductSidebar>
   );
 
-  const headerClass = newChatVisible
-    ? "new-chat-header flex h-16 shrink-0 items-center justify-between gap-4 border-b border-border-variant px-6"
-    : "chat-header flex items-center gap-2 py-0 px-4 bg-background shrink-0 h-12 relative z-4 w-full max-w-readable my-0 mx-auto [&::after]:content-[''] [&::after]:absolute [&::after]:top-full [&::after]:start-0 [&::after]:end-0 [&::after]:h-6 [&::after]:bg-[linear-gradient(to_bottom,_var(--base),_transparent)] [&::after]:pointer-events-none";
+  const headerClass = "chat-header flex items-center gap-2 py-0 px-4 bg-background shrink-0 h-12 relative z-4 w-full max-w-readable my-0 mx-auto [&::after]:content-[''] [&::after]:absolute [&::after]:top-full [&::after]:start-0 [&::after]:end-0 [&::after]:h-6 [&::after]:bg-[linear-gradient(to_bottom,_var(--base),_transparent)] [&::after]:pointer-events-none";
   const railReopen = !railOpen && !embedded && (
     <IconButton
       title={m.chat_panel_show_sidebar()}
@@ -6189,24 +6165,20 @@ export function ChatPanel({
     );
   }
 
+  if (layoutPending && !contentError && !historyError) {
+    return <>{railOpen && rail}<ChatLoadingShell label={m.chat_panel_loading_conversation()} /></>;
+  }
+
   return (
     <>
       {railOpen && rail}
       <section data-side-chat={embedded || undefined} className={`chat-pane flex-1 min-w-0 flex flex-col bg-background min-h-0 ${newChatVisible ? "new-chat-shell" : embedded ? "" : "mt-5"}`}>
         {/* Header — session title on the left, end-pane view switchers on the
           right, fading into the chat below (sessions live in the rail). */}
-        <div className={railOpen || embedded ? "contents" : "grid shrink-0 grid-cols-[2rem_minmax(0,1fr)_2rem] mac-titlebar:grid-cols-[6rem_minmax(0,1fr)_6rem] items-center"}>
+        {!newChatVisible && <div className={railOpen || embedded ? "contents" : "grid shrink-0 grid-cols-[2rem_minmax(0,1fr)_2rem] mac-titlebar:grid-cols-[6rem_minmax(0,1fr)_6rem] items-center"}>
           {railReopen}
           <div className={headerClass}>
-          {newChatVisible ? (
-            <>
-              <span className="new-chat-header-title min-w-0 truncate" title={projectName}>{projectName}</span>
-              <button type="button" className="new-chat-header-search" aria-label="搜索论文" onClick={() => void navigate({ to: "/discover" })}>
-                <Search size={16} aria-hidden="true" />
-                <span>搜索论文</span>
-              </button>
-            </>
-          ) : <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
             {activeSession && <>
               {activeSession.title?.trim() ? (
                 <PaperTitle variant="header" className="flex-initial" title={activeSession.title.trim()}>
@@ -6222,7 +6194,6 @@ export function ChatPanel({
               </span>
             </>}
           </div>
-          }
           {onOpenDemoWelcome && (
             <IconButton
               data-tip={m.chat_panel_about_this_demo()}
@@ -6233,7 +6204,8 @@ export function ChatPanel({
             </IconButton>
           )}
           </div>
-        </div>
+        </div>}
+        {newChatVisible && railReopen && <div className="flex h-10 shrink-0 items-center px-4">{railReopen}</div>}
 
         {contentError ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 p-5 text-subtext" role="alert">
@@ -6282,22 +6254,10 @@ export function ChatPanel({
             <div className={newChatVisible ? "new-chat-starters-section" : ""}>
               {newChatVisible && <h3>{getLocale() === "zh-CN" ? "猜你想问" : m.chat_panel_starter_prompts()}</h3>}
               {starterLoading && (
-                <>
-                  <div className={STARTER_GRID_CLASS} aria-hidden="true">
-                    {STARTER_ILLUSTRATIONS.map((illustration, index) => (
-                      <div key={index} className="new-chat-starter-card new-chat-starter-loading animate-pulse">
-                        <span className="new-chat-starter-visual"><img src={illustration} alt="" /></span>
-                        <span className="h-3.5 w-2/3 rounded bg-panel" />
-                        <span className="mt-3 h-3 w-full rounded bg-panel" />
-                        <span className="mt-2 h-3 w-4/5 rounded bg-panel" />
-                      </div>
-                    ))}
-                  </div>
-                  <LoadingRow className="mt-3" role="status">
-                    <Spinner />
-                    <span>{m.chat_panel_starter_generating()}</span>
-                  </LoadingRow>
-                </>
+                <LoadingRow className="mt-3" role="status">
+                  <Spinner />
+                  <span>{m.chat_panel_starter_generating()}</span>
+                </LoadingRow>
               )}
               {starterPrompts && starterPrompts.length > 0 && (
                 <div className={STARTER_GRID_CLASS} role="group" aria-label={m.chat_panel_starter_prompts()}>
@@ -6319,7 +6279,7 @@ export function ChatPanel({
                         <button
                           type="button"
                           className="new-chat-starter-card"
-                          style={{ backgroundImage: `linear-gradient(180deg, rgb(255 255 255 / 8%) 16%, rgb(255 255 255 / 78%) 100%), url(${starterCardBackground})` }}
+                          style={{ backgroundImage: `var(--starter-card-overlay), url(${starterCardBackground})` }}
                           onClick={() => pickStarter(false)}
                         >
                           <span className="new-chat-starter-visual" aria-hidden="true">
@@ -6555,11 +6515,7 @@ export function ChatPanel({
           {!embedded && !isDemoProjectId(projectId) && (activeId ? <ResearchPanel onOpenResearch={onOpenResearch} key={activeId} onOpenSession={openSpawnedSession} sessionId={activeId} disabled={!composerSelection || busy} onStartWorkflow={async (mode) => {
             if (!composerSelection) return;
             const objective = `${researchModes[mode]}：${draft.trim() || "请接管项目材料，明确研究目标与交付，并按需求判断执行路径；缺少材料时先澄清。"}`;
-            const images: ChatImageAttachment[] = attachments.map((attachment) => ({
-              mediaType: attachment.mediaType,
-              dataBase64: attachment.dataUrl.slice(attachment.dataUrl.indexOf(",") + 1),
-              name: attachment.name,
-            }));
+            const images: ChatImageAttachment[] = await uploadSendMaterials(attachments);
             const session = await openNewSession(composerSelection, false, objective, mode);
             await sendChatMessage(session.id, objective, {}, images.length ? images : undefined);
           }} /> : null)}
@@ -6637,7 +6593,7 @@ export function ChatPanel({
                 {attachments.map((a, i) => {
                   const remove = () =>
                     setAttachments((cur) => cur.filter((_, j) => j !== i));
-                  return a.mediaType === "application/pdf" ? (
+                  return a.file || a.mediaType === "application/pdf" ? (
                     <div key={i} className="attachment-file [&_button]:absolute [&_button]:-top-[5px] [&_button]:-right-[5px] [&_button]:inline-flex [&_button]:items-center [&_button]:justify-center [&_button]:w-4 [&_button]:h-4 [&_button]:p-0 [&_button]:border [&_button]:border-border [&_button]:rounded-full [&_button]:bg-surface [&_button]:text-text [&_button]:cursor-pointer [&_button:hover]:bg-text [&_button:hover]:text-background relative inline-flex items-center gap-2 max-w-55 py-2 px-2.5 border border-border rounded-sm text-text bg-surface [&_svg]:shrink-0 [&_svg]:text-muted" title={a.name}>
                       <FileText size={22} />
                       <span className="attachment-file-name overflow-hidden text-ellipsis whitespace-nowrap text-sm">{a.name ?? "document.pdf"}</span>
@@ -6656,6 +6612,7 @@ export function ChatPanel({
                 })}
               </div>
             )}
+            {uploadingMaterials && <div className="px-3 pt-2 text-sm text-subtext" role="status">正在上传研究材料，请稍候…</div>}
             {(imageInputError ?? attachError) && (
               <div className="composer-attach-error pt-1.5 px-3 pb-0 text-sm text-accent-red" role="alert">
                 {imageInputError ?? attachError}
@@ -6702,7 +6659,11 @@ export function ChatPanel({
                 onDrop={(e) => {
                   if (e.dataTransfer.files.length === 0) return;
                   e.preventDefault();
-                  addFiles(Array.from(e.dataTransfer.files));
+                  const scope = composerScopeRef.current;
+                  void droppedMaterials(e.dataTransfer).then(entries => {
+                    if (composerScopeRef.current.projectId === scope.projectId && composerScopeRef.current.activeId === scope.activeId) addMaterialEntries(entries);
+                    else setAttachError("会话已切换，请在目标会话重新选择材料。");
+                  }).catch(error => setAttachError(String(error)));
                 }}
                 onChange={(e) => {
                   const v = e.target.value;
@@ -6840,7 +6801,6 @@ export function ChatPanel({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="application/pdf,image/png,image/jpeg,image/gif,image/webp"
                 multiple
                 hidden
                 onChange={(e) => {
@@ -6851,12 +6811,14 @@ export function ChatPanel({
               <IconButton
                 type="button"
                 className="composer-attach"
-                title={m.chat_panel_attach_a_pdf_or_image()}
-                aria-label={m.chat_panel_attach_a_pdf_or_image()}
+                title="上传文件或 ZIP（支持多选）"
+                aria-label="上传文件或 ZIP（支持多选）"
                 onClick={() => fileInputRef.current?.click()}
               >
-                <Paperclip size={16} />
+                <FileUp size={16} />
               </IconButton>
+              <input ref={element => { folderInputRef.current = element; element?.setAttribute("webkitdirectory", ""); }} type="file" multiple hidden onChange={event => { addFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
+              <IconButton type="button" title="上传整个文件夹" aria-label="上传整个文件夹" onClick={() => folderInputRef.current?.click()}><FolderUp size={16} /></IconButton>
               {sessionGoal && (
                 <Button
                   type="button"
@@ -6964,7 +6926,7 @@ export function ChatPanel({
                     bashActive
                       ? !shellCommand || (!activeId && !activeHarness?.agentReady)
                       : !activeHarness?.agentReady ||
-                      (!draft.trim() && attachments.length === 0 && annotations.length === 0)
+                      uploadingMaterials || (!draft.trim() && attachments.length === 0 && annotations.length === 0)
                   }
                 >
                   <CornerDownLeft size={16} />

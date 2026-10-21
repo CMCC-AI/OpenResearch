@@ -170,7 +170,8 @@ pub(crate) async fn spawn(store: &Store, request: SpawnRequest) -> Result<()> {
         reasoning_level: inherits.then(|| parent.reasoning_level.clone()).flatten(),
         archived: false,
         context_usage_json: None,
-        bootstrap_context: None,
+        // Freeze only material references; never copy the author's conversation to reviewers.
+        bootstrap_context: Some(crate::local::materials::session_context(store, &parent_id)?),
         goal: None,
         // Copilot asks the user before acting; a helper has no user to ask.
         autonomy: None,

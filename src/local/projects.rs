@@ -37,6 +37,91 @@ pub fn project_slug_preview(store: &Store, name: &str) -> Result<String> {
     unique_project_slug(store, &slugify(name))
 }
 
+/// Delete local records, optionally moving the working folder to recovery.
+/// Restore the working location when the database transaction fails.
+pub fn delete_project(
+    store: &Store,
+    project: &LocalProject,
+    delete_folder: bool,
+    protected_paths: &[PathBuf],
+) -> Result<Option<PathBuf>> {
+    let moved = if delete_folder {
+        let others = store
+            .list_local_projects()?
+            .into_iter()
+            .filter(|other| other.id != project.id)
+            .map(|other| PathBuf::from(other.repo_path))
+            .collect::<Vec<_>>();
+        stage_folder_removal(Path::new(&project.repo_path), &others, protected_paths)?
+    } else {
+        None
+    };
+    if let Err(err) = store.delete_local_project(&project.id) {
+        if let Some((original, recovery)) = &moved {
+            if let Err(restore_err) = std::fs::rename(recovery, original) {
+                crate::error::bail!(
+                    "Project deletion failed: {err}. Folder restore failed: {restore_err}. Recover files from {}",
+                    recovery.display()
+                );
+            }
+        }
+        return Err(err);
+    }
+    Ok(moved.map(|(_, recovery)| recovery))
+}
+
+/// Move a project out of its working location without destroying user files.
+/// The caller must restore it if deleting the database records fails.
+fn stage_folder_removal(
+    repo_path: &Path,
+    other_projects: &[PathBuf],
+    protected_paths: &[PathBuf],
+) -> Result<Option<(PathBuf, PathBuf)>> {
+    let metadata = match std::fs::symlink_metadata(repo_path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        crate::error::bail!("The project folder must be a directory, not a symbolic link");
+    }
+    let original = crate::paths::canonicalize(repo_path)?;
+    let parent = original
+        .parent()
+        .ok_or_else(|| crate::error::anyhow!("Cannot remove a filesystem root"))?;
+    for path in protected_paths {
+        let path = crate::paths::canonicalize(path)?;
+        if path.starts_with(&original) {
+            crate::error::bail!(
+                "Cannot remove a folder containing protected path {}",
+                path.display()
+            );
+        }
+    }
+    for path in other_projects {
+        // A missing project can still be registered beneath this folder.
+        let path =
+            if path.exists() {
+                crate::paths::canonicalize(path)?
+            } else {
+                crate::paths::canonicalize(path.parent().ok_or_else(|| {
+                    crate::error::anyhow!("Cannot resolve another project's folder")
+                })?)?
+                .join(path.file_name().ok_or_else(|| {
+                    crate::error::anyhow!("Cannot resolve another project's folder")
+                })?)
+            };
+        if path.starts_with(&original) || original.starts_with(&path) {
+            crate::error::bail!("Cannot remove a folder overlapping another registered project");
+        }
+    }
+    // A unique sibling works on the same filesystem and avoids traversing a
+    // shared trash directory that could itself be a symbolic link.
+    let recovery = parent.join(format!(".orx-deleted-project-{}", uuid::Uuid::new_v4()));
+    std::fs::rename(&original, &recovery)?;
+    Ok(Some((original, recovery)))
+}
+
 pub(crate) fn expand_path(path: &str) -> Result<PathBuf> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -247,6 +332,102 @@ mod tests {
 
     fn root() -> PathBuf {
         std::env::temp_dir().join(format!("orx-local-project-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn folder_removal_preserves_uncommitted_files_in_recovery() {
+        let root = root();
+        let repo = root.join("project");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("uncommitted.txt"), "research data").unwrap();
+        let (original, recovery) = stage_folder_removal(&repo, &[], &[]).unwrap().unwrap();
+        assert!(!repo.exists());
+        assert_eq!(recovery.parent(), original.parent());
+        assert_eq!(
+            std::fs::read_to_string(recovery.join("uncommitted.txt")).unwrap(),
+            "research data"
+        );
+        std::fs::rename(recovery, original).unwrap();
+        assert!(repo.join("uncommitted.txt").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn folder_removal_rejects_overlapping_projects_and_protected_paths() {
+        let root = root();
+        let repo = root.join("project");
+        let nested = repo.join("other");
+        std::fs::create_dir_all(&nested).unwrap();
+        for other in [&repo, &nested, &root] {
+            assert!(stage_folder_removal(&repo, std::slice::from_ref(other), &[]).is_err());
+            assert!(nested.exists());
+        }
+        for protected in [&repo, &nested] {
+            assert!(stage_folder_removal(&repo, &[], std::slice::from_ref(protected)).is_err());
+            assert!(nested.exists());
+        }
+        assert!(stage_folder_removal(&repo, &[nested.join("missing")], &[]).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn folder_removal_accepts_an_already_missing_folder() {
+        assert!(stage_folder_removal(&root(), &[], &[]).unwrap().is_none());
+    }
+
+    #[test]
+    fn project_deletion_keeps_files_unless_explicitly_requested() {
+        let root = root();
+        let store = Store::open_at(root.join("data")).unwrap();
+        for delete_folder in [false, true] {
+            let repo = root.join(format!("project-{delete_folder}"));
+            let project = paper_project(&store, &repo).unwrap();
+            std::fs::write(repo.join("uncommitted.txt"), "keep me").unwrap();
+            let recovery = delete_project(&store, &project, delete_folder, &[]).unwrap();
+            assert!(store.get_local_project(&project.id).unwrap().is_none());
+            assert_eq!(repo.exists(), !delete_folder);
+            let kept = recovery.unwrap_or(repo);
+            assert_eq!(
+                std::fs::read_to_string(kept.join("uncommitted.txt")).unwrap(),
+                "keep me"
+            );
+        }
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_deletion_restores_folder_when_database_transaction_fails() {
+        let root = root();
+        let store = Store::open_at(root.join("data")).unwrap();
+        let repo = root.join("project");
+        let project = paper_project(&store, &repo).unwrap();
+        std::fs::write(repo.join("uncommitted.txt"), "keep me").unwrap();
+        let conn = rusqlite::Connection::open(root.join("data/orx.db")).unwrap();
+        conn.execute_batch("CREATE TRIGGER refuse_delete BEFORE DELETE ON local_projects BEGIN SELECT RAISE(ABORT, 'test failure'); END;").unwrap();
+        assert!(delete_project(&store, &project, true, &[]).is_err());
+        assert!(store.get_local_project(&project.id).unwrap().is_some());
+        assert_eq!(
+            std::fs::read_to_string(repo.join("uncommitted.txt")).unwrap(),
+            "keep me"
+        );
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+        drop(conn);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn folder_removal_rejects_symlinks_without_moving_the_target() {
+        let root = root();
+        let repo = root.join("project");
+        std::fs::create_dir_all(&repo).unwrap();
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&repo, &link).unwrap();
+        assert!(stage_folder_removal(&link, &[], &[]).is_err());
+        assert!(repo.exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn run_git(path: &Path, args: &[&str]) {

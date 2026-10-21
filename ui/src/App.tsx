@@ -1740,6 +1740,29 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     || (destination.kind === "task" && activeSessionId && sessions && !sessions.includes(activeSessionId) ? m.model_picker_unavailable() : null);
   const conversationLoading = !conversationError && (!workspaceLoaded || sessions === null);
   const retryConversation = () => { retryWorkspace(); void sessionsQuery.refetch(); };
+  const workspaceTools = mainView === "chat" && workspaceReady && !conversationError ? (
+  <WorkspaceTools
+    expanded={workspaceCardVisible}
+    placement={workspaceCardVisible ? "floating" : "header"}
+    experiments={experiments}
+    runs={runs}
+    onOpenExperiment={(id, runId) => openExperimentTab(id, "overview", "preview", runId)}
+    rightOffset={panelOpen ? panelWidth + 28 : undefined}
+    activeView={panelOpen && (rightTab === "files" || rightTab === "artifacts" || rightTab === "experiments" || rightTab === "terminal" || rightTab === "research") ? rightTab : null}
+    projectId={activeProject.id}
+    onResearch={openResearchTab}
+    onCompute={() => selectMainView("compute")}
+    onOpenSession={(id) => onActiveSessionChange(id)}
+    sessionId={activeSessionId}
+    busy={sessionsQuery.data?.some((session) => session.id === activeSessionId && session.busy) ?? false}
+    onChanges={() => { setFilesView("changes"); openWorktreeTab(); }}
+    onFiles={() => { setFilesView("files"); openWorktreeTab(); }}
+    onTerminal={openTerminalTab}
+    onArtifacts={openArtifactsTab}
+    onExperiments={() => openExperimentsTab()}
+    onSideChat={!readOnly && activeSessionId ? () => void startSideChat(activeSessionId, "") : undefined}
+  />
+  ) : null;
 
   return (
     <div className="app flex flex-col h-full">
@@ -1747,7 +1770,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
       {runtime.kind === "local" && <UpdateBanner status={updateStatus} />}
       {workspaceError && <div role="alert" className="flex items-center gap-2 px-4 mac-titlebar:ps-20 win-titlebar:pe-36 py-2 text-subtext"><span>{workspaceError}</span><Button onClick={retryWorkspace}>{m.app_retry()}</Button></div>}
       <div className={`app-body workspace-body relative grid flex-1 min-h-0 grid-rows-[4rem_minmax(0,1fr)] [&>.product-sidebar]:row-span-2 [&>.product-sidebar]:row-start-1 [&>.chat-pane]:row-start-2 [&>.right-pane]:row-start-2 ${railOpen ? "grid-cols-[17.5rem_minmax(0,1fr)_auto]" : "grid-cols-[minmax(0,1fr)_auto]"} ${workspaceCardVisible ? "workspace-card-visible" : ""}`}>
-        <div className="workspace-global-header min-w-0" style={{ gridColumn: railOpen ? "2 / -1" : "1 / -1", gridRow: 1 }}><ProductHeader title={<nav aria-label="当前位置" className="flex min-w-0 items-center gap-2"><Link to="/projects" className="shrink-0 text-subtext no-underline hover:text-primary">科研首页</Link><span aria-hidden="true">/</span><Link to="/projects/$projectId" params={{ projectId }} className="truncate text-subtext no-underline hover:text-primary">{activeProject.name}</Link><span aria-hidden="true">/</span><span className="shrink-0 text-text">{mainView === "chat" ? "研究工作区" : mainView === "skills" ? "自定义能力" : "项目设置"}</span></nav>} /></div>
+        <div className="workspace-global-header min-w-0" style={{ gridColumn: railOpen ? "2 / -1" : "1 / -1", gridRow: 1 }}><ProductHeader actions={!workspaceCardVisible ? workspaceTools : undefined} title={<nav aria-label="当前位置" className="flex min-w-0 items-center gap-2"><Link to="/projects" className="shrink-0 text-subtext no-underline hover:text-primary">科研首页</Link><span aria-hidden="true">/</span><Link to="/projects/$projectId" params={{ projectId }} className="truncate text-subtext no-underline hover:text-primary">{activeProject.name}</Link><span aria-hidden="true">/</span><span className="shrink-0 text-text">{mainView === "chat" ? "研究工作区" : mainView === "skills" ? "自定义能力" : "项目设置"}</span></nav>} /></div>
         {projectId && (
           <ChatPanel
             projectId={projectId}
@@ -1798,28 +1821,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             ) : null}
           </ChatPanel>
         )}
-        {mainView === "chat" && workspaceReady && !conversationError && (
-          <WorkspaceTools
-            expanded={workspaceCardVisible}
-            experiments={experiments}
-            runs={runs}
-            onOpenExperiment={(id, runId) => openExperimentTab(id, "overview", "preview", runId)}
-            rightOffset={panelOpen ? panelWidth + 28 : undefined}
-            activeView={panelOpen && (rightTab === "files" || rightTab === "artifacts" || rightTab === "experiments" || rightTab === "terminal" || rightTab === "research") ? rightTab : null}
-            projectId={activeProject.id}
-            onResearch={openResearchTab}
-            onCompute={() => selectMainView("compute")}
-            onOpenSession={(id) => onActiveSessionChange(id)}
-            sessionId={activeSessionId}
-            busy={sessionsQuery.data?.some((session) => session.id === activeSessionId && session.busy) ?? false}
-            onChanges={() => { setFilesView("changes"); openWorktreeTab(); }}
-            onFiles={() => { setFilesView("files"); openWorktreeTab(); }}
-            onTerminal={openTerminalTab}
-            onArtifacts={openArtifactsTab}
-            onExperiments={() => openExperimentsTab()}
-            onSideChat={!readOnly && activeSessionId ? () => void startSideChat(activeSessionId, "") : undefined}
-          />
-        )}
+        {workspaceCardVisible && workspaceTools}
         {mainView === "chat" && panelOpen && (
           <aside
             className={`right-pane relative shrink-0 min-w-0 flex flex-col mt-5 win-titlebar:mt-10 me-3.5 mb-5 ms-3.5 bg-canvas [&.max]:fixed [&.max]:inset-2.5 mac-titlebar:[&.max]:top-8 win-titlebar:[&.max]:top-10 [&.max]:m-0 [&.max]:z-60 [&.max]:shadow-panel-max border border-border rounded-lg overflow-hidden shadow-elevated ${panelMax ? "max" : ""}`}

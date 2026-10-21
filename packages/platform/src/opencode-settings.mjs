@@ -6,6 +6,7 @@ const packages = new Set([
   "@ai-sdk/openai-compatible",
   "@ai-sdk/openai",
   "@ai-sdk/anthropic",
+  "@ai-sdk/google",
 ]);
 const object = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -21,9 +22,33 @@ const field = (value, max = 2048) => {
 };
 
 // Only the configured server path is writable. Never accept a filesystem path from a browser.
-export function opencodeSettings(file) {
+export function opencodeSettings(file, apiUrl = "") {
   let pending = Promise.resolve();
+  async function api(path, method = "GET", body) {
+    try {
+      const response = await fetch(
+        new URL(path, `${apiUrl.replace(/\/$/, "")}/`),
+        {
+          method,
+          headers: { "content-type": "application/json" },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          signal: AbortSignal.timeout(20000),
+        },
+      );
+      // Never forward upstream errors: they may contain configuration or credentials.
+      check(
+        response.ok,
+        502,
+        "OpenCode 配置服务拒绝请求，请检查服务状态和版本",
+      );
+      return await response.json();
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      throw new HttpError(502, "无法连接 OpenCode 配置服务，请联系管理员");
+    }
+  }
   async function load() {
+    if (apiUrl) return api("global/config");
     check(file, 503, "服务器尚未启用网页模型配置，请配置共享目录后重新部署");
     try {
       const value = JSON.parse(await readFile(file, "utf8"));
@@ -43,27 +68,86 @@ export function opencodeSettings(file) {
       );
     }
   }
-  function summary(config) {
+  function summary(config, catalog = {}) {
     const model = typeof config.model === "string" ? config.model : "";
     const slash = model.indexOf("/");
     const providerId = slash > 0 ? model.slice(0, slash) : "openresearch";
     const provider = config.provider?.[providerId];
+    const providers = apiUrl ? catalogProviders(config, catalog) : [];
+    const preset = providers.find((item) => item.id === providerId);
     return {
       enabled: true,
       providerId,
-      npm: provider?.npm || "@ai-sdk/openai-compatible",
+      npm: provider?.npm || preset?.npm || "@ai-sdk/openai-compatible",
       baseUrl:
         typeof provider?.options?.baseURL === "string"
           ? provider.options.baseURL
-          : "",
+          : preset?.baseUrl || "",
       modelId: slash > 0 ? model.slice(slash + 1) : "",
       hasApiKey: !!provider?.options?.apiKey,
+      ...(apiUrl ? { backend: "opencode", providers } : {}),
     };
+  }
+  function catalogProviders(config, catalog) {
+    const all = new Map(
+      (catalog.all || []).map((provider) => [provider.id, provider]),
+    );
+    for (const [id, provider] of Object.entries(config.provider || {}))
+      all.set(id, {
+        ...all.get(id),
+        ...provider,
+        id,
+        models: { ...all.get(id)?.models, ...provider.models },
+      });
+    return [...all.values()]
+      .flatMap((provider) => {
+        if (!/^[a-zA-Z0-9_-]+$/.test(provider.id)) return [];
+        const configured = config.provider?.[provider.id];
+        const endpoint = Object.values(provider.models || {}).find(
+          (model) => model.api?.url,
+        )?.api?.url;
+        const npm =
+          configured?.npm ||
+          provider.npm ||
+          Object.values(provider.models || {})
+            .map((model) => model.api?.npm)
+            .find((npm) => packages.has(npm)) ||
+          {
+            google: "@ai-sdk/google",
+            openai: "@ai-sdk/openai",
+            anthropic: "@ai-sdk/anthropic",
+          }[provider.id] ||
+          "";
+        if (!packages.has(npm)) return [];
+        return [
+          {
+            id: provider.id,
+            name: provider.name || provider.id,
+            npm,
+            baseUrl:
+              typeof configured?.options?.baseURL === "string"
+                ? configured.options.baseURL
+                : typeof endpoint === "string" && !/[{}]/.test(endpoint)
+                  ? endpoint
+                  : "",
+            hasApiKey: !!configured?.options?.apiKey,
+            connected:
+              !!configured?.options?.apiKey ||
+              (catalog.connected || []).includes(provider.id),
+            models: Object.keys({ ...provider.models, ...configured?.models }),
+          },
+        ];
+      })
+      .sort(
+        (a, b) =>
+          Number(b.connected) - Number(a.connected) || a.id.localeCompare(b.id),
+      );
   }
   return {
     async read() {
-      if (!file) return { enabled: false };
-      return summary(await load());
+      if (!file && !apiUrl) return { enabled: false };
+      const config = await load();
+      return summary(config, apiUrl ? await api("provider") : {});
     },
     save(data, audit = async () => {}) {
       const operation = pending.then(async () => {
@@ -78,28 +162,44 @@ export function opencodeSettings(file) {
         check(packages.has(npm), 400, "不支持的接口类型");
         const modelId = field(data.modelId, 256);
         check(modelId && !/[{}]/.test(modelId), 400, "请填写有效的模型 ID");
+        const catalog = apiUrl ? await api("provider") : {};
+        const known = (catalog.all || []).some(
+          (provider) => provider.id === providerId,
+        );
         const baseUrl = field(data.baseUrl);
         let url;
-        try {
-          url = new URL(baseUrl);
-        } catch {
-          throw new HttpError(400, "请填写有效的模型服务地址");
-        }
-        check(
-          ["http:", "https:"].includes(url.protocol) &&
-            !url.username &&
-            !url.password &&
-            !url.search &&
-            !url.hash &&
-            !/[{}]/.test(baseUrl),
-          400,
-          "模型服务地址必须是 HTTP 或 HTTPS 地址，不能包含凭据、查询参数或占位符",
-        );
+        if (baseUrl) {
+          try {
+            url = new URL(baseUrl);
+          } catch {
+            throw new HttpError(400, "请填写有效的模型服务地址");
+          }
+          check(
+            ["http:", "https:"].includes(url.protocol) &&
+              !url.username &&
+              !url.password &&
+              !url.search &&
+              !url.hash &&
+              !/[{}]/.test(baseUrl),
+            400,
+            "模型服务地址必须是 HTTP 或 HTTPS 地址，不能包含凭据、查询参数或占位符",
+          );
+        } else
+          check(
+            npm !== "@ai-sdk/openai-compatible" || known,
+            400,
+            "自定义兼容接口必须填写服务地址",
+          );
         const apiKey = field(data.apiKey ?? "", 8192);
         check(!/[{}]/.test(apiKey), 400, "API Key 不能包含配置占位符");
         const config = await load();
         const providers = config.provider ?? {};
         const existing = providers[providerId] ?? {};
+        const preset = apiUrl
+          ? catalogProviders(config, catalog).find(
+              (provider) => provider.id === providerId,
+            )
+          : null;
         check(
           object(existing) &&
             (existing.options === undefined || object(existing.options)) &&
@@ -109,10 +209,15 @@ export function opencodeSettings(file) {
         );
         const provider = {
           ...existing,
-          npm,
+          // Native model entries may use different SDKs/endpoints under one
+          // provider. Preserve OpenCode's model-specific routing for presets.
+          ...(!known || existing.npm || npm !== preset?.npm ? { npm } : {}),
           options: {
             ...existing.options,
-            baseURL: baseUrl,
+            ...(baseUrl &&
+            (!known || existing.options?.baseURL || baseUrl !== preset?.baseUrl)
+              ? { baseURL: baseUrl }
+              : {}),
             ...(apiKey ? { apiKey } : {}),
           },
           models: {
@@ -150,6 +255,13 @@ export function opencodeSettings(file) {
               }
             : {}),
         };
+        if (apiUrl) {
+          await audit();
+          // The official global endpoint chooses and edits the existing JSON/JSONC
+          // source. Project PATCH /config would write to the wrong scope.
+          const saved = await api("global/config", "PATCH", next);
+          return summary(saved, catalog);
+        }
         const temporary = `${file}.${randomUUID()}.tmp`;
         try {
           // The directory is mounted read-only into executors. Renaming there makes

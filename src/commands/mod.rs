@@ -32,6 +32,7 @@ pub mod library;
 pub mod login;
 pub mod logout;
 pub mod logs;
+pub mod materials;
 pub mod mcp_gate;
 pub mod orgs;
 pub mod paper;

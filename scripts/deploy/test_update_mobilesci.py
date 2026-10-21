@@ -44,6 +44,23 @@ class UpdateBundleTests(unittest.TestCase):
         self.assertIn('BASE_IMAGE=mobilesci-update-base-workbench:release', calls[1])
         self.assertNotIn('BASE_IMAGE=sha256:abc123', calls[1])
 
+    def test_applied_migration_preserves_only_verified_historical_line_endings(self):
+        import ast
+        source = Path(__file__).with_name('update-server.py').read_text()
+        function = next(node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name == 'historical_migration')
+        namespace = {'hashlib': hashlib}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), '<historical_migration>', 'exec'), namespace)
+        preserve = namespace['historical_migration']
+        lf = b'CREATE TABLE fixture(id uuid);\n'
+        crlf = lf.replace(b'\n', b'\r\n')
+        recorded = hashlib.sha256(crlf).hexdigest()
+        self.assertEqual(preserve(lf, recorded, crlf), crlf)
+        self.assertEqual(preserve(crlf, recorded, crlf), crlf)
+        with self.assertRaises(RuntimeError):
+            preserve(b'DROP TABLE fixture;\n', recorded, crlf)
+        with self.assertRaises(RuntimeError):
+            preserve(lf, recorded, b'Unverified deployed source')
+
     def test_health_probe_keeps_workbench_loopback_host(self):
         import ast
         source = Path(__file__).with_name('update-server.py').read_text()
@@ -95,7 +112,7 @@ class UpdateBundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / 'Cargo.toml').write_text('version = "0.2.19"\n')
-            for name in ['ui/dist/index.html', 'packages/platform/src/server.mjs', 'packages/platform/public/index.html', 'packages/platform/migrations/004.sql', 'packages/platform/package.json', 'packages/platform/package-lock.json', 'scripts/deploy/update-server.py', 'scripts/deploy/enable-personal-spaces.py']:
+            for name in ['ui/dist/index.html', 'packages/platform/src/server.mjs', 'packages/platform/public/index.html', 'packages/platform/migrations/004.sql', 'packages/platform/package.json', 'packages/platform/package-lock.json', 'scripts/deploy/update-server.py', 'scripts/deploy/enable-personal-spaces.py', 'scripts/deploy/enable-opencode-admin.py']:
                 file = root / name
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text('test')

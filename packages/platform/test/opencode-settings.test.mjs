@@ -169,3 +169,134 @@ test("HTTP model settings require administrator permission and trusted origin", 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("official global API manages native providers and never returns catalog credentials", async () => {
+  const { createServer } = await import("node:http");
+  let config = {
+    permission: { bash: "ask" },
+    provider: {
+      company: {
+        npm: "@ai-sdk/openai-compatible",
+        options: { apiKey: draft.apiKey },
+      },
+    },
+  };
+  const calls = [];
+  let reject = false;
+  const upstream = createServer(async (req, res) => {
+    calls.push([req.method, req.url]);
+    res.setHeader("content-type", "application/json");
+    if (reject) {
+      res.writeHead(500);
+      return res.end(JSON.stringify({ error: draft.apiKey }));
+    }
+    if (req.url === "/global/config") {
+      if (req.method === "PATCH") {
+        let body = "";
+        for await (const chunk of req) body += chunk;
+        config = JSON.parse(body);
+      }
+      return res.end(JSON.stringify(config));
+    }
+    if (req.url === "/provider")
+      return res.end(
+        JSON.stringify({
+          all: [
+            {
+              id: "google",
+              name: "Google",
+              options: { apiKey: draft.apiKey },
+              models: { "fixture-gemini": {} },
+            },
+            {
+              id: "vendor",
+              models: {
+                main: {
+                  api: {
+                    npm: "@ai-sdk/openai-compatible",
+                    url: "https://vendor.invalid/v1",
+                  },
+                },
+                alternative: {
+                  api: {
+                    npm: "@ai-sdk/anthropic",
+                    url: "https://vendor.invalid/anthropic",
+                  },
+                },
+              },
+            },
+            { id: "unsupported.id", npm: "@ai-sdk/openai", models: {} },
+          ],
+          connected: ["google"],
+        }),
+      );
+    res.writeHead(404);
+    res.end("{}");
+  });
+  upstream.listen(0, "127.0.0.1");
+  await once(upstream, "listening");
+  try {
+    const settings = opencodeSettings(
+      "",
+      `http://127.0.0.1:${upstream.address().port}`,
+    );
+    const initial = await settings.read();
+    assert.equal(initial.backend, "opencode");
+    assert.equal(
+      initial.providers.find((p) => p.id === "google").connected,
+      true,
+    );
+    assert(!JSON.stringify(initial).includes(draft.apiKey));
+    assert.equal(
+      initial.providers.find((p) => p.id === "vendor").baseUrl,
+      "https://vendor.invalid/v1",
+    );
+    assert(!initial.providers.some((p) => p.id === "unsupported.id"));
+    const saved = await settings.save({
+      providerId: "google",
+      npm: "@ai-sdk/google",
+      baseUrl: "",
+      modelId: "fixture-gemini",
+      apiKey: "native-fixture-key",
+    });
+    assert.equal(saved.hasApiKey, true);
+    assert.equal(saved.npm, "@ai-sdk/google");
+    assert.equal(config.provider.google.npm, undefined);
+    assert.equal(config.model, "google/fixture-gemini");
+    assert.deepEqual(config.permission, { bash: "ask" });
+    assert.equal(config.provider.company.options.apiKey, draft.apiKey);
+    assert.equal(config.provider.google.options.apiKey, "native-fixture-key");
+    await settings.save({
+      providerId: "vendor",
+      npm: "@ai-sdk/openai-compatible",
+      baseUrl: "https://vendor.invalid/v1",
+      modelId: "alternative",
+      apiKey: "vendor-key",
+    });
+    assert.equal(config.provider.vendor.npm, undefined);
+    assert.equal(config.provider.vendor.options.baseURL, undefined);
+    assert.equal(config.model, "vendor/alternative");
+    assert(!JSON.stringify(saved).includes("native-fixture-key"));
+    await settings.save({
+      providerId: "google",
+      npm: "@ai-sdk/google",
+      baseUrl: "",
+      modelId: "fixture-gemini",
+      apiKey: "",
+    });
+    assert.equal(config.provider.google.options.apiKey, "native-fixture-key");
+    assert(
+      calls.some(
+        ([method, path]) => method === "PATCH" && path === "/global/config",
+      ),
+    );
+    assert(!calls.some(([, path]) => path === "/config"));
+    reject = true;
+    await assert.rejects(
+      settings.read(),
+      (error) => error.status === 502 && !error.message.includes(draft.apiKey),
+    );
+  } finally {
+    await new Promise((resolve) => upstream.close(resolve));
+  }
+});

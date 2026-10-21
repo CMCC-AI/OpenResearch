@@ -1294,5 +1294,12 @@
   "storage_managed_description": "Research data, logs and artifacts are stored on the server. Storage locations and migrations are maintained by the platform administrator.",
   "storage_managed_admin_note": "System administrators can view this location. Directory migration is available only through server maintenance.",
   "storage_managed_unavailable": "Storage information is temporarily unavailable. Retry or contact the platform administrator.",
-  "api_proxy_error": "Request failed (HTTP {status}). Retry or contact the platform administrator."
+  "api_proxy_error": "Request failed (HTTP {status}). Retry or contact the platform administrator.",
+  "projects_delete_folder_location": "پوشهٔ پروژه در دستگاهی که MobileSci را اجرا می‌کند:",
+  "projects_delete_folder_option": "پوشهٔ پروژه نیز حذف شود (انتقال به پوشهٔ بازیابی)",
+  "projects_delete_folder_recovery": "پوشه به یک پوشهٔ بازیابی در همان پوشهٔ والد منتقل می‌شود. فایل‌ها را می‌توان دستی بازیابی کرد؛ فضای دیسک آزاد نمی‌شود.",
+  "projects_delete_folder_kept": "پوشهٔ پروژه و فایل‌های آن نگه داشته می‌شوند.",
+  "projects_delete_github_kept": "مخزن GitHub پیوندشده نگه داشته می‌شود.",
+  "projects_delete_with_folder": "حذف پروژه و پوشه",
+  "projects_delete_recovery_path": "پروژه حذف شد. مسیر بازیابی پوشه: {path}"
 }

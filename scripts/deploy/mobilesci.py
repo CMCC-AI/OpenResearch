@@ -122,11 +122,34 @@ services:
       DEEPLIT_SSO_CLIENT_SECRET: ${{DEEPLIT_SSO_CLIENT_SECRET}}
       BIND_ADDRESS: 127.0.0.1
       ORX_UI_DIST: /app/ui/dist
+      OPENCODE_ADMIN_URL: http://127.0.0.1:4970
+    depends_on: [opencode-admin]
     restart: unless-stopped
     init: true
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+  opencode-admin:
+    image: {prefix}-workbench
+    network_mode: host
+    command: [sh, -ec, 'mkdir -p "$$XDG_DATA_HOME/opencode"; cp /run/orx-auth/auth.json "$$XDG_DATA_HOME/opencode/auth.json"; exec opencode serve --pure --hostname 127.0.0.1 --port 4970']
+    environment:
+      HOME: /tmp/opencode-admin
+      XDG_CONFIG_HOME: /run/orx-config
+      XDG_DATA_HOME: /tmp/opencode-admin/data
+      XDG_STATE_HOME: /tmp/opencode-admin/state
+      XDG_CACHE_HOME: /tmp/opencode-admin/cache
+      OPENCODE_CONFIG_PROJECT_DISABLE: '1'
+      OPENCODE_DISABLE_AUTOUPDATE: '1'
+    volumes:
+      - /opt/mobilesci/state/opencode:/run/orx-config/opencode
+      - /opt/mobilesci/state/opencode-auth/auth.json:/run/orx-auth/auth.json:ro
+    tmpfs: ['/tmp:uid=1000,gid=1000,mode=0700']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    init: true
   literature:
     image: {prefix}-literature
     network_mode: host

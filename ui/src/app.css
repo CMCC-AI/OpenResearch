@@ -365,17 +365,8 @@
   }
 }
 
-/* Reserve room for the four workspace buttons and their gaps. */
-.workspace-body > .chat-pane .chat-header {
-  padding-inline-end: 12rem;
-}
-
 .workspace-card-visible > .chat-pane {
   padding-inline-end: 16rem;
-}
-
-.workspace-card-visible > .chat-pane .chat-header {
-  padding-inline-end: 1rem;
 }
 
 .workspace-card-visible .workspace-tools {

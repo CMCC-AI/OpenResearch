@@ -36,6 +36,25 @@ test('a missing registered main checkout does not block isolated development', (
   }
 })
 
+test('feature-only primary and linked checkouts share the development registry', () => {
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'orx-dev-slot-feature-')))
+  const repository = path.join(root, 'repository')
+  const linked = path.join(root, 'linked')
+  mkdirSync(repository)
+  const git = (...args) => execFileSync('git', ['-C', repository, ...args], { stdio: 'pipe' })
+  try {
+    git('init', '-b', 'feature')
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'initial')
+    writeFileSync(path.join(repository, 'Cargo.toml'), '[package]\n')
+    assert.equal(worktreeInfo(repository).mainCheckout, repository)
+    git('worktree', 'add', '-b', 'another-feature', linked)
+    writeFileSync(path.join(linked, 'Cargo.toml'), '[package]\n')
+    assert.equal(worktreeInfo(linked).mainCheckout, repository)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('requires an explicit database mode when starting', () => {
   assert.throws(() => parseArgs(['start']), /requires --db empty or --db copy/)
   assert.equal(parseArgs(['start', '--db', 'empty']).db, 'empty')

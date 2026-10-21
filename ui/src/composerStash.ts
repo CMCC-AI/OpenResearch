@@ -2,6 +2,8 @@ import type { ChatTextAnnotation } from "./api";
 
 /** Per-chat stash for unsent composer content (draft, attachments, annotations). */
 export interface ComposerAttachment {
+  /** Kept in the draft until transferred to the project material store. */
+  file?: File;
   dataUrl: string;
   mediaType: string;
   name?: string;

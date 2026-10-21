@@ -93,6 +93,10 @@ export async function captureNativeProject(projectId: string, progress: (message
     const wt=await read<{exists:boolean}>(`/api/chat/sessions/${session.id}/worktree`);
     if(wt.exists)await tree(new URLSearchParams({sessionId:session.id}).toString());
     for(const message of messages.messages)for(const part of message.parts)if(part.type==="image"&&part.text&&!part.text.startsWith("data:"))await asset(`/api/chat/attachments/${encodeURIComponent(part.text)}`,part.name||part.text);
+    for (const message of messages.messages) for (const part of message.parts) if (part.type === "material" && part.text) {
+      const material = await read<{ id: string; files: { id: string; path: string }[] }>(`/api/materials/${encodeURIComponent(part.text)}`);
+      for (const file of material.files) await asset(`/api/materials/${encodeURIComponent(material.id)}/${encodeURIComponent(file.id)}/download`, file.path.split("/").at(-1) || file.id);
+    }
   }
   const experiments=(await read<{experiments:Experiment[]}>(`/api/projects/${projectId}/experiments`)).experiments;
   for(const experiment of experiments){await tree(new URLSearchParams({ref:experiment.branchName}).toString());await read(`/api/experiments/${experiment.id}/diff`);}

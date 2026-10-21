@@ -50,6 +50,7 @@ use crate::{browser, UpArgs};
 
 pub(crate) mod compute_settings;
 mod harness_setup;
+mod materials;
 mod research;
 use compute_settings::*;
 
@@ -801,7 +802,26 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
         // mode). Token-authenticated in the handler; blocks until the surfaced
         // card is answered.
         .route("/api/internal/permissions", post(bridge_permission))
+        .route("/api/projects/{project}/materials", post(materials::create))
+        .route(
+            "/api/projects/{project}/materials/{id}",
+            get(materials::manifest),
+        )
+        .route(
+            "/api/projects/{project}/materials/{id}/files",
+            axum::routing::put(materials::upload)
+                .layer(DefaultBodyLimit::max(local::materials::MAX_FILE)),
+        )
+        .route(
+            "/api/projects/{project}/materials/{id}/finalize",
+            post(materials::finalize),
+        )
         .route("/api/chat/attachments/{name}", get(chat_attachment))
+        .route("/api/materials/{id}", get(materials::inspect))
+        .route(
+            "/api/materials/{id}/{source}/download",
+            get(materials::download),
+        )
         .route("/api/agent/status", get(agent_status))
         .fallback(spa)
         // Chat attachments (PDFs, images) ride as base64 in the send-message
@@ -2339,11 +2359,22 @@ async fn update_project(
     Ok(Json(json!({ "project": project_json(&project) })))
 }
 
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteProjectQuery {
+    #[serde(default)]
+    delete_folder: bool,
+}
+
 /// Delete a project and everything hanging off it. Refuses while runs are in
 /// flight (deleting their rows would strand the supervisor mid-job) — but
 /// requests their cancellation, so a retry shortly after goes through. The
-/// registered repository folder is left untouched.
-async fn delete_project(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
+/// registered repository folder is kept unless explicitly moved to recovery.
+async fn delete_project(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(options): Query<DeleteProjectQuery>,
+) -> ApiResult {
     reject_if_moving(&state)?;
     let _deleting_project = state
         .project_lifecycle
@@ -2401,12 +2432,27 @@ async fn delete_project(State(state): State<AppState>, Path(id): Path<String>) -
         state.chat.codex.kill_session(&session.id).await;
         state.chat.claude.forget_session(&session.id).await;
     }
-    store.delete_local_project(&id)?;
+    let mut protected = Vec::new();
+    if options.delete_folder {
+        protected.extend([crate::store::data_dir(), crate::config::config_dir()]);
+        protected.extend(dirs::home_dir());
+        protected.push(std::env::current_dir().map_err(crate::error::Error::from)?);
+        protected.push(std::env::current_exe().map_err(crate::error::Error::from)?);
+        protected.retain(|path| path.exists());
+    }
+    let recovery_path =
+        local::projects::delete_project(&store, &project, options.delete_folder, &protected)
+            .map_err(|err| bad_request(err.to_string()))?;
     for session in &sessions {
         local::chat::cleanup_session_transcript_artifacts(&session.id);
-        local::chat::cleanup_session_worktree(&project, &session.id);
+        // Keep worktree paths valid after relocating the repository.
+        let mut cleanup_project = project.clone();
+        if let Some(recovery) = &recovery_path {
+            cleanup_project.repo_path = recovery.to_string_lossy().into_owned();
+        }
+        local::chat::cleanup_session_worktree(&cleanup_project, &session.id);
     }
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(json!({ "ok": true, "recoveryPath": recovery_path })))
 }
 
 async fn list_experiments(Path(id): Path<String>) -> ApiResult {

@@ -1,4 +1,4 @@
-import datetime, hashlib, http.client, json, os, pathlib, socket, subprocess, time, urllib.request, urllib.error, urllib.parse
+import datetime, hashlib, http.client, json, os, pathlib, socket, subprocess, time, urllib.request, urllib.error, urllib.parse, shutil, tempfile, re
 stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
 root=pathlib.Path.home()/('.mobilesci-sidebar-upgrade-'+stamp)
 root.mkdir(mode=0o700)
@@ -14,6 +14,33 @@ def build_service(service, image_id, context, release):
     base='mobilesci-update-base-'+service+':'+release
     cmd('docker','tag',image_id,base)
     cmd('docker','build','--pull=false','--build-arg','BASE_IMAGE='+base,'-t','mobilesci-sidebar-'+service+':'+release,str(context))
+def historical_migration(candidate, recorded, deployed):
+    digest=lambda value: hashlib.sha256(value).hexdigest()
+    if digest(candidate)==recorded:
+        return candidate
+    # Preserve the exact bytes already applied on this server, including an
+    # old Windows checkout's CRLF. Never rewrite checksums or accept SQL edits.
+    if digest(deployed)!=recorded or candidate.replace(b'\r\n',b'\n')!=deployed.replace(b'\r\n',b'\n'):
+        raise RuntimeError('Applied migration content differs; refusing upgrade')
+    return deployed
+def build_platform(image_id, context, release, container):
+    code="const {createPool}=await import('./src/db.mjs');const p=createPool(process.env.DATABASE_URL);try{const r=await p.query('SELECT version,checksum FROM platform_migrations');console.log(JSON.stringify(r.rows))}finally{await p.end()}"
+    applied=json.loads(cmd('docker','exec',container,'node','--input-type=module','-e',code,capture=True))
+    with tempfile.TemporaryDirectory(prefix='mobilesci-platform-build-') as directory:
+        destination=pathlib.Path(directory)/'platform'
+        shutil.copytree(context,destination)
+        for row in applied:
+            version=row['version']
+            if not re.fullmatch(r'\d+\.sql',version):raise RuntimeError('Invalid applied migration version')
+            file=destination/'migrations'/version
+            if not file.is_file():raise RuntimeError('Applied migration missing from update: '+version)
+            candidate=file.read_bytes()
+            deployed=subprocess.check_output(['docker','exec',container,'cat','/app/platform/migrations/'+version])
+            preserved=historical_migration(candidate,row['checksum'],deployed)
+            if preserved!=candidate:
+                file.write_bytes(preserved)
+                print('Preserved applied migration line endings: '+version,flush=True)
+        build_service('platform',image_id,destination,release)
 def health_headers(service):
     # The local workbench only accepts loopback Host. The account platform
     # validates its configured public Host even for loopback health requests.
@@ -105,7 +132,8 @@ for service,name in services:
     labels=old['Config'].get('Labels') or {}
     if labels.get('com.docker.compose.project')!='mobilesci-remote' or labels.get('com.docker.compose.service')!=service or old['HostConfig']['NetworkMode']!='host':
         raise RuntimeError('Unexpected service configuration; refusing replacement')
-    build_service(service,old['Image'],bundle/service,stamp)
+    if service=='platform':build_platform(old['Image'],bundle/service,stamp,name)
+    else:build_service(service,old['Image'],bundle/service,stamp)
 metadata=root/'rollback.json';metadata.write_text(json.dumps(originals));metadata.chmod(0o600)
 idle()
 rehearse_sqlite(originals['mobilesci-remote-workbench-1'],'mobilesci-sidebar-workbench:'+stamp)

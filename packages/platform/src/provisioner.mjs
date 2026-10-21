@@ -122,7 +122,7 @@ export function runtimeConfig(workspace, env) {
       "OPENCODE_DISABLE_AUTOUPDATE=1",
       `ORX_ACCOUNT_URL=${env.PLATFORM_ORIGIN}`,
       "RUNNER_TOKEN_FILE=/home/node/.platform-token",
-      ...(!legacy && sharedDirectory
+      ...(!legacy && sharedDirectory && !liveConfigDirectory
         ? ["MANAGED_CONFIG_SEED_DIR=/run/orx-seed/opencode"]
         : []),
       ...(!legacy && authFile
@@ -134,7 +134,7 @@ export function runtimeConfig(workspace, env) {
     HostConfig: {
       Binds: [
         `orx-managed-${workspace}:/home/node`,
-        ...(!legacy && sharedDirectory
+        ...(!legacy && sharedDirectory && !liveConfigDirectory
           ? [`${sharedDirectory}:/run/orx-seed/opencode:ro`]
           : []),
         ...(!legacy && authFile

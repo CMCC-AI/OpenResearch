@@ -527,61 +527,68 @@ fn opencode_auth_path() -> Option<PathBuf> {
     Some(base.join("opencode").join("auth.json"))
 }
 
-/// The cheap config read for the snapshot pass: `OPENCODE_CONFIG_CONTENT`,
-/// the file `OPENCODE_CONFIG` points at, else `opencode.json` under
-/// `OPENCODE_CONFIG_DIR` or the stock `~/.config/opencode`. `debug config
-/// --pure` additionally merges project and plugin layers, but it costs a
-/// child process — the snapshot settles for the file and the full pass
-/// re-reads it properly.
-///
-/// One merge the file read must not skip: orx's own connected local models,
-/// which `local_models::prepare_env` folds into `OPENCODE_CONFIG_CONTENT` for
-/// every spawned CLI — and inline content shadows the file entirely, so a
-/// connections-only user sees exactly those providers and nothing else.
-///
-/// Returns the config plus whether a source exists the strict parse could
-/// not honor (`.jsonc`, comments) — a cue for the full pass to ask the CLI.
+/// Merge the global, custom and inline layers just as the CLI does. JSONC or
+/// unparseable sources require the full pass to resolve them through OpenCode.
 fn snapshot_config() -> (Value, bool) {
     let connections = crate::local::local_models::read().unwrap_or_default();
-    // `true` when a config source exists that the strict file read cannot
-    // honor — opencode accepts `.jsonc` and comments, which parse as `Null`
-    // here and would silently drop configured providers. The full pass
-    // resolves those with `debug config --pure`.
-    let mut unresolved = false;
-    let mut config = if let Some(content) = crate::local::shell_env::var("OPENCODE_CONFIG_CONTENT")
-    {
-        // The env var overrides the file entirely — present-but-unparseable
-        // means "no usable config", not "fall through to the file" — but its
-        // comments still outrun the strict parse.
-        let parsed = serde_json::from_str::<Value>(&content.to_string_lossy());
-        unresolved = parsed.is_err();
-        parsed.unwrap_or(Value::Null)
-    } else if !connections.is_empty() {
-        // The spawned CLI would get inline content built from the connections
-        // alone; the file never enters the picture.
-        json!({})
-    } else if let Some(custom) = crate::local::shell_env::var("OPENCODE_CONFIG") {
-        let path = PathBuf::from(custom);
-        let parsed = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok());
-        unresolved = path.exists() && parsed.is_none();
-        parsed.unwrap_or(Value::Null)
-    } else {
-        let dir = crate::local::shell_env::var("OPENCODE_CONFIG_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| super::xdg_config_home().join("opencode"));
-        let json = dir.join("opencode.json");
-        let parsed = std::fs::read_to_string(&json)
-            .ok()
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok());
-        // opencode honors a sibling `.jsonc` alongside — and comments inside
-        // — `.json`; either outruns what the file read can claim to cover.
-        unresolved = dir.join("opencode.jsonc").exists() || (json.exists() && parsed.is_none());
-        parsed.unwrap_or(Value::Null)
-    };
-    if !connections.is_empty() && config.is_object() {
+    let global = super::xdg_config_home().join("opencode");
+    let mut paths = vec![global.join("opencode.json")];
+    if let Some(custom) = crate::local::shell_env::var("OPENCODE_CONFIG") {
+        paths.push(PathBuf::from(custom));
+    }
+    if let Some(custom) = crate::local::shell_env::var("OPENCODE_CONFIG_DIR") {
+        let file = PathBuf::from(custom).join("opencode.json");
+        if !paths.contains(&file) {
+            paths.push(file);
+        }
+    }
+    let inline = crate::local::shell_env::var("OPENCODE_CONFIG_CONTENT");
+    let (mut config, unresolved) = snapshot_layers(
+        &paths,
+        inline
+            .as_ref()
+            .map(|value| value.to_string_lossy())
+            .as_deref(),
+    );
+    if !connections.is_empty() {
         let _ = crate::local::local_models::merge_config(&mut config, &connections, None);
+    }
+    (config, unresolved)
+}
+
+fn merge_snapshot_config(target: &mut Value, source: Value) {
+    if let (Some(target), Value::Object(source)) = (target.as_object_mut(), source) {
+        for (key, value) in source {
+            if value.is_object() && target.get(&key).is_some_and(Value::is_object) {
+                merge_snapshot_config(target.get_mut(&key).unwrap(), value);
+            } else {
+                target.insert(key, value);
+            }
+        }
+    }
+}
+
+fn snapshot_layers(paths: &[PathBuf], inline: Option<&str>) -> (Value, bool) {
+    let mut config = json!({});
+    let mut unresolved = false;
+    for path in paths {
+        if path.extension().is_some_and(|ext| ext == "json") {
+            unresolved |= path.with_extension("jsonc").exists();
+        }
+        match std::fs::read_to_string(path) {
+            Ok(text) => match serde_json::from_str::<Value>(&text) {
+                Ok(value) if value.is_object() => merge_snapshot_config(&mut config, value),
+                _ => unresolved = true,
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => unresolved = true,
+        }
+    }
+    if let Some(text) = inline {
+        match serde_json::from_str::<Value>(text) {
+            Ok(value) if value.is_object() => merge_snapshot_config(&mut config, value),
+            _ => unresolved = true,
+        }
     }
     (config, unresolved)
 }
@@ -2153,6 +2160,38 @@ async fn handle_prompt_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_merges_global_custom_and_inline_provider_settings() {
+        let dir = std::env::temp_dir().join(format!("orx-config-merge-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let global = dir.join("opencode.json");
+        let custom = dir.join("custom.json");
+        std::fs::write(&global, r#"{"model":"company/main","provider":{"company":{"options":{"apiKey":"fixture"},"models":{"main":{}}}}}"#).unwrap();
+        std::fs::write(
+            &custom,
+            r#"{"provider":{"company":{"options":{"baseURL":"https://example.invalid/v1"}}}}"#,
+        )
+        .unwrap();
+        let (config, unresolved) = snapshot_layers(
+            &[global.clone(), custom],
+            Some(r#"{"provider":{"local":{"models":{"small":{}}}}}"#),
+        );
+        assert!(!unresolved);
+        assert_eq!(config["model"], "company/main");
+        assert_eq!(
+            config["provider"]["company"]["options"]["apiKey"],
+            "fixture"
+        );
+        assert_eq!(
+            config["provider"]["company"]["options"]["baseURL"],
+            "https://example.invalid/v1"
+        );
+        assert!(config["provider"]["local"].is_object());
+        std::fs::write(global.with_extension("jsonc"), "// resolve through CLI").unwrap();
+        assert!(snapshot_layers(&[global], None).1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[tokio::test]
     async fn local_models_require_an_enabled_loopback_server_and_matching_model() {

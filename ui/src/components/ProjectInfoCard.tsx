@@ -1,15 +1,11 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArrowRight, Folder, FolderOpen, MessageCircle, MoreHorizontal, Pin, Plus, Settings, Star, Trash2, X } from "lucide-react";
-import { deleteProject, revealFileInManager, updateProject, type Project } from "../api";
+import { revealFileInManager, updateProject, type Project } from "../api";
 import { m } from "../paraglide/messages.js";
 import { Button, IconButton, Input, MenuItem, Tooltip, showAlert } from "./ui";
+import { DeleteProjectDialog } from "./DeleteProjectDialog";
 import { useDialogFocus } from "./useDialogFocus";
-
-function deleteExplanation(project: Project) {
-  const synced = project.githubEnabled && (project.githubUrl || (project.githubOwner && project.githubRepo));
-  return `${m.projects_delete_from_app({ name: project.name })}\n\n${synced ? m.projects_home_local_and_github_kept() : m.projects_home_local_folder_kept()}`;
-}
 
 export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleCollapsed, onRemoved, onNewChat, onOpen, onFeature, pinned, onPin, readOnly = false }: {
   readOnly?: boolean;
@@ -30,7 +26,7 @@ export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleC
   const menuId = useId();
   const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   useEffect(() => {
     const dismiss = (event: Event) => {
       if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
@@ -58,13 +54,9 @@ export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleC
     menuRef.current?.hidePopover();
     setEditing(true);
   }
-  async function remove() {
+  function remove() {
     menuRef.current?.hidePopover();
-    if (deleting || !window.confirm(deleteExplanation(project))) return;
-    setDeleting(true);
-    try { await deleteProject(project.id); onRemoved(); }
-    catch (err) { showAlert(err instanceof Error ? err.message : String(err), "error"); }
-    finally { setDeleting(false); }
+    setConfirmDelete(true);
   }
 
   return <>
@@ -108,14 +100,15 @@ export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleC
         void revealFileInManager(project.id, ".").catch((err: unknown) => showAlert(err instanceof Error ? err.message : String(err), "error"));
       }}><span className="flex items-center gap-2"><FolderOpen size={16} />{m.sidebar_reveal_project()}</span></MenuItem>
       <div className="my-1 border-t border-border" />
-      <MenuItem role="menuitem" danger disabled={deleting} onClick={() => void remove()}><span className="flex items-center gap-2"><Trash2 size={16} />{m.projects_home_delete_project_action()}</span></MenuItem>
+      <MenuItem role="menuitem" danger onClick={remove}><span className="flex items-center gap-2"><Trash2 size={16} />{m.projects_home_delete_project_action()}</span></MenuItem>
     </div>
-    {editing && createPortal(<EditProjectDialog project={project} onClose={() => setEditing(false)} onRemoved={onRemoved} />, document.body)}
+    {confirmDelete && createPortal(<DeleteProjectDialog project={project} onClose={() => setConfirmDelete(false)} onRemoved={() => { setConfirmDelete(false); onRemoved(); }} />, document.body)}
+    {editing && createPortal(<EditProjectDialog project={project} onClose={() => setEditing(false)} onDelete={() => { setEditing(false); setConfirmDelete(true); }} />, document.body)}
     </>}
   </>;
 }
 
-function EditProjectDialog({ project, onClose, onRemoved }: { project: Project; onClose: () => void; onRemoved: () => void }) {
+function EditProjectDialog({ project, onClose, onDelete }: { project: Project; onClose: () => void; onDelete: () => void }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const nameId = useId();
@@ -134,15 +127,6 @@ function EditProjectDialog({ project, onClose, onRemoved }: { project: Project; 
     finally { setPending(false); }
   }
 
-  async function remove() {
-    if (pending || !window.confirm(deleteExplanation(project))) return;
-    setPending(true);
-    setError("");
-    try { await deleteProject(project.id); onClose(); onRemoved(); }
-    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
-    finally { setPending(false); }
-  }
-
   return <div className="modal-backdrop fixed inset-0 z-100 flex items-center justify-center bg-modal-backdrop p-5" onClick={(event) => { if (event.target === event.currentTarget) close(); }}>
     <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}
       className="modal w-120 max-w-full max-h-[calc(100vh-2.5rem)] overflow-y-auto rounded-xl border border-border bg-background p-6 text-text shadow-modal">
@@ -153,7 +137,7 @@ function EditProjectDialog({ project, onClose, onRemoved }: { project: Project; 
         <div className="mt-5 mb-2 text-sm font-medium">{m.sidebar_source_folder()}</div>
         <div className="flex items-start gap-2 rounded-lg border border-border p-3 text-sm"><FolderOpen size={16} className="mt-0.5 shrink-0 text-subtext" /><span className="min-w-0 break-all">{project.repoPath}</span></div>
         {error && <p role="alert" className="mt-3 text-sm text-accent-red">{error}</p>}
-        <div className="mt-6 flex items-center gap-2"><Button type="button" variant="danger" disabled={pending} onClick={() => void remove()}>{m.projects_home_delete_project_action()}</Button><div className="flex-1" /><Button type="button" variant="ghost" disabled={pending} onClick={close}>{m.projects_home_cancel()}</Button><Button type="submit" variant="primary" disabled={pending || !name.trim()}>{m.common_save()}</Button></div>
+        <div className="mt-6 flex items-center gap-2"><Button type="button" variant="danger" disabled={pending} onClick={onDelete}>{m.projects_home_delete_project_action()}</Button><div className="flex-1" /><Button type="button" variant="ghost" disabled={pending} onClick={close}>{m.projects_home_cancel()}</Button><Button type="submit" variant="primary" disabled={pending || !name.trim()}>{m.common_save()}</Button></div>
       </form>
     </div>
   </div>;

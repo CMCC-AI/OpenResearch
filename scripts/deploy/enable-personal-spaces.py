@@ -165,7 +165,7 @@ def main(package, capacity):
         'MANAGED_EXECUTOR_IMAGE': executor_image,
         'MANAGED_CONNECTOR_IMAGE': old['Config']['Image'],
         'MANAGED_LEGACY_WORKSPACE': workspace,
-        'MANAGED_OPENCODE_CONFIG_DIR': '/opt/mobilesci/state/opencode',
+        'MANAGED_OPENCODE_LIVE_CONFIG_DIR': '/opt/mobilesci/state/opencode',
         'MANAGED_OPENCODE_AUTH_FILE': '/opt/mobilesci/state/opencode-auth/auth.json',
         'ORX_DEEP_LITERATURE_URL': 'http://host.docker.internal:20281',
         'ORX_DEEP_LITERATURE_WEB_URL': existing['PLATFORM_ORIGIN'],

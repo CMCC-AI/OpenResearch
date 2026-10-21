@@ -2,15 +2,14 @@ import { useQuery } from "@tanstack/react-query";
 
 import { listProjectActivityQuery } from "../queries/projects";
 import { m } from "../paraglide/messages.js";
-import { autoDir } from "../i18n";
 import { ArrowRight, ChevronRight, Folder, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
-  deleteProject,
   timeAgo,
   type Project,
 } from "../api";
 
+import { DeleteProjectDialog } from "./DeleteProjectDialog";
 import { NewProjectForm } from "./NewProjectForm";
 import { Button, showAlert } from "./ui";
 import { getComposerStashStore, type ComposerStash } from "../composerStash";
@@ -109,105 +108,6 @@ export function NewProjectDialog({
   );
 }
 
-function DeleteProjectDialog({
-  project,
-  deleting,
-  error,
-  onClose,
-  onConfirm,
-}: {
-  project: Project;
-  deleting: boolean;
-  error: string | null;
-  onClose: () => void;
-  onConfirm: () => void;
-}) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const onCloseRef = useRef(onClose);
-  const deletingRef = useRef(deleting);
-  onCloseRef.current = onClose;
-  deletingRef.current = deleting;
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const focusable = () =>
-      [...dialog.querySelectorAll<HTMLElement>('button:not([disabled]), [tabindex]:not([tabindex="-1"])')];
-    (focusable()[0] ?? dialog).focus();
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        if (!deletingRef.current) onCloseRef.current();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const controls = focusable();
-      if (controls.length === 0) {
-        event.preventDefault();
-        dialog.focus();
-        return;
-      }
-      const first = controls[0];
-      const last = controls[controls.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown, true);
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown, true);
-      previousFocus?.focus();
-    };
-  }, []);
-
-  const hasSyncedRepository = Boolean(
-    project.githubEnabled && (project.githubUrl || (project.githubOwner && project.githubRepo)),
-  );
-
-  return (
-    <div
-      className="modal-backdrop fixed inset-0 bg-modal-backdrop flex items-center justify-center p-5 overflow-y-auto z-100"
-      onClick={(event) => {
-        if (!deleting && event.target === event.currentTarget) onClose();
-      }}
-    >
-      <div
-        ref={dialogRef}
-        className="modal w-110 max-w-full bg-background border border-border rounded-xl shadow-modal p-6"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="delete-project-dialog-title"
-        aria-describedby="delete-project-dialog-description"
-        tabIndex={-1}
-      >
-        <h2 id="delete-project-dialog-title" className="mt-0 mb-3 text-xl">{m.projects_home_delete_project()}</h2>
-        <div id="delete-project-dialog-description" className="flex flex-col gap-2 text-sm leading-normal text-subtext">
-          <p className="m-0">
-            {m.projects_delete_from_app({ name: autoDir(project.name) })}
-          </p>
-          <p className="m-0">
-            {hasSyncedRepository ? m.projects_home_local_and_github_kept() : m.projects_home_local_folder_kept()}
-          </p>
-          {error && <p className="m-0 text-accent-red" role="alert">{error}</p>}
-        </div>
-        <div className="mt-5 flex justify-end gap-2">
-          <Button disabled={deleting} onClick={onClose}>{m.projects_home_cancel()}</Button>
-          <Button variant="danger" disabled={deleting} onClick={onConfirm}>
-            {deleting ? m.projects_home_deleting() : m.projects_home_delete_project_action()}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function LiveDot() {
   return (
     <span className="activity-pulse h-2 w-2 shrink-0 rounded-full bg-accent-teal animate-[or-pulse_1.2s_ease-in-out_infinite]" />
@@ -244,8 +144,6 @@ export function ProjectsHome({
   const [attachments, setAttachments] = useState<ComposerStash["attachments"]>(() => homeStashes.get("research-home")?.attachments ?? []);
   useEffect(() => { homeStashes.set("research-home", { draft, attachments, annotations: [], workMode }); }, [homeStashes, draft, attachments, workMode]);
   useEffect(() => { if (initialDialogOpen) setModalOpen(true); }, [initialDialogOpen, initialPaperId]);
-  const [deleting, setDeleting] = useState<string | null>(null);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [projectPendingDelete, setProjectPendingDelete] = useState<Project | null>(null);
   useEffect(() => {
     if (!initialProjectId) return;
@@ -254,21 +152,6 @@ export function ProjectsHome({
   }, [initialProjectId]);
   const activity = useQuery(listProjectActivityQuery());
   const activityByProject = Object.fromEntries((activity.data ?? []).map((summary) => [summary.projectId, summary]));
-
-  async function onDelete(p: Project) {
-    setDeleting(p.id);
-    setDeleteError(null);
-    try {
-      await deleteProject(p.id);
-      setDeleteError(null);
-      setProjectPendingDelete(null);
-      onDeleted(p.id);
-    } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDeleting(null);
-    }
-  }
 
   return (
     <div className="home research-home flex-1 min-h-0 overflow-y-auto [scrollbar-gutter:stable_both-edges] bg-canvas">
@@ -284,7 +167,7 @@ export function ProjectsHome({
                 <button onClick={() => onOpen(p.id)} className="flex min-w-0 flex-1 flex-col gap-1 text-start"><span className="w-full truncate text-base font-normal">{p.name}</span><span className="text-sm text-muted">更新于 {timeAgo(activityByProject[p.id]?.lastMessageAt ?? p.updatedAt)} · {activityByProject[p.id]?.totalAgents ?? 0} 个研究会话</span></button>
                 {activityByProject[p.id]?.activeAgents > 0 && <LiveDot />}
                 <button onClick={() => onOpen(p.id)} aria-label={`继续研究 ${p.name}`} className="research-recent-action shrink-0 text-primary"><ArrowRight size={16} /></button>
-                <button onClick={() => { setDeleteError(null); setProjectPendingDelete(p); }} disabled={deleting === p.id} aria-label={`删除项目 ${p.name}`} className="research-recent-action shrink-0 text-muted hover:text-accent-red"><Trash2 size={14} /></button>
+                <button onClick={() => { setProjectPendingDelete(p); }} aria-label={`删除项目 ${p.name}`} className="research-recent-action shrink-0 text-muted hover:text-accent-red"><Trash2 size={14} /></button>
               </div>)}
             </div>
           </section>
@@ -308,13 +191,8 @@ export function ProjectsHome({
       {projectPendingDelete && (
         <DeleteProjectDialog
           project={projectPendingDelete}
-          deleting={deleting === projectPendingDelete.id}
-          error={deleteError}
-          onClose={() => {
-            setDeleteError(null);
-            setProjectPendingDelete(null);
-          }}
-          onConfirm={() => void onDelete(projectPendingDelete)}
+          onClose={() => setProjectPendingDelete(null)}
+          onRemoved={() => { setProjectPendingDelete(null); onDeleted(projectPendingDelete.id); }}
         />
       )}
     </div>

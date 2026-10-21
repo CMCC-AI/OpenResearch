@@ -1,7 +1,7 @@
 import { stripAppBase } from "../appBasePath";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
-import { PanelLeft, Search, Star } from "lucide-react";
+import { PanelLeft, Star } from "lucide-react";
 import brand from "../assets/workbench/brand.svg";
 import newProject from "../assets/workbench/new-project.svg";
 import discover from "../assets/workbench/discover.svg";
@@ -44,11 +44,10 @@ export function ProductSidebar({ children, connectionInfo, onCollapse }: { child
   </aside>;
 }
 
-export function ProductHeader({ title }: { title: ReactNode }) {
-  const { canAccessResearch } = useAuthSession();
+export function ProductHeader({ title, actions }: { title: ReactNode; actions?: ReactNode }) {
   return <header className="product-header flex h-16 shrink-0 items-center justify-between gap-4 border-b border-border-variant px-6">
-    <div className="product-header-title min-w-0 text-sm">{title}</div>
-    {canAccessResearch && <Link to="/discover" className="product-paper-search inline-flex h-10 w-50 shrink-0 items-center gap-3 rounded-full border border-border-variant px-4 text-sm text-subtext no-underline hover:text-primary max-sm:w-10 max-sm:justify-center max-sm:px-0" aria-label="搜索论文"><Search size={16} /><span className="max-sm:hidden">搜索论文</span></Link>}
+    <div className="product-header-title min-w-0 flex-1 overflow-hidden text-sm">{title}</div>
+    {actions && <div className="shrink-0">{actions}</div>}
   </header>;
 }
 

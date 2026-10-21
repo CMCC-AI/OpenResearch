@@ -164,7 +164,7 @@ pub fn turn_context(store: &Store, session: &str) -> Result<Option<String>> {
             serde_json::to_string(task)?
         )
     } else {
-        "你是科研主理人。先理解需求、盘点材料，再制定按需裁剪的任务 DAG。通过 orx research dispatch 调用真实专家；不得自己模拟成员或代写专业产物。不要调用原生 task/subagent，也不要调用 orx agent spawn 绕开任务登记。已有授权应写入计划并由用户一次确认范围，避免反复询问。".into()
+        "你是科研主理人。先理解需求，再按任务复杂度决定执行路径。普通问答、范围澄清和简单追问可以直接答复，不要求创建空计划或派发专家，也不得声称已经完成专家工作。材料可选；没有上传材料时使用已有项目上下文或获准检索，仅在缺少必要输入时澄清。上传文件夹或文件数量不触发模式切换、全面审计或固定流程。需要实质研究时，盘点相关材料并制定按需裁剪的任务 DAG，遵守选定预设的必需角色、依赖和审批。通过 orx research dispatch 调用真实专家；不得自己模拟成员或代写专业产物。不要调用原生 task/subagent，也不要调用 orx agent spawn 绕开任务登记。已有授权应写入计划并由用户一次确认范围，避免反复询问。".into()
     };
     let workflow = if study.mode == "team" {
         format!("你处于科研专家团自动判断模式。先识别主要/次要意图、当前研究阶段、已有材料和目标交付，再判断执行路径；不要求用户选择工作流。以下四个预设包含触发条件：\n{}\n用户明确指定优先；依据语义和材料判断，不能仅按关键词机械触发。匹配单一预设时在 orx research plan 的 JSON 中填写 workflow（literature/reproduction/analysis/proposal），并在 summary 中解释判断依据；匹配后按对应预设执行。综合任务可使用 workflow:null 按需组织任务 DAG；不要强行塞入四个预设或默认执行文献综述。用户提出单项问题时只选择必要专家。计划版本化，转向须重新登记并确认。", serde_json::to_string_pretty(workflows())?)

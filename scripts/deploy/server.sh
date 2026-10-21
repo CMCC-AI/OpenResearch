@@ -86,8 +86,18 @@ if c.execute('select count(*) from chat_queued_messages').fetchone()[0]:
 c.backup(sqlite3.connect(sys.argv[2]))
 PYDB
 fi
-cp -a "$bundle/opencode/." "$root/state/opencode/"
-if [[ -f $bundle/auth.json ]]; then install -m 0600 "$bundle/auth.json" "$root/state/opencode-auth/auth.json"; fi
+# Administrator-managed settings survive redeployments. Import only on first install.
+if [[ ! -f $root/state/opencode/opencode.json && ! -f $root/state/opencode/opencode.jsonc ]]; then
+  cp -a "$bundle/opencode/." "$root/state/opencode/"
+fi
+if [[ ! -f $root/state/opencode-auth/auth.json ]]; then
+  if [[ -f $bundle/auth.json ]]; then
+    install -m 0600 "$bundle/auth.json" "$root/state/opencode-auth/auth.json"
+  else
+    printf '{}\n' >"$root/state/opencode-auth/auth.json"
+    chmod 0600 "$root/state/opencode-auth/auth.json"
+  fi
+fi
 chown -R 1000:1000 "$root/state/opencode" "$root/state/opencode-auth" "$root/state/research"
 chown -R 1001:1001 "$root/state/papers"
 docker load -i "$release/images.tar"

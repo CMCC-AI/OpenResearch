@@ -125,6 +125,7 @@ test("web-managed OpenCode mounts a read-only directory for atomic updates", () 
   const configured = runtimeConfig(workspace, {
     ...env,
     MANAGED_OPENCODE_LIVE_CONFIG_DIR: "/srv/config",
+    MANAGED_OPENCODE_CONFIG_DIR: "/srv/old-seed",
     MANAGED_OPENCODE_CONFIG_FILE: "/srv/config/opencode.json",
   });
   assert(
@@ -138,6 +139,16 @@ test("web-managed OpenCode mounts a read-only directory for atomic updates", () 
     ),
   );
   assert(!configured.Env.some((value) => value.startsWith("OPENCODE_CONFIG=")));
+  assert(
+    !configured.Env.some((value) =>
+      value.startsWith("MANAGED_CONFIG_SEED_DIR="),
+    ),
+  );
+  assert(
+    !configured.HostConfig.Binds.some((bind) =>
+      bind.includes("/run/orx-seed/opencode"),
+    ),
+  );
   assert.throws(() =>
     runtimeConfig(workspace, {
       ...env,

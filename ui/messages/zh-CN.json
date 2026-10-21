@@ -1294,5 +1294,12 @@
   "storage_managed_description": "研究数据、运行日志和产物保存在服务器上。存储位置和数据迁移由平台管理员统一维护。",
   "storage_managed_admin_note": "系统管理员可查看当前目录。目录迁移仅通过服务器维护操作执行。",
   "storage_managed_unavailable": "暂时无法读取存储信息，请重试或联系平台管理员。",
-  "api_proxy_error": "请求未能完成（HTTP {status}），请重试或联系平台管理员。"
+  "api_proxy_error": "请求未能完成（HTTP {status}），请重试或联系平台管理员。",
+  "projects_delete_folder_location": "运行 MobileSci 的机器上的项目文件夹：",
+  "projects_delete_folder_option": "同时删除项目文件夹（移至恢复目录）",
+  "projects_delete_folder_recovery": "文件夹将移至同级恢复目录，内容可手动恢复；此操作不会释放磁盘空间。",
+  "projects_delete_folder_kept": "项目文件夹及其中的文件会保留。",
+  "projects_delete_github_kept": "已关联的 GitHub 仓库会保留。",
+  "projects_delete_with_folder": "删除项目及文件夹",
+  "projects_delete_recovery_path": "项目已删除。文件夹恢复路径：{path}"
 }

@@ -81,15 +81,19 @@ export function worktreeInfo(worktreeInput) {
       return split === -1 ? [line, true] : [line.slice(0, split), line.slice(split + 1)]
     })))
   const mainWorktrees = records.filter((record) => record.branch === 'refs/heads/main')
-  if (mainWorktrees.length !== 1) throw new Error('Expected exactly one worktree on refs/heads/main')
+  if (mainWorktrees.length > 1) throw new Error('Expected at most one worktree on refs/heads/main')
+  // A primary checkout can be on any branch. Keep one shared registry for its linked worktrees.
+  const commonDir = run('git', ['-C', worktreePath, 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+  const primary = records.find(record => record.worktree && path.join(record.worktree, '.git') === commonDir)
+  const registryCheckout = mainWorktrees[0]?.worktree ?? primary?.worktree ?? worktreePath
 
   return {
     worktreePath,
     manifestPath,
     worktreeKey: createHash('sha256').update(worktreePath).digest('hex').slice(0, 16),
     label: path.basename(worktreePath).replaceAll(/[^a-zA-Z0-9._-]/g, '-'),
-    mainCheckout: existsSync(mainWorktrees[0].worktree)
-      ? realpathSync(mainWorktrees[0].worktree)
+    mainCheckout: existsSync(registryCheckout)
+      ? realpathSync(registryCheckout)
       : worktreePath,
   }
 }
@@ -637,11 +641,13 @@ async function startUnlocked(info, dbMode, openBrowser) {
   uiListeners = listenerPids(slotPaths.uiPort)
   if (uiListeners.length === 0 && !supervisorMatches(state.uiProcess)) {
     console.log(`Starting ${slotPaths.slotKey} UI; log: ${state.uiLog}`)
-    state.uiProcess = spawnSupervised('pnpm', [
-      '-C', path.join(info.worktreePath, 'ui'),
-      'dev', '--port', String(slotPaths.uiPort), '--strictPort',
+    // Recent pnpm versions create a separate shell process group for scripts.
+    // Launch Vite directly so listener ownership and shutdown remain supervised.
+    state.uiProcess = spawnSupervised(process.execPath, [
+      path.join(info.worktreePath, 'ui', 'node_modules', 'vite', 'bin', 'vite.js'),
+      '--port', String(slotPaths.uiPort), '--strictPort',
     ], {
-      cwd: info.worktreePath,
+      cwd: path.join(info.worktreePath, 'ui'),
       env: { ...process.env, ORX_BACKEND: `http://127.0.0.1:${slotPaths.backendPort}` },
     }, state.uiLog)
     saveState(slotPaths, state)

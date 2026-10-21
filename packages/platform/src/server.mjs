@@ -133,6 +133,7 @@ export function configuration(env = process.env) {
   return {
     origin,
     opencodeConfigFile: env.OPENCODE_ADMIN_CONFIG_FILE || "",
+    opencodeAdminUrl: env.OPENCODE_ADMIN_URL || "",
     sendPasswordReset: resetMailer(env),
     appOrigin: appOrigin.origin,
     appEntry: `${appOrigin.origin}${appPath}`,
@@ -386,7 +387,10 @@ export async function createPlatform(
     audit,
     limit,
   });
-  const modelSettings = opencodeSettings(config.opencodeConfigFile);
+  const modelSettings = opencodeSettings(
+    config.opencodeConfigFile,
+    config.opencodeAdminUrl,
+  );
   async function adminUsers(req, res, origin, currentSession = null) {
     browserSessionOrigin(req, origin);
     res.setHeader("access-control-allow-origin", origin);

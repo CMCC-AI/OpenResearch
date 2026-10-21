@@ -81,6 +81,8 @@ enum Command {
 
     /// Coordinate expert tasks, approvals, and research evidence.
     Research(commands::research::ResearchArgs),
+    /// Read uploaded research materials in any work mode.
+    Materials(commands::materials::MaterialsArgs),
 
     /// List a project's runs.
     Runs(RunsArgs),
@@ -1253,6 +1255,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Project(_) => "project",
         Command::Agent(_) => "agent",
         Command::Research(_) => "research",
+        Command::Materials(_) => "materials",
         Command::Runs(_) => "runs",
         Command::Logs(_) => "logs",
         Command::CreateExperiment(_) => "create-experiment",
@@ -1303,6 +1306,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Project(args) => commands::project::run(args).await,
         Command::Agent(args) => commands::agent::run(args).await,
         Command::Research(args) => commands::research::run(args).await,
+        Command::Materials(args) => commands::materials::run(args).await,
         Command::Runs(args) => commands::runs::run(args).await,
         Command::Logs(args) => commands::logs::run(args).await,
         Command::CreateExperiment(args) => commands::create_experiment::run(args).await,

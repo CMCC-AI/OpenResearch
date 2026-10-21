@@ -33,7 +33,7 @@ def digest(path):
 
 def fingerprint():
     value = hashlib.sha256()
-    for name in ['Cargo.toml', 'Cargo.lock', 'build.rs', 'SYSTEM_PROMPT.md', 'SKILL.md', 'src', 'ui/src', 'ui/dist', 'linux', 'agent-skills', 'demo', 'packages/platform/Dockerfile.executor', 'packages/platform/package.json', 'packages/platform/package-lock.json', 'packages/platform/migrations', 'packages/platform/public', 'packages/platform/src', 'scripts/deploy/update-server.py', 'scripts/deploy/update-mobilesci.py', 'scripts/deploy/enable-personal-spaces.py']:
+    for name in ['Cargo.toml', 'Cargo.lock', 'build.rs', 'SYSTEM_PROMPT.md', 'SKILL.md', 'src', 'ui/src', 'ui/dist', 'linux', 'agent-skills', 'demo', 'packages/platform/Dockerfile.executor', 'packages/platform/package.json', 'packages/platform/package-lock.json', 'packages/platform/migrations', 'packages/platform/public', 'packages/platform/src', 'scripts/deploy/update-server.py', 'scripts/deploy/update-mobilesci.py', 'scripts/deploy/enable-personal-spaces.py', 'scripts/deploy/enable-opencode-admin.py']:
         path = ROOT / name
         for file in sorted(path.rglob('*') if path.is_dir() else [path]):
             if file.is_file():
@@ -84,22 +84,24 @@ def prepare(image=None):
     with tempfile.TemporaryDirectory(prefix='mobilesci-update-') as temp:
         work = Path(temp)
         if image is None:
-            archive = subprocess.check_output(['git', 'archive', 'HEAD'], cwd=ROOT)
-            # Include the current deployment Dockerfile without changing the source snapshot.
-            with tarfile.open(fileobj=io.BytesIO(archive)) as source_tar:
-                buffer = io.BytesIO()
-                with tarfile.open(fileobj=buffer, mode='w', format=tarfile.USTAR_FORMAT) as target_tar:
-                    for member in source_tar:
-                        member.pax_headers = {}
-                        if member.name == 'packages/platform/Dockerfile.executor':
-                            data = (ROOT / member.name).read_bytes()
-                            member.size = len(data)
-                            target_tar.addfile(member, io.BytesIO(data))
-                        else:
-                            target_tar.addfile(member, source_tar.extractfile(member) if member.isfile() else None)
-                archive = buffer.getvalue()
-            # Stream tracked Linux symlinks directly to Docker, including on Windows.
-            run(['docker', 'build', '--platform', 'linux/amd64', '--target', 'build', '-f', 'packages/platform/Dockerfile.executor', '-t', 'mobilesci-update-build:base', '-'], input=archive)
+            cached_build = subprocess.run(['docker', 'image', 'inspect', 'mobilesci-update-build:base'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+            if not cached_build:
+                archive = subprocess.check_output(['git', 'archive', 'HEAD'], cwd=ROOT)
+                # Include the current deployment Dockerfile without changing the source snapshot.
+                with tarfile.open(fileobj=io.BytesIO(archive)) as source_tar:
+                    buffer = io.BytesIO()
+                    with tarfile.open(fileobj=buffer, mode='w', format=tarfile.USTAR_FORMAT) as target_tar:
+                        for member in source_tar:
+                            member.pax_headers = {}
+                            if member.name == 'packages/platform/Dockerfile.executor':
+                                data = (ROOT / member.name).read_bytes()
+                                member.size = len(data)
+                                target_tar.addfile(member, io.BytesIO(data))
+                            else:
+                                target_tar.addfile(member, source_tar.extractfile(member) if member.isfile() else None)
+                    archive = buffer.getvalue()
+                # Stream tracked Linux symlinks directly to Docker, including on Windows.
+                run(['docker', 'build', '--platform', 'linux/amd64', '--target', 'build', '-f', 'packages/platform/Dockerfile.executor', '-t', 'mobilesci-update-build:base', '-'], input=archive)
             (work / 'Dockerfile').write_text('FROM mobilesci-update-build:base AS build\nCOPY src /src/src\nCOPY ui/dist /src/ui/dist\nCOPY ui/src/researchWorkflows.json /src/ui/src/researchWorkflows.json\nCOPY Cargo.toml Cargo.lock build.rs /src/\nCOPY linux /src/linux\nCOPY agent-skills /src/agent-skills\nCOPY demo /src/demo\nCOPY SYSTEM_PROMPT.md SKILL.md /src/\nRUN cargo build --release --locked\nFROM scratch\nCOPY --from=build /src/target/release/orx /orx\nCMD ["/orx"]\n')
             image = 'mobilesci-update-binary:' + source[:12]
             run(['docker', 'build', '--platform', 'linux/amd64', '-f', work / 'Dockerfile', '-t', image, ROOT])
@@ -145,6 +147,7 @@ def prepare(image=None):
             (package / service / 'Dockerfile').write_text('ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n' + copy + '\n')
         shutil.copy2(ROOT / 'scripts/deploy/update-server.py', package / 'update-server.py')
         shutil.copy2(ROOT / 'scripts/deploy/enable-personal-spaces.py', package / 'enable-personal-spaces.py')
+        shutil.copy2(ROOT / 'scripts/deploy/enable-opencode-admin.py', package / 'enable-opencode-admin.py')
         source = fingerprint()
         version = re.search(r'^version = "([^"]+)"', (ROOT / 'Cargo.toml').read_text(), re.MULTILINE).group(1)
         manifest = {'format': 1, 'architecture': 'linux/amd64', 'version': version, 'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(), 'fingerprint': source, 'files': {file.relative_to(package).as_posix(): digest(file) for file in sorted(package.rglob('*')) if file.is_file()}}
@@ -165,7 +168,7 @@ def prepare(image=None):
         return bundle
 
 
-def upload(bundle):
+def upload(bundle, unified_opencode=False):
     verify_bundle(bundle)
     sha = digest(bundle)
     remote = '/home/ubuntu/.mobilesci-updates/' + sha[:16]
@@ -194,9 +197,13 @@ if (root/'exit-code').exists() and (root/'exit-code').read_text().strip()=='0': 
 (root/'exit-code').unlink(missing_ok=True)
 with (root/'deploy.log').open('w') as log:
  code=subprocess.call(['python3','-u',str(root/'update-server.py')],stdout=log,stderr=subprocess.STDOUT)
+if code==0 and UNIFIED_OPENCODE:
+ with (root/'deploy.log').open('a') as log:
+  code=subprocess.call(['python3','-u',str(root/'enable-opencode-admin.py'),'--package',str(root),'--apply'],stdout=log,stderr=subprocess.STDOUT)
 (root/'exit-code.tmp').write_text(str(code))
 (root/'exit-code.tmp').replace(root/'exit-code')
 """
+    launcher = launcher.replace("UNIFIED_OPENCODE", repr(unified_opencode))
     # Extract first, then run detached so switching networks cannot kill a
     # container replacement midway. Re-running reattaches to the same package.
     setup = 'python3 -c ' + shlex.quote(bootstrap) + ' ' + shlex.quote(remote) + ' ' + shlex.quote(sha)
@@ -229,6 +236,7 @@ print(json.dumps({'log':text,'offset':offset,'code':int(result.read_text()) if r
 
 def main():
     parser = argparse.ArgumentParser(description='只更新 MobileSci 科研后端和前端，保留线上配置、数据库、模型凭据和文献服务。')
+    parser.add_argument('--unified-opencode', action='store_true', help='升级为官方模型配置 API，并迁移私人空间共享配置')
     parser.add_argument('--prepare-only', action='store_true', help='只准备本地更新包，不连接服务器')
     parser.add_argument('--bundle', type=Path, help='使用指定的已准备更新包')
     parser.add_argument('--workbench-image', help='从指定的本地 Linux amd64 科研镜像提取二进制')
@@ -238,7 +246,7 @@ def main():
     os.chdir(ROOT)
     bundle = args.bundle.resolve() if args.bundle else prepare(args.workbench_image)
     if not args.prepare_only:
-        upload(bundle)
+        upload(bundle, args.unified_opencode)
 
 
 if __name__ == '__main__':

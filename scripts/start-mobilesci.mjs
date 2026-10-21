@@ -131,7 +131,7 @@ async function main() {
     run('pnpm', ['--dir', 'ui', 'build'])
     const target = path.join(os.homedir(), '.local/share/openresearch-dev/cargo-target')
     const binary = path.join(target, 'debug/orx')
-    if (options.rebuild || sourceIsNewer(binary, ['src', 'agent-skills', 'Cargo.toml', 'Cargo.lock', 'build.rs'].map(file => path.join(root, file)))) {
+    if (options.rebuild || sourceIsNewer(binary, ['src', 'agent-skills', 'ui/dist', 'ui/src/researchWorkflows.json', 'Cargo.toml', 'Cargo.lock', 'build.rs'].map(file => path.join(root, file)))) {
       run('cargo', ['build', '--locked', '-j', '2'], root, { ...process.env, CARGO_TARGET_DIR: target })
     }
     const logFile = path.join(runtimeDir, 'workspace.log')

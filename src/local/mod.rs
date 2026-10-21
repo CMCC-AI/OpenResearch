@@ -28,6 +28,7 @@ pub mod latex;
 pub mod latex_templates;
 pub mod local_models;
 pub mod localrun;
+pub mod materials;
 pub mod modal;
 pub mod model;
 pub mod native_chats;

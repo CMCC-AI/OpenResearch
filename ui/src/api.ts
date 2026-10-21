@@ -463,13 +463,15 @@ export const getProjectStarterPrompts = (
     signal,
   );
 
-export const deleteProject = (projectId: string) =>
-  writeResponse(`/api/projects/${projectId}`, { method: "DELETE" }).then(async (r) => {
+export const deleteProject = (projectId: string, deleteFolder = false) =>
+  writeResponse(`/api/projects/${projectId}${deleteFolder ? "?deleteFolder=true" : ""}`, { method: "DELETE" }).then(async (r) => {
     if (!r.ok) {
       const body = await r.json().catch(() => null);
       throw new Error(body?.error ?? `delete failed (${r.status})`);
     }
+    const result = await r.json() as { ok: boolean; recoveryPath?: string | null };
     removeProject(projectId);
+    return result;
   });
 
 export const listExperiments = (projectId: string, signal?: AbortSignal) =>
@@ -2168,6 +2170,7 @@ export const retryQueuedMessage = (sessionId: string, itemId: string) =>
 
 /** A pasted image or uploaded file riding a chat message. */
 export interface ChatImageAttachment {
+  materialId?: string;
   mediaType: string;
   dataBase64: string;
   /** Original file name (uploads/drops); pasted images carry none. */
