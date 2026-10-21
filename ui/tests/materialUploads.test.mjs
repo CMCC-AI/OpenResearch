@@ -54,6 +54,19 @@ test("lost finalization response resumes a ready snapshot without rewriting file
   assert.equal(puts, 1);
 });
 
+test("upload size errors identify the failed file and retain a retryable draft", async () => {
+  let rejected = true;
+  globalThis.materialRequest = async (_url, init) => {
+    if (init?.method === "PUT" && rejected) return Response.json({ error: "请求体过大" }, { status: 413 });
+    return Response.json({ id: "pack", ready: false, files: [{}] });
+  };
+  const pending = pendingMaterials([new File(["x"], "large-paper.pdf")]);
+  await assert.rejects(prepareMaterialAttachments("p", pending), /large-paper\.pdf.*HTTP 413.*32 MiB/);
+  assert.ok(pending[0].file);
+  rejected = false;
+  assert.equal((await prepareMaterialAttachments("p", pending))[0].materialId, "pack");
+});
+
 test("directory drops drain every reader batch", async () => {
   const file = name => ({ name, isFile: true, file: cb => cb(new File(["x"], name)) });
   const batches = [[file("a.md")], [file("b.md")], []];

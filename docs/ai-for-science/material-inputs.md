@@ -19,6 +19,14 @@
 
 单文件／上传 ZIP 上限 32 MiB；解压后的单文件同样受限。单集合最多 2,000 个文件、512 MiB。ZIP 不递归展开嵌套压缩包。路径穿越、符号链接、大小写重名及文件／目录冲突拒绝导入。`.git`、`node_modules`、`__pycache__` 和系统元数据忽略。当前不上传空目录。
 
+部署时须同时更新平台网关和所有工作空间 runner／connector。平台仅对 `PUT /api/projects/:project/materials/:package/files` 放行 32 MiB；普通请求仍为 8 MiB。runner 的接收帧须容纳 32 MiB 原文经过 base64 编码后的 JSON（约 43 MiB），发送缓冲也保留相应有界空间。只更新 Rust 工作台、前端或 Nginx 的 `client_max_body_size` 不足以修复旧隧道的 8 MiB 限制；旧 runner 的 12 MiB 帧上限同样会中断上传。现有容器须应用新 runner 代码，新执行器镜像也须同步，保留 HOME 数据卷和认证配置。
+
+排查上传的 HTTP 413 时，先检查具体失败文件、平台网关和 runner 的版本，以及外层代理限制。当前文件夹按文件逐个发送，不应将整个文件夹总大小作为单次请求上限。上传失败时消息未发送、研究尚未开始；修复后可在保留材料草稿的会话重试，无需删除项目或对话。
+
+现有 MobileSci 部署可使用 `scripts/deploy/fix-material-upload.py`。在服务器准备仅含 `runner.mjs`、`tunnel.mjs` 和 `material-upload.test.mjs` 的补丁目录后，运行 `python3 fix-material-upload.py --source <补丁目录>` 先只读检查，确认后加 `--apply`。工具基于原镜像叠加两份传输模块，先在隔离容器中测试大文件完整性和普通接口上限，再检查空闲并替换平台及所有 runner；同步 provisioner 的未来镜像引用和持久化 Compose。容器配置及旧 Compose 保存到服务器用户目录的 `.mobilesci-upload-fix-*` 私有备份目录，失败自动回滚，旧容器与数据卷保留。该工具不升级 Rust 二进制、模型引擎、数据库结构或前端。
+
+2026-10-21 已部署该上传修复：平台和两个现有 runner 的模块哈希与补丁一致，两个 runner 均为 healthy，原挂载及数据卷保持一致；provisioner 和持久化 Compose 指向补丁后的未来 executor／connector 镜像。服务器隔离容器内实测 9 MiB 与 32 MiB 文件经网关及真实 runner 传输后 SHA-256 一致，普通接口超过 8 MiB 仍被拒绝；未代用户重跑科研任务。回滚目录为 `/home/ubuntu/.mobilesci-upload-fix-20261021t063147z`，其中容器配置可能包含凭据，保持私有。
+
 ## 读取契约
 
 - UTF-8 文本直接分段读取，返回行号、总行数、下一段位置；不静默截断超长行。

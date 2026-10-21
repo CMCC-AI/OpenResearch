@@ -332,7 +332,7 @@ export const searchPapers = (q: string, signal?: AbortSignal) =>
     (r) => r.papers,
   );
 
-export type LiteratureSource = "alphaxiv" | "openalex" | "biorxiv";
+export type LiteratureSource = import("./orxCommand").LitSource;
 
 export interface LiteratureHit {
   source: LiteratureSource;

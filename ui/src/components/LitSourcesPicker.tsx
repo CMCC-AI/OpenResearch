@@ -7,10 +7,10 @@ import { m } from "../paraglide/messages.js";
 // (same `/api/settings/lit-sources` endpoint the CLI enforces).
 
 import { setLitSources } from "../api";
-import { LitSourceLogo, LIT_SOURCE_NAME, type LitSource } from "./LitSourceLogo";
+import { Database, ExternalLink } from "lucide-react";
+import { literatureSources, externalLiteratureSources } from "../literatureSources";
+import { LitSourceLogo, type LitSource } from "./LitSourceLogo";
 import { MenuItem, SwitchIndicator } from "./ui";
-
-const LIT_SOURCES: LitSource[] = ["alphaxiv", "openalex", "biorxiv", "pubmed"];
 
 export function LitSourcesList() {
   const options = getLitSourcesQuery();
@@ -28,7 +28,7 @@ export function LitSourcesList() {
 
   return (
     <div className="flex flex-col">
-      {LIT_SOURCES.map((key) => {
+      {literatureSources.map(({ id: key, name }) => {
         const on = settings[key];
         return (
           <MenuItem
@@ -42,12 +42,18 @@ export function LitSourcesList() {
           >
             <span className="inline-flex items-center gap-[9px]">
               <LitSourceLogo source={key} size={16} decorative />
-              {LIT_SOURCE_NAME[key]}
+              {name}
             </span>
             <SwitchIndicator checked={on} aria-hidden="true" />
           </MenuItem>
         );
       })}
+      <div className="mt-1 flex flex-col border-t border-border pt-1">
+        {externalLiteratureSources.map(({ id, name, url }) => <a key={id} href={url} target="_blank" rel="noopener noreferrer" aria-label={`${name} 官网检索（新窗口）`} className="flex items-center justify-between gap-3 rounded-md px-2 py-2 text-sm text-text no-underline hover:bg-surface">
+          <span className="inline-flex items-center gap-2"><Database size={16} />{name}</span>
+          <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-subtext">官网检索<ExternalLink size={12} /></span>
+        </a>)}
+      </div>
     </div>
   );
 }

@@ -478,8 +478,8 @@
   background: transparent;
 }
 .new-chat-composer .composer-box {
-  min-height: 230px;
-  padding: 16px;
+  min-height: 0;
+  padding: 16px 16px 10px;
   border-color: #eaedf6;
   border-radius: 16px;
   background:
@@ -498,7 +498,7 @@
 .new-chat-composer textarea::placeholder { color: var(--workbench-blue); opacity: 1; }
 .new-chat-work-mode {
   margin-top: 6px;
-  padding-bottom: 8px;
+  padding-bottom: 10px;
   border-bottom: 1px solid var(--workbench-border);
 }
 .new-chat-work-mode > div { display: flex; align-items: center; gap: 8px; }
@@ -506,7 +506,7 @@
 .new-chat-work-mode > div > div:first-child label { gap: 4px; color: var(--text); }
 .new-chat-work-mode select { border: 0; background: transparent; padding: 2px 4px; font-size: 12px; }
 .new-chat-work-mode p { flex: 1 1 auto; min-width: 0; margin: 0; color: #757b83; font-size: 11px; line-height: 18px; }
-.new-chat-composer .composer-actions { min-height: 40px; padding: 6px 0 0; gap: 8px; }
+.new-chat-composer .composer-actions { min-height: 50px; padding: 10px 0 0; gap: 8px; }
 .new-chat-composer .send-btn { width: 40px; height: 40px; flex: 0 0 40px; border-radius: 12px; }
 .new-chat-project-picker { flex: 0 1 auto; min-width: 0; }
 .new-chat-project-picker > div { max-width: 156px; margin: 0; }

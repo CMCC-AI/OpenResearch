@@ -6792,7 +6792,7 @@ export function ChatPanel({
                   <ToggleRight size={16} />
                 </IconButton>
                 {dataSources.open && (
-                  <div className="composer-sources-menu absolute bottom-[calc(100%_+_8px)] start-0 z-50 flex min-w-55 flex-col gap-1 rounded-md border border-border bg-background p-2 shadow-dropdown">
+                  <div className="composer-sources-menu absolute bottom-[calc(100%_+_8px)] start-0 z-50 flex min-w-72 flex-col gap-1 rounded-md border border-border bg-background p-2 shadow-dropdown">
                     <span className="px-1 text-sm font-medium text-muted">{m.chat_panel_data_sources()}</span>
                     <LitSourcesList />
                   </div>

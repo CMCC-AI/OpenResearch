@@ -49,6 +49,10 @@ def configure(backup_dir=None):
     if '    location /deepxiv/' not in new:
         new=new.replace('    # MobileSci shared gateway routes',
             '    location = /deepxiv { proxy_pass http://'+host+':20281; }\n    location /deepxiv/ { proxy_pass http://'+host+':20281; }\n    # MobileSci shared gateway routes',1)
+    image_marker='# MobileSci legacy research image paths'
+    if image_marker not in new:
+        image_routes='    '+image_marker+'\n    location ^~ /research-experts/ { add_header Cache-Control "no-store" always; return 302 /mobilesci$request_uri; }\n    location ^~ /research-team/ { add_header Cache-Control "no-store" always; return 302 /mobilesci$request_uri; }\n'
+        new=new.replace('    location / { return 404; }',image_routes+'    location / { return 404; }',1)
     if new==old:
         print('CMCC MobileSci routes already configured.')
         return

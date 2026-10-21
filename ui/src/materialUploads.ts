@@ -61,8 +61,13 @@ export async function droppedMaterials(transfer: DataTransfer): Promise<Composer
 type Snapshot = { id: string; projectId: string; ready: boolean; files: { id: string; path: string; status: string; note?: string }[] };
 // Same draft retry reuses its upload; no repeated copies after a message/network failure.
 const uploads = new WeakMap<ComposerAttachment[], Map<string, { id?: string; promise?: Promise<ChatImageAttachment[]>; complete?: ChatImageAttachment[] }>>();
-async function response<T>(result: Response): Promise<T> {
-  if (!result.ok) throw new Error(`材料上传失败：${await result.text()}`);
+async function response<T>(result: Response, filename?: string): Promise<T> {
+  if (!result.ok) {
+    if (result.status === 413 && filename) {
+      throw new Error(`材料「${filename}」上传失败：服务器拒绝了文件大小（HTTP 413）。单文件支持上限为 32 MiB，请联系管理员检查服务器上传限制。`);
+    }
+    throw new Error(`材料上传失败${filename ? `（${filename}）` : ""}：${await result.text()}`);
+  }
   return result.json() as Promise<T>;
 }
 export async function prepareMaterialAttachments(projectId: string, attachments: ComposerAttachment[]): Promise<ChatImageAttachment[]> {
@@ -79,7 +84,8 @@ export async function prepareMaterialAttachments(projectId: string, attachments:
     if (!current.id) current.id = (await response<Snapshot>(await projectRequest(base, { method: "POST" }))).id;
     const previous = await response<Snapshot>(await projectRequest(`${base}/${current.id}`));
     if (!previous.ready) for (const attachment of attachments.filter(a => a.file)) {
-      await response<Snapshot>(await projectRequest(`${base}/${current.id}/files?path=${encodeURIComponent(attachment.name || attachment.file!.name)}`, { method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body: attachment.file }));
+      const filename = attachment.name || attachment.file!.name;
+      await response<Snapshot>(await projectRequest(`${base}/${current.id}/files?path=${encodeURIComponent(filename)}`, { method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body: attachment.file }), filename);
     }
     const snapshot = await response<Snapshot>(await projectRequest(`${base}/${current.id}/finalize`, { method: "POST" }));
     const legacy = attachments.filter(a => !a.file).map(a => ({ mediaType: a.mediaType, dataBase64: a.dataUrl.slice(a.dataUrl.indexOf(",") + 1), name: a.name }));

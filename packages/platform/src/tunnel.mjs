@@ -3,8 +3,25 @@ import { WebSocket } from "ws";
 import { HttpError, check } from "./security.mjs";
 
 export const MAX_BODY = 8 * 1024 * 1024;
+export const MAX_MATERIAL_UPLOAD = 32 * 1024 * 1024;
+// HTTP bodies use base64 inside a JSON frame. Reserve room for headers/path.
+export const MAX_RUNNER_FRAME =
+  Math.ceil(MAX_MATERIAL_UPLOAD / 3) * 4 + 64 * 1024;
+export const MAX_TUNNEL_BUFFER = MAX_RUNNER_FRAME + MAX_BODY;
+export function requestBodyLimit(method, path) {
+  const pathname = new URL(path, "http://localhost").pathname;
+  return method === "PUT" &&
+    /^\/api\/projects\/[a-zA-Z0-9_-]+\/materials\/[a-zA-Z0-9_-]+\/files$/.test(
+      pathname,
+    )
+    ? MAX_MATERIAL_UPLOAD
+    : MAX_BODY;
+}
 export function send(ws, message) {
-  if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > MAX_BODY) {
+  if (
+    ws.readyState !== WebSocket.OPEN ||
+    ws.bufferedAmount > MAX_TUNNEL_BUFFER
+  ) {
     ws.terminate();
     throw new Error("Tunnel unavailable or overloaded");
   }
@@ -79,7 +96,7 @@ export class Tunnel {
     this.reading++;
     let payload;
     try {
-      payload = await body(req);
+      payload = await body(req, requestBodyLimit(req.method, req.url));
     } finally {
       this.reading--;
     }

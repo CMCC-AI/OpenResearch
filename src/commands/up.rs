@@ -1485,8 +1485,8 @@ struct PaperDiscoverQ {
 
 async fn discover_papers_api(Query(q): Query<PaperDiscoverQ>) -> ApiResult {
     use crate::client::{
-        discover_openalex, discover_papers_by_keyword, LitHit, OpenAlexDiscoveryOptions,
-        PaperDiscoveryOptions, BIORXIV_SOURCE_ID,
+        discover_openalex, discover_papers_by_keyword, discover_pubmed, LitHit,
+        OpenAlexDiscoveryOptions, PaperDiscoveryOptions, PubmedDiscoveryOptions, BIORXIV_SOURCE_ID,
     };
 
     let query = q.q.trim();
@@ -1494,7 +1494,10 @@ async fn discover_papers_api(Query(q): Query<PaperDiscoverQ>) -> ApiResult {
         return Err(bad_request("query must contain 2 to 500 characters"));
     }
     let source = q.source.as_deref().unwrap_or("all");
-    if !matches!(source, "all" | "alphaxiv" | "openalex" | "biorxiv") {
+    if !matches!(
+        source,
+        "all" | "alphaxiv" | "openalex" | "biorxiv" | "pubmed"
+    ) {
         return Err(bad_request("unknown literature source"));
     }
     let limit = q.limit.unwrap_or(8).clamp(1, 25);
@@ -1503,6 +1506,7 @@ async fn discover_papers_api(Query(q): Query<PaperDiscoverQ>) -> ApiResult {
     let use_alpha = (source == "all" || source == "alphaxiv") && enabled("alphaxiv");
     let use_openalex = (source == "all" || source == "openalex") && enabled("openalex");
     let use_biorxiv = (source == "all" || source == "biorxiv") && enabled("biorxiv");
+    let use_pubmed = (source == "all" || source == "pubmed") && enabled("pubmed");
 
     let alpha = async {
         if !use_alpha {
@@ -1558,7 +1562,23 @@ async fn discover_papers_api(Query(q): Query<PaperDiscoverQ>) -> ApiResult {
         .await
     };
 
-    let (alpha_result, openalex_result, biorxiv_result) = tokio::join!(alpha, openalex, biorxiv);
+    let pubmed = async {
+        if !use_pubmed {
+            return Ok(Vec::new());
+        }
+        discover_pubmed(
+            query,
+            PubmedDiscoveryOptions {
+                limit,
+                published_after: None,
+                published_before: None,
+                prioritize: "recency",
+            },
+        )
+        .await
+    };
+    let (alpha_result, openalex_result, biorxiv_result, pubmed_result) =
+        tokio::join!(alpha, openalex, biorxiv, pubmed);
     let mut papers = Vec::new();
     let mut source_errors = Vec::new();
     for (name, selected, is_enabled, result) in [
@@ -1579,6 +1599,12 @@ async fn discover_papers_api(Query(q): Query<PaperDiscoverQ>) -> ApiResult {
             source == "all" || source == "biorxiv",
             enabled("biorxiv"),
             biorxiv_result,
+        ),
+        (
+            "pubmed",
+            source == "all" || source == "pubmed",
+            enabled("pubmed"),
+            pubmed_result,
         ),
     ] {
         if !selected {

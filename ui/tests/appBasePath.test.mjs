@@ -13,3 +13,19 @@ test('root and sibling applications retain their paths', () => {
   assert.equal(appBaseFor('/mobilesci/projects'), '/mobilesci');
   assert.equal(stripAppBase('/mobilesci/discover'), '/discover');
 });
+
+test('research image URLs respect the mounted app prefix', async () => {
+  const original = globalThis.window;
+  try {
+    for (const [pathname, prefix] of [['/projects/p', ''], ['/mobilesci/projects/p', '/mobilesci']]) {
+      globalThis.window = { location: { pathname } };
+      const { appHref } = await import(`../src/appBasePath.ts?asset-prefix=${prefix}`);
+      for (const asset of ['/research-team/team.svg', '/research-team/locate.svg', '/research-experts/as-asset-auditor.png']) {
+        assert.equal(appHref(asset), prefix + asset);
+      }
+    }
+  } finally {
+    if (original === undefined) delete globalThis.window;
+    else globalThis.window = original;
+  }
+});

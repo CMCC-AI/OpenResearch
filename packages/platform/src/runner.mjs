@@ -2,7 +2,13 @@ import { readFile, open, mkdir, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { WebSocket } from "ws";
 import { check, permitted } from "./security.mjs";
-import { MAX_BODY, decoded, send } from "./tunnel.mjs";
+import {
+  MAX_BODY,
+  MAX_RUNNER_FRAME,
+  requestBodyLimit,
+  decoded,
+  send,
+} from "./tunnel.mjs";
 import { pathToFileURL } from "node:url";
 
 // No public listener: this connector only reaches a fixed local OpenResearch instance.
@@ -36,7 +42,7 @@ export function connectRunner({
       authorization: `Bearer ${credential}`,
       host: publicOrigin.host,
     },
-    maxPayload: 12 * 1024 * 1024,
+    maxPayload: MAX_RUNNER_FRAME,
     handshakeTimeout: 10000,
     perMessageDeflate: false,
   });
@@ -87,8 +93,13 @@ export function connectRunner({
       if (msg.type === "http") {
         const controller = new AbortController();
         active.set(msg.id, controller);
-        const payload = Buffer.from(msg.body || "", "base64");
-        check(payload.length <= MAX_BODY);
+        const limit = requestBodyLimit(msg.method, target.pathname);
+        check(
+          typeof msg.body === "string" &&
+            msg.body.length <= Math.ceil(limit / 3) * 4,
+        );
+        const payload = Buffer.from(msg.body, "base64");
+        check(payload.length <= limit, 413);
         const response = await fetch(target, {
           method: msg.method,
           redirect: "manual",

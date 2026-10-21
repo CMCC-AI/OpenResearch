@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { Tunnel, MAX_BODY } from "../src/tunnel.mjs";
+import { Tunnel, MAX_TUNNEL_BUFFER } from "../src/tunnel.mjs";
 import {
   permitted,
   passwordHash,
@@ -15,7 +15,7 @@ import { configuration } from "../src/server.mjs";
 test("cancelling an overloaded stream does not crash the gateway", () => {
   const socket = new EventEmitter();
   socket.readyState = 1;
-  socket.bufferedAmount = MAX_BODY + 1;
+  socket.bufferedAmount = MAX_TUNNEL_BUFFER + 1;
   let terminated = false;
   socket.terminate = () => {
     terminated = true;

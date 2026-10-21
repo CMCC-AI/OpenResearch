@@ -1,4 +1,5 @@
 import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
+import { appHref } from "../appBasePath";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, useReactFlow, useStore, type Edge, type Node, type NodeProps } from "@xyflow/react";
@@ -15,7 +16,7 @@ function ExpertPill({ id, data, selected }: NodeProps<ExpertNode>) {
     <Handle id="up" type="target" position={Position.Top} className="opacity-0" />
     <Handle id="side-target" type="target" position={Position.Left} className="opacity-0" />
     <Handle id="side-source" type="source" position={Position.Right} className="opacity-0" />
-    <img src={`/research-experts/${data.role}.png`} alt="" className="h-9 w-9 shrink-0 rounded-full border border-border bg-background object-cover" />
+    <img src={appHref(`/research-experts/${data.role}.png`)} alt="" className="h-9 w-9 shrink-0 rounded-full border border-border bg-background object-cover" />
     <span className="min-w-0 flex-1"><strong className="block truncate text-xs text-text">{expertRoles[data.role] ?? data.role}</strong><span className="mt-0.5 block truncate text-xs">{data.label}</span></span>
     {data.state === "running" && <CircleDot size={15} className="shrink-0 text-primary" />}
     <Handle id="down" type="source" position={Position.Bottom} className="opacity-0" />
@@ -34,7 +35,7 @@ function StagePill({ id, data, selected }: NodeProps<StageNode>) {
 const nodeTypes = { expert: ExpertPill, stage: StagePill };
 function LocateCurrent({ ids }: { ids: string[] }) {
   const flow = useReactFlow();
-  return <Button size="small" className="research-team-locate" disabled={!ids.length} onClick={() => void flow.fitView({ nodes: ids.map((id) => ({ id })), padding: 0.6, maxZoom: 1, duration: 300 })}><img src="/research-team/locate.svg" alt="" width={16} height={16} />定位当前</Button>;
+  return <Button size="small" className="research-team-locate" disabled={!ids.length} onClick={() => void flow.fitView({ nodes: ids.map((id) => ({ id })), padding: 0.6, maxZoom: 1, duration: 300 })}><img src={appHref("/research-team/locate.svg")} alt="" width={16} height={16} />定位当前</Button>;
 }
 
 // Keep the first stage visible at its designed size; fitting the entire journey
@@ -86,7 +87,7 @@ export function ResearchTeamDagDialog({ study, runs, actions, onClose, onDetails
   const currentStages = study ? researchWorkflow(study).filter((stage) => stage.state === "running" || stage.state === "blocked").map((stage) => stage.title).join(" · ") : "尚未开始";
   const content = <div ref={embedded ? undefined : ref} role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-labelledby={titleId} tabIndex={-1} className={`research-team flex h-full min-h-0 w-full flex-col overflow-x-hidden overflow-y-auto bg-background text-text ${embedded ? "" : "max-h-full max-w-6xl rounded-xl border border-border shadow-elevated"}`} onClick={(event) => event.stopPropagation()}>
       <header className="research-team-header flex shrink-0 items-start justify-between gap-2 border-b border-border">
-        <div className="min-w-0"><h2 id={titleId} className="flex items-center gap-2 text-base font-normal"><span className="research-team-icon flex shrink-0 items-center justify-center"><img src="/research-team/team.svg" alt="" width={22} height={22} /></span>科研专家团 · DAG 全景</h2><p role="status" className="research-team-attention mt-4 text-sm leading-8">{study ? researchAttention(study) : "完整专家能力图 · 尚未开始研究"}</p></div>
+        <div className="min-w-0"><h2 id={titleId} className="flex items-center gap-2 text-base font-normal"><span className="research-team-icon flex shrink-0 items-center justify-center"><img src={appHref("/research-team/team.svg")} alt="" width={22} height={22} /></span>科研专家团 · DAG 全景</h2><p role="status" className="research-team-attention mt-4 text-sm leading-8">{study ? researchAttention(study) : "完整专家能力图 · 尚未开始研究"}</p></div>
         {!embedded && <IconButton data-initial-focus aria-label="关闭专家团 DAG" onClick={onClose}><X size={18} /></IconButton>}
       </header>
       <div className="research-team-stats grid shrink-0 gap-2">{[
