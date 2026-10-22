@@ -1731,7 +1731,7 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                     }
                     // Interactive prompts (permission/question) pause the turn and
                     // are handled async (emit a card, or auto-reply per mode); all
-                    // other events are message/part updates handled synchronously.
+                    // other events update parts before an awaited bounded flush.
                     if !handle_prompt_event(
                         ctx,
                         &native_id,
@@ -1740,8 +1740,9 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                         &plan_exit_calls,
                     )
                     .await?
+                        && handle_event(ctx, &native_id, &event, &mut assistant_msgs, &mut sub_sessions)
                     {
-                        handle_event(ctx, &native_id, &event, &mut assistant_msgs, &mut sub_sessions);
+                        ctx.maybe_flush_async().await;
                     }
                 }
             }
@@ -1846,18 +1847,20 @@ fn is_opencode_seed_title(title: &str) -> bool {
     title.trim_start().starts_with("New session - ")
 }
 
+/// Apply an event and report whether its owned content needs a throttled flush.
 fn handle_event(
     ctx: &mut TurnCtx,
     native_id: &str,
     event: &Value,
     assistant_msgs: &mut HashSet<String>,
     sub_sessions: &mut HashMap<String, String>,
-) {
+) -> bool {
+    let mut flush = false;
     let props = event.get("properties").unwrap_or(&Value::Null);
     match event.get("type").and_then(Value::as_str) {
         Some("session.status") => {
             if props.get("sessionID").and_then(Value::as_str) != Some(native_id) {
-                return;
+                return flush;
             }
             let status = props.get("status").unwrap_or(&Value::Null);
             let status_type = status.get("type").and_then(Value::as_str);
@@ -1885,7 +1888,7 @@ fn handle_event(
         }
         Some("session.error") => {
             if props.get("sessionID").and_then(Value::as_str) != Some(native_id) {
-                return;
+                return flush;
             }
             // OpenCode can emit this before recovering through automatic compaction.
             ctx.mark_delivery(DeliveryState::Accepted);
@@ -2011,23 +2014,23 @@ fn handle_event(
                     if let Some(mut wire) = to_wire_part(part) {
                         wire.id = format!("{spawn}:{}", wire.id);
                         ctx.upsert_child(&spawn, wire);
-                        ctx.maybe_flush();
+                        flush = true;
                     }
                 }
-                return;
+                return flush;
             }
             if session != Some(native_id) || !owned_by_assistant {
-                return;
+                return flush;
             }
             if part.get("type").and_then(Value::as_str) == Some("step-finish")
                 && part.get("reason").and_then(Value::as_str) == Some("stop")
             {
                 ctx.mark_final_text_tail();
-                ctx.maybe_flush();
+                flush = true;
             }
             if let Some(wire) = to_wire_part(part) {
                 ctx.upsert_part(wire);
-                ctx.maybe_flush();
+                flush = true;
             }
         }
         Some("message.part.delta") => {
@@ -2037,14 +2040,14 @@ fn handle_event(
                     .and_then(Value::as_str)
                     .is_some_and(|id| assistant_msgs.contains(id))
             {
-                return;
+                return flush;
             }
             let session = props.get("sessionID").and_then(Value::as_str);
             let (Some(part_id), Some(delta)) = (
                 props.get("partID").and_then(Value::as_str),
                 props.get("delta").and_then(Value::as_str),
             ) else {
-                return;
+                return flush;
             };
             // Route a sub-agent's text delta into the owning task row's child.
             if let Some(spawn) = session.and_then(|s| sub_sessions.get(s)).cloned() {
@@ -2052,14 +2055,14 @@ fn handle_event(
                 ctx.append_child_text(&spawn, &child_id, delta, || {
                     WirePart::text(child_id.clone(), "")
                 });
-                ctx.maybe_flush();
-                return;
+                flush = true;
+                return flush;
             }
             if session != Some(native_id) {
-                return;
+                return flush;
             }
             ctx.append_part_text(part_id, delta);
-            ctx.maybe_flush();
+            flush = true;
         }
         Some("session.updated") => {
             // Adopt opencode's auto-generated titles. The creation seed arrives
@@ -2079,6 +2082,7 @@ fn handle_event(
         }
         _ => {}
     }
+    flush
 }
 
 /// Surface a prompt card and flush it so it renders immediately (before the
@@ -2313,6 +2317,45 @@ opencode/unknown
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "opencode/free");
         assert_eq!(parse_verbose_models(catalog).len(), 4);
+    }
+
+    #[test]
+    fn only_owned_content_events_request_an_event_flush() {
+        let mut ctx = TurnCtx::test_stub();
+        let mut messages = HashSet::from(["message".to_string()]);
+        let mut sessions = HashMap::new();
+        let event = json!({"type":"message.part.updated","properties":{"part":{"id":"text","messageID":"message","sessionID":"session","type":"text","text":"one"}}});
+        assert!(handle_event(
+            &mut ctx,
+            "session",
+            &event,
+            &mut messages,
+            &mut sessions
+        ));
+        assert_eq!(ctx.assistant.parts[0].text.as_deref(), Some("one"));
+        let delta = json!({"type":"message.part.delta","properties":{"partID":"text","messageID":"message","sessionID":"session","field":"text","delta":" two"}});
+        assert!(handle_event(
+            &mut ctx,
+            "session",
+            &delta,
+            &mut messages,
+            &mut sessions
+        ));
+        assert_eq!(ctx.assistant.parts[0].text.as_deref(), Some("one two"));
+        assert!(!handle_event(
+            &mut ctx,
+            "foreign",
+            &delta,
+            &mut messages,
+            &mut sessions
+        ));
+        assert!(!handle_event(
+            &mut ctx,
+            "session",
+            &json!({"type":"unknown"}),
+            &mut messages,
+            &mut sessions
+        ));
     }
 
     #[test]

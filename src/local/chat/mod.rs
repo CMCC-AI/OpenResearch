@@ -7927,9 +7927,54 @@ impl TurnCtx {
         {
             return Ok(());
         }
+        self.flush_async_with_store(true, open).await
+    }
+
+    /// Preserve the broadcast/persistence cadence of `maybe_flush`, while
+    /// keeping event-driven database work off the async worker as well.
+    pub(crate) async fn maybe_flush_async(&mut self) {
+        let _ = self.maybe_flush_async_with_store(Store::open).await;
+    }
+
+    async fn maybe_flush_async_with_store(
+        &mut self,
+        open: impl FnOnce() -> Result<Store> + Send + 'static,
+    ) -> Result<()> {
+        let tool_states = tool_state_signature(&self.assistant.parts);
+        let unattempted_state = tool_states != self.last_flushed_tool_states
+            && tool_states != self.last_attempted_tool_states;
+        if unattempted_state || self.last_flush.elapsed() >= FLUSH_INTERVAL {
+            self.last_attempted_tool_states = tool_states;
+            self.flush_async_with_store(false, open).await?;
+        }
+        Ok(())
+    }
+
+    async fn flush_async_with_store(
+        &mut self,
+        force: bool,
+        open: impl FnOnce() -> Result<Store> + Send + 'static,
+    ) -> Result<()> {
         self.last_flush = Instant::now();
+        if self.assistant.parts.is_empty() {
+            return Ok(());
+        }
         self.apply_target_events();
         cap_tool_parts(&mut self.assistant.parts);
+        let has_prompt = self
+            .assistant
+            .parts
+            .iter()
+            .any(|part| part.prompt.is_some());
+        if !force && !has_prompt && self.last_persist.elapsed() < CHECKPOINT_INTERVAL {
+            self.host.emit(
+                "chat.message",
+                message_json(&self.assistant, &self.session_id),
+            );
+            self.last_flushed_tool_states = tool_state_signature(&self.assistant.parts);
+            self.last_attempted_tool_states = self.last_flushed_tool_states.clone();
+            return Ok(());
+        }
         let mut assistant = self.assistant.clone();
         let host = self.host.clone();
         let session_id = self.session_id.clone();
@@ -12183,6 +12228,182 @@ mod checkpoint_tests {
             },
         );
         (dir, store, ctx)
+    }
+
+    #[tokio::test]
+    async fn event_flush_preserves_cadence_tail_and_final_order() {
+        let (dir, store, mut ctx) = checkpoint_fixture();
+        let mut events = ctx.host.subscribe();
+        let root = dir.clone();
+        ctx.maybe_flush_async_with_store(move || Store::open_at(root))
+            .await
+            .unwrap();
+        assert_eq!(ctx.assistant.parent_id.as_deref(), Some("user"));
+        let (_, first) = events.try_recv().unwrap();
+        assert_eq!(first["message"]["parts"][0]["text"], "first");
+        ctx.assistant.parts[0].text = Some("latest delta".into());
+        ctx.maybe_flush_async_with_store(|| panic!("75ms throttle must not open storage"))
+            .await
+            .unwrap();
+        assert!(events.try_recv().is_err());
+        ctx.last_flush = Instant::now() - FLUSH_INTERVAL;
+        ctx.maybe_flush_async_with_store(|| panic!("broadcast-only delta must not open storage"))
+            .await
+            .unwrap();
+        let (_, delta) = events.try_recv().unwrap();
+        assert_eq!(delta["message"]["parts"][0]["text"], "latest delta");
+        assert!(store
+            .get_chat_message("assistant")
+            .unwrap()
+            .unwrap()
+            .parts_json
+            .contains("first"));
+        ctx.last_flush = Instant::now() - FLUSH_INTERVAL;
+        ctx.last_persist = Instant::now() - CHECKPOINT_INTERVAL;
+        let acknowledged = ctx.last_persisted_snapshot.clone();
+        assert!(ctx
+            .maybe_flush_async_with_store(|| Err(anyhow!("injected event write failure")))
+            .await
+            .is_err());
+        assert_eq!(ctx.last_persisted_snapshot, acknowledged);
+        let root = dir.clone();
+        ctx.checkpoint_async_with_store(move || Store::open_at(root))
+            .await
+            .unwrap();
+        assert!(store
+            .get_chat_message("assistant")
+            .unwrap()
+            .unwrap()
+            .parts_json
+            .contains("latest delta"));
+        assert!(store.complete_chat_turn("turn").unwrap());
+        ctx.assistant.parts[0].text = Some("final answer".into());
+        ctx.assistant.completed_at = Some(9);
+        ctx.flush_with_store(true, || Store::open_at(dir.clone()))
+            .unwrap();
+        let saved = store.get_chat_message("assistant").unwrap().unwrap();
+        assert!(saved.parts_json.contains("final answer"));
+        assert_eq!(saved.completed_at, Some(9));
+        assert_eq!(saved.parent_id.as_deref(), Some("user"));
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn event_flush_keeps_prompt_echo_without_waiting_for_checkpoint() {
+        let (dir, store, mut ctx) = checkpoint_fixture();
+        ctx.assistant.parts[0].prompt = Some(
+            serde_json::from_value(json!({"kind":"permission", "resolved":true, "approved":true}))
+                .unwrap(),
+        );
+        ctx.flush_with_store(true, || Store::open_at(dir.clone()))
+            .unwrap();
+        ctx.assistant.parts[0].prompt =
+            Some(serde_json::from_value(json!({"kind":"permission"})).unwrap());
+        ctx.last_flush = Instant::now() - FLUSH_INTERVAL;
+        let root = dir.clone();
+        ctx.maybe_flush_async_with_store(move || Store::open_at(root))
+            .await
+            .unwrap();
+        let saved = stored_to_wire(&store.get_chat_message("assistant").unwrap().unwrap());
+        assert!(saved.parts[0].prompt.as_ref().unwrap().resolved);
+        assert_eq!(saved.parts[0].prompt.as_ref().unwrap().approved, Some(true));
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "synthetic concurrent storage benchmark; run explicitly with --ignored --nocapture"]
+    async fn event_storage_contention_benchmark() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        const CONCURRENT: usize = 16;
+        fn percentile(values: &mut [f64], p: f64) -> f64 {
+            values.sort_by(f64::total_cmp);
+            values[((values.len() as f64 * p).ceil() as usize)
+                .saturating_sub(1)
+                .min(values.len() - 1)]
+        }
+        for offload in [false, true] {
+            let fixtures: Vec<_> = (0..CONCURRENT)
+                .map(|_| {
+                    let (dir, store, mut ctx) = checkpoint_fixture();
+                    ctx.assistant.parts[0].text = Some("x".repeat(65536));
+                    drop(store);
+                    (dir, ctx)
+                })
+                .collect();
+            let gate = Arc::new(tokio::sync::Barrier::new(CONCURRENT + 1));
+            let done = Arc::new(AtomicBool::new(false));
+            let heartbeat_done = done.clone();
+            let (ready, heartbeat_ready) = tokio::sync::oneshot::channel();
+            let heartbeat = tokio::spawn(async move {
+                let step = Duration::from_millis(5);
+                let mut next = tokio::time::Instant::now() + step;
+                let mut delays = Vec::new();
+                let _ = ready.send(());
+                loop {
+                    tokio::time::sleep_until(next).await;
+                    let observed = tokio::time::Instant::now();
+                    while next <= observed {
+                        delays.push((observed - next).as_secs_f64() * 1000.0);
+                        next += step;
+                    }
+                    if heartbeat_done.load(Ordering::SeqCst) {
+                        break;
+                    }
+                }
+                delays
+            });
+            heartbeat_ready.await.unwrap();
+            let active = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+            let started = Instant::now();
+            let mut workers = tokio::task::JoinSet::new();
+            for (dir, mut ctx) in fixtures {
+                let gate = gate.clone();
+                let active = active.clone();
+                let peak = peak.clone();
+                workers.spawn(async move {
+                    gate.wait().await;
+                    let root = dir.clone();
+                    let open = move || {
+                        let n = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(n, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(20));
+                        let result = Store::open_at(root);
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        result
+                    };
+                    if offload {
+                        ctx.maybe_flush_async_with_store(open).await.unwrap();
+                    } else {
+                        ctx.flush_with_store(false, open).unwrap();
+                    }
+                    (dir, ctx, started.elapsed().as_secs_f64() * 1000.0)
+                });
+            }
+            gate.wait().await;
+            let mut completed = Vec::new();
+            while let Some(result) = workers.join_next().await {
+                completed.push(result.unwrap());
+            }
+            let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+            done.store(true, Ordering::SeqCst);
+            let mut delays = heartbeat.await.unwrap();
+            let mut latencies: Vec<_> = completed.iter().map(|(_, _, ms)| *ms).collect();
+            eprintln!("event_storage mode={} concurrent={} text_bytes=65536 injected_open_ms=20 total_ms={total_ms:.3} completion_p50_ms={:.3} completion_p95_ms={:.3} completion_p99_ms={:.3} heartbeat_samples={} heartbeat_p50_ms={:.3} heartbeat_p95_ms={:.3} heartbeat_p99_ms={:.3} peak_open={}", if offload {"bounded_async"} else {"synchronous"}, CONCURRENT, percentile(&mut latencies,0.50),percentile(&mut latencies,0.95),percentile(&mut latencies,0.99),delays.len(),percentile(&mut delays,0.50),percentile(&mut delays,0.95),percentile(&mut delays,0.99),peak.load(Ordering::SeqCst));
+            for (dir, ctx, _) in completed {
+                let store = Store::open_at(dir.clone()).unwrap();
+                let saved = stored_to_wire(&store.get_chat_message("assistant").unwrap().unwrap());
+                assert_eq!(saved.parts[0].text.as_ref().unwrap().len(), 65536);
+                assert_eq!(saved.parent_id.as_deref(), Some("user"));
+                drop(store);
+                drop(ctx);
+                std::fs::remove_dir_all(dir).unwrap();
+            }
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
