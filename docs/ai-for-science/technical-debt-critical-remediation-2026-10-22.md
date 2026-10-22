@@ -57,3 +57,25 @@ PDF 解析器补齐支持 `--pdf-debs <目录>`：在本地 Debian bookworm amd6
 3. 从干净候选生成更新包和 evidence；`python scripts/deploy/update-mobilesci.py --bundle <包> --evidence <证据>` 才允许进入上传。私人运行环境需同时使用已核对的迁移/分发流程更新，不能只更新主工作台。
 4. 空闲检查、数据库备份/迁移演练、替换项目服务、健康与权限验证；保留上一版本和备份，迁移后的数据库不能盲目降级。
 5. 按用户“操作前确认范围”的要求，预览并确认具体清理目标；仅在部署验收成功后应用，不运行全局 Docker prune、不清空系统临时目录、不删除数据库/材料/研究产物/凭据/回滚元数据。
+
+## 实际发布结果
+
+本轮代码已按顺序提交并推送至 `origin/feat/ai4s-product`：`e9fb478`（关键修复）、`319c945`（UTF-8 打包）、`dadd9ea`（运行镜像 PDF 解析器）、`4aa886d`（离线依赖）。实际部署候选为 `4aa886d6853b4adb6604eb292c1d48c89db23c8a`；本节后续文档提交不改变线上代码候选。
+
+- 更新包：`20261022T021504Z-807c027b9b25.tgz`，SHA256 `70b2c10f14003aa33f6325d83e150b6f502d862cfc4e08c87c80740e029f1968`；证据目录 `.mobilesci-run/technical-debt/release-4aa886d/`。原在线依赖构建在替换服务前安全停止，离线候选重新经过包和证据校验后发布，未改写已校验的旧包。
+- 主工作台/平台备份与回滚元数据：`/home/ubuntu/.mobilesci-sidebar-upgrade-20261022T021619Z/`；私人执行环境备份与回滚记录：`/home/ubuntu/.mobilesci-opencode-upgrade-20261022T022039Z/`；runner 分发记录：`/home/ubuntu/.mobilesci-upload-fix-20261022t022502z/`。上述备份全部保留。
+- 主工作台、平台、provisioner、两个私人 executor 和一个 connector 已验收；未来 executor/connector 镜像已同步 runner 三模块，核对 Node >=22.20 与 `node:sqlite` 可用。runner 分发在服务器候选镜像上执行上传回归 2 项，全部通过。
+- 最终核对平台/UI 661 个文件、主/私人/未来执行器二进制与 runner 哈希；在主工作台、私人及未来 executor 镜像实际提取合成 PDF 文本，全部通过。三个私人环境的数据挂载与分发前一致。
+- systemd、公开研究入口、既有文献入口、匿名访问拒绝、既有管理员登录及认证后的研究 API 全部通过；验收仅退出本次会话，密码始终留在服务器。日志：`deploy-offline-final.log`、`runner-final-deploy.log`、`server-final-acceptance.log`。
+- 部署验收成功后，依用户明确批准，仅删除 `/home/ubuntu/.mobilesci-updates/0688c64b05b607e8/bundle.tgz`，复核目录、资格、inode、时间、大小及 SHA256 后释放 `23,873,425` bytes（约 22.8 MiB）。结果见 `approved-cleanup-result.log`。没有执行其他归档、日志、缓存、数据或 Docker 资源清理，其他项目未纳入改动范围。
+
+| 问题 | 本轮结果 | 剩余边界 |
+| --- | --- | --- |
+| 静默期间消息尾部丢失、失败重试 | 已修复并上线 | 磁盘故障和长期压力场景继续验证 |
+| 材料配额临时峰值、中断原件恢复 | 已修复并上线 | 异常旧包完整恢复治理仍需专门方案 |
+| 无证据部署、旧包/私人运行代码漂移 | 已接入门禁并核验现有及未来镜像 | 后续发布继续使用同一证据流程 |
+| 缺少 PDF 解析运行依赖、服务器下载阻塞 | 已随包离线安装并实际解析验收 | OCR 尚不在本次范围 |
+| 同步文件操作影响异步请求 | upload/finalize 已隔离并上线 | 聊天同步持久化进一步治理列为 P2 |
+| runner 分发与 Node 约束文档缺失 | 已补齐并实测分发 | 新版本持续保留版本与模块哈希核验 |
+
+后续按以下顺序另开小批次，避免阻塞当前改造：首先补磁盘写满/进程中断故障注入和持久化延迟指标，再完成材料与研究 DTO 生成/漂移门禁，最后按领域拆分聊天/API 大模块。KaTeX low 单独做渲染升级验证；glib 风险在 Linux 桌面发行前复评。伴随服务 #717 继续记录为范围外待办。未调用付费模型，本轮结果不代表已完成真实模型研究全流程验收。
