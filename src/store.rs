@@ -503,6 +503,157 @@ fn migrate_chat_spawns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Recheck current rows on every open: older writers/imports may introduce
+/// retired values after initial migration. A clean store only needs reads;
+/// do not take SQLite's writer lock for dozens of no-op UPDATEs.
+fn normalize_permission_modes(conn: &Connection) -> Result<()> {
+    // Keep these accepted values aligned with the conversions below. NULL
+    // session modes are normalized; NULL preference modes remain unchanged.
+    let needed: bool = conn.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM ui_state WHERE id = 1)
+         OR EXISTS(SELECT 1 FROM chat_sessions WHERE
+           (harness = 'claude-code' AND (permission_mode IS NULL OR permission_mode NOT IN ('manual','acceptEdits','plan','auto','bypassPermissions')))
+           OR (harness = 'codex' AND (permission_mode IS NULL OR permission_mode NOT IN ('ask','approve-for-me','full-access')))
+           OR (harness = 'opencode' AND (permission_mode IS NULL OR permission_mode NOT IN ('default','auto-approve'))))
+         OR EXISTS(SELECT 1 FROM ui_state WHERE
+           (preferred_harness = 'claude-code' AND preferred_permission_mode NOT IN ('manual','acceptEdits','auto','bypassPermissions'))
+           OR (preferred_harness = 'codex' AND preferred_permission_mode NOT IN ('ask','approve-for-me','full-access'))
+           OR (preferred_harness = 'opencode' AND preferred_permission_mode NOT IN ('default','auto-approve')))",
+        [], |row| row.get(0),
+    )?;
+    if !needed {
+        return Ok(());
+    }
+    // Provider-owned permission ids + the independent Codex/OpenCode Plan
+    // axis. These updates are idempotent and intentionally do not touch
+    // Claude's native `plan`, Manual, or Accept edits modes.
+    let _ = conn.execute(
+        "UPDATE chat_sessions
+         SET plan_mode = 1, permission_mode = 'ask'
+         WHERE harness = 'codex' AND permission_mode = 'plan'",
+        [],
+    );
+    let _ = conn.execute(
+        "UPDATE chat_sessions
+         SET plan_mode = 1, permission_mode = 'default'
+         WHERE harness = 'opencode' AND permission_mode = 'plan'",
+        [],
+    );
+    for (harness, old, new) in [
+        ("claude-code", "ask", "manual"),
+        ("claude-code", "default", "manual"),
+        ("claude-code", "accept-edits", "acceptEdits"),
+        ("claude-code", "bypass", "bypassPermissions"),
+        ("codex", "auto", "approve-for-me"),
+        ("codex", "bypass", "full-access"),
+        ("codex", "accept-edits", "ask"),
+        ("codex", "acceptEdits", "ask"),
+        ("opencode", "auto", "default"),
+        ("opencode", "bypass", "auto-approve"),
+        ("opencode", "ask", "default"),
+        ("opencode", "accept-edits", "default"),
+        ("opencode", "acceptEdits", "default"),
+    ] {
+        let _ = conn.execute(
+            "UPDATE chat_sessions SET permission_mode = ?3
+             WHERE harness = ?1 AND permission_mode = ?2",
+            params![harness, old, new],
+        );
+    }
+    let _ = conn.execute(
+        "UPDATE chat_sessions SET permission_mode = 'auto'
+         WHERE harness = 'claude-code'
+           AND (permission_mode IS NULL OR permission_mode NOT IN
+                ('manual', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'))",
+        [],
+    );
+    let _ = conn.execute(
+        "UPDATE chat_sessions SET permission_mode = 'approve-for-me'
+         WHERE harness = 'codex'
+           AND (permission_mode IS NULL OR permission_mode NOT IN
+                ('ask', 'approve-for-me', 'full-access'))",
+        [],
+    );
+    let _ = conn.execute(
+        "UPDATE chat_sessions SET permission_mode = 'default'
+         WHERE harness = 'opencode'
+           AND (permission_mode IS NULL OR permission_mode NOT IN
+                ('default', 'auto-approve'))",
+        [],
+    );
+    // Seed before normalizing preferences: on the first open of an older
+    // database the latest session may itself carry a retired mode or Plan.
+    conn.execute(
+        "INSERT OR IGNORE INTO ui_state (
+             id, onboarding_completed, tour_completed,
+             preferred_harness, preferred_model,
+             preferred_service_tier, preferred_permission_mode, preferred_reasoning_level
+         )
+         SELECT 1,
+                EXISTS(SELECT 1 FROM local_projects),
+                EXISTS(SELECT 1 FROM local_projects),
+                harness, model, service_tier, permission_mode, reasoning_level
+         FROM (SELECT 1) seed
+         LEFT JOIN chat_sessions ON chat_sessions.id = (
+             SELECT id FROM chat_sessions ORDER BY updated_at DESC LIMIT 1
+         )",
+        [],
+    )?;
+    // Preferred-agent state never carries Plan for command-activated
+    // harnesses: new sessions start in Build/Default until `/plan` is used.
+    let _ = conn.execute(
+        "UPDATE ui_state SET preferred_permission_mode = 'ask'
+         WHERE preferred_harness = 'codex' AND preferred_permission_mode = 'plan'",
+        [],
+    );
+    let _ = conn.execute(
+        "UPDATE ui_state SET preferred_permission_mode = 'default'
+         WHERE preferred_harness = 'opencode' AND preferred_permission_mode = 'plan'",
+        [],
+    );
+    let _ = conn.execute(
+        "UPDATE ui_state SET preferred_permission_mode = 'auto'
+         WHERE preferred_harness = 'claude-code' AND preferred_permission_mode = 'plan'",
+        [],
+    );
+    for (harness, old, new) in [
+        ("claude-code", "ask", "manual"),
+        ("claude-code", "default", "manual"),
+        ("claude-code", "accept-edits", "acceptEdits"),
+        ("claude-code", "bypass", "bypassPermissions"),
+        ("codex", "auto", "approve-for-me"),
+        ("codex", "bypass", "full-access"),
+        ("opencode", "auto", "default"),
+        ("opencode", "bypass", "auto-approve"),
+    ] {
+        let _ = conn.execute(
+            "UPDATE ui_state SET preferred_permission_mode = ?3
+             WHERE preferred_harness = ?1 AND preferred_permission_mode = ?2",
+            params![harness, old, new],
+        );
+    }
+    let _ = conn.execute(
+        "UPDATE ui_state SET preferred_permission_mode = 'auto'
+         WHERE preferred_harness = 'claude-code'
+           AND preferred_permission_mode NOT IN
+               ('manual', 'acceptEdits', 'plan', 'auto', 'bypassPermissions')",
+        [],
+    );
+    let _ = conn.execute(
+        "UPDATE ui_state SET preferred_permission_mode = 'approve-for-me'
+         WHERE preferred_harness = 'codex'
+           AND preferred_permission_mode NOT IN ('ask', 'approve-for-me', 'full-access')",
+        [],
+    );
+    let _ = conn.execute(
+        "UPDATE ui_state SET preferred_permission_mode = 'default'
+         WHERE preferred_harness = 'opencode'
+           AND preferred_permission_mode NOT IN ('default', 'auto-approve')",
+        [],
+    );
+    Ok(())
+}
+
 /// Default wait for ordinary SQLite writer contention.
 pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_millis(5000);
 
@@ -558,11 +709,21 @@ impl Store {
         data_dir_move_lock_path: PathBuf,
         busy_timeout: Duration,
     ) -> Result<Self> {
+        Self::open_profiled(dir, data_dir_move_lock_path, busy_timeout, |_| {})
+    }
+
+    fn open_profiled(
+        dir: PathBuf,
+        data_dir_move_lock_path: PathBuf,
+        busy_timeout: Duration,
+        mut phase: impl FnMut(&'static str),
+    ) -> Result<Self> {
         std::fs::create_dir_all(dir.join("run-logs"))
             .map_err(|e| anyhow!("Could not create {}: {}", dir.display(), e))?;
         let conn = Connection::open(dir.join("orx.db"))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "busy_timeout", busy_timeout.as_millis() as u64)?;
+        phase("connection");
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS runs (
                 id           TEXT PRIMARY KEY,
@@ -786,6 +947,7 @@ impl Store {
             );",
         )?;
         // Keep this applied batch immutable; future columns require a new migration.
+        phase("tables");
         schema::migrate_columns(&conn, "legacy-columns-v1", &[
             "ALTER TABLE native_invocation_identities ADD COLUMN session_id TEXT",
             "ALTER TABLE native_invocation_identities ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0",
@@ -837,6 +999,7 @@ impl Store {
             "persistent-side-chats-v1",
             &["ALTER TABLE chat_sessions ADD COLUMN side_parent_leaf_id TEXT"],
         )?;
+        phase("columns");
         conn.execute_batch("CREATE TRIGGER IF NOT EXISTS delete_chat_invocation_identities AFTER DELETE ON chat_sessions BEGIN DELETE FROM native_invocation_identities WHERE session_id = OLD.id; END;")?;
         conn.execute(
             "DELETE FROM native_invocation_identities WHERE session_id IS NULL AND created_at < ?1",
@@ -848,6 +1011,7 @@ impl Store {
              WHERE reachable = 1 AND tools_found = 0 AND missing_tools = ''",
             [],
         )?;
+        phase("cleanup");
         // Chat messages became a tree (forked turns). Legacy rows are one linear
         // chain each; after this a NULL parent_id genuinely means "branch root".
         // All-or-nothing, because a half-applied backfill that still bumped the
@@ -892,133 +1056,7 @@ impl Store {
             "DROP INDEX IF EXISTS uidx_local_experiments_project_baseline",
             [],
         );
-        // Provider-owned permission ids + the independent Codex/OpenCode Plan
-        // axis. These updates are idempotent and intentionally do not touch
-        // Claude's native `plan`, Manual, or Accept edits modes.
-        let _ = conn.execute(
-            "UPDATE chat_sessions
-             SET plan_mode = 1, permission_mode = 'ask'
-             WHERE harness = 'codex' AND permission_mode = 'plan'",
-            [],
-        );
-        let _ = conn.execute(
-            "UPDATE chat_sessions
-             SET plan_mode = 1, permission_mode = 'default'
-             WHERE harness = 'opencode' AND permission_mode = 'plan'",
-            [],
-        );
-        for (harness, old, new) in [
-            ("claude-code", "ask", "manual"),
-            ("claude-code", "default", "manual"),
-            ("claude-code", "accept-edits", "acceptEdits"),
-            ("claude-code", "bypass", "bypassPermissions"),
-            ("codex", "auto", "approve-for-me"),
-            ("codex", "bypass", "full-access"),
-            ("codex", "accept-edits", "ask"),
-            ("codex", "acceptEdits", "ask"),
-            ("opencode", "auto", "default"),
-            ("opencode", "bypass", "auto-approve"),
-            ("opencode", "ask", "default"),
-            ("opencode", "accept-edits", "default"),
-            ("opencode", "acceptEdits", "default"),
-        ] {
-            let _ = conn.execute(
-                "UPDATE chat_sessions SET permission_mode = ?3
-                 WHERE harness = ?1 AND permission_mode = ?2",
-                params![harness, old, new],
-            );
-        }
-        let _ = conn.execute(
-            "UPDATE chat_sessions SET permission_mode = 'auto'
-             WHERE harness = 'claude-code'
-               AND (permission_mode IS NULL OR permission_mode NOT IN
-                    ('manual', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'))",
-            [],
-        );
-        let _ = conn.execute(
-            "UPDATE chat_sessions SET permission_mode = 'approve-for-me'
-             WHERE harness = 'codex'
-               AND (permission_mode IS NULL OR permission_mode NOT IN
-                    ('ask', 'approve-for-me', 'full-access'))",
-            [],
-        );
-        let _ = conn.execute(
-            "UPDATE chat_sessions SET permission_mode = 'default'
-             WHERE harness = 'opencode'
-               AND (permission_mode IS NULL OR permission_mode NOT IN
-                    ('default', 'auto-approve'))",
-            [],
-        );
-        // Seed before normalizing preferences: on the first open of an older
-        // database the latest session may itself carry a retired mode or Plan.
-        conn.execute(
-            "INSERT OR IGNORE INTO ui_state (
-                 id, onboarding_completed, tour_completed,
-                 preferred_harness, preferred_model,
-                 preferred_service_tier, preferred_permission_mode, preferred_reasoning_level
-             )
-             SELECT 1,
-                    EXISTS(SELECT 1 FROM local_projects),
-                    EXISTS(SELECT 1 FROM local_projects),
-                    harness, model, service_tier, permission_mode, reasoning_level
-             FROM (SELECT 1) seed
-             LEFT JOIN chat_sessions ON chat_sessions.id = (
-                 SELECT id FROM chat_sessions ORDER BY updated_at DESC LIMIT 1
-             )",
-            [],
-        )?;
-        // Preferred-agent state never carries Plan for command-activated
-        // harnesses: new sessions start in Build/Default until `/plan` is used.
-        let _ = conn.execute(
-            "UPDATE ui_state SET preferred_permission_mode = 'ask'
-             WHERE preferred_harness = 'codex' AND preferred_permission_mode = 'plan'",
-            [],
-        );
-        let _ = conn.execute(
-            "UPDATE ui_state SET preferred_permission_mode = 'default'
-             WHERE preferred_harness = 'opencode' AND preferred_permission_mode = 'plan'",
-            [],
-        );
-        let _ = conn.execute(
-            "UPDATE ui_state SET preferred_permission_mode = 'auto'
-             WHERE preferred_harness = 'claude-code' AND preferred_permission_mode = 'plan'",
-            [],
-        );
-        for (harness, old, new) in [
-            ("claude-code", "ask", "manual"),
-            ("claude-code", "default", "manual"),
-            ("claude-code", "accept-edits", "acceptEdits"),
-            ("claude-code", "bypass", "bypassPermissions"),
-            ("codex", "auto", "approve-for-me"),
-            ("codex", "bypass", "full-access"),
-            ("opencode", "auto", "default"),
-            ("opencode", "bypass", "auto-approve"),
-        ] {
-            let _ = conn.execute(
-                "UPDATE ui_state SET preferred_permission_mode = ?3
-                 WHERE preferred_harness = ?1 AND preferred_permission_mode = ?2",
-                params![harness, old, new],
-            );
-        }
-        let _ = conn.execute(
-            "UPDATE ui_state SET preferred_permission_mode = 'auto'
-             WHERE preferred_harness = 'claude-code'
-               AND preferred_permission_mode NOT IN
-                   ('manual', 'acceptEdits', 'plan', 'auto', 'bypassPermissions')",
-            [],
-        );
-        let _ = conn.execute(
-            "UPDATE ui_state SET preferred_permission_mode = 'approve-for-me'
-             WHERE preferred_harness = 'codex'
-               AND preferred_permission_mode NOT IN ('ask', 'approve-for-me', 'full-access')",
-            [],
-        );
-        let _ = conn.execute(
-            "UPDATE ui_state SET preferred_permission_mode = 'default'
-             WHERE preferred_harness = 'opencode'
-               AND preferred_permission_mode NOT IN ('default', 'auto-approve')",
-            [],
-        );
+        normalize_permission_modes(&conn)?;
         // NOTE: `reasoning_level` deliberately has NO migration for issue #123,
         // unlike the permission modes above. Rows written by older builds carry
         // an implicit effort (`high`), but every value the old builds wrote is
@@ -1029,8 +1067,10 @@ impl Store {
         // to do it safely exists: `reconcileReasoning` in `ui/src/api.ts` drops
         // one the selected model doesn't offer, and each harness's mapper drops
         // it again before it can reach a CLI.
+        phase("compatibility");
         research::migrate(&conn)?;
         migrate_chat_spawns(&conn)?;
+        phase("research-and-spawns");
         Ok(Self {
             conn,
             data_dir_move_lock_path,
@@ -3634,6 +3674,44 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "synthetic Store open profile; run explicitly with --ignored --nocapture"]
+    fn store_open_profile_benchmark() {
+        let dir = std::env::temp_dir().join(format!("orx-open-profile-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_at(dir.clone()).unwrap();
+        let tx = store.begin().unwrap();
+        for i in 0..1000 {
+            tx.execute("INSERT INTO chat_sessions(id,project_id,harness,permission_mode,created_at,updated_at) VALUES(?1,'project','opencode','default',1,1)", [format!("session-{i}")]).unwrap();
+        }
+        tx.commit().unwrap();
+        drop(store);
+        let mut totals = std::collections::BTreeMap::<&str, f64>::new();
+        for _ in 0..30 {
+            let mut previous = std::time::Instant::now();
+            let store = Store::open_profiled(
+                dir.clone(),
+                dir.join(".orx-data-dir-move.lock"),
+                BUSY_TIMEOUT,
+                |name| {
+                    let now = std::time::Instant::now();
+                    *totals.entry(name).or_default() += (now - previous).as_secs_f64() * 1000.0;
+                    previous = now;
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                store
+                    .conn
+                    .query_row("SELECT COUNT(*) FROM chat_sessions", [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                1000
+            );
+        }
+        eprintln!("store_open_profile rounds=30 sessions=1000 phase_total_ms={totals:?}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn lifecycle_lock_keeps_legacy_inode() {
         let config_dir = std::env::temp_dir().join(format!("orx-lock-{}", uuid::Uuid::new_v4()));
         let lock = open_lifecycle_lock_in(&config_dir).unwrap();
@@ -3929,6 +4007,78 @@ mod tests {
             Some(json)
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clean_permission_normalization_does_not_require_writer_lock() {
+        let dir =
+            std::env::temp_dir().join(format!("orx-permission-read-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_at(dir.clone()).unwrap();
+        let mut session = chat_session_fixture("clean");
+        session.harness = "opencode".into();
+        session.permission_mode = Some("default".into());
+        store.create_chat_session(&session).unwrap();
+        store.set_busy_timeout(Duration::ZERO).unwrap();
+        let writer = Connection::open(dir.join("orx.db")).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+        normalize_permission_modes(&store.conn).unwrap();
+        assert_eq!(
+            store
+                .get_chat_session("clean")
+                .unwrap()
+                .unwrap()
+                .permission_mode
+                .as_deref(),
+            Some("default")
+        );
+        writer.execute_batch("ROLLBACK").unwrap();
+        drop(writer);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn warm_open_rechecks_new_legacy_permissions_and_preserves_null_preferences() {
+        let dir =
+            std::env::temp_dir().join(format!("orx-permission-recheck-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_at(dir.clone()).unwrap();
+        store.conn.execute("UPDATE ui_state SET preferred_harness='claude-code', preferred_permission_mode=NULL", []).unwrap();
+        normalize_permission_modes(&store.conn).unwrap();
+        let mode: Option<String> = store
+            .conn
+            .query_row(
+                "SELECT preferred_permission_mode FROM ui_state",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(mode.is_none());
+        drop(store);
+        let store = Store::open_at(dir.clone()).unwrap();
+        let mut session = chat_session_fixture("imported");
+        session.harness = "opencode".into();
+        session.permission_mode = Some("plan".into());
+        session.reasoning_level = Some("high".into());
+        store.create_chat_session(&session).unwrap();
+        store.conn.execute("UPDATE ui_state SET preferred_harness='claude-code', preferred_permission_mode='plan'", []).unwrap();
+        drop(store);
+        let store = Store::open_at(dir.clone()).unwrap();
+        let imported = store.get_chat_session("imported").unwrap().unwrap();
+        assert_eq!(imported.permission_mode.as_deref(), Some("default"));
+        assert!(imported.plan_mode);
+        assert_eq!(imported.reasoning_level.as_deref(), Some("high"));
+        assert_eq!(
+            store
+                .ui_state()
+                .unwrap()
+                .preferred_agent
+                .unwrap()
+                .permission_mode
+                .as_deref(),
+            Some("auto")
+        );
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
