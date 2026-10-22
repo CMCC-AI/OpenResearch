@@ -755,6 +755,119 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a dedicated, disposable filesystem no larger than 64 MiB"]
+    fn real_enospc_preserves_materials_and_allows_retry() {
+        use std::io::Write;
+
+        let volume = PathBuf::from(
+            std::env::var_os("ORX_ENOSPC_TEST_ROOT").expect("set ORX_ENOSPC_TEST_ROOT"),
+        )
+        .canonicalize()
+        .unwrap();
+        assert_eq!(
+            fs::read(volume.join(".orx-enospc-fixture")).unwrap(),
+            b"disposable filesystem for orx ENOSPC acceptance\n"
+        );
+        let run = volume.join(format!("run-{}", uuid::Uuid::new_v4()));
+        let root = run.join("materials");
+        let package = create_at(&root, "enospc-test").unwrap();
+        let package = upload_at(&root, &package.id, "enospc-test", "keep.md", b"keep").unwrap();
+        let dir = dir_at(&root, &package.id).unwrap();
+        let manifest = fs::read(dir.join("manifest.json")).unwrap();
+        fs::write(dir.join("originals/unknown.md"), b"unregistered").unwrap();
+
+        let db = rusqlite::Connection::open(run.join("rollback.db")).unwrap();
+        db.execute_batch("CREATE TABLE durable(value BLOB); INSERT INTO durable VALUES('keep');")
+            .unwrap();
+        struct Ballast(PathBuf);
+        impl Drop for Ballast {
+            fn drop(&mut self) {
+                let _ = fs::remove_file(&self.0);
+            }
+        }
+        // Outside the managed material root: exercise physical disk exhaustion,
+        // not the logical material quota. Bound writes even if misconfigured.
+        let ballast = Ballast(run.join("ballast"));
+        let mut file = fs::File::create(&ballast.0).unwrap();
+        let mut exhausted = false;
+        for _ in 0..(64 * 1024 * 1024 / 4096) {
+            if let Err(error) = file.write_all(&[b'x'; 4096]) {
+                assert_eq!(error.raw_os_error(), Some(28), "expected real ENOSPC");
+                exhausted = true;
+                break;
+            }
+        }
+        drop(file);
+        assert!(exhausted, "refusing to fill more than 64 MiB");
+        let is_enospc = |error: &anyhow::Error| {
+            error.chain().any(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.raw_os_error() == Some(28))
+            })
+        };
+        let failed = upload_at(
+            &root,
+            &package.id,
+            "enospc-test",
+            "retry.md",
+            &[b'y'; 65536],
+        )
+        .unwrap_err();
+        assert!(is_enospc(&failed), "{failed:#}");
+        let mut candidate = package.clone();
+        candidate.ready = true;
+        let failed = write_manifest(&dir, &candidate).unwrap_err();
+        assert!(is_enospc(&failed), "{failed:#}");
+        assert_eq!(fs::read(dir.join("manifest.json")).unwrap(), manifest);
+        assert!(!dir.join("manifest.tmp").exists());
+        assert!(verified_original(&dir, &package.files[0]).is_ok());
+        assert_eq!(
+            fs::read(dir.join("originals/unknown.md")).unwrap(),
+            b"unregistered"
+        );
+        assert!(!dir.join("originals/retry.md").exists());
+        assert!(fs::read_dir(&dir).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".upload-")));
+        let failed = db
+            .execute("INSERT INTO durable VALUES(zeroblob(65536))", [])
+            .unwrap_err();
+        // Journal creation can fail before a database write reaches SQLITE_FULL.
+        eprintln!("SQLite on exhausted test filesystem: {failed}");
+        assert!(
+            matches!(failed, rusqlite::Error::SqliteFailure(ref code, _)
+            if matches!(code.code, rusqlite::ErrorCode::DiskFull
+                | rusqlite::ErrorCode::CannotOpen | rusqlite::ErrorCode::SystemIoFailure)),
+            "unexpected SQLite failure: {failed}"
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM durable", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+
+        drop(ballast);
+        let retried = upload_at(&root, &package.id, "enospc-test", "retry.md", b"retry").unwrap();
+        let sealed = finalize_at(&root, &retried.id, "enospc-test").unwrap();
+        assert!(sealed.ready);
+        for entry in &sealed.files {
+            assert!(verified_original(&dir, entry).is_ok());
+        }
+        db.execute("INSERT INTO durable VALUES(zeroblob(65536))", [])
+            .unwrap();
+        assert_eq!(
+            db.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        drop(db);
+        fs::remove_dir_all(run).unwrap();
+    }
+
+    #[test]
     fn interrupted_upload_rolls_back_only_uncommitted_journaled_originals() {
         let root = temp();
         let package = create_at(&root, "p").unwrap();

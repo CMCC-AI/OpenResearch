@@ -17,7 +17,7 @@
 3. [生产评估与路线图](production-readiness.md)：已修复项、上线阻断项、验收条件。
 4. [开发与运维](development-and-operations.md)：启动、配置、接口、测试、备份与回滚。
 
-官方 v0.2.20 当前差距见[版本核查](upstream-v0.2.20-gap-2026-10-22.md)，源码回移进度与待验收范围见[选择性回移批次](upstream-v0.2.20-backport-batches.md)。本轮结果见[回移测试验收记录](upstream-v0.2.20-backport-acceptance-2026-10-22.md)。
+官方 v0.2.20 当前差距见[版本核查](upstream-v0.2.20-gap-2026-10-22.md)，源码回移进度与待验收范围见[选择性回移批次](upstream-v0.2.20-backport-batches.md)。本轮结果见[回移测试验收记录](upstream-v0.2.20-backport-acceptance-2026-10-22.md)。后续 ENOSPC 与专家唤醒进度见[可靠性后续验收](reliability-followup-2026-10-22.md)。
 
 ## 当前交付边界
 

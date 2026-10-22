@@ -1,6 +1,6 @@
 # 技术债下一步修复计划（2026-10-22）
 
-> 状态更新：本文保留制定时的计划。TD-01/02/03/06 及 TD-04/05/07 的已完成部分，以[后续修复与实际发布记录](technical-debt-critical-remediation-2026-10-22.md)为准，不再作为全部未实施项重复排期。最新[本地故障测试与启动验收](technical-debt-local-acceptance-2026-10-22.md)补充真实进程强杀及 SQLite 写锁重试；ENOSPC、长期压力等剩余边界继续保留。
+> 状态更新：本文保留制定时的计划。TD-01/02/03/06 及 TD-04/05/07 的已完成部分，以[后续修复与实际发布记录](technical-debt-critical-remediation-2026-10-22.md)为准，不再作为全部未实施项重复排期。最新[本地故障测试与启动验收](technical-debt-local-acceptance-2026-10-22.md)补充真实进程强杀及 SQLite 写锁重试；真实 ENOSPC 已补本地受限文件系统回归，见[可靠性后续验收](reliability-followup-2026-10-22.md)；Linux 生产文件系统、聊天消息磁盘满生命周期、断电及长期压力边界继续保留。
 
 ## 范围与判断
 
