@@ -76,9 +76,11 @@ def prepare(image=None):
         saved = json.loads(latest.read_text())
         bundle = OUTPUT / saved['file']
         if saved.get('fingerprint') == source and bundle.is_file() and digest(bundle) == saved['sha256']:
-            verify_bundle(bundle)
-            print('复用已准备的更新包：' + str(bundle), flush=True)
-            return bundle
+            manifest = verify_bundle(bundle)
+            revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+            if manifest.get('commit') == revision:
+                print('复用已准备的更新包：' + str(bundle), flush=True)
+                return bundle
     if image is None:
         run(['pnpm', 'run', 'build'], cwd=ROOT / 'ui')
     with tempfile.TemporaryDirectory(prefix='mobilesci-update-') as temp:
@@ -168,8 +170,24 @@ def prepare(image=None):
         return bundle
 
 
-def upload(bundle, unified_opencode=False):
-    verify_bundle(bundle)
+def authorize_upload(bundle, evidence):
+    manifest = verify_bundle(bundle)
+    if evidence is None:
+        raise ValueError('部署前必须提供 --evidence，包含当前候选的全部验收证据')
+    document = json.loads(evidence.read_text(encoding='utf-8'))
+    revision = manifest.get('commit')
+    if document.get('revision') != revision:
+        raise ValueError('验收证据与部署包提交不一致')
+    components = document.get('components', {})
+    if (components.get('workbench', {}).get('artifactSha256') != manifest['files']['workbench/orx']
+            or components.get('platform', {}).get('artifactSha256') != digest(bundle)):
+        raise ValueError('验收产物与部署包不一致：workbench 应绑定二进制，platform 应绑定完整更新包')
+    run(['node', ROOT / 'scripts/check-release-evidence.mjs', evidence, revision], cwd=ROOT)
+    return manifest
+
+
+def upload(bundle, unified_opencode=False, evidence=None):
+    authorize_upload(bundle, evidence)
     sha = digest(bundle)
     remote = '/home/ubuntu/.mobilesci-updates/' + sha[:16]
     ssh = ['ssh', *SSH_OPTIONS, '-p', '20280', TARGET]
@@ -239,6 +257,7 @@ def main():
     parser.add_argument('--unified-opencode', action='store_true', help='升级为官方模型配置 API，并迁移私人空间共享配置')
     parser.add_argument('--prepare-only', action='store_true', help='只准备本地更新包，不连接服务器')
     parser.add_argument('--bundle', type=Path, help='使用指定的已准备更新包')
+    parser.add_argument('--evidence', type=Path, help='当前候选的发行证据 JSON；实际部署必需')
     parser.add_argument('--workbench-image', help='从指定的本地 Linux amd64 科研镜像提取二进制')
     args = parser.parse_args()
     if args.bundle and args.workbench_image:
@@ -246,7 +265,7 @@ def main():
     os.chdir(ROOT)
     bundle = args.bundle.resolve() if args.bundle else prepare(args.workbench_image)
     if not args.prepare_only:
-        upload(bundle, args.unified_opencode)
+        upload(bundle, args.unified_opencode, args.evidence.resolve() if args.evidence else None)
 
 
 if __name__ == '__main__':

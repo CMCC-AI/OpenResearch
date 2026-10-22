@@ -78,6 +78,18 @@ fn install_refusal(harness: &str, install: &crate::commands::up::HarnessInstall)
     })
 }
 
+/// Reserve the writer before checking capacity, and hold it through insertion.
+fn reserve_spawn<'a>(
+    store: &'a Store,
+    parent: &StoredChatSession,
+) -> Result<rusqlite::Transaction<'a>> {
+    let tx = store.begin_immediate()?;
+    if let Some(refusal) = spawn_refusal(parent, store.count_live_chat_spawns(&parent.id)?) {
+        return Err(anyhow!(refusal));
+    }
+    Ok(tx)
+}
+
 pub(crate) struct SpawnRequest {
     pub task: Option<String>,
     pub stdin: bool,
@@ -124,9 +136,6 @@ pub(crate) async fn spawn(store: &Store, request: SpawnRequest) -> Result<()> {
         study.ready(task_id)?;
     }
     let prompt = task_text(task, stdin)?;
-    if let Some(refusal) = spawn_refusal(&parent, store.count_live_chat_spawns(&parent_id)?) {
-        return Err(anyhow!(refusal));
-    }
     let harness = harness.unwrap_or_else(|| parent.harness.clone());
     if !crate::local::harness::is_chat_harness(&harness) {
         return Err(anyhow!("unknown harness: {harness}"));
@@ -183,7 +192,8 @@ pub(crate) async fn spawn(store: &Store, request: SpawnRequest) -> Result<()> {
     };
     // One transaction: a session row without its spawn row is an empty session
     // in the user's sidebar that nothing will ever start.
-    let tx = store.begin_immediate()?;
+    // No network awaits inside the writer reservation.
+    let tx = reserve_spawn(store, &parent)?;
     store.create_chat_session(&session)?;
     if let (Some(study), Some(task)) = (&research, &research_task) {
         store.research_bind_task(&study.id, task, &session.id)?;
@@ -238,6 +248,56 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn concurrent_dispatches_cannot_consume_the_same_last_slot() {
+        use super::{reserve_spawn, ChatSpawn, Store};
+        use std::sync::{Arc, Barrier};
+        let dir = std::env::temp_dir().join(format!("orx-spawn-cap-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_at(dir.clone()).unwrap();
+        let spawn = |id: String| ChatSpawn {
+            session_id: id,
+            parent_session_id: "chat_parent".into(),
+            prompt: "task".into(),
+            wake_parent: true,
+            attempts: 0,
+            finished_at: None,
+        };
+        for i in 0..MAX_LIVE_SPAWNS - 1 {
+            store
+                .create_chat_spawn(&spawn(format!("existing-{i}")))
+                .unwrap();
+        }
+        let barrier = Arc::new(Barrier::new(2));
+        let threads: Vec<_> = (0..2)
+            .map(|i| {
+                let dir = dir.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let store = Store::open_at(dir).unwrap();
+                    barrier.wait();
+                    let Ok(tx) = reserve_spawn(&store, &parent(None)) else {
+                        return false;
+                    };
+                    store.create_chat_spawn(&spawn(format!("new-{i}"))).unwrap();
+                    tx.commit().unwrap();
+                    true
+                })
+            })
+            .collect();
+        let admitted = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .filter(|admitted| *admitted)
+            .count();
+        assert_eq!(admitted, 1);
+        assert_eq!(
+            store.count_live_chat_spawns("chat_parent").unwrap(),
+            MAX_LIVE_SPAWNS
+        );
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

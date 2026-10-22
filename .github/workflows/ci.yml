@@ -80,6 +80,9 @@ jobs:
       - name: Dev-slot helper tests
         run: node --test scripts/dev-slot.test.mjs
 
+      - name: Product release evidence checks
+        run: node --test scripts/release-evidence.test.mjs
+
       - name: Local startup helper tests
         run: node --test scripts/start-local.test.mjs scripts/start-mobilesci.test.mjs
 
@@ -102,6 +105,10 @@ jobs:
         working-directory: ui
         run: pnpm install --frozen-lockfile
 
+      - name: Audit UI dependencies
+        working-directory: ui
+        run: pnpm audit --audit-level=high
+
       - name: Generate localized messages
         working-directory: ui
         run: pnpm exec paraglide-js compile --silent --emit-ts-declarations
@@ -117,6 +124,7 @@ jobs:
         working-directory: ui
         run: |
           pnpm exec vite build
+          node ../scripts/check-ui-budget.mjs
           stale=$(git status --porcelain -- dist)
           if [ -n "$stale" ]; then
             echo "$stale"
@@ -130,6 +138,12 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Audit Rust dependencies
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit --file Cargo.lock
+          cargo audit --file windows/launcher/Cargo.lock
 
       - name: Format
         run: |

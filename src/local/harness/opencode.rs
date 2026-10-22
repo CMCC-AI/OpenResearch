@@ -1701,9 +1701,11 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // preceding `plan_exit` tool through the question's `tool.callID`.
     let mut plan_exit_calls: HashSet<String> = HashSet::new();
     let mut buf = String::new();
+    let mut checkpoint = TurnCtx::checkpoint_timer();
 
     loop {
         tokio::select! {
+            _ = checkpoint.tick() => ctx.checkpoint(),
             chunk = stream.next() => {
                 let Some(chunk) = chunk else {
                     return Err(anyhow!("opencode event stream ended mid-turn"));

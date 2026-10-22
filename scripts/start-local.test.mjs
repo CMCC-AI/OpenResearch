@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import path from 'node:path'
 import { optionsFrom, setValues, valueOf } from './start-local.mjs'
 
 test('local startup options resolve a companion checkout and reject unknown flags', () => {
   const options = optionsFrom(['--deeplit-dir', '/tmp/deeplit', '--no-open', '--with-workers'])
-  assert.equal(options.deeplitDir, '/tmp/deeplit')
+  assert.equal(options.deeplitDir, path.resolve('/tmp/deeplit'))
   assert.equal(options.open, false)
   assert.equal(options.withWorkers, true)
   assert.throws(() => optionsFrom(['--wrong']), /Unknown option/)

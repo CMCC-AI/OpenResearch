@@ -27,6 +27,7 @@ ui/package-lock.json
 
 # Local MobileSci startup state and runtime logs
 .mobilesci-run/
+/.t/
 
 # Python test and deployment bytecode caches
 __pycache__/

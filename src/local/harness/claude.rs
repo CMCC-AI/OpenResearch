@@ -2312,6 +2312,7 @@ async fn run_attempt(ctx: &mut TurnCtx, spec: SpawnSpec) -> Result<(TurnState, u
     // Absolute, so steering can't push it back: a wedged child that the user
     // keeps typing at must still trip the detector.
     let mut deadline = tokio::time::Instant::now() + FIRST_EVENT_TIMEOUT;
+    let mut checkpoint = TurnCtx::checkpoint_timer();
     // An event received during the post-result grace wait below, replayed at
     // the top of the next iteration.
     let mut queued: Option<TurnEvent> = None;
@@ -2326,10 +2327,15 @@ async fn run_attempt(ctx: &mut TurnCtx, spec: SpawnSpec) -> Result<(TurnState, u
                 tokio::select! {
                     event = tokio::time::timeout_at(deadline, rx.recv()) => Waited::Event(event),
                     steer = super::next_steer(steering) => Waited::Steer(steer),
+                    _ = checkpoint.tick() => Waited::Checkpoint,
                 }
             }
         };
         let event = match waited {
+            Waited::Checkpoint => {
+                ctx.checkpoint();
+                continue;
+            }
             Waited::Steer(steer) => {
                 // A failed write means the child is gone and this turn is about
                 // to error out — park the text so it survives into the next one.

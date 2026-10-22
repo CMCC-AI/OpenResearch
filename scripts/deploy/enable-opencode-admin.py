@@ -33,6 +33,13 @@ def inspect(name):
     return json.loads(run('docker', 'inspect', name, capture=True))[0]
 
 
+def owned_runtime(item, workspace_ids):
+    labels = item['Config'].get('Labels') or {}
+    workspace = labels.get('openresearch.workspace')
+    return (workspace in workspace_ids and labels.get('openresearch.managed') == 'true'
+            and item['Name'] == '/orx-managed-' + str(workspace))
+
+
 def values(config):
     return dict(entry.split('=', 1) for entry in config.get('Env', []))
 
@@ -135,12 +142,13 @@ def main(package, apply=False):
         labels = item['Config'].get('Labels') or {}
         if labels.get('com.docker.compose.project') != 'mobilesci-remote' or labels.get('com.docker.compose.service') != service:
             raise RuntimeError('Unexpected service ownership: ' + service)
+    query = "const {createPool}=await import('./src/db.mjs');const p=createPool(process.env.DATABASE_URL);try{console.log(JSON.stringify((await p.query('SELECT id FROM workspaces')).rows.map(r=>r.id)))}finally{await p.end()}"
+    workspace_ids = set(json.loads(run('docker', 'exec', platform_name, 'node', '--input-type=module', '-e', query, capture=True)))
     names = run('docker', 'ps', '-aq', '--filter', 'label=openresearch.managed=true', capture=True).split()
     private = []
     for name in names:
         item = inspect(name)
-        workspace = item['Config'].get('Labels', {}).get('openresearch.workspace')
-        if item['Name'] != '/orx-managed-' + str(workspace):
+        if not owned_runtime(item, workspace_ids):
             continue  # Retained rollback containers must never be restarted.
         if 'src/connector-entry.mjs' not in (item['Config'].get('Cmd') or []):
             private.append(item)
@@ -151,6 +159,11 @@ def main(package, apply=False):
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     assert_idle([workbench_name, *[item['Name'][1:] for item in private]])
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    # Snapshot each owned private database before running a new binary against
+    # its retained HOME volume. Never inspect or back up unrelated executors.
+    for item in private:
+        code = "import pathlib,sqlite3,sys;p=pathlib.Path('/home/node/research/state/backups');p.mkdir(exist_ok=True);s=sqlite3.connect('file:/home/node/research/state/orx.db?mode=ro',uri=True);d=sqlite3.connect(p/('debt-'+sys.argv[1]+'.db'));s.backup(d);assert d.execute('PRAGMA integrity_check').fetchone()[0]=='ok';d.close();print('Private research database backup verified')"
+        run('docker', 'exec', item['Name'][1:], 'python3', '-c', code, stamp)
     backup = Path.home() / ('.mobilesci-opencode-upgrade-' + stamp)
     backup.mkdir(mode=0o700)
     originals = {item['Name'][1:]: item for item in [platform, provisioner, *private]}

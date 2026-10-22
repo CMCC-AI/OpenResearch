@@ -7,7 +7,7 @@ import { optionsFrom, workspaceIsHealthy, sourceIsNewer, composeFiles } from './
 
 test('startup options reject unknown arguments and resolve companion paths', () => {
   assert.equal(optionsFrom(['--rebuild', '--deeplit-dir', '/tmp/literature']).rebuild, true)
-  assert.equal(optionsFrom(['--deeplit-dir', '/tmp/literature']).literatureDir, '/tmp/literature')
+  assert.equal(optionsFrom(['--deeplit-dir', '/tmp/literature']).literatureDir, path.resolve('/tmp/literature'))
   assert.throws(() => optionsFrom(['--deeplit-dir']), /未知参数/)
 })
 

@@ -1301,5 +1301,9 @@
   "projects_delete_folder_kept": "Se conservarán la carpeta del proyecto y sus archivos.",
   "projects_delete_github_kept": "Se conservará el repositorio de GitHub vinculado.",
   "projects_delete_with_folder": "Eliminar proyecto y carpeta",
-  "projects_delete_recovery_path": "Proyecto eliminado. Ruta de recuperación de la carpeta: {path}"
+  "projects_delete_recovery_path": "Proyecto eliminado. Ruta de recuperación de la carpeta: {path}",
+  "remote_repair_run": "Run in terminal",
+  "remote_repair_copy": "Copy command",
+  "remote_repair_copied": "Copied",
+  "remote_repair_terminal": "Repair terminal"
 }

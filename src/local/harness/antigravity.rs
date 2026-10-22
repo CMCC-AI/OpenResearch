@@ -408,8 +408,18 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     let mut lines = BufReader::new(stdout).lines();
     let mut state = TurnState::default();
 
+    let mut checkpoint = TurnCtx::checkpoint_timer();
     loop {
-        match tokio::time::timeout(TURN_WATCHDOG, lines.next_line()).await {
+        // Keep the same read and watchdog alive across checkpoint ticks.
+        let event = tokio::time::timeout(TURN_WATCHDOG, lines.next_line());
+        tokio::pin!(event);
+        let event = loop {
+            tokio::select! {
+                event = &mut event => break event,
+                _ = checkpoint.tick() => ctx.checkpoint(),
+            }
+        };
+        match event {
             Ok(Ok(Some(line))) => {
                 let Ok(event) = serde_json::from_str::<Value>(&line) else {
                     continue;

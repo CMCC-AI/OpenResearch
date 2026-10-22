@@ -9,15 +9,18 @@ pub(super) struct NewResearch {
 }
 
 pub(super) async fn session(Path(id): Path<String>) -> ApiResult {
-    let store = Store::open()?;
-    let study = store.research_for_session(&id)?;
-    let runs = study
-        .as_ref()
-        .map(|s| store.research_runs(s))
-        .transpose()?
-        .unwrap_or_default();
-    let runs: Vec<_> = runs.iter().map(ApiRun::from).collect();
-    Ok(Json(json!({"study":study,"runs":runs})))
+    blocking_api(move || {
+        let store = Store::open()?;
+        let study = store.research_for_session(&id)?;
+        let runs = study
+            .as_ref()
+            .map(|s| store.research_runs(s))
+            .transpose()?
+            .unwrap_or_default();
+        let runs: Vec<_> = runs.iter().map(ApiRun::from).collect();
+        Ok(Json(json!({"study":study,"runs":runs})))
+    })
+    .await
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

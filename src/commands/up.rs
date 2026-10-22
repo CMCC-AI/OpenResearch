@@ -11,6 +11,7 @@
 //! loopback-only; the hidden persistent-host mode also requires a session bearer.
 
 use std::collections::{HashMap, HashSet};
+#[cfg(test)]
 use std::convert::Infallible;
 use std::io::IsTerminal as _;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,12 +22,12 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
-use axum::response::sse::{Event, KeepAlive, Sse};
+#[cfg(test)]
+use axum::response::sse::Sse;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine as _;
-use futures::Stream;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -49,8 +50,13 @@ use crate::workspace_state::{GlobalWorkspaceState, WorkspaceState};
 use crate::{browser, UpArgs};
 
 pub(crate) mod compute_settings;
+mod event_stream;
 mod harness_setup;
 mod materials;
+mod message_delta;
+#[cfg(test)]
+use event_stream::forward_chat_events;
+use event_stream::{events, log_size, read_log_from, UPDATE_SAMPLE_INTERVAL};
 mod research;
 use compute_settings::*;
 
@@ -810,7 +816,8 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
         .route(
             "/api/projects/{project}/materials/{id}/files",
             axum::routing::put(materials::upload)
-                .layer(DefaultBodyLimit::max(local::materials::MAX_FILE)),
+                .layer(DefaultBodyLimit::max(local::materials::MAX_FILE))
+                .layer(middleware::from_fn(materials::limit_upload)),
         )
         .route(
             "/api/projects/{project}/materials/{id}/finalize",
@@ -1257,14 +1264,17 @@ struct UploadSkillReq {
 }
 
 async fn upload_user_skill(Json(req): Json<UploadSkillReq>) -> ApiResult {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(req.content_base64.trim())
-        .map_err(|e| bad_request(format!("invalid file data: {e}")))?;
+    blocking_api(move || {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(req.content_base64.trim())
+            .map_err(|e| bad_request(format!("invalid file data: {e}")))?;
 
-    let saved =
-        crate::local::user_skills::save_upload(&req.filename, &bytes).map_err(bad_request)?;
+        let saved =
+            crate::local::user_skills::save_upload(&req.filename, &bytes).map_err(bad_request)?;
 
-    Ok(Json(json!({ "skill": user_skill_json(&saved) })))
+        Ok(Json(json!({ "skill": user_skill_json(&saved) })))
+    })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -1291,25 +1301,34 @@ fn latex_template_json(t: &crate::local::latex_templates::LatexTemplate) -> Valu
 }
 
 async fn list_latex_templates() -> ApiResult {
-    let templates: Vec<Value> = crate::local::latex_templates::list()
-        .iter()
-        .map(latex_template_json)
-        .collect();
-    Ok(Json(json!({ "templates": templates })))
+    blocking_api(move || {
+        let templates: Vec<Value> = crate::local::latex_templates::list()
+            .iter()
+            .map(latex_template_json)
+            .collect();
+        Ok(Json(json!({ "templates": templates })))
+    })
+    .await
 }
 
 async fn upload_latex_template(Json(req): Json<UploadSkillReq>) -> ApiResult {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(req.content_base64.trim())
-        .map_err(|e| bad_request(format!("invalid file data: {e}")))?;
-    let saved =
-        crate::local::latex_templates::save_upload(&req.filename, &bytes).map_err(bad_request)?;
-    Ok(Json(json!({ "template": latex_template_json(&saved) })))
+    blocking_api(move || {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(req.content_base64.trim())
+            .map_err(|e| bad_request(format!("invalid file data: {e}")))?;
+        let saved = crate::local::latex_templates::save_upload(&req.filename, &bytes)
+            .map_err(bad_request)?;
+        Ok(Json(json!({ "template": latex_template_json(&saved) })))
+    })
+    .await
 }
 
 async fn delete_latex_template(Query(q): Query<DeleteByNameQ>) -> ApiResult {
-    crate::local::latex_templates::delete(&q.name).map_err(bad_request)?;
-    Ok(Json(json!({ "ok": true })))
+    blocking_api(move || {
+        crate::local::latex_templates::delete(&q.name).map_err(bad_request)?;
+        Ok(Json(json!({ "ok": true })))
+    })
+    .await
 }
 
 /// Serialize a project for the UI, injecting the absolute artifacts directory
@@ -1341,9 +1360,12 @@ fn project_json_with_artifacts_dir(p: &local::model::LocalProject, artifacts_dir
 }
 
 async fn list_projects() -> ApiResult {
-    let projects = Store::open()?.list_local_projects()?;
-    let projects: Vec<Value> = projects.iter().map(project_json).collect();
-    Ok(Json(json!({ "projects": projects })))
+    blocking_api(move || {
+        let projects = Store::open()?.list_local_projects()?;
+        let projects: Vec<Value> = projects.iter().map(project_json).collect();
+        Ok(Json(json!({ "projects": projects })))
+    })
+    .await
 }
 
 async fn list_project_activity(State(state): State<AppState>) -> ApiResult {
@@ -1985,10 +2007,13 @@ async fn create_project(
 }
 
 async fn get_project(Path(id): Path<String>) -> ApiResult {
-    let project = Store::open()?
-        .get_local_project(&id)?
-        .ok_or_else(|| not_found("project"))?;
-    Ok(Json(json!({ "project": project_json(&project) })))
+    blocking_api(move || {
+        let project = Store::open()?
+            .get_local_project(&id)?
+            .ok_or_else(|| not_found("project"))?;
+        Ok(Json(json!({ "project": project_json(&project) })))
+    })
+    .await
 }
 
 fn project_git_json(
@@ -2323,12 +2348,15 @@ async fn github_repo_access(Query(q): Query<RepoAccessQuery>) -> ApiResult {
 /// Mark a project visited: bumps updated_at, which drives the recency sort
 /// and the SSE project.updated diff.
 async fn open_project(Path(id): Path<String>) -> ApiResult {
-    let store = Store::open()?;
-    store.touch_local_project(&id)?;
-    let project = store
-        .get_local_project(&id)?
-        .ok_or_else(|| not_found("project"))?;
-    Ok(Json(json!({ "project": project_json(&project) })))
+    blocking_api(move || {
+        let store = Store::open()?;
+        store.touch_local_project(&id)?;
+        let project = store
+            .get_local_project(&id)?
+            .ok_or_else(|| not_found("project"))?;
+        Ok(Json(json!({ "project": project_json(&project) })))
+    })
+    .await
 }
 
 /// Present-vs-absent for PATCH fields: absent = leave, null = clear.
@@ -2352,37 +2380,40 @@ async fn update_project(
     Path(id): Path<String>,
     Json(req): Json<UpdateProjectReq>,
 ) -> ApiResult {
-    reject_if_moving(&state)?;
-    let _admission = state
-        .project_lifecycle
-        .admit(&id)
-        .ok_or_else(|| bad_request("project deletion is in progress"))?;
-    reject_if_moving(&state)?;
-    if req.name.is_none() && req.run_command.is_none() {
-        return Err(bad_request(
-            "nothing to update: pass name and/or runCommand",
-        ));
-    }
-    let store = Store::open()?;
-    let mut project = store
-        .get_local_project(&id)?
-        .ok_or_else(|| not_found("project"))?;
-    if let Some(name) = req.name {
-        if name.trim().is_empty() {
-            return Err(bad_request("name cannot be empty"));
+    blocking_api(move || {
+        reject_if_moving(&state)?;
+        let _admission = state
+            .project_lifecycle
+            .admit(&id)
+            .ok_or_else(|| bad_request("project deletion is in progress"))?;
+        reject_if_moving(&state)?;
+        if req.name.is_none() && req.run_command.is_none() {
+            return Err(bad_request(
+                "nothing to update: pass name and/or runCommand",
+            ));
         }
-        project.name = name.trim().to_string();
-    }
-    if let Some(cmd) = req.run_command {
-        project.run_command = cmd.filter(|c| !c.trim().is_empty());
-    }
-    store.update_local_project(&project)?;
-    // Re-read: update bumps updated_at, which is also what fires the SSE
-    // project.updated diff.
-    let project = store
-        .get_local_project(&id)?
-        .ok_or_else(|| not_found("project"))?;
-    Ok(Json(json!({ "project": project_json(&project) })))
+        let store = Store::open()?;
+        let mut project = store
+            .get_local_project(&id)?
+            .ok_or_else(|| not_found("project"))?;
+        if let Some(name) = req.name {
+            if name.trim().is_empty() {
+                return Err(bad_request("name cannot be empty"));
+            }
+            project.name = name.trim().to_string();
+        }
+        if let Some(cmd) = req.run_command {
+            project.run_command = cmd.filter(|c| !c.trim().is_empty());
+        }
+        store.update_local_project(&project)?;
+        // Re-read: update bumps updated_at, which is also what fires the SSE
+        // project.updated diff.
+        let project = store
+            .get_local_project(&id)?
+            .ok_or_else(|| not_found("project"))?;
+        Ok(Json(json!({ "project": project_json(&project) })))
+    })
+    .await
 }
 
 #[derive(Default, Deserialize)]
@@ -2482,12 +2513,15 @@ async fn delete_project(
 }
 
 async fn list_experiments(Path(id): Path<String>) -> ApiResult {
-    let store = Store::open()?;
-    store
-        .get_local_project(&id)?
-        .ok_or_else(|| not_found("project"))?;
-    let experiments = store.list_experiments_by_project(&id)?;
-    Ok(Json(json!({ "experiments": experiments })))
+    blocking_api(move || {
+        let store = Store::open()?;
+        store
+            .get_local_project(&id)?
+            .ok_or_else(|| not_found("project"))?;
+        let experiments = store.list_experiments_by_project(&id)?;
+        Ok(Json(json!({ "experiments": experiments })))
+    })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -2501,37 +2535,43 @@ async fn set_experiment_archive(
     Path(id): Path<String>,
     Json(request): Json<ArchiveExperimentRequest>,
 ) -> ApiResult {
-    let direction = match request.direction.as_str() {
-        "ancestors" => local::experiments::ArchiveDirection::Ancestors,
-        "descendants" => local::experiments::ArchiveDirection::Descendants,
-        "only" => local::experiments::ArchiveDirection::Only,
-        "region" => local::experiments::ArchiveDirection::Region,
-        "taskRegion" => local::experiments::ArchiveDirection::TaskRegion,
-        _ => {
-            return Err(bad_request(
-                "direction must be ancestors, descendants, only, region, or taskRegion",
-            ))
+    blocking_api(move || {
+        let direction = match request.direction.as_str() {
+            "ancestors" => local::experiments::ArchiveDirection::Ancestors,
+            "descendants" => local::experiments::ArchiveDirection::Descendants,
+            "only" => local::experiments::ArchiveDirection::Only,
+            "region" => local::experiments::ArchiveDirection::Region,
+            "taskRegion" => local::experiments::ArchiveDirection::TaskRegion,
+            _ => {
+                return Err(bad_request(
+                    "direction must be ancestors, descendants, only, region, or taskRegion",
+                ))
+            }
+        };
+        let mut store = Store::open()?;
+        if store.get_local_experiment(&id)?.is_none() {
+            return Err(not_found("experiment"));
         }
-    };
-    let mut store = Store::open()?;
-    if store.get_local_experiment(&id)?.is_none() {
-        return Err(not_found("experiment"));
-    }
-    let ids = local::experiments::set_archived(&mut store, &id, direction, request.archived)?;
-    Ok(Json(json!({ "ids": ids })))
+        let ids = local::experiments::set_archived(&mut store, &id, direction, request.archived)?;
+        Ok(Json(json!({ "ids": ids })))
+    })
+    .await
 }
 
 async fn list_project_runs(Path(id): Path<String>) -> ApiResult {
-    let store = Store::open()?;
-    store
-        .get_local_project(&id)?
-        .ok_or_else(|| not_found("project"))?;
-    let runs: Vec<ApiRun> = store
-        .list_runs_by_project(&id)?
-        .iter()
-        .map(ApiRun::from)
-        .collect();
-    Ok(Json(json!({ "runs": runs })))
+    blocking_api(move || {
+        let store = Store::open()?;
+        store
+            .get_local_project(&id)?
+            .ok_or_else(|| not_found("project"))?;
+        let runs: Vec<ApiRun> = store
+            .list_runs_by_project(&id)?
+            .iter()
+            .map(ApiRun::from)
+            .collect();
+        Ok(Json(json!({ "runs": runs })))
+    })
+    .await
 }
 
 async fn compute_backends() -> Json<Value> {
@@ -2858,24 +2898,27 @@ const INSTANCES_LIMIT: usize = 500;
 /// have spun up (Modal / HF / SSH / K8s), regardless of which project launched
 /// it. Includes finished runs as history; the client surfaces live ones first.
 async fn list_instances() -> ApiResult {
-    let store = Store::open()?;
-    let names: HashMap<String, String> = store
-        .list_local_projects()?
-        .into_iter()
-        .map(|p| (p.id, p.name))
-        .collect();
-    let mut instances: Vec<Value> = Vec::new();
-    for run in store.list_runs(INSTANCES_LIMIT)? {
-        // ApiRun is a plain serializable struct, so this can't realistically
-        // fail; propagate rather than emit a malformed row if it ever does.
-        let mut value = serde_json::to_value(ApiRun::from(&run))
-            .map_err(|e| anyhow!("serialize run {}: {e}", run.id))?;
-        if let (Some(obj), Some(name)) = (value.as_object_mut(), names.get(&run.project_id)) {
-            obj.insert("projectName".into(), json!(name));
+    blocking_api(move || {
+        let store = Store::open()?;
+        let names: HashMap<String, String> = store
+            .list_local_projects()?
+            .into_iter()
+            .map(|p| (p.id, p.name))
+            .collect();
+        let mut instances: Vec<Value> = Vec::new();
+        for run in store.list_runs(INSTANCES_LIMIT)? {
+            // ApiRun is a plain serializable struct, so this can't realistically
+            // fail; propagate rather than emit a malformed row if it ever does.
+            let mut value = serde_json::to_value(ApiRun::from(&run))
+                .map_err(|e| anyhow!("serialize run {}: {e}", run.id))?;
+            if let (Some(obj), Some(name)) = (value.as_object_mut(), names.get(&run.project_id)) {
+                obj.insert("projectName".into(), json!(name));
+            }
+            instances.push(value);
         }
-        instances.push(value);
-    }
-    Ok(Json(json!({ "instances": instances })))
+        Ok(Json(json!({ "instances": instances })))
+    })
+    .await
 }
 
 /// Sent by `orx exp cancel`; the dashboard and older CLIs post no body.
@@ -2928,16 +2971,19 @@ struct LogQuery {
 }
 
 async fn run_log(Path(id): Path<String>, Query(q): Query<LogQuery>) -> ApiResult {
-    let store = Store::open()?;
-    store.get_run(&id)?.ok_or_else(|| not_found("run"))?;
-    let offset = q.offset.unwrap_or(0);
-    let chunk = read_log_from(&id, offset, 4_000_000);
-    let next_offset = offset + chunk.len() as u64;
-    Ok(Json(json!({
-        "dataBase64": base64::engine::general_purpose::STANDARD.encode(&chunk),
-        "nextOffset": next_offset,
-        "eof": next_offset >= log_size(&id),
-    })))
+    blocking_api(move || {
+        let store = Store::open()?;
+        store.get_run(&id)?.ok_or_else(|| not_found("run"))?;
+        let offset = q.offset.unwrap_or(0);
+        let chunk = read_log_from(&id, offset, 4_000_000);
+        let next_offset = offset + chunk.len() as u64;
+        Ok(Json(json!({
+            "dataBase64": base64::engine::general_purpose::STANDARD.encode(&chunk),
+            "nextOffset": next_offset,
+            "eof": next_offset >= log_size(&id),
+        })))
+    })
+    .await
 }
 
 // --- diffs ------------------------------------------------------------------
@@ -2956,14 +3002,33 @@ fn diff_json(d: local::git::DiffPayload) -> Value {
     })
 }
 
-/// Off-worker helper for git-backed handlers.
+/// Bounded executor for synchronous database, filesystem and git operations.
+async fn blocking_task<T, F>(work: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    static LIMIT: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    let permit = LIMIT
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(8)))
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|error| anyhow!("blocking executor closed: {error}"))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    })
+    .await
+    .map_err(|error| anyhow!("blocking task failed: {error}"))
+}
+
+/// Off-worker helper for synchronous API handlers.
 async fn blocking_api<F>(f: F) -> ApiResult
 where
     F: FnOnce() -> std::result::Result<Json<Value>, ApiError> + Send + 'static,
 {
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|e| ApiError::from(anyhow!("git task failed: {e}")))?
+    blocking_task(f).await.map_err(ApiError::from)?
 }
 
 /// Cumulative diff of a run's commit vs its experiment's parent branch. A root
@@ -3095,26 +3160,29 @@ struct PrewarmStarterPromptsReq {
 /// Start generating starter prompts for a project the user is still naming in
 /// the new-project form, so they are cached before the project exists.
 async fn prewarm_starter_prompts(Json(req): Json<PrewarmStarterPromptsReq>) -> ApiResult {
-    let name = req.name.trim().to_string();
-    if name.is_empty() {
-        return Err(bad_request("name is required"));
-    }
-    let paper_id = req
-        .paper_id
-        .as_deref()
-        .map(super::paper::parse_paper_id)
-        .filter(|id| !id.is_empty());
-    let path = req
-        .path
-        .map(|p| p.trim().to_string())
-        .filter(|p| !p.is_empty());
-    local::starter::prewarm(
-        name,
-        paper_id,
-        path,
-        req.locale.unwrap_or_else(|| "en".to_string()),
-    );
-    Ok(Json(json!({ "ok": true })))
+    blocking_api(move || {
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Err(bad_request("name is required"));
+        }
+        let paper_id = req
+            .paper_id
+            .as_deref()
+            .map(super::paper::parse_paper_id)
+            .filter(|id| !id.is_empty());
+        let path = req
+            .path
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty());
+        local::starter::prewarm(
+            name,
+            paper_id,
+            path,
+            req.locale.unwrap_or_else(|| "en".to_string()),
+        );
+        Ok(Json(json!({ "ok": true })))
+    })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -5771,36 +5839,42 @@ struct UiEventReq {
 }
 
 async fn record_ui_event(Json(req): Json<UiEventReq>) -> ApiResult {
-    match req.name.as_str() {
-        "demo_welcome_choice" => {
-            if let Some(choice) = req.choice.as_deref() {
-                crate::telemetry::capture_demo_welcome_choice(choice);
+    blocking_api(move || {
+        match req.name.as_str() {
+            "demo_welcome_choice" => {
+                if let Some(choice) = req.choice.as_deref() {
+                    crate::telemetry::capture_demo_welcome_choice(choice);
+                }
             }
-        }
-        "onboarding_step_viewed" => {
-            if let Some(step) = req.step.as_deref() {
-                crate::telemetry::capture_onboarding_step_viewed(step);
+            "onboarding_step_viewed" => {
+                if let Some(step) = req.step.as_deref() {
+                    crate::telemetry::capture_onboarding_step_viewed(step);
+                }
             }
-        }
-        "demo_experiment_started" => {
-            if let (Some(kind), Some(experiment)) = (req.kind.as_deref(), req.experiment.as_deref())
-            {
-                crate::telemetry::capture_demo_experiment_started(kind, experiment);
+            "demo_experiment_started" => {
+                if let (Some(kind), Some(experiment)) =
+                    (req.kind.as_deref(), req.experiment.as_deref())
+                {
+                    crate::telemetry::capture_demo_experiment_started(kind, experiment);
+                }
             }
-        }
-        "project_starter_clicked" => {
-            if let Some(slot) = req.slot {
-                crate::telemetry::capture_project_starter_clicked(slot);
+            "project_starter_clicked" => {
+                if let Some(slot) = req.slot {
+                    crate::telemetry::capture_project_starter_clicked(slot);
+                }
             }
-        }
-        "first_action" => {
-            if let (Some(surface), Some(action)) = (req.surface.as_deref(), req.action.as_deref()) {
-                crate::telemetry::capture_first_action(surface, action);
+            "first_action" => {
+                if let (Some(surface), Some(action)) =
+                    (req.surface.as_deref(), req.action.as_deref())
+                {
+                    crate::telemetry::capture_first_action(surface, action);
+                }
             }
+            _ => return Ok(Json(json!({ "ok": false }))),
         }
-        _ => return Ok(Json(json!({ "ok": false }))),
-    }
-    Ok(Json(json!({ "ok": true })))
+        Ok(Json(json!({ "ok": true })))
+    })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -6272,6 +6346,28 @@ pub(crate) async fn ssh_connect_to_target(
     })
 }
 
+/// Open a terminal that SSHes to `target` and runs a fixed `command`. Used by
+/// the remote gateway's repair flow: the command is server-derived, so unlike
+/// [`ssh_connect_to_target`] the client never supplies it, and no preflight
+/// runs afterwards.
+pub(crate) async fn ssh_run_to_target(
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+    host: String,
+    target: crate::jobs::ssh::SshTarget,
+    command: String,
+) -> Response {
+    if !same_origin(&headers) {
+        return ApiError(StatusCode::FORBIDDEN, "SSH terminal origin rejected".into())
+            .into_response();
+    }
+    let active = Active::new();
+    ws.on_upgrade(move |socket| async move {
+        let _active = active;
+        ssh_run_socket(socket, host, target, command).await
+    })
+}
+
 const DEFAULT_PTY_SIZE: PtySize = PtySize {
     rows: 24,
     cols: 80,
@@ -6397,7 +6493,7 @@ async fn ssh_connect_socket(
     backend: SshConnectBackend,
     target: crate::jobs::ssh::SshTarget,
 ) {
-    let connection = match crate::jobs::ssh::interactive_args(&target, None).await {
+    let connection = match crate::jobs::ssh::interactive_args(&target, None, None).await {
         Ok(connection) => connection,
         Err(error) => {
             send_ssh_connect_error(&mut socket, &host, backend, error.to_string()).await;
@@ -6480,6 +6576,81 @@ async fn ssh_connect_socket(
             record_ssh_host_test(&test).await;
         }
         close_socket(&mut socket).await;
+    }
+}
+
+async fn send_ws_error(socket: &mut WebSocket, error: String) {
+    let _ = socket
+        .send(Message::Text(
+            json!({ "type": "error", "error": error })
+                .to_string()
+                .into(),
+        ))
+        .await;
+    close_socket(socket).await;
+}
+
+async fn ssh_run_socket(
+    mut socket: WebSocket,
+    host: String,
+    target: crate::jobs::ssh::SshTarget,
+    command: String,
+) {
+    let connection = match crate::jobs::ssh::interactive_args(&target, None, Some(command)).await {
+        Ok(connection) => connection,
+        Err(error) => {
+            send_ws_error(&mut socket, error.to_string()).await;
+            return;
+        }
+    };
+    let args = connection.args.clone();
+    let session = match tokio::task::spawn_blocking(move || start_pty("ssh", args)).await {
+        Ok(Ok(session)) => session,
+        Ok(Err(error)) => {
+            send_ws_error(&mut socket, error.to_string()).await;
+            return;
+        }
+        Err(error) => {
+            send_ws_error(&mut socket, format!("SSH terminal task failed: {error}")).await;
+            return;
+        }
+    };
+    let mut size = DEFAULT_PTY_SIZE;
+    let Some(status) = relay_pty(&mut socket, session, None, &mut size, None).await else {
+        return;
+    };
+
+    match status {
+        Ok(status) if status.success() => {
+            if let Some(warning) = crate::jobs::ssh::setup_connection_sharing(&target).await {
+                let _ = socket
+                    .send(Message::Binary(
+                        format!("\r\norx: warning: {warning}\r\n")
+                            .into_bytes()
+                            .into(),
+                    ))
+                    .await;
+            }
+            if socket
+                .send(Message::Text(
+                    json!({ "type": "complete" }).to_string().into(),
+                ))
+                .await
+                .is_ok()
+            {
+                close_socket(&mut socket).await;
+            }
+        }
+        Ok(status) => {
+            send_ws_error(
+                &mut socket,
+                format!("ssh {host} exited with code {}", status.exit_code()),
+            )
+            .await;
+        }
+        Err(error) => {
+            send_ws_error(&mut socket, error).await;
+        }
     }
 }
 
@@ -6919,7 +7090,7 @@ async fn local_runtime() -> Json<Value> {
 }
 
 async fn list_local_models() -> ApiResult {
-    Ok(Json(local::local_models::list()?))
+    blocking_api(move || Ok(Json(local::local_models::list()?))).await
 }
 
 async fn discover_local_models(Json(req): Json<local::local_models::Probe>) -> ApiResult {
@@ -8117,21 +8288,24 @@ async fn update_chat_session(
 }
 
 async fn chat_messages(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
-    // Messages first: these are two connections, so a turn writing between them
-    // can only leave the leaf *ahead* of the list, which the client falls back on
-    // safely — the other order hides a reply that is already in the list.
-    let messages = local::chat::list_messages(&id)?;
-    let session = Store::open()?
-        .get_chat_session(&id)?
-        .ok_or_else(|| not_found("chat session"))?;
-    // The host restores its durable queue at startup; return the live snapshot
-    // so dispatch progress and cancellation are reflected immediately.
-    let queued = state.chat.queued_items(&id);
-    Ok(Json(json!({
-        "messages": messages,
-        "queued": queued,
-        "activeLeafId": session.active_leaf_id,
-    })))
+    blocking_api(move || {
+        // Messages first: these are two connections, so a turn writing between them
+        // can only leave the leaf *ahead* of the list, which the client falls back on
+        // safely — the other order hides a reply that is already in the list.
+        let messages = local::chat::list_messages(&id)?;
+        let session = Store::open()?
+            .get_chat_session(&id)?
+            .ok_or_else(|| not_found("chat session"))?;
+        // The host restores its durable queue at startup; return the live snapshot
+        // so dispatch progress and cancellation are reflected immediately.
+        let queued = state.chat.queued_items(&id);
+        Ok(Json(json!({
+            "messages": messages,
+            "queued": queued,
+            "activeLeafId": session.active_leaf_id,
+        })))
+    })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -8494,8 +8668,11 @@ async fn cancel_queued_chat(
     State(state): State<AppState>,
     Path((id, item_id)): Path<(String, String)>,
 ) -> ApiResult {
-    let removed = state.chat.cancel_queued(&id, &item_id)?;
-    Ok(Json(json!({ "ok": true, "removed": removed })))
+    blocking_api(move || {
+        let removed = state.chat.cancel_queued(&id, &item_id)?;
+        Ok(Json(json!({ "ok": true, "removed": removed })))
+    })
+    .await
 }
 
 /// Retry one queued message after its safe delivery budget was exhausted.
@@ -8503,16 +8680,19 @@ async fn retry_queued_chat(
     State(state): State<AppState>,
     Path((id, item_id)): Path<(String, String)>,
 ) -> ApiResult {
-    reject_if_stopping(&state)?;
-    reject_if_moving(&state)?;
-    let retried = state.chat.retry_queued(&id, &item_id)?;
-    if !retried {
-        return Err(ApiError(
-            StatusCode::CONFLICT,
-            "queued message is no longer available for retry".into(),
-        ));
-    }
-    Ok(Json(json!({ "ok": true, "retried": retried })))
+    blocking_api(move || {
+        reject_if_stopping(&state)?;
+        reject_if_moving(&state)?;
+        let retried = state.chat.retry_queued(&id, &item_id)?;
+        if !retried {
+            return Err(ApiError(
+                StatusCode::CONFLICT,
+                "queued message is no longer available for retry".into(),
+            ));
+        }
+        Ok(Json(json!({ "ok": true, "retried": retried })))
+    })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -8598,253 +8778,6 @@ async fn agent_status(State(state): State<AppState>) -> Json<Value> {
 
 // --- /api/events SSE ------------------------------------------------------
 
-async fn events(
-    State(state): State<AppState>,
-) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
-    // Small buffer on purpose: run.log events can carry ~MB payloads, and a
-    // stalled client must backpressure the loop, not queue hundreds of MB.
-    let (tx, rx) = mpsc::channel::<Event>(16);
-    tokio::spawn(event_loop(tx.clone()));
-    // Chat events ride the same stream: chat.session / chat.message / chat.busy.
-    tokio::spawn(forward_chat_events(state.chat.subscribe(), tx));
-    let stream = futures::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|ev| (Ok(ev), rx))
-    });
-    Sse::new(stream).keep_alive(KeepAlive::default())
-}
-
-async fn forward_chat_events(
-    mut chat_rx: tokio::sync::broadcast::Receiver<(&'static str, Value)>,
-    tx: mpsc::Sender<Event>,
-) {
-    loop {
-        let event = tokio::select! {
-            _ = tx.closed() => return,
-            event = chat_rx.recv() => event,
-        };
-        match event {
-            Ok((name, data)) => {
-                if tx.send(json_event(name, &data)).await.is_err() {
-                    return;
-                }
-            }
-            // The client must repair snapshots after missed edge-only events.
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                if tx
-                    .send(json_event("resync.required", &json!({})))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-                continue;
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-        }
-    }
-}
-
-/// Diff state for one SSE subscriber.
-#[derive(Default)]
-struct EventCursor {
-    projects: HashMap<String, i64>,
-    experiments: HashMap<String, i64>,
-    files: HashMap<String, u64>,
-    runs: HashMap<String, (String, i64)>,
-    log_offsets: HashMap<String, u64>,
-    /// Last update status sent. Unlike the rest of the cursor this isn't store
-    /// state — the updater is a separate process, so its progress reaches the UI
-    /// through the same diff the store changes do.
-    update: Option<updates::UpdateStatus>,
-    update_sampled_at: Option<std::time::Instant>,
-}
-
-/// How often the event loop re-reads update status. The 500ms store cadence is
-/// there for run logs; nothing about an update needs that resolution.
-const UPDATE_SAMPLE_INTERVAL: Duration = Duration::from_secs(10);
-
-/// 500ms poll loop: diff the store + log files, push named events into the
-/// channel. Ends when the subscriber disconnects (send fails). Same idiom as
-/// serve.rs, extended with project/experiment diffs.
-async fn event_loop(tx: mpsc::Sender<Event>) {
-    let mut cursor = EventCursor::default();
-    let mut first = true;
-    loop {
-        if !first {
-            // An idle store never sends, so a failed send can't be the only
-            // disconnect signal — watch the receiver side too or the loop
-            // (and its 2Hz store polling) leaks per closed EventSource.
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_millis(500)) => {}
-                _ = tx.closed() => return,
-            }
-        }
-        if tx.is_closed() {
-            return;
-        }
-        // Store hiccups (locked db) just skip a tick.
-        let batch = collect_events(&mut cursor, first).unwrap_or_default();
-        first = false;
-        for ev in batch {
-            if tx.send(ev).await.is_err() {
-                return;
-            }
-        }
-    }
-}
-
-fn json_event(name: &str, data: &Value) -> Event {
-    Event::default().event(name).data(data.to_string())
-}
-
-/// One diff pass. On the first pass everything is "changed", so a fresh
-/// subscriber gets a full snapshot and needs no separate baseline fetches.
-fn collect_events(cursor: &mut EventCursor, first: bool) -> Result<Vec<Event>> {
-    let mut out = Vec::new();
-
-    // Sampled far below the 2Hz loop — the updater works on the scale of
-    // minutes, and this reads files. `cursor.update` is committed only once the
-    // batch is certain: every `?` below discards it (`event_loop` swallows the
-    // error), and a cursor that had already moved would never re-emit, leaving
-    // the restart banner permanently unshown for that subscriber.
-    let sampled_update = cursor
-        .update_sampled_at
-        .is_none_or(|at| at.elapsed() >= UPDATE_SAMPLE_INTERVAL)
-        .then(|| {
-            cursor.update_sampled_at = Some(std::time::Instant::now());
-            updates::status()
-        })
-        .filter(|update| cursor.update.as_ref() != Some(update));
-    if let Some(update) = &sampled_update {
-        out.push(json_event("update.status", &json!(update)));
-    }
-
-    let store = Store::open()?;
-    // Cap log bytes per tick so one pass never materializes a huge batch —
-    // remainders (whole-log replays included) stream out on later ticks.
-    let mut log_budget: u64 = 2_000_000;
-
-    for project in store.list_local_projects()? {
-        if cursor.projects.get(&project.id) != Some(&project.updated_at) {
-            cursor
-                .projects
-                .insert(project.id.clone(), project.updated_at);
-            out.push(json_event(
-                "project.updated",
-                &json!({ "project": project_json(&project) }),
-            ));
-        }
-        push_experiment_events(&store, &project.id, cursor, &mut out)?;
-        // Artifacts appear live — anything written into the directory (by the
-        // agent or the user) pings the UI to refetch the listing.
-        let fp = local::files::fingerprint(&project);
-        if cursor.files.get(&project.id) != Some(&fp) {
-            cursor.files.insert(project.id.clone(), fp);
-            out.push(json_event(
-                "files.updated",
-                &json!({ "projectId": project.id }),
-            ));
-        }
-    }
-
-    for run in store.list_runs(200)? {
-        let changed = match cursor.runs.get(&run.id) {
-            None => true,
-            Some((status, updated)) => *status != run.status || *updated != run.updated_at,
-        };
-        if changed {
-            cursor
-                .runs
-                .insert(run.id.clone(), (run.status.clone(), run.updated_at));
-            out.push(json_event(
-                "run.updated",
-                &json!({ "run": ApiRun::from(&run) }),
-            ));
-        }
-        if first {
-            // Live runs replay their whole log through the stream (chunked per
-            // tick); terminal runs start at EOF — backfill is /api/runs/{id}/log.
-            let start = if is_terminal(&run.status) {
-                log_size(&run.id)
-            } else {
-                0
-            };
-            cursor.log_offsets.insert(run.id.clone(), start);
-        }
-        // Terminal runs were seeded at EOF above, so this is a no-op for them.
-        push_log_delta(&run, cursor, &mut out, &mut log_budget);
-    }
-    // Committed only now that the batch is certain to be returned.
-    if let Some(update) = sampled_update {
-        cursor.update = Some(update);
-    }
-    Ok(out)
-}
-
-fn push_experiment_events(
-    store: &Store,
-    project_id: &str,
-    cursor: &mut EventCursor,
-    out: &mut Vec<Event>,
-) -> Result<()> {
-    for exp in store.list_experiments_by_project(project_id)? {
-        if cursor.experiments.get(&exp.id) != Some(&exp.updated_at) {
-            cursor.experiments.insert(exp.id.clone(), exp.updated_at);
-            out.push(json_event(
-                "experiment.updated",
-                &json!({ "experiment": exp }),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn push_log_delta(
-    run: &StoredRun,
-    cursor: &mut EventCursor,
-    out: &mut Vec<Event>,
-    budget: &mut u64,
-) {
-    let offset = *cursor.log_offsets.entry(run.id.clone()).or_insert(0);
-    let size = log_size(&run.id);
-    if size <= offset || *budget == 0 {
-        return;
-    }
-    let chunk = read_log_from(&run.id, offset, *budget);
-    *budget -= chunk.len() as u64;
-    cursor
-        .log_offsets
-        .insert(run.id.clone(), offset + chunk.len() as u64);
-    // base64: chunk boundaries are arbitrary byte positions, and exact byte
-    // lengths are what lets the client dedup replays.
-    out.push(json_event(
-        "run.log",
-        &json!({
-            "runId": run.id,
-            "dataBase64": base64::engine::general_purpose::STANDARD.encode(&chunk),
-            "offset": offset,
-        }),
-    ));
-}
-
-fn log_size(run_id: &str) -> u64 {
-    std::fs::metadata(log_path(run_id))
-        .map(|m| m.len())
-        .unwrap_or(0)
-}
-
-fn read_log_from(run_id: &str, offset: u64, max: u64) -> Vec<u8> {
-    use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut f) = std::fs::File::open(log_path(run_id)) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    if f.seek(SeekFrom::Start(offset)).is_ok() {
-        let _ = f.take(max).read_to_end(&mut out);
-    }
-    out
-}
-
 // --- embedded SPA ----------------------------------------------------------
 
 /// ui/dist, embedded at release build time (debug builds read from disk).
@@ -8911,6 +8844,19 @@ pub(crate) async fn spa(uri: Uri) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn slow_sync_work_leaves_async_timers_responsive() {
+        let work = blocking_task(|| std::thread::sleep(Duration::from_millis(150)));
+        let heartbeat = async {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        let (_, heartbeat) = tokio::join!(
+            work,
+            tokio::time::timeout(Duration::from_millis(80), heartbeat)
+        );
+        assert!(heartbeat.is_ok());
+    }
 
     #[test]
     fn new_chat_uses_saved_preferences_and_normalizes_model_settings() {

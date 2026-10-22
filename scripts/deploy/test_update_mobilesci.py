@@ -19,7 +19,7 @@ class UpdateBundleTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         path = Path(temp.name) / 'bundle.tgz'
         files = {'update-server.py': b'print("test")', 'workbench/orx': b'\x7fELFtest', 'workbench/Dockerfile': b'FROM test', 'platform/Dockerfile': b'FROM test', 'platform/dist/index.html': b'page'}
-        manifest = {'format': 1, 'architecture': 'linux/amd64', 'files': {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
+        manifest = {'format': 1, 'architecture': 'linux/amd64', 'commit': 'a' * 40, 'files': {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
         if corrupt:
             files['workbench/orx'] = b'corrupt'
         files['manifest.json'] = json.dumps(manifest).encode()
@@ -73,6 +73,27 @@ class UpdateBundleTests(unittest.TestCase):
     def test_complete_bundle_verifies(self):
         self.assertEqual(update.verify_bundle(self.bundle())['architecture'], 'linux/amd64')
 
+    def test_upload_requires_evidence_before_any_network_action(self):
+        with patch.object(update, 'run', side_effect=AssertionError('must not contact server')):
+            with self.assertRaisesRegex(ValueError, '--evidence'):
+                update.upload(self.bundle())
+
+    def test_evidence_must_bind_the_exact_bundle_and_binary(self):
+        bundle = self.bundle()
+        manifest = update.verify_bundle(bundle)
+        evidence = bundle.parent / 'evidence.json'
+        data = {'revision': manifest['commit'], 'components': {'workbench': {'artifactSha256': manifest['files']['workbench/orx']},
+                               'platform': {'artifactSha256': update.digest(bundle)}}}
+        evidence.write_text(json.dumps(data))
+        with patch.object(update, 'run') as execute:
+            update.authorize_upload(bundle, evidence)
+            self.assertEqual(execute.call_args.args[0][1], update.ROOT / 'scripts/check-release-evidence.mjs')
+        data['components']['platform']['artifactSha256'] = '0' * 64
+        evidence.write_text(json.dumps(data))
+        with patch.object(update, 'run', side_effect=AssertionError('must not contact server')):
+            with self.assertRaisesRegex(ValueError, '产物与部署包不一致'):
+                update.authorize_upload(bundle, evidence)
+
     def test_literature_callback_drift_blocks_upgrade_before_replacement(self):
         import ast
         source = Path(__file__).with_name('update-server.py').read_text()
@@ -105,8 +126,15 @@ class UpdateBundleTests(unittest.TestCase):
         bundle = self.bundle()
         output = bundle.parent
         (output / 'latest.json').write_text(json.dumps({'file': bundle.name, 'sha256': update.digest(bundle), 'fingerprint': 'same'}))
-        with patch.object(update, 'OUTPUT', output), patch.object(update, 'fingerprint', return_value='same'), patch.object(update, 'run', side_effect=AssertionError('unexpected command')):
+        with patch.object(update, 'OUTPUT', output), patch.object(update, 'fingerprint', return_value='same'), patch.object(update.subprocess, 'check_output', return_value='a' * 40), patch.object(update, 'run', side_effect=AssertionError('unexpected command')):
             self.assertEqual(update.prepare(), bundle)
+
+    def test_cached_bundle_from_another_commit_is_not_reused(self):
+        bundle = self.bundle()
+        (bundle.parent / 'latest.json').write_text(json.dumps({'file': bundle.name, 'sha256': update.digest(bundle), 'fingerprint': 'same'}))
+        with patch.object(update, 'OUTPUT', bundle.parent), patch.object(update, 'fingerprint', return_value='same'), patch.object(update.subprocess, 'check_output', return_value='b' * 40), patch.object(update, 'run', side_effect=RuntimeError('rebuild required')):
+            with self.assertRaisesRegex(RuntimeError, 'rebuild required'):
+                update.prepare()
 
     def test_package_contains_platform_dependencies_and_migrations(self):
         with tempfile.TemporaryDirectory() as temp:

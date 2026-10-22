@@ -9,6 +9,7 @@
 //! `~/.local/share/openresearch`.
 
 pub(crate) mod research;
+mod schema;
 mod telemetry;
 pub(crate) use telemetry::{InvocationIdentity, TokenUsage};
 
@@ -784,9 +785,8 @@ impl Store {
                 preferred_reasoning_level TEXT
             );",
         )?;
-        // Best-effort migrations for pre-existing dbs; re-runs fail with
-        // "duplicate column name", which is exactly the no-op we want.
-        for ddl in [
+        // Keep this applied batch immutable; future columns require a new migration.
+        schema::migrate_columns(&conn, "legacy-columns-v1", &[
             "ALTER TABLE native_invocation_identities ADD COLUMN session_id TEXT",
             "ALTER TABLE native_invocation_identities ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE chat_usage_samples ADD COLUMN complete INTEGER NOT NULL DEFAULT 0",
@@ -831,9 +831,7 @@ impl Store {
             "ALTER TABLE chat_spawns ADD COLUMN finished_at INTEGER",
             "ALTER TABLE chat_messages ADD COLUMN completed_at INTEGER",
             "ALTER TABLE runs ADD COLUMN cancel_reason TEXT",
-        ] {
-            let _ = conn.execute(ddl, []);
-        }
+        ])?;
         conn.execute_batch("CREATE TRIGGER IF NOT EXISTS delete_chat_invocation_identities AFTER DELETE ON chat_sessions BEGIN DELETE FROM native_invocation_identities WHERE session_id = OLD.id; END;")?;
         conn.execute(
             "DELETE FROM native_invocation_identities WHERE session_id IS NULL AND created_at < ?1",

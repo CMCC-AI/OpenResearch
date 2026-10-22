@@ -1,3 +1,4 @@
+import { ChatMessageStream } from "./chatMessageDelta";
 // One EventSource('/api/events') for the whole app. Entity updates go to the
 // caller's handlers; run.log deltas fan out through a tiny per-run emitter so
 // terminals can subscribe without threading props everywhere.
@@ -238,7 +239,8 @@ export function useOrxEventStream(handlers: OrxEventHandlers) {
     const connect = () => {
       // connect() owns exactly one live source.
       source?.close();
-      const es = new EventSource("/api/events");
+      const messages = new ChatMessageStream();
+      const es = new EventSource("/api/events?deltas=true");
       source = es;
       es.onerror = () => {
         // An error landing after cleanup would otherwise arm a timer whose id no
@@ -258,6 +260,7 @@ export function useOrxEventStream(handlers: OrxEventHandlers) {
       };
       es.onopen = () => {
         if (stopped) return;
+        messages.clear();
         window.clearTimeout(offlineTimer);
         offlineTimer = undefined;
         setConnected(true);
@@ -278,6 +281,7 @@ export function useOrxEventStream(handlers: OrxEventHandlers) {
         }
       };
       es.addEventListener("resync.required", () => {
+        messages.clear();
         emitChat({ type: "reconnected" });
         emitProjectActivityEvent();
         ref.current.onReconnect?.();
@@ -329,10 +333,26 @@ export function useOrxEventStream(handlers: OrxEventHandlers) {
         }
       });
       es.addEventListener("chat.message", (e) => {
-        const d = parse<{ sessionId: string; message: ChatMessage }>(e as MessageEvent);
+        const d = messages.full(parse<unknown>(e as MessageEvent));
         if (d?.message) {
           emitProjectActivityEvent();
           emitChat({ type: "message", sessionId: d.sessionId, message: d.message });
+        }
+      });
+      es.addEventListener("chat.message.delta", (e) => {
+        const d = messages.delta(parse<unknown>(e as MessageEvent));
+        if (d) {
+          emitProjectActivityEvent();
+          emitChat({ type: "message", ...d });
+        } else {
+          // A gap must establish a new server baseline, not guess at message contents.
+          messages.clear();
+          needsRepair = true;
+          es.close();
+          if (reopenTimer === undefined) reopenTimer = window.setTimeout(() => {
+            reopenTimer = undefined;
+            if (!stopped) connect();
+          }, REOPEN_AFTER_MS);
         }
       });
       es.addEventListener("chat.busy", (e) => {

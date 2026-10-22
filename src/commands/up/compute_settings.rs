@@ -179,7 +179,7 @@ pub(super) fn modal_settings_json() -> crate::error::Result<Value> {
 }
 
 pub(super) async fn modal_settings() -> ApiResult {
-    Ok(Json(modal_settings_json().map_err(bad_request)?))
+    blocking_api(move || Ok(Json(modal_settings_json().map_err(bad_request)?))).await
 }
 
 #[derive(Deserialize)]

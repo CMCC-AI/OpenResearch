@@ -483,6 +483,7 @@ pub fn service_tier_for<'a>(harness_id: &str, id: &'a str) -> Option<&'a str> {
 pub(crate) enum Waited<T> {
     Event(T),
     Steer(SteerMessage),
+    Checkpoint,
 }
 
 /// The next message the user steers into a running turn. A turn without a

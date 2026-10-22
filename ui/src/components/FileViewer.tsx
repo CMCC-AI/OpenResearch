@@ -52,9 +52,11 @@ import {
 import { useLatexCompile } from "../useLatexCompile";
 import { useOverleafSync } from "../useOverleafSync";
 import {
+  documentAssetTarget,
   isExternalMarkdownTarget,
   markdownTargetUrl,
   resolveMarkdownTarget,
+  type ImageCandidate,
 } from "../markdownTarget";
 import { CodeView } from "./CodeView";
 import { CodeEditor } from "./CodeEditor";
@@ -283,6 +285,22 @@ export function FileViewer({
       return markdownTargetUrl(rawFileUrl(target.path), target);
     },
     [isAbsolute, parentFolder, rawFileUrl],
+  );
+  /** A Markdown image; an embedded HTML document's assets resolve from that document's folder. */
+  const resolveImageCandidates = useCallback(
+    (src: string): ImageCandidate[] => {
+      const url = resolveAssetSrc(src);
+      if (!url) return [];
+      const target = isExternalMarkdownTarget(src) ? null : resolveMarkdownTarget(parentFolder, src, isAbsolute);
+      return [{
+        url,
+        resolveAsset: (child) => {
+          const asset = target && documentAssetTarget(target.path, child, isAbsolute);
+          return asset ? rawFileUrl(asset.path) + asset.hash : null;
+        },
+      }];
+    },
+    [isAbsolute, parentFolder, rawFileUrl, resolveAssetSrc],
   );
   // Stable so Md's memo holds; callers pass a fresh `onOpenFile` each render.
   const onOpenFileRef = useRef(onOpenFile);
@@ -914,7 +932,7 @@ export function FileViewer({
               <Md
                 text={data.content}
                 resolveFilePath={resolveMarkdownFilePath}
-                resolveImageSrc={resolveAssetSrc}
+                resolveImageSrc={resolveImageCandidates}
                 onOpenFile={onOpenFile && openMarkdownFile}
               />
             )}

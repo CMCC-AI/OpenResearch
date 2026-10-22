@@ -15,6 +15,14 @@ pub struct MaterialsArgs {
 }
 #[derive(Subcommand, Debug)]
 pub enum MaterialsCommand {
+    /// Preview abandoned unsealed uploads; sealed inputs are always retained.
+    Gc {
+        #[arg(long, default_value_t = 7)]
+        days: u32,
+        /// Remove only the reported abandoned uploads (unavailable inside agent sessions).
+        #[arg(long)]
+        apply: bool,
+    },
     /// List immutable sources, versions and parsing limitations.
     List {
         package: String,
@@ -50,10 +58,20 @@ pub async fn run(args: MaterialsArgs) -> Result<()> {
     let project = session_project
         .or(args.project)
         .ok_or_else(|| anyhow!("请提供 --project 或在 agent 会话中运行"))?;
-    store
-        .get_local_project(&project)?
-        .ok_or_else(|| anyhow!("project not found"))?;
+    if !matches!(&args.command, MaterialsCommand::Gc { .. }) {
+        store
+            .get_local_project(&project)?
+            .ok_or_else(|| anyhow!("project not found"))?;
+    }
     let result = match args.command {
+        MaterialsCommand::Gc { days, apply } => {
+            if apply && crate::local::chat::launching_chat_session().is_some() {
+                return Err(anyhow!(
+                    "Agent 会话不能删除材料；请由用户在终端检查清单后执行"
+                ));
+            }
+            serde_json::to_value(materials::collect_abandoned(&project, days, apply)?)?
+        }
         MaterialsCommand::List {
             package,
             offset,

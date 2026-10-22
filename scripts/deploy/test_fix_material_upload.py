@@ -8,6 +8,12 @@ spec.loader.exec_module(upload_fix)
 
 
 class MaterialUploadDeploymentTests(unittest.TestCase):
+    def test_runtime_ownership_excludes_other_projects_and_retained_rollbacks(self):
+        item = {'Name': '/orx-managed-owned', 'Config': {'Labels': {'openresearch.managed': 'true', 'openresearch.workspace': 'owned'}}}
+        self.assertTrue(upload_fix.owned_runtime(item, {'owned'}))
+        self.assertFalse(upload_fix.owned_runtime(item, {'another-project'}))
+        item['Name'] += '-rollback'
+        self.assertFalse(upload_fix.owned_runtime(item, {'owned'}))
     def test_managed_images_change_without_touching_credentials(self):
         env = {'MANAGED_EXECUTOR_IMAGE': 'executor:old', 'MANAGED_CONNECTOR_IMAGE': 'connector:old', 'TOKEN_FILE': '/private/token'}
         result = upload_fix.source_changes(env, {'executor:old': 'executor:new', 'connector:old': 'connector:new'})

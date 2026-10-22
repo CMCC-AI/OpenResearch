@@ -43,7 +43,8 @@ test("workspace settings render with no project and retain compute history navig
     let navigation;
     const { WorkspaceSettingsPage } = load("product/WorkspaceSettingsPage.tsx", {
       "@tanstack/react-router": { useParams: () => ({ tab }), useNavigate: () => (target) => { navigation = target; } },
-      "../components/SettingsPage": { SettingsView: (props) => { settings = props; return React.createElement("p", null, props.tab); } },
+      react: { ...React, lazy: () => (props) => { settings = props; return React.createElement("p", null, props.tab); } },
+      "../components/ui": { Spinner: () => null },
       "../RemoteRuntime": { useRuntime: () => ({ kind: "local" }) },
       "../workspaceState": { isSettingsSection: () => true },
       "../paraglide/messages.js": { m: { settings_page_compute: () => "Compute", settings_page_settings: () => "Settings" } },

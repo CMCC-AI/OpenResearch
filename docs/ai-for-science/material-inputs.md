@@ -23,7 +23,11 @@
 
 排查上传的 HTTP 413 时，先检查具体失败文件、平台网关和 runner 的版本，以及外层代理限制。当前文件夹按文件逐个发送，不应将整个文件夹总大小作为单次请求上限。上传失败时消息未发送、研究尚未开始；修复后可在保留材料草稿的会话重试，无需删除项目或对话。
 
-现有 MobileSci 部署可使用 `scripts/deploy/fix-material-upload.py`。在服务器准备仅含 `runner.mjs`、`tunnel.mjs` 和 `material-upload.test.mjs` 的补丁目录后，运行 `python3 fix-material-upload.py --source <补丁目录>` 先只读检查，确认后加 `--apply`。工具基于原镜像叠加两份传输模块，先在隔离容器中测试大文件完整性和普通接口上限，再检查空闲并替换平台及所有 runner；同步 provisioner 的未来镜像引用和持久化 Compose。容器配置及旧 Compose 保存到服务器用户目录的 `.mobilesci-upload-fix-*` 私有备份目录，失败自动回滚，旧容器与数据卷保留。该工具不升级 Rust 二进制、模型引擎、数据库结构或前端。
+现有 MobileSci 部署可使用 `scripts/deploy/fix-material-upload.py`。在服务器准备含 `runner.mjs`、`tunnel.mjs`、`runner-lock.mjs` 和 `material-upload.test.mjs` 的补丁目录后，运行 `python3 fix-material-upload.py --source <补丁目录>` 先只读检查，确认后加 `--apply`。工具基于原镜像叠加三份运行模块（runner、tunnel 和 runner-lock），先在隔离容器中测试大文件完整性和普通接口上限，再检查空闲并替换平台及所有 runner；同步 provisioner 的未来镜像引用和持久化 Compose。容器配置及旧 Compose 保存到服务器用户目录的 `.mobilesci-upload-fix-*` 私有备份目录，失败自动回滚，旧容器与数据卷保留。该工具不升级 Rust 二进制、模型引擎、数据库结构或前端。
+
+运行环境要求 Node >=22.20，以支持 runner-lock 使用的 SQLite 文件锁。升级时先确认 runner 空闲，再替换模块并重启；不得删除仍在使用的锁文件或研究数据。该步骤与 PDF 解析器镜像更新分别验证。
+
+以下记录仅表示历史上传修复已部署，不表示后续 SQLite runner 锁已部署：
 
 2026-10-21 已部署该上传修复：平台和两个现有 runner 的模块哈希与补丁一致，两个 runner 均为 healthy，原挂载及数据卷保持一致；provisioner 和持久化 Compose 指向补丁后的未来 executor／connector 镜像。服务器隔离容器内实测 9 MiB 与 32 MiB 文件经网关及真实 runner 传输后 SHA-256 一致，普通接口超过 8 MiB 仍被拒绝；未代用户重跑科研任务。回滚目录为 `/home/ubuntu/.mobilesci-upload-fix-20261021t063147z`，其中容器配置可能包含凭据，保持私有。
 
@@ -74,9 +78,17 @@ agent 会话中项目身份从会话解析，不能用 --project 指向其他项
 - 构建并部署含 PDF 文本解析依赖的执行器镜像；进一步打包 OCR/复杂表格解析依赖，统一页面渲染与图像阅读代理。
 - 可查询的结构化阅读覆盖记录、来源关系及研究包原件导出；目前由专家报告记录，引用可使用现有 claim 的 source/location。
 - 远端独立执行主机的材料同步／挂载；本阶段仅保证共享本地数据目录的 harness 与 worktree 可用。
-- 草稿取消后的未完成集合清理、跨导入增量去重、显式材料集合版本关系。
+- 跨导入增量去重、显式材料集合版本关系；未完成集合已提供显式 GC，见下文，仍需部署验收。
 - 统一搜索工具、独立页面预览和已有项目目录快照导入；已有项目文件仍可使用当前路径引用与原生工具读取。
 
 ## 验收
 
 验证两种模式各自的无附件／单文件／目录输入；无附件不走上传 API。验证目录拖入多批条目、相对路径、ZIP 安全和限额、Notebook 来源、上传完成响应丢失后的重试、活动消息分支、重新采样、项目隔离、专家输入固定及原件变化检测。遵循仓库 CI 的 Rust 格式／clippy／测试和 UI 类型检查／测试／构建，提交 regenerated ui/dist。
+
+## 材料容量与未完成上传回收（源码实现，待部署验收）
+
+材料 root 默认限制为 4 GiB，可用执行器环境变量 `ORX_MATERIAL_STORAGE_BYTES` 配置（至少 32 MiB）；跨进程写入通过配额锁串行核算。ZIP 逐文件暂存到磁盘，失败清理暂存；HTTP 在缓冲 body 前限制一个并发上传，繁忙时返回 429。
+
+`orx materials --project <id> gc --days 7` 预览过期未封存包；核对后加 `--apply` 才删除。最少保留 24 小时，sealed 材料永不自动删除，Agent 会话不能执行 apply。本轮未执行真实清理。可指定已删除项目的 ID 回收其未完成包。
+
+详见 [技术债修复记录](technical-debt-remediation-2026-10-21.md)。

@@ -5,8 +5,8 @@
 //!
 //! Flow: `POST /api/chat/sessions/{id}/message` → `ChatHost::send_message`
 //! persists the user message and spawns one turn task. The adapter streams
-//! normalized parts into the per-turn assistant message; every flush persists
-//! the message and broadcasts it as a `chat.message` SSE event.
+//! normalized parts into the per-turn assistant message. Flushes broadcast
+//! `chat.message` events; ordinary streaming writes use periodic checkpoints.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -33,11 +33,13 @@ use crate::store::{
 /// Min interval between mid-turn persist+broadcast flushes (streaming parts
 /// can update many times a second; the final flush is always unconditional).
 const FLUSH_INTERVAL: Duration = Duration::from_millis(75);
+/// Streaming checkpoints bound crash loss; explicit/final flushes remain immediate.
+const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Max chars of a tool part's `output`/`error` kept on the wire and in the
-/// store. Every flush re-broadcasts (and re-persists) the FULL assistant
-/// message, so uncapped tool outputs make each 75ms SSE frame O(total tool
-/// output) for the whole turn. The UI never shows more than 20k chars of a
+/// store. The chat host supplies full messages to its subscribers; legacy SSE
+/// clients also receive full frames, while opt-in clients use deltas. Cap
+/// outputs before both broadcasts and periodic checkpoints. The UI never shows more than 20k chars of a
 /// tool output anyway (ToolRow slices); capping below that keeps the
 /// truncation marker visible under the UI's own slice.
 const TOOL_TEXT_CAP: usize = 16_000;
@@ -7125,6 +7127,8 @@ pub struct TurnCtx {
     /// harnesses that can't take mid-turn input — those park sends instead.
     pub steering: Option<SteerReceiver>,
     last_flush: Instant,
+    last_persist: Instant,
+    last_persisted_snapshot: String,
     last_flushed_tool_states: Vec<(String, String)>,
     last_attempted_tool_states: Vec<(String, String)>,
     target_event_path: Option<PathBuf>,
@@ -7179,6 +7183,8 @@ fn turn_ctx_from_stored(
             .and_then(|json| serde_json::from_str(json).ok()),
         steering: None,
         last_flush: Instant::now() - FLUSH_INTERVAL,
+        last_persist: Instant::now() - CHECKPOINT_INTERVAL,
+        last_persisted_snapshot: String::new(),
         last_flushed_tool_states: Vec::new(),
         last_attempted_tool_states: Vec::new(),
         target_event_path: None,
@@ -7580,6 +7586,8 @@ impl TurnCtx {
             context_usage: None,
             steering: None,
             last_flush: Instant::now(),
+            last_persist: Instant::now() - CHECKPOINT_INTERVAL,
+            last_persisted_snapshot: String::new(),
             last_flushed_tool_states: Vec::new(),
             last_attempted_tool_states: Vec::new(),
             target_event_path: None,
@@ -7827,25 +7835,74 @@ impl TurnCtx {
             .push(WirePart::tool(id, "error", "error", Some(message)));
     }
 
-    /// Persist + broadcast the assistant message, rate-limited mid-turn.
+    /// Each adapter owns this timer for its active turn. Ticks must not reset
+    /// the adapter's watchdog or cancel an in-progress transport read.
+    pub(crate) fn checkpoint_timer() -> tokio::time::Interval {
+        let mut timer = tokio::time::interval_at(
+            tokio::time::Instant::now() + CHECKPOINT_INTERVAL,
+            CHECKPOINT_INTERVAL,
+        );
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        timer
+    }
+
+    fn checkpoint_snapshot(&self) -> Result<String> {
+        Ok(serde_json::to_string(&(
+            &self.assistant.parts,
+            self.assistant.completed_at,
+            &self.native_session_id,
+        ))?)
+    }
+
+    fn checkpoint_with_store(&mut self, open: impl FnOnce() -> Result<Store>) -> Result<()> {
+        if !self.assistant.parts.is_empty()
+            && self.checkpoint_snapshot()? != self.last_persisted_snapshot
+        {
+            self.flush_with_store(true, open)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn checkpoint(&mut self) {
+        if let Err(error) = self.checkpoint_with_store(Store::open) {
+            // Do not acknowledge a failed write: the next tick retries it.
+            eprintln!(
+                "orx up: chat checkpoint failed for {}: {error}",
+                self.session_id
+            );
+        }
+    }
+
+    /// Broadcast frequently, with periodic persistence even without new events.
     pub fn maybe_flush(&mut self) {
         let tool_states = tool_state_signature(&self.assistant.parts);
         let unattempted_state = tool_states != self.last_flushed_tool_states
             && tool_states != self.last_attempted_tool_states;
         if unattempted_state || self.last_flush.elapsed() >= FLUSH_INTERVAL {
             self.last_attempted_tool_states = tool_states;
-            let _ = self.flush();
+            let _ = self.flush_with_checkpoint(false);
         }
     }
 
     pub fn flush(&mut self) -> Result<()> {
+        self.flush_with_checkpoint(true)
+    }
+
+    fn flush_with_checkpoint(&mut self, force: bool) -> Result<()> {
+        self.flush_with_store(force, Store::open)
+    }
+
+    fn flush_with_store(
+        &mut self,
+        force: bool,
+        open: impl FnOnce() -> Result<Store>,
+    ) -> Result<()> {
         self.last_flush = Instant::now();
         if self.assistant.parts.is_empty() {
             return Ok(());
         }
         self.apply_target_events();
         cap_tool_parts(&mut self.assistant.parts);
-        let store = Store::open()?;
         // A prompt card the harness surfaced mid-turn (opencode's inline
         // permission/question) may be answered *while the turn is still running*
         // — `respond` flips its `resolved` flag on the persisted message from a
@@ -7856,31 +7913,39 @@ impl TurnCtx {
         // (else that reconcile-then-clobber is a lost update). Only pay the lock
         // when this message actually carries a prompt part.
         let has_prompt = self.assistant.parts.iter().any(|p| p.prompt.is_some());
-        let wire_assistant = {
-            // Clone the host handle so the guard borrows it, not `self` — the
-            // reconcile below needs `&mut self`.
-            let host = self.host.clone();
-            let _guard = has_prompt.then(|| host.msg_write.lock().unwrap());
-            if has_prompt {
-                self.adopt_resolved_prompts(&store);
-            }
-            let mut wire_assistant = self.assistant.clone();
-            cap_tool_parts(&mut wire_assistant.parts);
-            // Stamp the branch position onto the SSE copy (see the interrupt
-            // marker above for what an unparented broadcast does to a client).
-            wire_assistant.parent_id = store.upsert_chat_message_on_branch(&StoredChatMessage {
-                id: wire_assistant.id.clone(),
-                session_id: self.session_id.clone(),
-                role: wire_assistant.role.clone(),
-                parts_json: serde_json::to_string(&wire_assistant.parts)?,
-                created_at: wire_assistant.created_at,
-                completed_at: wire_assistant.completed_at,
-                parent_id: None,
-                base_native_session_id: None,
-                result_native_session_id: self.native_session_id.clone(),
-            })?;
-            wire_assistant
-        };
+        let wire_assistant =
+            if force || has_prompt || self.last_persist.elapsed() >= CHECKPOINT_INTERVAL {
+                let store = open()?;
+                // Clone the host handle so the guard borrows it, not `self` — the
+                // reconcile below needs `&mut self`.
+                let host = self.host.clone();
+                let _guard = has_prompt.then(|| host.msg_write.lock().unwrap());
+                if has_prompt {
+                    self.adopt_resolved_prompts(&store);
+                }
+                let mut wire_assistant = self.assistant.clone();
+                cap_tool_parts(&mut wire_assistant.parts);
+                // Stamp the branch position onto the SSE copy (see the interrupt
+                // marker above for what an unparented broadcast does to a client).
+                wire_assistant.parent_id =
+                    store.upsert_chat_message_on_branch(&StoredChatMessage {
+                        id: wire_assistant.id.clone(),
+                        session_id: self.session_id.clone(),
+                        role: wire_assistant.role.clone(),
+                        parts_json: serde_json::to_string(&wire_assistant.parts)?,
+                        created_at: wire_assistant.created_at,
+                        completed_at: wire_assistant.completed_at,
+                        parent_id: None,
+                        base_native_session_id: None,
+                        result_native_session_id: self.native_session_id.clone(),
+                    })?;
+                self.assistant.parent_id = wire_assistant.parent_id.clone();
+                self.last_persist = Instant::now();
+                self.last_persisted_snapshot = self.checkpoint_snapshot()?;
+                wire_assistant
+            } else {
+                self.assistant.clone()
+            };
         self.host.emit(
             "chat.message",
             message_json(&wire_assistant, &self.session_id),
@@ -11699,5 +11764,167 @@ mod steering_tests {
         assert_eq!(host.queued_items("owner")[0]["text"], "still here");
         drop(store);
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn streaming_checkpoints_keep_branch_parent_and_force_final_and_prompt_writes() {
+        let dir = std::env::temp_dir().join(format!("orx-checkpoint-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_at(dir.clone()).unwrap();
+        let session = StoredChatSession {
+            id: "session".into(),
+            project_id: "project".into(),
+            harness: "codex".into(),
+            native_session_id: None,
+            title: None,
+            title_source: None,
+            model: None,
+            service_tier: None,
+            permission_mode: None,
+            plan_mode: false,
+            plan_reset_pending: false,
+            reasoning_level: None,
+            archived: false,
+            context_usage_json: None,
+            bootstrap_context: None,
+            goal: None,
+            autonomy: None,
+            active_leaf_id: None,
+            parent_session_id: None,
+            side_parent_session_id: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        store.create_chat_session(&session).unwrap();
+        store
+            .upsert_chat_message_on_branch(&StoredChatMessage {
+                id: "user".into(),
+                session_id: session.id.clone(),
+                role: "user".into(),
+                parts_json: "[]".into(),
+                created_at: 1,
+                completed_at: Some(1),
+                parent_id: None,
+                base_native_session_id: None,
+                result_native_session_id: None,
+            })
+            .unwrap();
+        let project = LocalProject {
+            id: "project".into(),
+            name: "project".into(),
+            slug: "project".into(),
+            github_owner: String::new(),
+            github_repo: String::new(),
+            github_sync_enabled: false,
+            baseline_branch: "main".into(),
+            repo_path: dir.to_string_lossy().into_owned(),
+            run_command: None,
+            paper_id: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let turn = StoredChatTurn {
+            id: "turn".into(),
+            session_id: session.id.clone(),
+            user_message_id: Some("user".into()),
+            assistant_message_id: "assistant".into(),
+            client_turn_id: "client".into(),
+            request_hash: String::new(),
+            prepared_input: String::new(),
+            settings_json: "{}".into(),
+            state: "running".into(),
+            delivery_state: "sent".into(),
+            attempt_count: 0,
+            next_retry_at: None,
+            error_kind: None,
+            error_message: None,
+            recovery_action: None,
+            recovered_by_turn_id: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let host = Arc::new(ChatHost::new(
+            Arc::new(AgentHost::new(None)),
+            Arc::new(crate::local::codex::CodexHost::new()),
+            Arc::new(crate::local::claude::ClaudeHost::new()),
+        ));
+        let mut events = host.subscribe();
+        let mut ctx = turn_ctx_from_stored(
+            host,
+            &session,
+            project,
+            &turn,
+            WireMessage {
+                id: "assistant".into(),
+                role: "assistant".into(),
+                parts: vec![WirePart::text("part", "first")],
+                created_at: 2,
+                completed_at: None,
+                parent_id: None,
+            },
+        );
+        let open = || Store::open_at(dir.clone());
+        ctx.flush_with_store(false, open).unwrap();
+        assert_eq!(ctx.assistant.parent_id.as_deref(), Some("user"));
+        let (_, initial) = events.try_recv().unwrap();
+        assert_eq!(initial["message"]["parentId"], "user");
+        ctx.assistant.parts[0].text = Some("streamed".into());
+        ctx.flush_with_store(false, || {
+            panic!("a mid-checkpoint broadcast must not open the store")
+        })
+        .unwrap();
+        assert!(store
+            .get_chat_message("assistant")
+            .unwrap()
+            .unwrap()
+            .parts_json
+            .contains("first"));
+        let (_, streamed) = events.try_recv().unwrap();
+        assert_eq!(streamed["message"]["parentId"], "user");
+        // No harness event follows this delta. Its independent timer still
+        // checkpoints it, and a failed attempt must remain retryable.
+        let mut timer = TurnCtx::checkpoint_timer();
+        tokio::time::timeout(Duration::from_secs(3), timer.tick())
+            .await
+            .unwrap();
+        assert!(ctx
+            .checkpoint_with_store(|| Err(anyhow!("injected storage failure")))
+            .is_err());
+        assert!(store
+            .get_chat_message("assistant")
+            .unwrap()
+            .unwrap()
+            .parts_json
+            .contains("first"));
+        ctx.checkpoint_with_store(open).unwrap();
+        assert!(store
+            .get_chat_message("assistant")
+            .unwrap()
+            .unwrap()
+            .parts_json
+            .contains("streamed"));
+        ctx.checkpoint_with_store(|| panic!("clean checkpoint must not write again"))
+            .unwrap();
+        ctx.assistant.completed_at = Some(3);
+        ctx.flush_with_store(true, open).unwrap();
+        let final_message = store.get_chat_message("assistant").unwrap().unwrap();
+        assert_eq!(final_message.completed_at, Some(3));
+        assert!(final_message.parts_json.contains("streamed"));
+        ctx.assistant.parts[0].prompt =
+            Some(serde_json::from_value(json!({"kind":"permission"})).unwrap());
+        ctx.flush_with_store(false, open).unwrap();
+        assert!(store
+            .get_chat_message("assistant")
+            .unwrap()
+            .unwrap()
+            .parts_json
+            .contains("permission"));
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

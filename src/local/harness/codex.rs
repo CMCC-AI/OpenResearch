@@ -2842,6 +2842,7 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
     let mut open_requests: HashMap<String, (Value, ServerReqKind)> = HashMap::new();
     // Absolute, so steering can't push the watchdog back on a wedged turn.
     let mut deadline = tokio::time::Instant::now() + TURN_WATCHDOG;
+    let mut checkpoint = TurnCtx::checkpoint_timer();
 
     // Sub-agent threads spawned this turn (Codex collaboration). Their events
     // stream on this same connection with a foreign turnId; we route them into
@@ -2877,9 +2878,14 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
             tokio::select! {
                 event = event => Waited::Event(event),
                 steer = super::next_steer(steering) => Waited::Steer(steer),
+                _ = checkpoint.tick() => Waited::Checkpoint,
             }
         };
         let event = match waited {
+            Waited::Checkpoint => {
+                ctx.checkpoint();
+                continue;
+            }
             Waited::Steer(steer) => {
                 steer_turn(ctx, &client, &thread_id, turn_id.as_deref(), steer).await;
                 continue;

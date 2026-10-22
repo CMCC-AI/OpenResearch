@@ -583,8 +583,15 @@ async function waitForBackend(state) {
   state.backendProcess, state.backendLog)
 }
 
+export async function uiReady(port) {
+  // Vite may bind ::1 while Node's ADDRCONFIG lookup chooses only 127.0.0.1
+  // for localhost in an IPv4-only container. Probe both loopback families.
+  return await httpReady(`http://127.0.0.1:${port}/`)
+    || await httpReady(`http://[::1]:${port}/`)
+}
+
 async function waitForUi(state) {
-  await waitFor('the UI', UI_TIMEOUT_MS, () => httpReady(`http://localhost:${state.uiPort}/`),
+  await waitFor('the UI', UI_TIMEOUT_MS, () => uiReady(state.uiPort),
     state.uiProcess, state.uiLog)
 }
 

@@ -9,6 +9,12 @@ spec.loader.exec_module(module)
 
 
 class UnifiedOpenCodeTests(unittest.TestCase):
+    def test_executor_scope_requires_current_platform_workspace_and_exact_name(self):
+        item = {'Name': '/orx-managed-owned', 'Config': {'Labels': {'openresearch.managed': 'true', 'openresearch.workspace': 'owned'}}}
+        self.assertTrue(module.owned_runtime(item, {'owned'}))
+        self.assertFalse(module.owned_runtime(item, {'unrelated'}))
+        item['Config']['Labels']['openresearch.managed'] = 'false'
+        self.assertFalse(module.owned_runtime(item, {'owned'}))
     def test_executor_migration_preserves_home_auth_and_runtime_isolation(self):
         old = {'Config': {'Image': 'old', 'Env': ['KEEP=value', 'MANAGED_CONFIG_SEED_DIR=/run/orx-seed/opencode']},
                'HostConfig': {'Binds': ['orx-managed-fixture:/home/node', '/shared:/run/orx-seed/opencode:ro', '/auth.json:/run/orx-seed/auth.json:ro'], 'Memory': 1073741824, 'CapDrop': ['ALL']}}

@@ -1,4 +1,5 @@
-import { readFile, open, mkdir, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import { acquireRunnerLock } from "./runner-lock.mjs";
 import { resolve } from "node:path";
 import { WebSocket } from "ws";
 import { check, permitted } from "./security.mjs";
@@ -209,16 +210,13 @@ async function main() {
   );
   // Prevent accidental simultaneous attachment of one connector directory to two tenants.
   const state = resolve(process.env.RUNNER_STATE_DIR || ".runner-state");
-  await mkdir(state, { recursive: true, mode: 0o700 });
-  const lock = await open(`${state}/connector.lock`, "wx", 0o600);
-  const { unlink } = await import("node:fs/promises");
+  const releaseLock = await acquireRunnerLock(state);
   let stopping = false;
   let socket;
   const stop = async () => {
     stopping = true;
     socket?.terminate();
-    await lock.close();
-    await unlink(`${state}/connector.lock`);
+    releaseLock();
     process.exit(0);
   };
   process.on("SIGINT", stop);

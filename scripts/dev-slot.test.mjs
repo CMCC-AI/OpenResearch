@@ -4,6 +4,8 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import http from 'node:http'
+import { once } from 'node:events'
 
 import {
   acquireAdvisoryLock,
@@ -15,7 +17,21 @@ import {
   sqliteBackupCommand,
   supervisorCommandMatches,
   worktreeInfo,
+  uiReady,
 } from './dev-slot.mjs'
+
+test('UI readiness accepts an IPv6-only Vite listener and an IPv4 listener', async () => {
+  for (const host of ['127.0.0.1', '::1']) {
+    const server = http.createServer((_, response) => response.end('ready'))
+    server.listen(0, host)
+    await once(server, 'listening')
+    try {
+      assert.equal(await uiReady(server.address().port), true)
+    } finally {
+      await new Promise(resolve => server.close(resolve))
+    }
+  }
+})
 
 test('a missing registered main checkout does not block isolated development', () => {
   const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'orx-dev-slot-main-')))

@@ -1301,5 +1301,9 @@
   "projects_delete_folder_kept": "پوشهٔ پروژه و فایل‌های آن نگه داشته می‌شوند.",
   "projects_delete_github_kept": "مخزن GitHub پیوندشده نگه داشته می‌شود.",
   "projects_delete_with_folder": "حذف پروژه و پوشه",
-  "projects_delete_recovery_path": "پروژه حذف شد. مسیر بازیابی پوشه: {path}"
+  "projects_delete_recovery_path": "پروژه حذف شد. مسیر بازیابی پوشه: {path}",
+  "remote_repair_run": "Run in terminal",
+  "remote_repair_copy": "Copy command",
+  "remote_repair_copied": "Copied",
+  "remote_repair_terminal": "Repair terminal"
 }

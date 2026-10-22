@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { useReadOnlyWorkspace } from "./components/ReadOnlyWorkspace";
 import { readHarnesses } from "./queries/settings";
 import {
@@ -103,7 +104,7 @@ import {
 } from "./api";
 import { ResearchPanel } from "./components/ResearchPanel";
 import { WorkspaceTools } from "./components/WorkspaceTools";
-import { ProjectTerminal } from "./components/ProjectTerminal";
+const ProjectTerminal = lazy(() => import("./components/ProjectTerminal").then(module => ({ default: module.ProjectTerminal })));
 import { SettingsCommandTerminal } from "./components/SshConnectTerminal";
 import { isWindowsDrivePath } from "./markdownTarget";
 import { ChatPanel, findPartById, spawnRowTitle } from "./components/ChatPanel";
@@ -123,7 +124,8 @@ import { OfflineBanner } from "./components/OfflineBanner";
 import { ExperimentsTable } from "./components/ExperimentsTable";
 import { archiveActionsByExperiment } from "./components/ArchiveMenu";
 import { Md } from "./components/Md";
-import { SettingsView, type SettingsTab } from "./components/SettingsPage";
+import type { SettingsTab } from "./components/SettingsPage";
+const SettingsView = lazy(() => import("./components/SettingsPage").then(module => ({ default: module.SettingsView })));
 import { DemoWelcomeModal } from "./components/Tour";
 import { TreeView } from "./components/TreeView";
 import { onChatEvent, useOrxEvents } from "./events";
@@ -1809,7 +1811,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             {mainView === "skills" ? (
               <SkillsTab />
             ) : mainView !== "chat" ? (
-              <SettingsView
+              <Suspense fallback={<div role="status" className="flex h-full items-center justify-center"><Spinner /></div>}><SettingsView
                 remote={runtime.kind === "ssh"}
                 tab={mainView}
                 project={activeProject}
@@ -1817,7 +1819,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
                   setProjects((current) => (current ? upsert(current, project) : [project]));
                 }}
                 onSelectTab={selectMainView}
-              />
+              /></Suspense>
             ) : null}
           </ChatPanel>
         )}
@@ -2335,12 +2337,12 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             {/* Hidden rather than unmounted so the shell survives tab switches within the panel. */}
             {terminalTabOpen && terminalStartedFor !== null && terminalStartedFor === terminalKey && activeProject && (
               <TabBody className={rightTab === "terminal" && !setupRun ? undefined : "hidden"}>
-                <ProjectTerminal
+                <Suspense fallback={<div role="status" className="flex h-full items-center justify-center"><Spinner /></div>}><ProjectTerminal
                   key={terminalKey}
                   projectId={activeProject.id}
                   sessionId={activeSessionId}
                   active={rightTab === "terminal" && !setupRun}
-                />
+                /></Suspense>
               </TabBody>
             )}
           </aside>

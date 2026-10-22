@@ -1,0 +1,50 @@
+{
+  "baseline": {
+    "sessionId": "s",
+    "streamRevision": 1,
+    "message": {
+      "id": "m",
+      "role": "assistant",
+      "createdAt": 0,
+      "parts": [
+        {
+          "id": "p",
+          "type": "text",
+          "text": "baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline "
+        }
+      ]
+    }
+  },
+  "next": {
+    "sessionId": "s",
+    "message": {
+      "id": "m",
+      "role": "assistant",
+      "createdAt": 0,
+      "parts": [
+        {
+          "id": "p",
+          "type": "text",
+          "text": "baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline baseline 世界"
+        }
+      ]
+    }
+  },
+  "delta": {
+    "sessionId": "s",
+    "messageId": "m",
+    "baseRevision": 1,
+    "revision": 2,
+    "changes": [
+      {
+        "op": "append",
+        "path": [
+          "parts",
+          0,
+          "text"
+        ],
+        "text": "世界"
+      }
+    ]
+  }
+}

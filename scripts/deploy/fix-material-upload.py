@@ -1,6 +1,6 @@
 """Apply the material-upload tunnel fix to existing MobileSci images and runners.
 
-Run on the deployment host with a directory containing runner.mjs/tunnel.mjs.
+Run with runner.mjs, runner-lock.mjs, tunnel.mjs and material-upload.test.mjs.
 Defaults to read-only planning; --apply preserves volumes, credentials and bases.
 """
 import argparse
@@ -31,6 +31,13 @@ def run(*args, capture=False, input=None):
 
 def inspect(name):
     return json.loads(run('docker', 'inspect', name, capture=True))[0]
+
+
+def owned_runtime(item, workspace_ids):
+    labels = item['Config'].get('Labels') or {}
+    workspace = labels.get('openresearch.workspace')
+    return (workspace in workspace_ids and labels.get('openresearch.managed') == 'true'
+            and item['Name'] == '/orx-managed-' + str(workspace))
 
 
 def environment(config):
@@ -119,14 +126,16 @@ def wait_healthy(name):
 
 def main(source, apply=False):
     source = Path(source).resolve()
-    for file in ('runner.mjs', 'tunnel.mjs', 'material-upload.test.mjs'):
+    for file in ('runner.mjs', 'runner-lock.mjs', 'tunnel.mjs', 'material-upload.test.mjs'):
         if not (source / file).is_file():
             raise RuntimeError('Missing patch source: ' + file)
     platform, provisioner = inspect(PLATFORM), inspect(PROVISIONER)
     for name, detail in ((PLATFORM, platform), (PROVISIONER, provisioner)):
         if detail['Config'].get('Labels', {}).get('com.docker.compose.project') != 'mobilesci-remote':
             raise RuntimeError('Unexpected deployment: ' + name)
-    private = [inspect(name) for name in run('docker', 'ps', '--filter', 'label=openresearch.managed=true', '--format', '{{.Names}}', capture=True).splitlines()]
+    query = "const {createPool}=await import('./src/db.mjs');const p=createPool(process.env.DATABASE_URL);try{console.log(JSON.stringify((await p.query('SELECT id FROM workspaces')).rows.map(r=>r.id)))}finally{await p.end()}"
+    workspace_ids = set(json.loads(run('docker', 'exec', PLATFORM, 'node', '--input-type=module', '-e', query, capture=True)))
+    private = [item for name in run('docker', 'ps', '--filter', 'label=openresearch.managed=true', '--format', '{{.Names}}', capture=True).splitlines() if owned_runtime(item := inspect(name), workspace_ids)]
     if not private:
         raise RuntimeError('No managed runners discovered')
     idle_names = [WORKBENCH] + [item['Name'][1:] for item in private if 'src/connector-entry.mjs' not in (item['Config'].get('Cmd') or [])]
@@ -165,9 +174,9 @@ def main(source, apply=False):
             run('docker', 'tag', image_id, base)
             context = backup / ('build-' + str(index))
             context.mkdir()
-            for file in ('runner.mjs', 'tunnel.mjs'):
+            for file in ('runner.mjs', 'runner-lock.mjs', 'tunnel.mjs'):
                 (context / file).write_bytes((source / file).read_bytes())
-            (context / 'Dockerfile').write_text('FROM ' + base + '\nCOPY --chmod=644 runner.mjs tunnel.mjs /app/platform/src/\n')
+            (context / 'Dockerfile').write_text('FROM ' + base + '\nCOPY --chmod=644 runner.mjs runner-lock.mjs tunnel.mjs /app/platform/src/\n')
             run('docker', 'build', '--pull=false', '-t', tag, str(context))
             code = "import {requestBodyLimit,MAX_RUNNER_FRAME} from './src/tunnel.mjs';if(requestBodyLimit('PUT','/api/projects/p/materials/m/files')!==33554432||requestBodyLimit('POST','/api/chat/sessions/s/message')!==8388608||MAX_RUNNER_FRAME<44739244)process.exit(1)"
             run('docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'node', tag, '--input-type=module', '-e', code)
@@ -219,7 +228,7 @@ def main(source, apply=False):
         release(platform['Image'], rendered)
         persisted = True
         for name in [PLATFORM] + [item['Name'][1:] for item in private]:
-            for file in ('runner.mjs', 'tunnel.mjs'):
+            for file in ('runner.mjs', 'runner-lock.mjs', 'tunnel.mjs'):
                 actual = subprocess.check_output(['docker', 'exec', name, 'cat', '/app/platform/src/' + file])
                 if hashlib.sha256(actual).digest() != hashlib.sha256((source / file).read_bytes()).digest():
                     raise RuntimeError('Deployed code hash mismatch: ' + name)
