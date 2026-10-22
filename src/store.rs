@@ -2553,38 +2553,38 @@ impl Store {
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        // Outer None = no such row yet; inner None = a row that is a branch root.
-        let known: Option<Option<String>> = tx
-            .query_row(
-                "SELECT parent_id FROM chat_messages WHERE id = ?1",
-                params![m.id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let parent = match &known {
-            Some(parent) => parent.clone(),
-            None => tx
-                .query_row(
-                    "SELECT active_leaf_id FROM chat_sessions WHERE id = ?1",
-                    params![m.session_id],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .flatten(),
-        };
-        upsert_chat_message_with(
-            &tx,
-            &StoredChatMessage {
-                parent_id: parent.clone(),
-                ..m.clone()
-            },
+        let parent = upsert_chat_message_on_branch_with(&tx, m)?;
+        tx.commit()?;
+        Ok(parent)
+    }
+
+    /// Write a queued checkpoint only while its durable turn is active. The
+    /// state check and branch update share an immediate transaction: a worker
+    /// left running after cancellation cannot overwrite terminal content.
+    /// Outer None means skipped; inner None means a written branch root.
+    pub fn checkpoint_chat_message(
+        &self,
+        turn_id: &str,
+        m: &StoredChatMessage,
+    ) -> Result<Option<Option<String>>> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
         )?;
-        if known.is_none() {
-            tx.execute(
-                "UPDATE chat_sessions SET active_leaf_id = ?2 WHERE id = ?1",
-                params![m.session_id, m.id],
-            )?;
-        }
+        let active: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM chat_turns WHERE id = ?1
+             AND session_id = ?2 AND assistant_message_id = ?3
+             AND state IN ('preparing','retrying','running'))
+             AND NOT EXISTS(SELECT 1 FROM chat_messages WHERE id = ?3
+               AND (session_id != ?2 OR completed_at IS NOT NULL OR created_at != ?4))",
+            params![turn_id, m.session_id, m.id, m.created_at],
+            |row| row.get(0),
+        )?;
+        let parent = if active {
+            Some(upsert_chat_message_on_branch_with(&tx, m)?)
+        } else {
+            None
+        };
         tx.commit()?;
         Ok(parent)
     }
@@ -3404,6 +3404,45 @@ pub struct StoredChatMessage {
     /// Selecting a branch restores it, so the next message continues the branch
     /// on screen rather than whichever fork ran most recently.
     pub result_native_session_id: Option<String>,
+}
+
+fn upsert_chat_message_on_branch_with(
+    tx: &Connection,
+    m: &StoredChatMessage,
+) -> Result<Option<String>> {
+    // Outer None = no such row yet; inner None = a row that is a branch root.
+    let known: Option<Option<String>> = tx
+        .query_row(
+            "SELECT parent_id FROM chat_messages WHERE id = ?1",
+            params![m.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let parent = match &known {
+        Some(parent) => parent.clone(),
+        None => tx
+            .query_row(
+                "SELECT active_leaf_id FROM chat_sessions WHERE id = ?1",
+                params![m.session_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten(),
+    };
+    upsert_chat_message_with(
+        tx,
+        &StoredChatMessage {
+            parent_id: parent.clone(),
+            ..m.clone()
+        },
+    )?;
+    if known.is_none() {
+        tx.execute(
+            "UPDATE chat_sessions SET active_leaf_id = ?2 WHERE id = ?1",
+            params![m.session_id, m.id],
+        )?;
+    }
+    Ok(parent)
 }
 
 fn upsert_chat_message_with(conn: &Connection, m: &StoredChatMessage) -> Result<()> {

@@ -7906,6 +7906,76 @@ impl TurnCtx {
         }
     }
 
+    /// Await each checkpoint before processing another event. A cancelled
+    /// waiter may leave a blocking worker alive; the store fences it against
+    /// terminal turns in the same transaction that writes the snapshot.
+    pub(crate) async fn checkpoint_async(&mut self) {
+        if let Err(error) = self.checkpoint_async_with_store(Store::open).await {
+            eprintln!(
+                "orx up: chat checkpoint failed for {}: {error}",
+                self.session_id
+            );
+        }
+    }
+
+    async fn checkpoint_async_with_store(
+        &mut self,
+        open: impl FnOnce() -> Result<Store> + Send + 'static,
+    ) -> Result<()> {
+        if self.assistant.parts.is_empty()
+            || self.checkpoint_snapshot()? == self.last_persisted_snapshot
+        {
+            return Ok(());
+        }
+        self.last_flush = Instant::now();
+        self.apply_target_events();
+        cap_tool_parts(&mut self.assistant.parts);
+        let mut assistant = self.assistant.clone();
+        let host = self.host.clone();
+        let session_id = self.session_id.clone();
+        let turn_id = self.turn_id.clone();
+        let native_session_id = self.native_session_id.clone();
+        let saved = crate::local::blocking::run(move || -> Result<Option<WireMessage>> {
+            let store = open()?;
+            let has_prompt = assistant.parts.iter().any(|part| part.prompt.is_some());
+            let _guard = has_prompt.then(|| host.msg_write.lock().unwrap());
+            if has_prompt {
+                adopt_resolved_prompts(&mut assistant, &store);
+            }
+            let stored = StoredChatMessage {
+                id: assistant.id.clone(),
+                session_id: session_id.clone(),
+                role: assistant.role.clone(),
+                parts_json: serde_json::to_string(&assistant.parts)?,
+                created_at: assistant.created_at,
+                completed_at: assistant.completed_at,
+                parent_id: None,
+                base_native_session_id: None,
+                result_native_session_id: native_session_id,
+            };
+            let Some(parent) = store.checkpoint_chat_message(&turn_id, &stored)? else {
+                return Ok(None);
+            };
+            assistant.parent_id = parent;
+            Ok(Some(assistant))
+        })
+        .await??;
+        if let Some(assistant) = saved {
+            // No other event can mutate this context while it is borrowed by
+            // this await. Failed/skipped writes never acknowledge its snapshot.
+            self.assistant = assistant;
+            self.last_persist = Instant::now();
+            self.last_persisted_snapshot = self.checkpoint_snapshot()?;
+            self.host.emit(
+                "chat.message",
+                message_json(&self.assistant, &self.session_id),
+            );
+            self.last_flushed_tool_states = tool_state_signature(&self.assistant.parts);
+            self.last_attempted_tool_states = self.last_flushed_tool_states.clone();
+        }
+        Ok(())
+    }
+
     /// Broadcast frequently, with periodic persistence even without new events.
     pub fn maybe_flush(&mut self) {
         let tool_states = tool_state_signature(&self.assistant.parts);
@@ -7954,7 +8024,7 @@ impl TurnCtx {
                 let host = self.host.clone();
                 let _guard = has_prompt.then(|| host.msg_write.lock().unwrap());
                 if has_prompt {
-                    self.adopt_resolved_prompts(&store);
+                    adopt_resolved_prompts(&mut self.assistant, &store);
                 }
                 let mut wire_assistant = self.assistant.clone();
                 cap_tool_parts(&mut wire_assistant.parts);
@@ -7987,45 +8057,45 @@ impl TurnCtx {
         self.last_attempted_tool_states = self.last_flushed_tool_states.clone();
         Ok(())
     }
+}
 
-    /// Merge the persisted resolution state of prompt parts into the in-memory
-    /// assistant message, so a concurrent `respond` that resolved a card isn't
-    /// clobbered by this turn's next flush. Only ever flips `false`→`true` and
-    /// fills an empty echo (`answers`/`approved`/`note`/`annotations`) — never the reverse —
-    /// so it's safe regardless of ordering: the in-memory copy normally never
-    /// carries an echo of its own, and dropping the stored one here would
-    /// erase the stamped outcome on the next flush.
-    fn adopt_resolved_prompts(&mut self, store: &Store) {
-        let Ok(Some(stored)) = store.get_chat_message(&self.assistant.id) else {
-            return;
+/// Merge the persisted resolution state of prompt parts into the in-memory
+/// assistant message, so a concurrent `respond` that resolved a card isn't
+/// clobbered by this turn's next flush. Only ever flips `false`→`true` and
+/// fills an empty echo (`answers`/`approved`/`note`/`annotations`) — never the reverse —
+/// so it's safe regardless of ordering: the in-memory copy normally never
+/// carries an echo of its own, and dropping the stored one here would
+/// erase the stamped outcome on the next flush.
+fn adopt_resolved_prompts(assistant: &mut WireMessage, store: &Store) {
+    let Ok(Some(stored)) = store.get_chat_message(&assistant.id) else {
+        return;
+    };
+    let persisted: Vec<WirePart> = serde_json::from_str(&stored.parts_json).unwrap_or_default();
+    for part in assistant.parts.iter_mut() {
+        let Some(prompt) = part.prompt.as_mut() else {
+            continue;
         };
-        let persisted: Vec<WirePart> = serde_json::from_str(&stored.parts_json).unwrap_or_default();
-        for part in self.assistant.parts.iter_mut() {
-            let Some(prompt) = part.prompt.as_mut() else {
-                continue;
-            };
-            let stored_prompt = persisted
-                .iter()
-                .find(|p| p.id == part.id)
-                .and_then(|p| p.prompt.as_ref());
-            let Some(stored_prompt) = stored_prompt.filter(|p| p.resolved) else {
-                continue;
-            };
-            prompt.resolved = true;
-            // Adopt the echo even when this copy is already resolved but
-            // echo-less (codex's turn loop resolves its in-memory card
-            // without one) — else this flush would persist the bare copy
-            // over the stamped outcome.
-            if prompt.answers.is_empty()
-                && prompt.approved.is_none()
-                && prompt.note.is_none()
-                && prompt.annotations.is_empty()
-            {
-                prompt.answers = stored_prompt.answers.clone();
-                prompt.approved = stored_prompt.approved;
-                prompt.note = stored_prompt.note.clone();
-                prompt.annotations = stored_prompt.annotations.clone();
-            }
+        let stored_prompt = persisted
+            .iter()
+            .find(|p| p.id == part.id)
+            .and_then(|p| p.prompt.as_ref());
+        let Some(stored_prompt) = stored_prompt.filter(|p| p.resolved) else {
+            continue;
+        };
+        prompt.resolved = true;
+        // Adopt the echo even when this copy is already resolved but
+        // echo-less (codex's turn loop resolves its in-memory card
+        // without one) — else this flush would persist the bare copy
+        // over the stamped outcome.
+        if prompt.answers.is_empty()
+            && prompt.approved.is_none()
+            && prompt.note.is_none()
+            && prompt.annotations.is_empty()
+        {
+            prompt.answers = stored_prompt.answers.clone();
+            prompt.approved = stored_prompt.approved;
+            prompt.note = stored_prompt.note.clone();
+            prompt.annotations = stored_prompt.annotations.clone();
         }
     }
 }
@@ -12016,8 +12086,7 @@ mod steering_tests {
 mod checkpoint_tests {
     use super::*;
 
-    #[tokio::test]
-    async fn streaming_checkpoints_keep_branch_parent_and_force_final_and_prompt_writes() {
+    fn checkpoint_fixture() -> (PathBuf, Store, TurnCtx) {
         let dir = std::env::temp_dir().join(format!("orx-checkpoint-{}", uuid::Uuid::new_v4()));
         let store = Store::open_at(dir.clone()).unwrap();
         let session = StoredChatSession {
@@ -12098,8 +12167,8 @@ mod checkpoint_tests {
             Arc::new(crate::local::codex::CodexHost::new()),
             Arc::new(crate::local::claude::ClaudeHost::new()),
         ));
-        let mut events = host.subscribe();
-        let mut ctx = turn_ctx_from_stored(
+        store.admit_chat_turn(None, &turn).unwrap();
+        let ctx = turn_ctx_from_stored(
             host,
             &session,
             project,
@@ -12113,6 +12182,168 @@ mod checkpoint_tests {
                 parent_id: None,
             },
         );
+        (dir, store, ctx)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn async_checkpoint_leaves_worker_responsive_and_retries_without_redundant_writes() {
+        let (dir, store, mut ctx) = checkpoint_fixture();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let root = dir.clone();
+        let checkpoint = ctx.checkpoint_async_with_store(move || {
+            let _ = started.send(());
+            wait.recv_timeout(Duration::from_secs(2))
+                .map_err(|e| anyhow!("heartbeat blocked: {e}"))?;
+            Store::open_at(root)
+        });
+        let heartbeat = async {
+            ready.await.unwrap();
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            release.send(()).unwrap();
+        };
+        let (result, ()) = tokio::join!(checkpoint, heartbeat);
+        result.unwrap();
+        assert_eq!(ctx.assistant.parent_id.as_deref(), Some("user"));
+        ctx.checkpoint_async_with_store(|| panic!("clean snapshot must not open storage"))
+            .await
+            .unwrap();
+        ctx.assistant.parts[0].text = Some("retry tail".into());
+        let acknowledged = ctx.last_persisted_snapshot.clone();
+        assert!(ctx
+            .checkpoint_async_with_store(|| Err(anyhow!("injected write failure")))
+            .await
+            .is_err());
+        assert_eq!(ctx.last_persisted_snapshot, acknowledged);
+        let root = dir.clone();
+        ctx.checkpoint_async_with_store(move || Store::open_at(root))
+            .await
+            .unwrap();
+        assert!(store
+            .get_chat_message("assistant")
+            .unwrap()
+            .unwrap()
+            .parts_json
+            .contains("retry tail"));
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_checkpoint_cannot_overwrite_terminal_message() {
+        for interrupted in [true, false] {
+            let (dir, store, mut ctx) = checkpoint_fixture();
+            ctx.flush_with_store(true, || Store::open_at(dir.clone()))
+                .unwrap();
+            ctx.assistant.parts[0].text = Some("stale queued snapshot".into());
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            let root = dir.clone();
+            let mut checkpoint = Box::pin(ctx.checkpoint_async_with_store(move || {
+                let _ = started.send(());
+                wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                Store::open_at(root)
+            }));
+            tokio::select! {
+                _ = ready => {},
+                result = &mut checkpoint => panic!("checkpoint finished before release: {result:?}"),
+            }
+            drop(checkpoint); // the already-started blocking closure remains alive
+            if interrupted {
+                store.interrupt_chat_turn("turn").unwrap();
+            } else {
+                assert!(store.complete_chat_turn("turn").unwrap());
+            }
+            ctx.assistant.parts[0].text = Some("terminal content".into());
+            ctx.assistant.completed_at = Some(3);
+            ctx.flush_with_store(true, || Store::open_at(dir.clone()))
+                .unwrap();
+            release.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while Arc::strong_count(&ctx.host) > 1 {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let saved = store.get_chat_message("assistant").unwrap().unwrap();
+            assert!(saved.parts_json.contains("terminal content"));
+            assert!(!saved.parts_json.contains("stale queued snapshot"));
+            assert_eq!(saved.completed_at, Some(3));
+            assert_eq!(saved.parent_id.as_deref(), Some("user"));
+            drop(ctx);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn checkpoint_fences_wrong_identity_and_completed_message() {
+        let (dir, store, mut ctx) = checkpoint_fixture();
+        ctx.flush_with_store(true, || Store::open_at(dir.clone()))
+            .unwrap();
+        let mut candidate = store.get_chat_message("assistant").unwrap().unwrap();
+        candidate.parts_json = "[]".into();
+        assert!(store
+            .checkpoint_chat_message("wrong-turn", &candidate)
+            .unwrap()
+            .is_none());
+        candidate.session_id = "wrong-session".into();
+        assert!(store
+            .checkpoint_chat_message("turn", &candidate)
+            .unwrap()
+            .is_none());
+        candidate.session_id = "session".into();
+        candidate.created_at = 999; // stale incarnation after a retry
+        assert!(store
+            .checkpoint_chat_message("turn", &candidate)
+            .unwrap()
+            .is_none());
+        candidate.created_at = 2;
+        ctx.assistant.completed_at = Some(3);
+        ctx.flush_with_store(true, || Store::open_at(dir.clone()))
+            .unwrap();
+        assert!(store
+            .checkpoint_chat_message("turn", &candidate)
+            .unwrap()
+            .is_none());
+        let saved = store.get_chat_message("assistant").unwrap().unwrap();
+        assert!(saved.parts_json.contains("first"));
+        assert_eq!(saved.completed_at, Some(3));
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn async_checkpoint_keeps_resolved_prompt_echo() {
+        let (dir, store, mut ctx) = checkpoint_fixture();
+        ctx.assistant.parts[0].prompt = Some(
+            serde_json::from_value(json!({"kind":"permission", "resolved":true, "approved":true}))
+                .unwrap(),
+        );
+        ctx.flush_with_store(true, || Store::open_at(dir.clone()))
+            .unwrap();
+        ctx.assistant.parts[0].prompt =
+            Some(serde_json::from_value(json!({"kind":"permission"})).unwrap());
+        let root = dir.clone();
+        ctx.checkpoint_async_with_store(move || Store::open_at(root))
+            .await
+            .unwrap();
+        let saved = stored_to_wire(&store.get_chat_message("assistant").unwrap().unwrap());
+        let prompt = saved.parts[0].prompt.as_ref().unwrap();
+        assert!(prompt.resolved);
+        assert_eq!(prompt.approved, Some(true));
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn streaming_checkpoints_keep_branch_parent_and_force_final_and_prompt_writes() {
+        let (dir, store, mut ctx) = checkpoint_fixture();
+        let mut events = ctx.host.subscribe();
         let open = || Store::open_at(dir.clone());
         ctx.flush_with_store(false, open).unwrap();
         assert_eq!(ctx.assistant.parent_id.as_deref(), Some("user"));

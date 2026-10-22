@@ -2995,26 +2995,7 @@ fn diff_json(d: local::git::DiffPayload) -> Value {
     })
 }
 
-/// Bounded executor for synchronous database, filesystem and git operations.
-async fn blocking_task<T, F>(work: F) -> Result<T>
-where
-    T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
-{
-    static LIMIT: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
-    let permit = LIMIT
-        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(8)))
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|error| anyhow!("blocking executor closed: {error}"))?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        work()
-    })
-    .await
-    .map_err(|error| anyhow!("blocking task failed: {error}"))
-}
+use crate::local::blocking::run as blocking_task;
 
 /// Off-worker helper for synchronous API handlers.
 async fn blocking_api<F>(f: F) -> ApiResult

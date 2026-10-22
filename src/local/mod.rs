@@ -11,6 +11,7 @@ pub mod agent_lifecycle;
 pub mod agent_skills;
 pub mod autonomy;
 pub mod bash;
+pub(crate) mod blocking;
 pub mod browser_cookies;
 pub mod chat;
 pub mod claude;
