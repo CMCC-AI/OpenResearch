@@ -539,11 +539,25 @@ fn reconcile_target_file(session_id: &str, message_id: &str) -> Option<WireMessa
     let Ok(store) = Store::open() else {
         return None;
     };
-    let Ok(messages) = store.list_chat_messages(session_id) else {
+    let message = reconcile_target_message(&store, session_id, message_id, &contents)?;
+    let _ = std::fs::remove_file(path);
+    remove_target_pointer_if_matches(session_id, message_id);
+    Some(message)
+}
+
+fn reconcile_target_message(
+    store: &Store,
+    session_id: &str,
+    message_id: &str,
+    contents: &str,
+) -> Option<WireMessage> {
+    // Tool recovery concerns one message, not every transcript payload. Retain
+    // the session boundary that the old session-scoped list query enforced.
+    let stored = store.get_chat_message(message_id).ok()??;
+    if stored.session_id != session_id {
         return None;
-    };
-    let stored = messages.iter().find(|message| message.id == message_id)?;
-    let mut message = stored_to_wire(stored);
+    }
+    let mut message = stored_to_wire(&stored);
     let mut bindings = HashMap::new();
     let mut claimed = HashSet::new();
     for line in contents.lines().take(TOOL_TARGET_INSPECTION_CAP) {
@@ -584,14 +598,12 @@ fn reconcile_target_file(session_id: &str, message_id: &str) -> Option<WireMessa
             session_id: session_id.to_string(),
             role: message.role.clone(),
             parts_json: serde_json::to_string(&message.parts).unwrap_or_default(),
-            ..stored.clone()
+            ..stored
         })
         .is_err()
     {
         return None;
     }
-    let _ = std::fs::remove_file(path);
-    remove_target_pointer_if_matches(session_id, message_id);
     Some(message)
 }
 
@@ -8224,6 +8236,13 @@ pub enum ForkKind {
 /// Transcript replay for the UI.
 pub fn list_messages(session_id: &str) -> Result<Vec<WireMessage>> {
     let store = Store::open()?;
+    list_messages_with_store(&store, session_id)
+}
+
+pub(crate) fn list_messages_with_store(
+    store: &Store,
+    session_id: &str,
+) -> Result<Vec<WireMessage>> {
     Ok(store
         .list_chat_messages(session_id)?
         .iter()
@@ -10429,6 +10448,85 @@ mod bridge_tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn target_recovery_keeps_session_ownership_and_message_metadata() {
+        let dir =
+            std::env::temp_dir().join(format!("orx-target-recovery-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_at(dir.clone()).unwrap();
+        let session = bare_session();
+        store.create_chat_session(&session).unwrap();
+        let stored = StoredChatMessage {
+            id: "target".into(),
+            session_id: session.id.clone(),
+            role: "assistant".into(),
+            parts_json: serde_json::to_string(&vec![WirePart::tool(
+                "tool", "bash", "running", None,
+            )])
+            .unwrap(),
+            created_at: 1,
+            completed_at: None,
+            parent_id: Some("root".into()),
+            base_native_session_id: Some("base".into()),
+            result_native_session_id: Some("result".into()),
+        };
+        store.upsert_chat_message(&stored).unwrap();
+        assert!(reconcile_target_message(&store, "another-session", "target", "").is_none());
+        assert_eq!(
+            store
+                .get_chat_message("target")
+                .unwrap()
+                .unwrap()
+                .parts_json,
+            stored.parts_json
+        );
+        assert!(reconcile_target_message(&store, &session.id, "missing", "").is_none());
+        let recovered = reconcile_target_message(&store, &session.id, "target", "").unwrap();
+        assert_eq!(
+            recovered.parts[0].state.as_ref().unwrap().status,
+            "interrupted"
+        );
+        let saved = store.get_chat_message("target").unwrap().unwrap();
+        assert_eq!(saved.parent_id, stored.parent_id);
+        assert_eq!(saved.base_native_session_id, stored.base_native_session_id);
+        assert_eq!(
+            saved.result_native_session_id,
+            stored.result_native_session_id
+        );
+        assert_eq!(saved.created_at, stored.created_at);
+        assert_eq!(saved.completed_at, stored.completed_at);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "synthetic lookup benchmark; run explicitly with --ignored --nocapture"]
+    fn target_message_lookup_benchmark() {
+        let dir = std::env::temp_dir().join(format!("orx-target-bench-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_at(dir.clone()).unwrap();
+        store.create_chat_session(&bare_session()).unwrap();
+        let payload =
+            serde_json::to_string(&vec![WirePart::text("text", "x".repeat(4096))]).unwrap();
+        let tx = store.begin().unwrap();
+        for i in 0..5000 {
+            tx.execute("INSERT INTO chat_messages(id,session_id,role,parts_json,created_at) VALUES(?1,'chat_1','assistant',?2,?3)", rusqlite::params![format!("m{i}"), payload, i]).unwrap();
+        }
+        tx.commit().unwrap();
+        let started = Instant::now();
+        for _ in 0..20 {
+            let all = store.list_chat_messages("chat_1").unwrap();
+            assert!(std::hint::black_box(all).iter().any(|m| m.id == "m2500"));
+        }
+        let old = started.elapsed();
+        let started = Instant::now();
+        for _ in 0..20 {
+            let message = store.get_chat_message("m2500").unwrap().unwrap();
+            assert_eq!(std::hint::black_box(message).session_id, "chat_1");
+        }
+        eprintln!("target lookup: rows=5000 rounds=20 list_and_find_ms={:.3} indexed_ms={:.3} old_payload_bytes_per_lookup={} indexed_payload_bytes_per_lookup={}",old.as_secs_f64()*1000.0,started.elapsed().as_secs_f64()*1000.0,5000*payload.len(),payload.len());
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

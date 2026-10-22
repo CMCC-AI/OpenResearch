@@ -921,6 +921,7 @@ fn is_remote_callback_route(method: &Method, path: &str) -> bool {
 // --- error plumbing -------------------------------------------------------
 
 /// JSON error responses: `{"error": "..."}` with an explicit status.
+#[derive(Debug)]
 struct ApiError(StatusCode, String);
 
 impl IntoResponse for ApiError {
@@ -7863,38 +7864,51 @@ async fn list_chat_sessions(
     State(state): State<AppState>,
     Query(q): Query<SessionsQuery>,
 ) -> ApiResult {
-    let store = Store::open()?;
-    if q.scope.as_deref() == Some("sidebar") {
-        let before = match (q.before_updated_at, q.before_id.as_deref()) {
-            (Some(at), Some(id)) => Some((at, id)),
-            (None, None) => None,
-            _ => return Err(bad_request("both cursor fields are required")),
-        };
-        let mut sessions = store.list_sidebar_chat_sessions(q.archived, before)?;
-        let has_more = sessions.len() > 50;
-        sessions.truncate(50);
-        let next = sessions
-            .last()
-            .filter(|_| has_more)
-            .map(|session| json!({ "updatedAt": session.updated_at, "id": session.id }));
-        let busy = state.chat.busy_sessions().await;
-        let sessions: Vec<Value> = sessions
-            .iter()
-            .map(|session| local::chat::session_json(session, busy.contains(&session.id)))
-            .collect();
-        return Ok(Json(json!({ "sessions": sessions, "next": next })));
-    }
-    let sessions = match (q.project_id.as_deref(), q.scope.as_deref()) {
-        (Some(project_id), _) => store.list_chat_sessions_by_project(project_id)?,
-        (None, Some("all")) => store.list_all_chat_sessions()?,
-        (None, _) => return Err(bad_request("projectId or scope=all is required")),
-    };
-    let busy = state.chat.busy_sessions().await;
+    let sidebar = q.scope.as_deref() == Some("sidebar");
+    let (sessions, next) = read_chat_sessions(q, Store::open).await?;
+    // Sample live activity after the read, without holding its lock during IO.
+    let busy: HashSet<_> = state.chat.busy_sessions().await.into_iter().collect();
     let sessions: Vec<Value> = sessions
         .iter()
         .map(|s| local::chat::session_json(s, busy.contains(&s.id)))
         .collect();
-    Ok(Json(json!({ "sessions": sessions })))
+    Ok(Json(if sidebar {
+        json!({ "sessions": sessions, "next": next })
+    } else {
+        json!({ "sessions": sessions })
+    }))
+}
+
+async fn read_chat_sessions(
+    q: SessionsQuery,
+    open: impl FnOnce() -> Result<Store> + Send + 'static,
+) -> std::result::Result<(Vec<StoredChatSession>, Option<Value>), ApiError> {
+    blocking_task(move || {
+        let store = open()?;
+        if q.scope.as_deref() == Some("sidebar") {
+            let before = match (q.before_updated_at, q.before_id.as_deref()) {
+                (Some(at), Some(id)) => Some((at, id)),
+                (None, None) => None,
+                _ => return Err(bad_request("both cursor fields are required")),
+            };
+            let mut sessions = store.list_sidebar_chat_sessions(q.archived, before)?;
+            let has_more = sessions.len() > 50;
+            sessions.truncate(50);
+            let next = sessions
+                .last()
+                .filter(|_| has_more)
+                .map(|session| json!({ "updatedAt": session.updated_at, "id": session.id }));
+            return Ok((sessions, next));
+        }
+        let sessions = match (q.project_id.as_deref(), q.scope.as_deref()) {
+            (Some(project_id), _) => store.list_chat_sessions_by_project(project_id)?,
+            (None, Some("all")) => store.list_all_chat_sessions()?,
+            (None, _) => return Err(bad_request("projectId or scope=all is required")),
+        };
+        Ok((sessions, None))
+    })
+    .await
+    .map_err(ApiError::from)?
 }
 
 #[derive(Deserialize)]
@@ -8010,10 +8024,14 @@ fn new_chat_settings(
 }
 
 async fn get_chat_session(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
-    let session = Store::open()?
-        .get_chat_session(&id)?
-        .ok_or_else(|| not_found("chat session"))?;
-    let busy = state.chat.is_busy(&id).await;
+    let session = blocking_task(move || {
+        Store::open()?
+            .get_chat_session(&id)?
+            .ok_or_else(|| not_found("chat session"))
+    })
+    .await
+    .map_err(ApiError::from)??;
+    let busy = state.chat.is_busy(&session.id).await;
     Ok(Json(
         json!({ "session": local::chat::session_json(&session, busy) }),
     ))
@@ -8282,11 +8300,12 @@ async fn update_chat_session(
 
 async fn chat_messages(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
     blocking_api(move || {
-        // Messages first: these are two connections, so a turn writing between them
+        // Messages first: a turn writing between these two reads
         // can only leave the leaf *ahead* of the list, which the client falls back on
         // safely — the other order hides a reply that is already in the list.
-        let messages = local::chat::list_messages(&id)?;
-        let session = Store::open()?
+        let store = Store::open()?;
+        let messages = local::chat::list_messages_with_store(&store, &id)?;
+        let session = store
             .get_chat_session(&id)?
             .ok_or_else(|| not_found("chat session"))?;
         // The host restores its durable queue at startup; return the live snapshot
@@ -8837,6 +8856,88 @@ pub(crate) async fn spa(uri: Uri) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn session_query(scope: Option<&str>) -> SessionsQuery {
+        SessionsQuery {
+            project_id: None,
+            scope: scope.map(str::to_string),
+            archived: None,
+            before_updated_at: None,
+            before_id: None,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn session_reads_do_not_block_the_async_worker() {
+        let dir = std::env::temp_dir().join(format!("orx-read-worker-{}", uuid::Uuid::new_v4()));
+        let root = dir.clone();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let read = read_chat_sessions(session_query(Some("all")), move || {
+            let _ = started.send(());
+            // A synchronous read on the only async worker would time out here:
+            // its heartbeat cannot run until this closure returns.
+            wait.recv_timeout(Duration::from_secs(2))
+                .map_err(|error| anyhow!("async worker did not release storage: {error}"))?;
+            Store::open_at(root)
+        });
+        let heartbeat = async {
+            ready.await.unwrap();
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            release.send(()).unwrap();
+        };
+        let (result, ()) = tokio::join!(read, heartbeat);
+        assert!(result.unwrap().0.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_reads_preserve_scope_and_sidebar_pagination() {
+        let dir = std::env::temp_dir().join(format!("orx-read-scopes-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_at(dir.clone()).unwrap();
+        let tx = store.begin().unwrap();
+        for i in 0..51 {
+            tx.execute("INSERT INTO chat_sessions(id,project_id,harness,created_at,updated_at,archived) VALUES(?1,'p','opencode',100,100,?2)", rusqlite::params![format!("s{i:03}"), i == 0]).unwrap();
+        }
+        tx.execute_batch("INSERT INTO chat_sessions(id,project_id,harness,created_at,updated_at) VALUES('outside','q','opencode',100,100);
+            INSERT INTO chat_sessions(id,project_id,harness,created_at,updated_at,side_parent_session_id) VALUES('side','p','opencode',100,100,'s001');").unwrap();
+        tx.commit().unwrap();
+        drop(store);
+        let read = |q| {
+            let root = dir.clone();
+            read_chat_sessions(q, move || Store::open_at(root))
+        };
+        assert_eq!(read(session_query(Some("all"))).await.unwrap().0.len(), 52);
+        let mut q = session_query(Some("all"));
+        q.project_id = Some("p".into());
+        let (project, next) = read(q).await.unwrap();
+        assert_eq!(project.len(), 52);
+        assert!(project.iter().all(|s| s.project_id == "p"));
+        assert!(next.is_none());
+        let mut q = session_query(Some("sidebar"));
+        q.archived = Some(false);
+        let (first, next) = read(q).await.unwrap();
+        assert_eq!(first.len(), 50);
+        let next = next.unwrap();
+        let mut q = session_query(Some("sidebar"));
+        q.archived = Some(false);
+        q.before_updated_at = next["updatedAt"].as_i64();
+        q.before_id = next["id"].as_str().map(str::to_string);
+        let (last, next) = read(q).await.unwrap();
+        assert_eq!(
+            last.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["outside"]
+        );
+        assert!(next.is_none());
+        assert_eq!(
+            read(session_query(None)).await.unwrap_err().0,
+            StatusCode::BAD_REQUEST
+        );
+        let mut q = session_query(Some("sidebar"));
+        q.before_updated_at = Some(100);
+        assert_eq!(read(q).await.unwrap_err().0, StatusCode::BAD_REQUEST);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn slow_sync_work_leaves_async_timers_responsive() {
