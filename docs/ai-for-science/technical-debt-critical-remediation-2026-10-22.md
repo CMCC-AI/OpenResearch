@@ -26,6 +26,7 @@
 6. `material-inputs.md`、旧修复汇总：修正模块分发说明和过度的全绿结论。启动辅助测试使用 `path.resolve` 比较实际路径，避免把 Windows 的合理路径规范化误判为失败。
 7. `scripts/dev-slot.mjs`：显式探测 IPv4/IPv6 回环，解决 Vite 绑定 ::1、Node ADDRCONFIG 仅选择 IPv4 时的假超时；真实双地址族与生命周期测试 12 项通过。
 8. 私人运行环境分发脚本以当前平台数据库的 workspace ID、精确容器名称和 managed 标签共同确认归属，排除其他项目和回滚容器；升级私人 executor 前备份其 SQLite。更新包缓存还须匹配当前 HEAD，避免源码指纹相同但提交不同的旧包被复用。
+9. 真实镜像检查发现旧主工作台缺少 pdftotext。常规覆盖式镜像更新及私人 executor 构建现在显式补装 poppler-utils，并在构建时执行 pdftotext -v；不能只依赖完整 Dockerfile 中已有的安装声明。Windows 打包器还为 Cargo.toml/manifest/cache 明确 UTF-8 编码。
 
 配额指受管理文件的逻辑字节，包含写入临时峰值，不等于文件系统分配块占用。周期检查点是在正常调度/存储可用时约每秒尝试保存，不承诺磁盘故障下的硬实时耐久性。未知归属目录只报告；旧包的完整恢复治理、磁盘故障注入及长期压力验证继续保留。
 

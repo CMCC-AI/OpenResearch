@@ -197,7 +197,7 @@ def main(package, apply=False):
         shutil.copytree(package / 'platform/src', context / 'src')
         base = 'mobilesci-opencode-executor-base:' + stamp.lower()
         run('docker', 'tag', private[0]['Image'], base)
-        (context / 'Dockerfile').write_text('FROM ' + base + '\nCOPY --chmod=755 orx /usr/local/bin/orx\nCOPY src /app/platform/src\n')
+        (context / 'Dockerfile').write_text('FROM ' + base + '\nUSER root\nRUN if ! command -v pdftotext >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends poppler-utils && rm -rf /var/lib/apt/lists/*; fi\nRUN pdftotext -v\nCOPY --chmod=755 orx /usr/local/bin/orx\nCOPY src /app/platform/src\nUSER node\n')
         run('docker', 'build', '--pull=false', '-t', executor_image, str(context))
     else:
         executor_image = values(provisioner['Config'])['MANAGED_EXECUTOR_IMAGE']
