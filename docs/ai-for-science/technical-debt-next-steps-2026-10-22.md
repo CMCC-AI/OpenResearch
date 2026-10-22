@@ -1,5 +1,7 @@
 # 技术债下一步修复计划（2026-10-22）
 
+> 状态更新：本文保留制定时的计划。TD-01/02/03/06 及 TD-04/05/07 的已完成部分，以[后续修复与实际发布记录](technical-debt-critical-remediation-2026-10-22.md)为准，不再作为全部未实施项重复排期。最新[本地故障测试与启动验收](technical-debt-local-acceptance-2026-10-22.md)补充真实进程强杀及 SQLite 写锁重试；ENOSPC、长期压力等剩余边界继续保留。
+
 ## 范围与判断
 
 依据 `technical-debt-plan-conformance-2026-10-22.md` 的 D1–D8 差异制定。本文件是待执行计划，不表示修复、测试或部署已完成。只纳入当前仓库；`openresearch.sh` 的 managed compute #717 回收修复继续作为外部待办。

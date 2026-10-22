@@ -1210,6 +1210,7 @@ pub fn import_native_chat(
         active_leaf_id: None,
         parent_session_id: None,
         side_parent_session_id: None,
+        side_parent_leaf_id: None,
         created_at: now_ms(),
         updated_at: now_ms(),
     };
@@ -1734,7 +1735,8 @@ impl ChatHost {
         harness: &dyn crate::local::harness::Harness,
         snapshot: &str,
     ) -> Result<String> {
-        let prior = session.bootstrap_context.as_deref().unwrap_or("");
+        let bootstrap = effective_bootstrap_context(&Store::open()?, session)?;
+        let prior = bootstrap.as_deref().unwrap_or("");
         let prompt = format!(
             "<orx-transcript>\n{prior}{}{snapshot}\n</orx-transcript>",
             if prior.is_empty() { "" } else { "\n\n" }
@@ -5619,13 +5621,18 @@ impl ChatHost {
                 prepare_project_slash_worktree(&project, &message.text, &session.id).await;
             }
         }
+        let bootstrap = if prepared_input.is_none() && session.native_session_id.is_none() {
+            effective_bootstrap_context(&store, &session)?
+        } else {
+            None
+        };
         let mut turn_text = prepared_input.unwrap_or_else(|| {
             let expanded = contextualize_messages(messages, |text| {
                 expand_slash_skills(&project, text, Some(&session.harness), Some(&session.id))
             });
             with_turn_context(
                 session.native_session_id.as_deref(),
-                session.bootstrap_context.as_deref(),
+                bootstrap.as_deref(),
                 session.goal.as_deref(),
                 Autonomy::from_stored(session.autonomy.as_deref()).turn_context(),
                 super::demo::turn_context(&project.id),
@@ -6424,9 +6431,14 @@ impl ChatHost {
     /// live branch as it is right now.
     pub async fn open_side_chat(&self, parent: &StoredChatSession) -> Result<StoredChatSession> {
         let store = Store::open()?;
+        let transaction = store.begin_immediate()?;
+        let parent = store
+            .get_chat_session(&parent.id)?
+            .ok_or_else(|| anyhow!("chat session is gone"))?;
         let messages = store.list_chat_messages(&parent.id)?;
-        let session = side_chat_session(parent, &messages);
+        let session = side_chat_session(&parent, &messages);
         store.create_chat_session(&session)?;
+        transaction.commit()?;
         // Checked after the insert: a parent delete that began earlier has
         // already listed its side chats and would miss this one.
         if self.deleting_sessions.lock().unwrap().contains(&parent.id)
@@ -6587,8 +6599,17 @@ impl ChatHost {
         let _deleting = self
             .begin_session_delete(session_id)
             .ok_or_else(|| anyhow!("session deletion is already in progress"))?;
-        for side_chat in Store::open()?.side_chats_of(session_id)? {
-            let _ = Box::pin(self.delete_session(&side_chat)).await;
+        let store = Store::open()?;
+        // Reject before recursively deleting persistent children or stopping
+        // agents. The store rechecks this under its deletion transaction.
+        if store
+            .research_for_session(session_id)?
+            .is_some_and(|study| study.status == "active")
+        {
+            return Err(anyhow!("请先停止研究，再删除关联会话。"));
+        }
+        for side_chat in store.side_chats_of(session_id)? {
+            Box::pin(self.delete_session(&side_chat)).await?;
         }
         self.clear_queue(session_id)?;
         let _ = self.interrupt(session_id).await;
@@ -8066,19 +8087,49 @@ fn active_path<'a>(
     path
 }
 
+fn side_chat_context<'a>(
+    messages: impl IntoIterator<Item = &'a StoredChatMessage>,
+) -> Option<String> {
+    let snapshot = crate::local::harness::transcript_snapshot(messages);
+    (!snapshot.is_empty()).then(|| format!(
+        "<orx-side-chat-context>\nThis is a side chat branched from another chat, which may still be running in this same worktree. Use this snapshot of that chat, taken when the side chat opened, to answer questions about its work. Do not modify files unless the user asks.\n{snapshot}\n</orx-side-chat-context>"
+    ))
+}
+
+fn effective_bootstrap_context(
+    store: &Store,
+    session: &StoredChatSession,
+) -> Result<Option<String>> {
+    if let Some(context) = &session.bootstrap_context {
+        return Ok(Some(context.clone()));
+    }
+    let (Some(parent), Some(leaf)) = (
+        &session.side_parent_session_id,
+        &session.side_parent_leaf_id,
+    ) else {
+        return Ok(None);
+    };
+    let messages = store.list_chat_messages(parent)?;
+    if !messages.iter().any(|message| &message.id == leaf) {
+        return Err(anyhow!("side chat parent context is unavailable"));
+    }
+    Ok(side_chat_context(active_path(&messages, Some(leaf))))
+}
+
 fn side_chat_session(
     parent: &StoredChatSession,
     messages: &[StoredChatMessage],
 ) -> StoredChatSession {
-    let snapshot = crate::local::harness::transcript_snapshot(active_path(
-        messages,
-        parent.active_leaf_id.as_deref(),
-    ));
-    let bootstrap_context = (!snapshot.is_empty()).then(|| {
-        format!(
-            "<orx-side-chat-context>\nThis is a side chat branched from another chat, which may still be running in this same worktree. Use this snapshot of that chat, taken when the side chat opened, to answer questions about its work. Do not modify files unless the user asks.\n{snapshot}\n</orx-side-chat-context>"
-        )
-    });
+    let leaf = parent
+        .active_leaf_id
+        .as_ref()
+        .filter(|id| messages.iter().any(|m| &m.id == *id));
+    // Legacy transcripts without a valid leaf keep their existing snapshot semantics.
+    let bootstrap_context = if leaf.is_none() && !messages.is_empty() {
+        side_chat_context(messages.iter())
+    } else {
+        None
+    };
     let now = now_ms();
     StoredChatSession {
         id: format!("chat_{}", uuid::Uuid::new_v4()),
@@ -8105,6 +8156,7 @@ fn side_chat_session(
         active_leaf_id: None,
         parent_session_id: None,
         side_parent_session_id: Some(parent.id.clone()),
+        side_parent_leaf_id: leaf.cloned(),
         created_at: now,
         updated_at: now,
     }
@@ -8755,14 +8807,6 @@ async fn deliver_wake_up(
         ));
     }
     Ok(store)
-}
-
-/// Side chats last only as long as the app run that opened them.
-pub async fn delete_side_chats(chat: &Arc<ChatHost>) -> Result<()> {
-    for session_id in Store::open()?.side_chat_ids()? {
-        chat.delete_session(&session_id).await?;
-    }
-    Ok(())
 }
 
 /// Resume explicitly subscribed agent sessions after a run finishes. Busy and
@@ -9436,6 +9480,7 @@ mod cap_tests {
                 active_leaf_id: None,
                 parent_session_id: None,
                 side_parent_session_id: None,
+                side_parent_leaf_id: None,
                 created_at: 1,
                 updated_at: 1,
             })
@@ -9545,6 +9590,7 @@ mod cap_tests {
             active_leaf_id: None,
             parent_session_id: None,
             side_parent_session_id: None,
+            side_parent_leaf_id: None,
             created_at: 1,
             updated_at: 1,
         };
@@ -9603,6 +9649,7 @@ mod cap_tests {
             active_leaf_id: None,
             parent_session_id: None,
             side_parent_session_id: None,
+            side_parent_leaf_id: None,
             created_at: 1,
             updated_at: 1,
         };
@@ -10378,6 +10425,7 @@ mod bridge_tests {
             active_leaf_id: None,
             parent_session_id: None,
             side_parent_session_id: None,
+            side_parent_leaf_id: None,
             created_at: 1,
             updated_at: 1,
         }
@@ -10535,6 +10583,7 @@ mod run_wakeup_tests {
                 active_leaf_id: None,
                 parent_session_id: None,
                 side_parent_session_id: None,
+                side_parent_leaf_id: None,
                 created_at: 1,
                 updated_at: 1,
             })
@@ -11407,6 +11456,7 @@ mod transcript_tree_tests {
             active_leaf_id: Some("a3".into()),
             parent_session_id: None,
             side_parent_session_id: None,
+            side_parent_leaf_id: None,
             created_at: 1,
             updated_at: 1,
         }
@@ -11422,7 +11472,10 @@ mod transcript_tree_tests {
             said("a3", "assistant", Some("u2"), "loss is falling"),
         ];
         let side = side_chat_session(&parent_session("codex"), &messages);
-        let context = side.bootstrap_context.unwrap();
+        assert_eq!(side.bootstrap_context, None);
+        assert_eq!(side.side_parent_leaf_id.as_deref(), Some("a3"));
+        let context =
+            side_chat_context(active_path(&messages, side.side_parent_leaf_id.as_deref())).unwrap();
         assert!(context.contains("kept branch") && context.contains("loss is falling"));
         assert!(!context.contains("abandoned retry"));
         assert_eq!(side.side_parent_session_id.as_deref(), Some("chat_parent"));
@@ -11444,6 +11497,99 @@ mod transcript_tree_tests {
     fn a_side_chat_of_an_empty_chat_has_no_seed_context() {
         let side = side_chat_session(&parent_session("claude-code"), &[]);
         assert_eq!(side.bootstrap_context, None);
+    }
+
+    #[test]
+    fn side_context_references_survive_restart_and_parent_branch_changes() {
+        let dir = std::env::temp_dir().join(format!("orx-side-context-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_at(dir.clone()).unwrap();
+        let parent = parent_session("codex");
+        store.create_chat_session(&parent).unwrap();
+        let mut messages = vec![
+            said("u1", "user", None, "train the model"),
+            said("a1", "assistant", Some("u1"), "kept branch"),
+            said("a2", "assistant", Some("u1"), "abandoned retry"),
+            said("u2", "user", Some("a1"), "how is it going"),
+            said("a3", "assistant", Some("u2"), "loss is falling"),
+        ];
+        for message in &mut messages {
+            message.session_id = parent.id.clone();
+            store.upsert_chat_message(message).unwrap();
+        }
+        let side = side_chat_session(&parent, &messages);
+        store.create_chat_session(&side).unwrap();
+        let expected = side_chat_context(active_path(&messages, parent.active_leaf_id.as_deref()));
+        assert_eq!(
+            effective_bootstrap_context(&store, &side).unwrap(),
+            expected
+        );
+
+        store
+            .set_chat_session_active_leaf(&parent.id, Some("a2"))
+            .unwrap();
+        let mut later = said("later", "user", Some("a3"), "do not inherit this");
+        later.session_id = parent.id.clone();
+        store.upsert_chat_message(&later).unwrap();
+        drop(store);
+        let store = Store::open_at(dir.clone()).unwrap();
+        let mut side = store.get_chat_session(&side.id).unwrap().unwrap();
+        assert_eq!(side.side_parent_leaf_id.as_deref(), Some("a3"));
+        assert_eq!(
+            effective_bootstrap_context(&store, &side).unwrap(),
+            expected
+        );
+
+        // Parent content changes are accepted, but the saved branch boundary stays fixed.
+        messages[4].parts_json = said("a3", "assistant", None, "updated result").parts_json;
+        store.upsert_chat_message(&messages[4]).unwrap();
+        assert!(effective_bootstrap_context(&store, &side)
+            .unwrap()
+            .unwrap()
+            .contains("updated result"));
+        side.bootstrap_context = Some("compaction or legacy snapshot".into());
+        assert_eq!(
+            effective_bootstrap_context(&store, &side)
+                .unwrap()
+                .as_deref(),
+            Some("compaction or legacy snapshot")
+        );
+        side.bootstrap_context = None;
+        side.side_parent_leaf_id = Some("missing".into());
+        assert!(effective_bootstrap_context(&store, &side).is_err());
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_empty_side_context_stays_empty_after_parent_messages_arrive() {
+        let dir =
+            std::env::temp_dir().join(format!("orx-empty-side-context-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_at(dir.clone()).unwrap();
+        let mut parent = parent_session("codex");
+        parent.active_leaf_id = None;
+        store.create_chat_session(&parent).unwrap();
+        let side = side_chat_session(&parent, &[]);
+        store.create_chat_session(&side).unwrap();
+        let mut later = said("later", "user", None, "new parent context");
+        later.session_id = parent.id.clone();
+        store.upsert_chat_message(&later).unwrap();
+        assert_eq!(effective_bootstrap_context(&store, &side).unwrap(), None);
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn side_context_keeps_legacy_fallback_and_utf8_snapshot_limit() {
+        let mut parent = parent_session("codex");
+        parent.active_leaf_id = None;
+        let messages = vec![said("u1", "user", None, &"界".repeat(20_000))];
+        let side = side_chat_session(&parent, &messages);
+        assert_eq!(side.side_parent_leaf_id, None);
+        let expected = crate::local::harness::transcript_snapshot(messages.iter());
+        assert!(expected.len() <= 32 * 1024);
+        assert!(expected.ends_with('界'));
+        assert_eq!(side.bootstrap_context, side_chat_context(messages.iter()));
+        assert!(side.bootstrap_context.unwrap().contains(&expected));
     }
 
     #[test]
@@ -11544,6 +11690,7 @@ mod steering_tests {
                 active_leaf_id: None,
                 parent_session_id: None,
                 side_parent_session_id: None,
+                side_parent_leaf_id: None,
                 created_at: 1,
                 updated_at: 1,
             })
@@ -11796,6 +11943,7 @@ mod checkpoint_tests {
             active_leaf_id: None,
             parent_session_id: None,
             side_parent_session_id: None,
+            side_parent_leaf_id: None,
             created_at: 1,
             updated_at: 1,
         };
@@ -11909,6 +12057,34 @@ mod checkpoint_tests {
             .contains("streamed"));
         ctx.checkpoint_with_store(|| panic!("clean checkpoint must not write again"))
             .unwrap();
+        // Exercise a real SQLite write failure as well as the injected open
+        // failure above. A competing writer must not acknowledge the dirty
+        // snapshot; once its transaction ends the same checkpoint can retry.
+        ctx.assistant.parts[0].text = Some("streamed after writer contention".into());
+        let acknowledged = ctx.last_persisted_snapshot.clone();
+        let writer = rusqlite::Connection::open(dir.join("orx.db")).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let write_error = ctx.checkpoint_with_store(open).unwrap_err();
+        assert!(
+            write_error.to_string().contains("locked"),
+            "{write_error:#}"
+        );
+        assert_eq!(ctx.last_persisted_snapshot, acknowledged);
+        assert!(!store
+            .get_chat_message("assistant")
+            .unwrap()
+            .unwrap()
+            .parts_json
+            .contains("writer contention"));
+        writer.execute_batch("ROLLBACK").unwrap();
+        drop(writer);
+        ctx.checkpoint_with_store(open).unwrap();
+        assert!(store
+            .get_chat_message("assistant")
+            .unwrap()
+            .unwrap()
+            .parts_json
+            .contains("writer contention"));
         ctx.assistant.completed_at = Some(3);
         ctx.flush_with_store(true, open).unwrap();
         let final_message = store.get_chat_message("assistant").unwrap().unwrap();

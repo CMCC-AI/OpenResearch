@@ -1,11 +1,11 @@
 import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
-import { type Experiment, type Run, runDisplayStatus, fmtNumber } from "../api";
+import { type ChatSession, type Experiment, type Run, runDisplayStatus, fmtNumber } from "../api";
 import { activeWorkspaceRuns } from "../workspaceRuns";
 import { statusLabel } from "./StatusBadge";
 import { getComputeSettingsQuery } from "../queries/settings";
 import { TARGET_LABELS } from "../computeTargets";
 import { useEffect, useMemo, useRef } from "react";
-import { FlaskConical, FolderOpen, Package, GitBranch, Cpu, MessagesSquare, MoreHorizontal, Terminal } from "lucide-react";
+import { FlaskConical, FolderOpen, Package, GitBranch, Cpu, MoreHorizontal, Terminal } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { getSessionWorktreeQuery } from "../queries/files";
 import { countChanges, parseDiffFiles } from "./GitDiff";
@@ -14,8 +14,9 @@ import { BackendLogo } from "./BackendLogos";
 import { IconButton, MenuItem, StatusIndicator } from "./ui";
 import { ResearchPanel } from "./ResearchPanel";
 import { usePopover } from "./ModelPicker";
+import { SideChatMenu } from "./SideChatMenu";
 
-export function WorkspaceTools({ placement = "floating", expanded, experiments, runs, onOpenExperiment, rightOffset, activeView, projectId, onCompute, sessionId, busy, onChanges, onFiles, onTerminal, onArtifacts, onExperiments, onSideChat, onOpenSession, onResearch }: {
+export function WorkspaceTools({ placement = "floating", expanded, experiments, runs, onOpenExperiment, rightOffset, activeView, projectId, onCompute, sessionId, busy, onChanges, onFiles, onTerminal, onArtifacts, onExperiments, onSideChat, onOpenSession, onResearch, sessions, onSelectSideChat }: {
   placement?: "floating" | "header";
   expanded: boolean;
   experiments: Experiment[];
@@ -36,6 +37,8 @@ export function WorkspaceTools({ placement = "floating", expanded, experiments, 
   /** Absent until there is a chat to branch from. */
   onSideChat?: () => void;
   onOpenSession?: (sessionId: string) => void;
+  sessions: ChatSession[];
+  onSelectSideChat: (sessionId: string) => void;
 }) {
   const readOnly = useReadOnlyWorkspace();
   const experimentRows = activeWorkspaceRuns(experiments, runs, sessionId);
@@ -64,14 +67,14 @@ export function WorkspaceTools({ placement = "floating", expanded, experiments, 
               <MoreHorizontal size={15} />
             </IconButton>
             {more.open && (
-              <div ref={more.ref} role="menu" className="absolute end-0 top-[calc(100%_+_4px)] z-50 flex min-w-40 flex-col rounded-lg border border-border bg-background p-1.5 shadow-menu">
+              <div ref={more.ref} role="menu" className="absolute end-0 top-[calc(100%_+_4px)] z-50 flex max-h-95 min-w-40 flex-col overflow-y-auto rounded-lg border border-border bg-background p-1.5 shadow-menu">
                 <MenuItem disabled={Boolean(readOnly)} role="menuitem" onClick={() => { more.setOpen(false); onTerminal(); }}>
                   <span className="flex items-center gap-2.5"><Terminal size={15} />{m.workspace_terminal()}</span>
                 </MenuItem>
-                {onSideChat && (
-                  <MenuItem role="menuitem" onClick={() => { more.setOpen(false); onSideChat(); }}>
-                    <span className="flex items-center gap-2.5"><MessagesSquare size={15} />{m.side_chat_open()}</span>
-                  </MenuItem>
+                {onSideChat && sessionId && !readOnly && (
+                  <SideChatMenu key={sessionId} parentId={sessionId} sessions={sessions}
+                    onCreate={() => { more.setOpen(false); onSideChat(); }}
+                    onSelect={(id) => { more.setOpen(false); onSelectSideChat(id); }} />
                 )}
               </div>
             )}
@@ -105,10 +108,9 @@ export function WorkspaceTools({ placement = "floating", expanded, experiments, 
             {<MenuItem disabled={Boolean(readOnly)} className="min-h-7 py-1" onClick={onTerminal}>
               <span className="flex items-center gap-4"><Terminal size={15} />{m.workspace_terminal()}</span>
             </MenuItem>}
-            {onSideChat && (
-              <MenuItem className="min-h-7 py-1" onClick={onSideChat}>
-                <span className="flex items-center gap-4"><MessagesSquare size={15} />{m.side_chat_open()}</span>
-              </MenuItem>
+            {onSideChat && sessionId && !readOnly && (
+              <SideChatMenu key={sessionId} parentId={sessionId} sessions={sessions}
+                onCreate={onSideChat} onSelect={onSelectSideChat} />
             )}
             {sessionId && <ChatBranch key={sessionId} sessionId={sessionId} busy={busy} onChanges={onChanges} />}
             {experimentRows.length > 0 && (

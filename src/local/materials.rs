@@ -789,6 +789,99 @@ mod tests {
     }
 
     #[test]
+    fn killed_upload_recovers_each_publication_phase() {
+        const CHILD_ROOT: &str = "ORX_TEST_KILLED_UPLOAD_ROOT";
+        const CHILD_ID: &str = "ORX_TEST_KILLED_UPLOAD_ID";
+        const CHILD_PHASE: &str = "ORX_TEST_KILLED_UPLOAD_PHASE";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let root = PathBuf::from(root);
+            let id = std::env::var(CHILD_ID).unwrap();
+            let phase = std::env::var(CHILD_PHASE).unwrap();
+            let mut capacity = storage::lock(&root).unwrap();
+            let _capacity = capacity.write().unwrap();
+            let mut package = read_at(&root, &id, "p").unwrap();
+            let dir = dir_at(&root, &id).unwrap();
+            let stage = UploadStage::new(&dir, 100).unwrap();
+            stage.file(0, &b"interrupted"[..]).unwrap();
+            if phase != "staged" {
+                fs::write(stage.path.join("publish.json"), br#"["interrupted.md"]"#).unwrap();
+                fs::rename(stage.path.join("0"), dir.join("originals/interrupted.md")).unwrap();
+            }
+            if phase == "committed" {
+                package.files.push(Entry {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    path: "interrupted.md".into(),
+                    size: 11,
+                    sha256: format!("{:x}", Sha256::digest(b"interrupted")),
+                    format: "text".into(),
+                    status: "pending".into(),
+                    note: None,
+                });
+                write_manifest(&dir, &package).unwrap();
+            }
+            fs::write(root.join("child-ready"), []).unwrap();
+            // The parent kills this process: neither Drop nor lock cleanup runs.
+            loop {
+                std::thread::park();
+            }
+        }
+        for phase in ["staged", "published", "committed"] {
+            let root = temp();
+            let package = create_at(&root, "p").unwrap();
+            upload_at(&root, &package.id, "p", "keep.md", b"keep").unwrap();
+            let dir = dir_at(&root, &package.id).unwrap();
+            fs::write(dir.join("originals/unknown.md"), b"unknown").unwrap();
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "local::materials::tests::killed_upload_recovers_each_publication_phase",
+                    "--nocapture",
+                ])
+                .env(CHILD_ROOT, &root)
+                .env(CHILD_ID, &package.id)
+                .env(CHILD_PHASE, phase)
+                .spawn()
+                .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let ready = loop {
+                if root.join("child-ready").exists() {
+                    break true;
+                }
+                if child.try_wait().unwrap().is_some() || std::time::Instant::now() >= deadline {
+                    break false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            let _ = child.kill();
+            child.wait().unwrap();
+            assert!(ready, "upload child failed before {phase} checkpoint");
+            // A killed process must release the quota lock. Recovery must be
+            // repeatable and preserve committed and unrelated originals.
+            upload_at(&root, &package.id, "p", "next.md", b"next").unwrap();
+            upload_at(&root, &package.id, "p", "next.md", b"next").unwrap();
+            assert_eq!(fs::read(dir.join("originals/keep.md")).unwrap(), b"keep");
+            assert_eq!(
+                fs::read(dir.join("originals/unknown.md")).unwrap(),
+                b"unknown"
+            );
+            assert_eq!(
+                dir.join("originals/interrupted.md").exists(),
+                phase == "committed"
+            );
+            assert!(fs::read_dir(&dir).unwrap().all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".upload-")));
+            let sealed = finalize_at(&root, &package.id, "p").unwrap();
+            for entry in &sealed.files {
+                assert!(verified_original(&dir, entry).is_ok());
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn collection_reports_broken_manifest_without_deleting_unknown_data() {
         let root = temp();
         let package = create_at(&root, "p").unwrap();
