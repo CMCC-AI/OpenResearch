@@ -55,7 +55,7 @@ def verify_bundle(bundle):
         with tempfile.TemporaryDirectory() as temp:
             safe_extract(archive, temp)
             root = Path(temp).resolve()
-            manifest = json.loads((root / 'manifest.json').read_text())
+            manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
             if manifest.get('format') != 1 or manifest.get('architecture') != 'linux/amd64':
                 raise ValueError('不支持的更新包格式或架构')
             for name, expected in manifest['files'].items():
@@ -73,7 +73,7 @@ def prepare(image=None):
     latest = OUTPUT / 'latest.json'
     source = fingerprint()
     if image is None and latest.exists():
-        saved = json.loads(latest.read_text())
+        saved = json.loads(latest.read_text(encoding='utf-8'))
         bundle = OUTPUT / saved['file']
         if saved.get('fingerprint') == source and bundle.is_file() and digest(bundle) == saved['sha256']:
             manifest = verify_bundle(bundle)
@@ -151,7 +151,7 @@ def prepare(image=None):
         shutil.copy2(ROOT / 'scripts/deploy/enable-personal-spaces.py', package / 'enable-personal-spaces.py')
         shutil.copy2(ROOT / 'scripts/deploy/enable-opencode-admin.py', package / 'enable-opencode-admin.py')
         source = fingerprint()
-        version = re.search(r'^version = "([^"]+)"', (ROOT / 'Cargo.toml').read_text(), re.MULTILINE).group(1)
+        version = re.search(r'^version = "([^"]+)"', (ROOT / 'Cargo.toml').read_text(encoding='utf-8'), re.MULTILINE).group(1)
         manifest = {'format': 1, 'architecture': 'linux/amd64', 'version': version, 'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(), 'fingerprint': source, 'files': {file.relative_to(package).as_posix(): digest(file) for file in sorted(package.rglob('*')) if file.is_file()}}
         (package / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
         bundle = OUTPUT / (time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-' + source[:12] + '.tgz')

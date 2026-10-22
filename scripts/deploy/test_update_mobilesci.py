@@ -139,7 +139,7 @@ class UpdateBundleTests(unittest.TestCase):
     def test_package_contains_platform_dependencies_and_migrations(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            (root / 'Cargo.toml').write_text('version = "0.2.19"\n')
+            (root / 'Cargo.toml').write_text('version = "0.2.19"\n# 中文说明与 UTF-8 标点 “候选”\n', encoding='utf-8')
             for name in ['ui/dist/index.html', 'packages/platform/src/server.mjs', 'packages/platform/public/index.html', 'packages/platform/migrations/004.sql', 'packages/platform/package.json', 'packages/platform/package-lock.json', 'scripts/deploy/update-server.py', 'scripts/deploy/enable-personal-spaces.py', 'scripts/deploy/enable-opencode-admin.py']:
                 file = root / name
                 file.parent.mkdir(parents=True, exist_ok=True)
