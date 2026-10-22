@@ -7950,6 +7950,12 @@ impl TurnCtx {
         Ok(())
     }
 
+    /// Immediate writes during an active turn (setup progress/prompt cards).
+    /// Final writes after the turn becomes terminal still use `flush`.
+    pub(crate) async fn flush_active_async(&mut self) -> Result<()> {
+        self.flush_async_with_store(true, Store::open).await
+    }
+
     async fn flush_async_with_store(
         &mut self,
         force: bool,
@@ -12133,9 +12139,13 @@ mod checkpoint_tests {
 
     fn checkpoint_fixture() -> (PathBuf, Store, TurnCtx) {
         let dir = std::env::temp_dir().join(format!("orx-checkpoint-{}", uuid::Uuid::new_v4()));
+        checkpoint_fixture_at(dir, "")
+    }
+
+    fn checkpoint_fixture_at(dir: PathBuf, suffix: &str) -> (PathBuf, Store, TurnCtx) {
         let store = Store::open_at(dir.clone()).unwrap();
         let session = StoredChatSession {
-            id: "session".into(),
+            id: format!("session{suffix}"),
             project_id: "project".into(),
             harness: "codex".into(),
             native_session_id: None,
@@ -12162,7 +12172,7 @@ mod checkpoint_tests {
         store.create_chat_session(&session).unwrap();
         store
             .upsert_chat_message_on_branch(&StoredChatMessage {
-                id: "user".into(),
+                id: format!("user{suffix}"),
                 session_id: session.id.clone(),
                 role: "user".into(),
                 parts_json: "[]".into(),
@@ -12188,10 +12198,10 @@ mod checkpoint_tests {
             updated_at: 1,
         };
         let turn = StoredChatTurn {
-            id: "turn".into(),
+            id: format!("turn{suffix}"),
             session_id: session.id.clone(),
-            user_message_id: Some("user".into()),
-            assistant_message_id: "assistant".into(),
+            user_message_id: Some(format!("user{suffix}")),
+            assistant_message_id: format!("assistant{suffix}"),
             client_turn_id: "client".into(),
             request_hash: String::new(),
             prepared_input: String::new(),
@@ -12219,7 +12229,7 @@ mod checkpoint_tests {
             project,
             &turn,
             WireMessage {
-                id: "assistant".into(),
+                id: format!("assistant{suffix}"),
                 role: "assistant".into(),
                 parts: vec![WirePart::text("part", "first")],
                 created_at: 2,
@@ -12228,6 +12238,97 @@ mod checkpoint_tests {
             },
         );
         (dir, store, ctx)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn immediate_flush_waits_off_worker_for_real_sqlite_writer_lock() {
+        let (dir, store, mut ctx) = checkpoint_fixture();
+        let writer = rusqlite::Connection::open(dir.join("orx.db")).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let root = dir.clone();
+        let write = ctx.flush_async_with_store(true, move || {
+            let _ = started.send(());
+            Store::open_at(root)
+        });
+        let release = async {
+            ready.await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            writer.execute_batch("ROLLBACK").unwrap();
+        };
+        let (result, ()) = tokio::join!(write, release);
+        result.unwrap();
+        assert_eq!(ctx.assistant.parent_id.as_deref(), Some("user"));
+        assert!(store
+            .get_chat_message("assistant")
+            .unwrap()
+            .unwrap()
+            .parts_json
+            .contains("first"));
+        // Force progress/card writes even inside the normal broadcast throttle.
+        ctx.assistant.parts[0].text = Some("immediate progress".into());
+        ctx.last_flush = Instant::now();
+        ctx.last_persist = Instant::now();
+        let root = dir.clone();
+        ctx.flush_async_with_store(true, move || Store::open_at(root))
+            .await
+            .unwrap();
+        assert!(store
+            .get_chat_message("assistant")
+            .unwrap()
+            .unwrap()
+            .parts_json
+            .contains("immediate progress"));
+        drop(writer);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn shared_sessions_keep_independent_branches_and_prompt_echoes() {
+        let dir = std::env::temp_dir().join(format!("orx-shared-prompts-{}", uuid::Uuid::new_v4()));
+        let (_, store, mut first) = checkpoint_fixture_at(dir.clone(), "-first");
+        let (_, other, mut second) = checkpoint_fixture_at(dir.clone(), "-second");
+        for ctx in [&mut first, &mut second] {
+            ctx.assistant.parts[0].prompt = Some(
+                serde_json::from_value(
+                    json!({"kind":"permission","resolved":true,"approved":true}),
+                )
+                .unwrap(),
+            );
+            ctx.flush_with_store(true, || Store::open_at(dir.clone()))
+                .unwrap();
+            ctx.assistant.parts[0].prompt =
+                Some(serde_json::from_value(json!({"kind":"permission"})).unwrap());
+        }
+        first.assistant.parts[0].text = Some("first progress".into());
+        second.assistant.parts[0].text = Some("second progress".into());
+        let root1 = dir.clone();
+        let root2 = dir.clone();
+        let (a, b) = tokio::join!(
+            first.flush_async_with_store(true, move || Store::open_at(root1)),
+            second.flush_async_with_store(true, move || Store::open_at(root2)),
+        );
+        a.unwrap();
+        b.unwrap();
+        for (ctx, expected, parent) in [
+            (&first, "first progress", "user-first"),
+            (&second, "second progress", "user-second"),
+        ] {
+            let saved =
+                stored_to_wire(&store.get_chat_message(&ctx.assistant.id).unwrap().unwrap());
+            assert_eq!(saved.parts[0].text.as_deref(), Some(expected));
+            assert_eq!(saved.parent_id.as_deref(), Some(parent));
+            let prompt = saved.parts[0].prompt.as_ref().unwrap();
+            assert!(prompt.resolved);
+            assert_eq!(prompt.approved, Some(true));
+        }
+        drop(first);
+        drop(second);
+        drop(store);
+        drop(other);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
@@ -12317,6 +12418,16 @@ mod checkpoint_tests {
     #[tokio::test(flavor = "current_thread")]
     #[ignore = "synthetic concurrent storage benchmark; run explicitly with --ignored --nocapture"]
     async fn event_storage_contention_benchmark() {
+        storage_contention_benchmark(false).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "shared SQLite storage benchmark; run explicitly with --ignored --nocapture"]
+    async fn shared_sqlite_contention_benchmark() {
+        storage_contention_benchmark(true).await;
+    }
+
+    async fn storage_contention_benchmark(shared: bool) {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         const CONCURRENT: usize = 16;
         fn percentile(values: &mut [f64], p: f64) -> f64 {
@@ -12325,83 +12436,129 @@ mod checkpoint_tests {
                 .saturating_sub(1)
                 .min(values.len() - 1)]
         }
-        for offload in [false, true] {
-            let fixtures: Vec<_> = (0..CONCURRENT)
-                .map(|_| {
-                    let (dir, store, mut ctx) = checkpoint_fixture();
-                    ctx.assistant.parts[0].text = Some("x".repeat(65536));
-                    drop(store);
-                    (dir, ctx)
-                })
-                .collect();
-            let gate = Arc::new(tokio::sync::Barrier::new(CONCURRENT + 1));
-            let done = Arc::new(AtomicBool::new(false));
-            let heartbeat_done = done.clone();
-            let (ready, heartbeat_ready) = tokio::sync::oneshot::channel();
-            let heartbeat = tokio::spawn(async move {
-                let step = Duration::from_millis(5);
-                let mut next = tokio::time::Instant::now() + step;
-                let mut delays = Vec::new();
-                let _ = ready.send(());
-                loop {
-                    tokio::time::sleep_until(next).await;
-                    let observed = tokio::time::Instant::now();
-                    while next <= observed {
-                        delays.push((observed - next).as_secs_f64() * 1000.0);
-                        next += step;
+        for round in 0..3 {
+            for offload in if round % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
+                let shared_dir =
+                    std::env::temp_dir().join(format!("orx-shared-bench-{}", uuid::Uuid::new_v4()));
+                let fixtures: Vec<_> = (0..CONCURRENT)
+                    .map(|i| {
+                        let (dir, store, mut ctx) = if shared {
+                            checkpoint_fixture_at(shared_dir.clone(), &format!("-{i}"))
+                        } else {
+                            checkpoint_fixture()
+                        };
+                        ctx.assistant.parts[0].text = Some("x".repeat(65536));
+                        drop(store);
+                        (dir, ctx)
+                    })
+                    .collect();
+                let gate = Arc::new(tokio::sync::Barrier::new(CONCURRENT + 1));
+                let done = Arc::new(AtomicBool::new(false));
+                let heartbeat_done = done.clone();
+                let (ready, heartbeat_ready) = tokio::sync::oneshot::channel();
+                let heartbeat = tokio::spawn(async move {
+                    let step = Duration::from_millis(5);
+                    let mut next = tokio::time::Instant::now() + step;
+                    let mut delays = Vec::new();
+                    let _ = ready.send(());
+                    loop {
+                        tokio::time::sleep_until(next).await;
+                        let observed = tokio::time::Instant::now();
+                        while next <= observed {
+                            delays.push((observed - next).as_secs_f64() * 1000.0);
+                            next += step;
+                        }
+                        if heartbeat_done.load(Ordering::SeqCst) {
+                            break;
+                        }
                     }
-                    if heartbeat_done.load(Ordering::SeqCst) {
-                        break;
+                    delays
+                });
+                heartbeat_ready.await.unwrap();
+                let active = Arc::new(AtomicUsize::new(0));
+                let peak = Arc::new(AtomicUsize::new(0));
+                let started = Instant::now();
+                let mut workers = tokio::task::JoinSet::new();
+                for (dir, mut ctx) in fixtures {
+                    let gate = gate.clone();
+                    let active = active.clone();
+                    let peak = peak.clone();
+                    workers.spawn(async move {
+                        gate.wait().await;
+                        let root = dir.clone();
+                        let requested = Instant::now();
+                        let (phase_tx, phase_rx) = tokio::sync::oneshot::channel();
+                        let open = move || {
+                            let opened_at = Instant::now();
+                            let queue_ms = requested.elapsed().as_secs_f64() * 1000.0;
+                            let n = active.fetch_add(1, Ordering::SeqCst) + 1;
+                            peak.fetch_max(n, Ordering::SeqCst);
+                            std::thread::sleep(Duration::from_millis(20));
+                            let result = Store::open_at(root);
+                            active.fetch_sub(1, Ordering::SeqCst);
+                            let _ = phase_tx
+                                .send((queue_ms, opened_at.elapsed().as_secs_f64() * 1000.0));
+                            result
+                        };
+                        let result = if offload {
+                            ctx.maybe_flush_async_with_store(open).await
+                        } else {
+                            ctx.flush_with_store(false, open)
+                        };
+                        let (queue_ms, open_ms) = phase_rx.await.unwrap();
+                        (
+                            dir,
+                            ctx,
+                            started.elapsed().as_secs_f64() * 1000.0,
+                            queue_ms,
+                            open_ms,
+                            result.err(),
+                            requested.elapsed().as_secs_f64() * 1000.0,
+                        )
+                    });
+                }
+                gate.wait().await;
+                let mut completed = Vec::new();
+                while let Some(result) = workers.join_next().await {
+                    completed.push(result.unwrap());
+                }
+                let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+                done.store(true, Ordering::SeqCst);
+                let mut delays = heartbeat.await.unwrap();
+                let mut latencies: Vec<_> =
+                    completed.iter().map(|(_, _, ms, _, _, _, _)| *ms).collect();
+                let errors = completed.iter().filter(|item| item.5.is_some()).count();
+                let mut queues: Vec<_> = completed.iter().map(|item| item.3).collect();
+                let mut opens: Vec<_> = completed.iter().map(|item| item.4).collect();
+                let mut writes: Vec<_> = completed
+                    .iter()
+                    .map(|item| item.6 - item.3 - item.4)
+                    .collect();
+                eprintln!("event_storage shared={} round={} mode={} concurrent={} text_bytes=65536 injected_open_ms=20 total_ms={total_ms:.3} completion_p50_ms={:.3} completion_p95_ms={:.3} completion_p99_ms={:.3} heartbeat_samples={} heartbeat_p50_ms={:.3} heartbeat_p95_ms={:.3} heartbeat_p99_ms={:.3} peak_open={} errors={} queue_p95_ms={:.3} open_p95_ms={:.3} post_open_p95_ms={:.3}", shared, round, if offload {"bounded_async"} else {"synchronous"}, CONCURRENT, percentile(&mut latencies,0.50),percentile(&mut latencies,0.95),percentile(&mut latencies,0.99),delays.len(),percentile(&mut delays,0.50),percentile(&mut delays,0.95),percentile(&mut delays,0.99),peak.load(Ordering::SeqCst), errors, percentile(&mut queues,0.95),percentile(&mut opens,0.95),percentile(&mut writes,0.95));
+                for (dir, ctx, _, _, _, error, _) in completed {
+                    assert!(error.is_none(), "shared storage write failed: {error:?}");
+                    let store = Store::open_at(dir.clone()).unwrap();
+                    let saved = stored_to_wire(
+                        &store.get_chat_message(&ctx.assistant.id).unwrap().unwrap(),
+                    );
+                    assert_eq!(saved.parts[0].text.as_ref().unwrap().len(), 65536);
+                    assert_eq!(
+                        saved.parent_id,
+                        Some(ctx.session_id.replace("session", "user"))
+                    );
+                    drop(store);
+                    drop(ctx);
+                    if !shared {
+                        std::fs::remove_dir_all(dir).unwrap();
                     }
                 }
-                delays
-            });
-            heartbeat_ready.await.unwrap();
-            let active = Arc::new(AtomicUsize::new(0));
-            let peak = Arc::new(AtomicUsize::new(0));
-            let started = Instant::now();
-            let mut workers = tokio::task::JoinSet::new();
-            for (dir, mut ctx) in fixtures {
-                let gate = gate.clone();
-                let active = active.clone();
-                let peak = peak.clone();
-                workers.spawn(async move {
-                    gate.wait().await;
-                    let root = dir.clone();
-                    let open = move || {
-                        let n = active.fetch_add(1, Ordering::SeqCst) + 1;
-                        peak.fetch_max(n, Ordering::SeqCst);
-                        std::thread::sleep(Duration::from_millis(20));
-                        let result = Store::open_at(root);
-                        active.fetch_sub(1, Ordering::SeqCst);
-                        result
-                    };
-                    if offload {
-                        ctx.maybe_flush_async_with_store(open).await.unwrap();
-                    } else {
-                        ctx.flush_with_store(false, open).unwrap();
-                    }
-                    (dir, ctx, started.elapsed().as_secs_f64() * 1000.0)
-                });
-            }
-            gate.wait().await;
-            let mut completed = Vec::new();
-            while let Some(result) = workers.join_next().await {
-                completed.push(result.unwrap());
-            }
-            let total_ms = started.elapsed().as_secs_f64() * 1000.0;
-            done.store(true, Ordering::SeqCst);
-            let mut delays = heartbeat.await.unwrap();
-            let mut latencies: Vec<_> = completed.iter().map(|(_, _, ms)| *ms).collect();
-            eprintln!("event_storage mode={} concurrent={} text_bytes=65536 injected_open_ms=20 total_ms={total_ms:.3} completion_p50_ms={:.3} completion_p95_ms={:.3} completion_p99_ms={:.3} heartbeat_samples={} heartbeat_p50_ms={:.3} heartbeat_p95_ms={:.3} heartbeat_p99_ms={:.3} peak_open={}", if offload {"bounded_async"} else {"synchronous"}, CONCURRENT, percentile(&mut latencies,0.50),percentile(&mut latencies,0.95),percentile(&mut latencies,0.99),delays.len(),percentile(&mut delays,0.50),percentile(&mut delays,0.95),percentile(&mut delays,0.99),peak.load(Ordering::SeqCst));
-            for (dir, ctx, _) in completed {
-                let store = Store::open_at(dir.clone()).unwrap();
-                let saved = stored_to_wire(&store.get_chat_message("assistant").unwrap().unwrap());
-                assert_eq!(saved.parts[0].text.as_ref().unwrap().len(), 65536);
-                assert_eq!(saved.parent_id.as_deref(), Some("user"));
-                drop(store);
-                drop(ctx);
-                std::fs::remove_dir_all(dir).unwrap();
+                if shared {
+                    std::fs::remove_dir_all(shared_dir).unwrap();
+                }
             }
         }
     }

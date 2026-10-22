@@ -1513,7 +1513,7 @@ async fn ensure_runtime(
                 let mut part = WirePart::tool("opencode-setup", "OpenCode", "running", None);
                 if let Some(state) = &mut part.state { state.title = Some(progress.borrow().clone()); }
                 ctx.upsert_part(part);
-                ctx.flush()?;
+                ctx.flush_active_async().await?;
             }
         }
     };
@@ -1527,7 +1527,7 @@ async fn ensure_runtime(
         state.status = if result.is_ok() { "completed" } else { "error" }.into();
         state.error = result.as_ref().err().map(ToString::to_string);
     }
-    ctx.flush()?;
+    ctx.flush_active_async().await?;
     result
 }
 
@@ -2088,7 +2088,7 @@ fn handle_event(
 /// Surface a prompt card and flush it so it renders immediately (before the
 /// turn resumes). The card's `native_id` (the reply target) is also its
 /// `WirePart` id, so the user's answer round-trips back to the right request.
-fn surface_card(ctx: &mut TurnCtx, card: WirePrompt) {
+async fn surface_card(ctx: &mut TurnCtx, card: WirePrompt) {
     // `native_id` is always set by permission_card/question_card (opencode
     // requires the request id); the fallback id only guards a malformed payload.
     let part_id = card
@@ -2096,7 +2096,7 @@ fn surface_card(ctx: &mut TurnCtx, card: WirePrompt) {
         .clone()
         .unwrap_or_else(|| format!("prompt-{}", ctx.assistant.parts.len()));
     ctx.upsert_part(WirePart::prompt(part_id, card));
-    let _ = ctx.flush();
+    let _ = ctx.flush_active_async().await;
 }
 
 /// Handle an interactive-prompt SSE event (`permission.asked` / `question.asked`)
@@ -2128,7 +2128,7 @@ async fn handle_prompt_event(
                 // No request id to reply to — surface it as an error so the turn
                 // isn't silently wedged waiting on an answer no one can give.
                 ctx.push_error("opencode asked for a permission we couldn't parse".into());
-                let _ = ctx.flush();
+                let _ = ctx.flush_active_async().await;
                 return Ok(true);
             };
             // Auto-approve handles native `ask` requests; Default surfaces them.
@@ -2142,19 +2142,19 @@ async fn handle_prompt_event(
                         post_permission(ctx.http(), base, native_id, id, "always").await
                     {
                         eprintln!("orx up: opencode auto-approve failed, surfacing card: {err}");
-                        surface_card(ctx, card);
+                        surface_card(ctx, card).await;
                     }
                 }
-                _ => surface_card(ctx, card),
+                _ => surface_card(ctx, card).await,
             }
             Ok(true)
         }
         Some("question.asked") => {
             match question_card(props, plan_exit_calls) {
-                Some(card) => surface_card(ctx, card),
+                Some(card) => surface_card(ctx, card).await,
                 None => {
                     ctx.push_error("opencode asked a question we couldn't parse".into());
-                    let _ = ctx.flush();
+                    let _ = ctx.flush_active_async().await;
                 }
             }
             Ok(true)

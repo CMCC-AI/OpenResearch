@@ -410,7 +410,8 @@ async fn prompts(
                 tool_input: Some(request["resources"].clone()),
                 ..Default::default()
             },
-        );
+        )
+        .await;
         surfaced.insert(id.to_owned());
     }
     let forms = get(endpoint, &format!("{path}/form")).await?;
@@ -431,7 +432,7 @@ async fn prompts(
             if surfaced.contains(&native_id) {
                 continue;
             }
-            surface_card(ctx, form_card(form, field, native_id.clone())?);
+            surface_card(ctx, form_card(form, field, native_id.clone())?).await;
             surfaced.insert(native_id);
         }
     }
