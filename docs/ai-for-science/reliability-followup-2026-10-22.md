@@ -27,7 +27,7 @@ bash scripts/test-material-enospc-macos.sh
 
 边界：这是 macOS HFS+ 文件系统上的本地故障回归，不等于 Linux 生产文件系统、实际聊天检查点在 ENOSPC 下的完整生命周期、断电耐久性或长期压力均已验收。SQLite 部分直接验证事务失败与重试，不冒充真实聊天消息 ENOSPC 端到端测试。
 
-## 专家派发与唤醒：计划完成，等待 G1
+## 专家派发与唤醒：真实合成闭环通过
 
 已在独立 slot-4 建立合成研究会话，由真实 OpenCode 主理人通过 `orx research plan` 登记计划 v1，没有直接写数据库或调用审批 API。
 
@@ -37,6 +37,18 @@ bash scripts/test-material-enospc-macos.sh
 2. `review-check`：独立审稿专家，读取声明的上游合成说明并写核验结果。
 3. `audit-check`：引用审计专家，核验声明依赖链并写合成审计结果。
 
-所有产物局限于该隔离研究的产物目录，不读取业务数据、不检索文献、不启动实验或交付闸门。已打开研究面板展示完整计划及“批准当前版本”，等待用户在 G1 确认；尚未派发专家，不能标记唤醒通过。审批后按依赖顺序验证三次派发、完成通知、主理人唤醒及产物哈希，最后要求主理人回复 `PARENT_WAKE_ACCEPTANCE_OK`。
+用户在研究面板批准 G1 后，主理人自动恢复，只派发当前依赖就绪的任务，并在每次派发后结束当前 turn。三个专家分别完成 `orx research finish`，三次完成通知均唤醒主理人；主理人核对上游产物后逐次派发下一任务，最终界面显示 3/3 个任务已验收，并回复 `PARENT_WAKE_ACCEPTANCE_OK`。
 
-会话与页面状态保留在本地 `expert-wake-state.json`，截图为 `expert-g1-review.jpg`。此处等待来自项目现有研究流程的人类决策门槛，不是浏览器访问审批故障。
+通过正常界面的“下载草稿包”导出，独立计算三个实际文件的大小和 SHA-256，均与导出包内登记一致；首个文件包含约定标记。包中仅有三个声明产物及系统生成的 manifest、README。
+
+| 产物 | 字节 | SHA-256 |
+| --- | --- | --- |
+| wake-check.md | 1450 | 6c041cba67c4bd72d8ddb4ff63c29ab69859a132ff082caabeef6e7625befe20 |
+| review-check.md | 3988 | 4b7ef9d9116bae98eaec9cc7e6eab22f25c9da60d975b7d0db685b8b5f608dd3 |
+| audit-check.md | 6784 | 3bfbb4b2bf8838028532b312aa10bcc026caddba7c93e1a7b2640b8be0cab881 |
+
+本轮只批准了 G1；未申请或批准交付闸门，没有启动实验或外部服务。研究保持草稿状态，最终主理人 turn 已结束；隔离服务和页面保留供复核。该结果证明本地 OpenCode 自定义 team 的合成派发/依赖/完成唤醒链，不等于 W1–W4、G2/G3 实验审批、实际科研结论或生产服务器全部验收。
+
+会话入口保留在本地 `expert-wake-state.json`；审批截图 `expert-g1-review.jpg`，最终截图 `expert-wake-complete.jpg`；文件核验记录 `expert-artifact-evidence.json`。材料故障日志及源码哈希汇总见 `enospc-evidence.json`。这些证据均在忽略目录 acceptance 下，不提交测试数据库或模型会话日志。
+
+一次独立 API 状态快照采集因自动审批连接中断而未执行，也没有通过其他执行方式补跑该命令。上述完成证据来自持续进行的正常浏览器验收及草稿产物导出，不将未生成的 API 快照列作已归档证据。
