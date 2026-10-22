@@ -68,11 +68,11 @@ def verify_bundle(bundle):
     return manifest
 
 
-def prepare(image=None):
+def prepare(image=None, pdf_debs=None):
     OUTPUT.mkdir(parents=True, exist_ok=True)
     latest = OUTPUT / 'latest.json'
     source = fingerprint()
-    if image is None and latest.exists():
+    if image is None and pdf_debs is None and latest.exists():
         saved = json.loads(latest.read_text(encoding='utf-8'))
         bundle = OUTPUT / saved['file']
         if saved.get('fingerprint') == source and bundle.is_file() and digest(bundle) == saved['sha256']:
@@ -144,8 +144,18 @@ def prepare(image=None):
             run(['docker', 'cp', container + ':/node_modules', package / 'platform/node_modules'])
         finally:
             run(['docker', 'rm', container])
+        if pdf_debs is not None:
+            files = sorted(pdf_debs.glob('*.deb'))
+            if not files or any(file.is_symlink() for file in files):
+                raise ValueError('离线 PDF 依赖必须包含普通 .deb 文件')
+            destination = package / 'workbench/pdf-debs'
+            destination.mkdir()
+            for file in files:
+                shutil.copy2(file, destination / file.name)
         for service in ['workbench', 'platform']:
             copy = 'USER root\nRUN if ! command -v pdftotext >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends poppler-utils && rm -rf /var/lib/apt/lists/*; fi\nRUN pdftotext -v\nCOPY --chmod=755 orx /usr/local/bin/orx\nUSER node' if service == 'workbench' else 'WORKDIR /app/platform\nCOPY package.json package-lock.json ./\nCOPY node_modules ./node_modules\nCOPY migrations ./migrations\nCOPY dist /app/ui/dist\nCOPY public ./public\nCOPY src ./src'
+            if service == 'workbench' and pdf_debs is not None:
+                copy = 'USER root\nCOPY pdf-debs /tmp/pdf-debs\nRUN dpkg -i /tmp/pdf-debs/*.deb && pdftotext -v && rm -rf /tmp/pdf-debs\nCOPY --chmod=755 orx /usr/local/bin/orx\nUSER node'
             (package / service / 'Dockerfile').write_text('ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n' + copy + '\n')
         shutil.copy2(ROOT / 'scripts/deploy/update-server.py', package / 'update-server.py')
         shutil.copy2(ROOT / 'scripts/deploy/enable-personal-spaces.py', package / 'enable-personal-spaces.py')
@@ -259,11 +269,12 @@ def main():
     parser.add_argument('--bundle', type=Path, help='使用指定的已准备更新包')
     parser.add_argument('--evidence', type=Path, help='当前候选的发行证据 JSON；实际部署必需')
     parser.add_argument('--workbench-image', help='从指定的本地 Linux amd64 科研镜像提取二进制')
+    parser.add_argument('--pdf-debs', type=Path, help='携带本地下载的 Debian bookworm amd64 PDF 解析器及完整依赖；服务器禁止联网补包')
     args = parser.parse_args()
-    if args.bundle and args.workbench_image:
-        parser.error('--bundle 与 --workbench-image 不能同时使用')
+    if args.bundle and (args.workbench_image or args.pdf_debs):
+        parser.error('--bundle 与 --workbench-image/--pdf-debs 不能同时使用')
     os.chdir(ROOT)
-    bundle = args.bundle.resolve() if args.bundle else prepare(args.workbench_image)
+    bundle = args.bundle.resolve() if args.bundle else prepare(args.workbench_image, args.pdf_debs.resolve() if args.pdf_debs else None)
     if not args.prepare_only:
         upload(bundle, args.unified_opencode, args.evidence.resolve() if args.evidence else None)
 

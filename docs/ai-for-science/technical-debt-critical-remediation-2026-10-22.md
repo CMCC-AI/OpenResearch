@@ -50,6 +50,8 @@
 
 ## 部署与清理步骤
 
+PDF 解析器补齐支持 `--pdf-debs <目录>`：在本地 Debian bookworm amd64 环境使用官方仓库下载 `poppler-utils` 及完整依赖，通过 SHA256 清单复核后随更新包 SCP 上传。所有 `.deb` 纳入部署 manifest 哈希，主工作台与私人 executor 均用 `dpkg -i` 离线安装；缺包或版本不兼容即停止构建，不在服务器联网补包。此次 32 包已在断网容器安装并验证 `pdftotext 22.12.0`。
+
 1. 测试候选源码，构建 Linux amd64 工作台并核对哈希；验证平台、浏览器关键路径和历史数据升级/恢复。
 2. 按中文 Conventional Commits 提交，推送现有工作分支；核实远程 SHA。
 3. 从干净候选生成更新包和 evidence；`python scripts/deploy/update-mobilesci.py --bundle <包> --evidence <证据>` 才允许进入上传。私人运行环境需同时使用已核对的迁移/分发流程更新，不能只更新主工作台。

@@ -172,6 +172,19 @@ class UpdateBundleTests(unittest.TestCase):
                     self.assertIn('COPY node_modules ./node_modules', dockerfile)
                     self.assertNotIn('RUN npm', dockerfile)
                     self.assertIn('COPY migrations ./migrations', dockerfile)
+                offline = root / 'pdf-debs'
+                offline.mkdir()
+                (offline / 'poppler-utils_test_amd64.deb').write_bytes(b'offline package fixture')
+                offline_bundle = update.prepare('test-image', offline)
+                offline_manifest = update.verify_bundle(offline_bundle)
+                self.assertIn('workbench/pdf-debs/poppler-utils_test_amd64.deb', offline_manifest['files'])
+                with tarfile.open(offline_bundle) as archive:
+                    dockerfile = archive.extractfile('workbench/Dockerfile').read().decode()
+                    self.assertIn('dpkg -i /tmp/pdf-debs/*.deb', dockerfile)
+                    self.assertNotIn('apt-get update', dockerfile)
+                (offline / 'poppler-utils_test_amd64.deb').unlink()
+                with self.assertRaisesRegex(ValueError, '离线 PDF 依赖'):
+                    update.prepare('test-image', offline)
 
 
 if __name__ == '__main__':

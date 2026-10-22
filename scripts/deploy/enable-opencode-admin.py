@@ -197,7 +197,11 @@ def main(package, apply=False):
         shutil.copytree(package / 'platform/src', context / 'src')
         base = 'mobilesci-opencode-executor-base:' + stamp.lower()
         run('docker', 'tag', private[0]['Image'], base)
-        (context / 'Dockerfile').write_text('FROM ' + base + '\nUSER root\nRUN if ! command -v pdftotext >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends poppler-utils && rm -rf /var/lib/apt/lists/*; fi\nRUN pdftotext -v\nCOPY --chmod=755 orx /usr/local/bin/orx\nCOPY src /app/platform/src\nUSER node\n')
+        parser_setup = 'RUN if ! command -v pdftotext >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends poppler-utils && rm -rf /var/lib/apt/lists/*; fi\nRUN pdftotext -v\n'
+        if (package / 'workbench/pdf-debs').is_dir():
+            shutil.copytree(package / 'workbench/pdf-debs', context / 'pdf-debs')
+            parser_setup = 'COPY pdf-debs /tmp/pdf-debs\nRUN dpkg -i /tmp/pdf-debs/*.deb && pdftotext -v && rm -rf /tmp/pdf-debs\n'
+        (context / 'Dockerfile').write_text('FROM ' + base + '\nUSER root\n' + parser_setup + 'COPY --chmod=755 orx /usr/local/bin/orx\nCOPY src /app/platform/src\nUSER node\n')
         run('docker', 'build', '--pull=false', '-t', executor_image, str(context))
     else:
         executor_image = values(provisioner['Config'])['MANAGED_EXECUTOR_IMAGE']
