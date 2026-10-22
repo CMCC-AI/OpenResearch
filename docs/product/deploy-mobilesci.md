@@ -1,5 +1,7 @@
 # MobileSci 一键部署：公网 IP / Nginx 20281
 
+运行形态、规范入口和推荐配置源统一见[运行与部署约定](runtime-and-deployment.md)。本文提供该形态的具体操作步骤。
+
 入口为仓库根目录 `deploy-mobilesci.command`。SSH 目标固定为 `ubuntu@61.136.101.179:20280`，部署后浏览器访问 **http://61.136.101.179:20281/mobilesci**，无需手动建立 SSH 隧道。已确认同步本地 OpenCode 配置及模型登录凭据，并明确授权该公网 HTTP 入口；其他部署继续默认要求 HTTPS。
 
 ## 一键执行

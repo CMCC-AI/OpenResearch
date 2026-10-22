@@ -39,7 +39,7 @@ The local-first harness & workspace for research agents.
 
 ## Get started
 
-AI for Science 产品扩展与 Deep Literature 集成见 [开发文档中心](docs/ai-for-science/README.md)。
+AI for Science 产品扩展与 Deep Literature 集成见 [开发文档中心](docs/ai-for-science/README.md)；本地版、服务器私人托管版、规范入口和部署参数统一见 [运行与部署约定](docs/product/runtime-and-deployment.md)。
 
 **We recommend using the OpenResearch desktop app.** Download it for your platform:
 

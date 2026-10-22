@@ -2,7 +2,7 @@
 
 2026-10-10：科研专家团已作为研究编排层接入原生执行底座。当前完整架构、功能和验收边界见[最终项目架构与功能设计](final-architecture-and-functional-design.md)；下文文献渠道说明沿用 2026-09-22 的核查范围。
 
-2026-09-22 产品主线收敛为本地 OpenResearch、Deep Literature 与统一账号。`packages/platform` 的前台只承担个人账号和 SSO；其中工作空间 RBAC、专属执行器和托管环境代码作为内部兼容能力保留，不进入个人版用户路径。原有本地数据流和设置不变；边界见[个人版产品主线](product-experience.md)。
+当前支持本地个人版与服务器私人托管版，统一身份与文献服务，研究数据分别留在本机或对应服务器私人执行环境。`packages/platform` 在本地版承担账号和 SSO，在托管版还承担私人空间归属验证及执行器路由；provisioner、executor 和原工作台 connector 仍是运行链路。历史团队 RBAC/邀请方案不作为当前授权依据。运行形态及参数以[统一约定](../product/runtime-and-deployment.md)为准。
 
 ## 系统边界与代码导航
 

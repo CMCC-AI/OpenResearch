@@ -1,5 +1,7 @@
 # 多用户平台：架构、部署与验收
 
+> 适用范围：早期团队/托管方案的历史参考。当前本地版和服务器私人托管版的区别见[统一约定](../product/runtime-and-deployment.md)，现行托管权限见[私人空间权限](../product/private-space-permissions.md)。保留执行器实现不等于继续提供历史团队功能。
+
 > 历史设计归档（2026-10-18）：本文中的团队角色、成员管理、邀请接口和邀请向导已移除，不代表当前行为。现行权限以 [私人空间权限](../product/private-space-permissions.md) 为准。
 
 

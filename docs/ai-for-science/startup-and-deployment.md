@@ -1,6 +1,6 @@
 # OpenResearch + Deep Literature 完整部署指南
 
-本文是当前个人版本的部署基线，覆盖三个运行单元：
+本文说明本地个人版的配套服务部署，覆盖下列三个运行单元。服务器私人托管版、规范入口和配置源见[运行与部署约定](../product/runtime-and-deployment.md)。
 
 官方源码同步与产品发行包升级流程见[官方版本同步与产品升级](upstream-upgrades.md)。产品构建不会从官方仓库自动替换自身。
 
@@ -8,7 +8,7 @@
 2. OpenResearch 统一账号服务：注册、登录、会话、退出和 SSO 授权。
 3. Deep Literature：论文发现、精读、文库、笔记及后台 Worker。
 
-团队空间和托管执行器仍作为内部兼容能力保留，不是个人版的默认部署路径。相关部署见[平台托管空间](managed-workspaces.md)和[多用户平台](multi-user-platform.md)。
+服务器私人托管版实际使用空间与执行器，见[自托管 OpenCode](self-hosted-opencode.md)。早期团队与托管方案文档按历史设计阅读，不代表当前授权行为。
 
 ## 1. 用户访问流程
 
@@ -29,7 +29,7 @@
 | 服务 | 本地默认地址 | 说明 |
 |---|---|---|
 | OpenResearch release | `http://localhost:4791` | 面向用户的科研工作台 |
-| OpenResearch UI 开发服务器 | `http://localhost:5202` | 仅源码开发使用 |
+| OpenResearch UI 开发服务器 | dev-slot 分配（slot-1 通常为 `http://localhost:5201`） | 仅源码开发使用 |
 | 统一账号服务 | `http://localhost:5300` | 注册、登录和 SSO |
 | 账号 PostgreSQL | `127.0.0.1:15439` | 仅开发环境发布到回环地址 |
 | Deep Literature | `http://localhost:3000` | 论文、精读和个人文库 |
@@ -59,11 +59,18 @@ docker compose --env-file ../DeepLiterature/.env.local \
 
 Docker Desktop 可能自动恢复此前的 Compose 容器；若没有运行，按第 4.2、4.3 节分别启动。随后运行第 4.4 节的本地产品进程，并用第 5 节的健康检查确认。不要仅以 `docker ps` 中的 `Up` 判断登录链路可用。
 
+开发请使用 `./start-mobilesci-dev.command`，并以 `node scripts/dev-slot.mjs status` 确认端口。账号的 `OPENRESEARCH_APP_ORIGIN` 和文献回调必须与实际前端入口一致；不再将下述历史恢复记录中的 5202 或 4791 视为所有环境的固定值。
+
+<details>
+<summary>历史本机恢复记录（2026-09-30、2026-10-10；不是当前启动步骤）</summary>
+
 2026-09-30 本机恢复时，实际先通过 `node scripts/dev-slot.mjs start --db empty` 恢复了 `4902` 后端和 `5202` UI 开发预览；Docker Desktop 启动后，既有的账号服务与 Deep Literature Compose 项目自动恢复；最后在 `ORX_ACCOUNT_URL`、`ORX_DEEP_LITERATURE_URL`、`ORX_DEEP_LITERATURE_WEB_URL` 环境变量下，以 `/Users/levent/.local/share/openresearch-dev/cargo-target/debug/orx`（`orx 0.2.9`）运行 `up --no-browser`，让产品入口监听 `4791`。最终通过 Node.js `spawn` 的 `detached: true` 和 `unref()` 将该实例作为独立后台进程启动，日志位于 `/private/tmp/openresearch-orx-4791.log`。这是基于本机现有构建产物的快速恢复；首次部署或代码更新后应使用下文的一键脚本重新构建。
 
 2026-10-10 本机排查：开发 slot-1（后端 `4901`、UI `5201`）仍在运行，但用户入口 `4791` 没有监听，登录回调因此出现 `ERR_CONNECTION_REFUSED`。账号服务 `5300` 和 Deep Literature `3000` 正常。已使用当前 dev-slot 构建的 `orx 0.2.17` 按上述后台恢复方式重新启动 `4791`，验证工作台与账号页 HTTP 200、后端健康检查正常，账号会话接口允许精确来源 `http://localhost:4791`。实际用户登录需在浏览器完成；开发预览地址不能代替既有登录回调入口。
 
 `5202` 是隔离的源码开发预览，`4791` 是当前账号与 Deep Literature 配置的登录回调目标。若直接从 `5202` 测试登录，必须先将两端 App origin 都改为 `http://localhost:5202` 并重启相应服务；否则应从 `http://localhost:4791` 进入完整产品。
+
+</details>
 
 检查 Docker 容器归属时使用 `docker compose ls --all` 和容器的 `com.docker.compose.project.working_dir` 标签。只停止明确属于其他项目的容器，使用 `docker stop <容器名>` 或该项目目录下的 `docker compose stop`；不要执行 `docker compose down -v`，以免删除数据库卷。本机的 `cmcc-local-dev` MySQL、Redis 属于另一个项目，已停止但未删除；`openresearch-test` 执行器属于本仓库测试环境，虽非个人版必需服务，不能归类为无关项目。
 

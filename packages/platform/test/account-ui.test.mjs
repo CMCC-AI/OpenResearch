@@ -138,3 +138,29 @@ test("administrator lands on user management and normal users have no management
   assert.match(ordinary.node("#app").innerHTML, /仅对系统管理员开放/);
   assert.deepEqual(ordinary.redirects, []);
 });
+
+test("account management links use canonical admin routes for root and prefixed apps", async () => {
+  for (const prefix of ["", "/mobilesci"]) {
+    const b = browser({
+      "/api/platform/me": { name: "Admin", isAdmin: true },
+      "/api/platform/capabilities": {
+        openResearchAppUrl: `http://localhost:4791${prefix}/projects?from=old#section`,
+      },
+    });
+    b.context.location.search = "?account=1";
+    await b.ui.load();
+    assert.ok(
+      b
+        .node("#account")
+        .innerHTML.includes(
+          `href="http://localhost:4791${prefix}/admin/users"`,
+        ),
+    );
+    assert.ok(!b.node("#account").innerHTML.includes("admin=1"));
+    assert.deepEqual(b.redirects, []);
+    assert.equal(
+      b.calls.filter((path) => path === "/api/platform/capabilities").length,
+      1,
+    );
+  }
+});

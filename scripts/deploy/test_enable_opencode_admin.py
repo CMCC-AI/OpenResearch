@@ -45,6 +45,21 @@ class UnifiedOpenCodeTests(unittest.TestCase):
         self.assertTrue(admin['read_only'])
         self.assertNotIn('opencode-admin', original['services'])
 
+    def test_recommended_configuration_removes_only_superseded_sources(self):
+        original = {'OPENCODE_ADMIN_CONFIG_FILE': '/old/config.json', 'DATABASE_URL': 'keep'}
+        platform = module.official_platform_environment(original)
+        self.assertNotIn('OPENCODE_ADMIN_CONFIG_FILE', platform)
+        self.assertEqual(platform['OPENCODE_ADMIN_URL'], module.URL)
+        self.assertEqual(platform['DATABASE_URL'], 'keep')
+        self.assertIn('OPENCODE_ADMIN_CONFIG_FILE', original)
+        old = {'MANAGED_OPENCODE_CONFIG_DIR': '/old', 'MANAGED_OPENCODE_CONFIG_FILE': '/old/file.json', 'MANAGED_OPENCODE_AUTH_FILE': '/private/auth.json', 'MANAGED_LEGACY_WORKSPACE': 'owner', 'MANAGED_CONNECTOR_IMAGE': 'connector'}
+        env = module.live_provisioner_environment(old, 'new-executor')
+        self.assertNotIn('MANAGED_OPENCODE_CONFIG_DIR', env)
+        self.assertNotIn('MANAGED_OPENCODE_CONFIG_FILE', env)
+        self.assertEqual(env['MANAGED_OPENCODE_LIVE_CONFIG_DIR'], module.SHARED)
+        for key in ('MANAGED_OPENCODE_AUTH_FILE', 'MANAGED_LEGACY_WORKSPACE', 'MANAGED_CONNECTOR_IMAGE'):
+            self.assertEqual(env[key], old[key])
+
     def test_fresh_deployment_uses_official_api_and_retains_settings_on_upgrade(self):
         spec = importlib.util.spec_from_file_location('mobilesci_for_opencode', Path(__file__).with_name('mobilesci.py'))
         deployment = importlib.util.module_from_spec(spec)

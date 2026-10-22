@@ -2,7 +2,7 @@
 
 自有服务器多用户部署可启用 `compose.hosted.yaml`：自动私人空间、独立数据卷、共享 OpenCode 镜像及 Deep Literature SSO。部署说明见[服务器 OpenCode 模式](../../docs/ai-for-science/self-hosted-opencode.md)。本地个人版入口继续保持原行为。
 
-当前用户主线：OpenResearch 本地版 + Deep Literature + 统一账号。此 package 的门户负责个人注册、登录、改密、退出和 Deep Literature SSO，不再向个人用户展示工作空间或执行器配置。
+支持本地个人版与服务器私人托管版，运行形态和推荐配置见[统一约定](../../docs/product/runtime-and-deployment.md)。本地版由门户提供账号和 SSO；托管版还提供私人空间路由与自动执行环境，普通用户不需手工配置连接器。
 
 主项目可独立运行 `orx up`；未登录时显示产品介绍页，登录后进入项目、Agent 和设置。统一账号只提供身份，不读取或同步本地研究数据。
 
@@ -22,7 +22,7 @@ node --env-file=.env src/admin.mjs migrate
 node --env-file=.env src/server.mjs
 ```
 
-访问 `http://localhost:5300`，在页面自助注册个人账号。`OPENRESEARCH_APP_ORIGIN` 必须是实际 OpenResearch Web origin；本地 release 通常为 `http://localhost:4791`，UI 开发服务器示例为 `http://localhost:5202`。不要把开发数据库或 HTTP 入口暴露公网；公网部署必须使用 HTTPS。
+访问 `http://localhost:5300`，在页面自助注册个人账号。`OPENRESEARCH_APP_ORIGIN` 必须是实际 OpenResearch Web origin；本地 release 通常为 `http://localhost:4791`，UI 开发服务器示例为 dev-slot 实际分配的地址（slot-1 通常为 `http://localhost:5201`）。不要把开发数据库或 HTTP 入口暴露公网；公网部署必须使用 HTTPS。
 
 ## 检查
 

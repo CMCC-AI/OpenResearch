@@ -18,6 +18,7 @@ When changing authentication, organization, sandbox, or managed-compute APIs, in
 
 ## MobileSci development and materials
 
+- Runtime boundaries, canonical entry routes and recommended deployment configuration are documented in `docs/product/runtime-and-deployment.md`. Distinguish local personal and server-hosted private deployments; historical team design documents do not define current private-space permissions. Use the same configuration normalization for replacement containers and persisted Compose when changing deployment migrations.
 - Use `./start-mobilesci-dev.command` for local development with Vite hot updates; it starts an isolated slot through `scripts/dev-slot.mjs`. `./start-mobilesci.command` serves the built dashboard and does not provide frontend hot updates. Inspect slot status before starting or stopping services; stop only the processes owned by the relevant slot.
 - Keep the account service's `OPENRESEARCH_APP_ORIGIN` compatible with the active frontend origin. Inspect the configured origin when troubleshooting login; do not broaden CORS or overwrite credentials as a workaround.
 - Material ingestion is independent of work mode: ordinary conversations need no uploads, and both work mode and research-team mode may receive multiple files, folders, or ZIP archives. Preserve relative paths and use the shared upload flow in `ui/src/materialUploads.ts` and server-side material packages in `src/local/materials.rs`.

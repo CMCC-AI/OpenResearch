@@ -62,20 +62,32 @@ def admin_service(image):
     }
 
 
+def official_platform_environment(original):
+    env = dict(original)
+    env.pop('OPENCODE_ADMIN_CONFIG_FILE', None)
+    env['OPENCODE_ADMIN_URL'] = URL
+    return env
+
+
+def live_provisioner_environment(original, executor_image):
+    env = dict(original)
+    for key in ('MANAGED_OPENCODE_CONFIG_DIR', 'MANAGED_OPENCODE_CONFIG_FILE'):
+        env.pop(key, None)
+    env.update(MANAGED_OPENCODE_LIVE_CONFIG_DIR=SHARED, MANAGED_EXECUTOR_IMAGE=executor_image)
+    return env
+
+
 def desired_compose(compose, workbench_image, executor_image):
     result = copy.deepcopy(compose)
     services = result['services']
-    services['platform'].setdefault('environment', {})['OPENCODE_ADMIN_URL'] = URL
+    services['platform']['environment'] = official_platform_environment(services['platform'].get('environment', {}))
     dependencies = services['platform'].setdefault('depends_on', {})
     if isinstance(dependencies, list):
         dependencies = {name: {'condition': 'service_started'} for name in dependencies}
         services['platform']['depends_on'] = dependencies
     dependencies['opencode-admin'] = {'condition': 'service_started'}
     services['opencode-admin'] = admin_service(workbench_image)
-    env = services['provisioner'].setdefault('environment', {})
-    env['MANAGED_OPENCODE_LIVE_CONFIG_DIR'] = SHARED
-    env.pop('MANAGED_OPENCODE_CONFIG_DIR', None)
-    env['MANAGED_EXECUTOR_IMAGE'] = executor_image
+    services['provisioner']['environment'] = live_provisioner_environment(services['provisioner'].get('environment', {}), executor_image)
     return result
 
 
@@ -263,7 +275,7 @@ def main(package, apply=False):
             run('docker', 'start', name)
 
         config = copy.deepcopy(platform['Config'])
-        config['Env'] = [k + '=' + v for k, v in {**values(config), 'OPENCODE_ADMIN_URL': URL}.items()]
+        config['Env'] = [k + '=' + v for k, v in official_platform_environment(values(config)).items()]
         replace(platform_name, config, platform['HostConfig'])
         wait('http://127.0.0.1:5300/healthz', '61.136.101.179:20281')
         for item in private:
@@ -278,9 +290,7 @@ def main(package, apply=False):
                     raise RuntimeError('Private executor readiness timeout')
                 time.sleep(1)
         config = copy.deepcopy(provisioner['Config'])
-        env = values(config)
-        env.pop('MANAGED_OPENCODE_CONFIG_DIR', None)
-        env.update(MANAGED_OPENCODE_LIVE_CONFIG_DIR=SHARED, MANAGED_EXECUTOR_IMAGE=executor_image)
+        env = live_provisioner_environment(values(config), executor_image)
         config['Env'] = [k + '=' + v for k, v in env.items()]
         # Use the current platform source so future spaces suppress obsolete seeds.
         config['Image'] = platform['Config']['Image']

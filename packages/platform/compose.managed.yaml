@@ -1,4 +1,6 @@
-# Trusted local/team prototype. The public gateway has no Docker socket.
+# Historical trusted local/team prototype; not the private hosted production baseline.
+# New private deployments use compose.yaml + compose.hosted.yaml. Do not stack both overlays.
+# See docs/product/runtime-and-deployment.md. The public gateway has no Docker socket.
 services:
   platform:
     environment:

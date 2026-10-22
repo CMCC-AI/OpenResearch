@@ -7,7 +7,7 @@ let runtimeTimer;
 window.addEventListener("pagehide", () => clearTimeout(runtimeTimer));
 
 async function hostedHome(capabilities) {
-  renderAccount();
+  renderAccount(capabilities);
   const space = await api("/personal-space", "POST", {});
   app.innerHTML = `<section class="auth card account-card"><h1>我的科研空间</h1><p id="runtime-status" role="status">正在准备运行环境…</p><button id="enter-space" class="primary" disabled>进入科研工作台</button><button id="retry-space" hidden>重新准备环境</button>${capabilities.deepLiteratureUrl ? '<button id="literature">进入论文精读</button>' : ""}</section>`;
   document.querySelector("#enter-space").onclick = async () => {
@@ -256,9 +256,20 @@ function passwordDialog() {
   });
 }
 
-function renderAccount() {
+function administrationUrl(capabilities) {
+  const destination = new URL(capabilities.openResearchAppUrl);
+  destination.pathname = destination.pathname.replace(
+    /\/projects\/?$/,
+    "/admin/users",
+  );
+  destination.search = "";
+  destination.hash = "";
+  return destination.href;
+}
+
+function renderAccount(capabilities) {
   document.body.classList.remove("auth-page");
-  account.innerHTML = `<span class="muted">${esc(me.name)}</span> ${me.isAdmin ? '<a class="admin-link" href="/_account/login?admin=1">系统管理</a>' : ""} <button id="password">修改密码</button> <button id="logout">退出</button>`;
+  account.innerHTML = `<span class="muted">${esc(me.name)}</span> ${me.isAdmin ? `<a class="admin-link" href="${esc(administrationUrl(capabilities))}">系统管理</a>` : ""} <button id="password">修改密码</button> <button id="logout">退出</button>`;
   document.querySelector("#password").onclick = passwordDialog;
   document.querySelector("#logout").onclick = async () => {
     await api("/logout", "POST");
@@ -275,21 +286,13 @@ function renderAccount() {
   </section>`;
 }
 
-async function administration() {
+async function administration(capabilities) {
   if (!me.isAdmin) {
     app.innerHTML =
       '<section class="card"><h1>无权访问系统管理</h1><p>此页面仅对系统管理员开放。</p><a href="/">返回主页</a></section>';
     return;
   }
-  const capabilities = await api("/capabilities");
-  const destination = new URL(capabilities.openResearchAppUrl);
-  destination.pathname = destination.pathname.replace(
-    /\/projects\/?$/,
-    "/admin/users",
-  );
-  destination.search = "";
-  destination.hash = "";
-  location.replace(destination.href);
+  location.replace(administrationUrl(capabilities));
 }
 
 async function load() {
@@ -305,22 +308,22 @@ async function load() {
     location.replace(safeContinue);
     return;
   }
+  const capabilities = await api("/capabilities");
   if (
     new URLSearchParams(location.search).has("admin") ||
     (me.isAdmin && !new URLSearchParams(location.search).has("account"))
   ) {
-    renderAccount();
-    await administration();
+    renderAccount(capabilities);
+    await administration(capabilities);
     return;
   }
   if (!new URLSearchParams(location.search).has("account")) {
-    const capabilities = await api("/capabilities");
     if (capabilities.privateSpaces && !capabilities.sharedOriginSpaces)
       return hostedHome(capabilities);
     location.replace(capabilities.openResearchAppUrl);
     return;
   }
-  renderAccount();
+  renderAccount(capabilities);
 }
 
 (resetToken ? Promise.resolve(recovery("reset")) : load()).catch((error) =>
