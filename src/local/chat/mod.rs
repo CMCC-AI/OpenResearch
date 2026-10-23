@@ -5871,35 +5871,33 @@ impl ChatHost {
                 }
                 Ok(crate::local::harness::TurnOutcome::Completed) => ctx.terminal_error.take(),
             };
-            let usage_outcome = if failure.is_some() { "failed" } else { "done" };
-            let _terminal_won = if let Some((kind, message)) = failure {
-                let action = ctx.delivery_state.recovery_action();
-                let retry_owner = ctx
-                    .retry_owner
-                    .as_deref()
-                    .unwrap_or_else(|| {
+            // The final snapshot carries retry-card removal; do not perform an
+            // extra synchronous progress/message write just to clear it here.
+            ctx.assistant.parts.retain(|part| part.id != "turn-retry");
+            let settlement = match &failure {
+                Some((kind, message)) => TurnSettlement::Failed {
+                    delivery: ctx.delivery_state,
+                    kind: kind.clone(),
+                    message: message.clone(),
+                    recovery_action: ctx.delivery_state.recovery_action(),
+                },
+                None => TurnSettlement::Completed,
+            };
+            let terminal_won = settle_turn_with_store(&ctx.turn_id, settlement, Store::open)
+                .await
+                .unwrap_or(false);
+            if let Some((kind, message)) = failure {
+                if terminal_won {
+                    ctx.push_turn_failure(&kind, message, ctx.delivery_state.recovery_action());
+                }
+                if terminal_won && ctx.retry_exhausted {
+                    let retry_owner = ctx.retry_owner.as_deref().unwrap_or_else(|| {
                         if kind.ends_with("_terminal") {
                             "native"
                         } else {
                             "orx"
                         }
-                    })
-                    .to_string();
-                let changed = Store::open()
-                    .and_then(|store| {
-                        store.fail_chat_turn(
-                            &ctx.turn_id,
-                            ctx.delivery_state.as_str(),
-                            &kind,
-                            &message,
-                            Some(action),
-                        )
-                    })
-                    .unwrap_or(false);
-                if changed {
-                    ctx.push_turn_failure(&kind, message.clone(), action);
-                }
-                if changed && ctx.retry_exhausted {
+                    });
                     crate::telemetry::capture(
                         "chat_retry_exhausted",
                         json!({
@@ -5910,16 +5908,6 @@ impl ChatHost {
                         }),
                     );
                 }
-                changed
-            } else if let Ok(store) = Store::open() {
-                ctx.clear_retry_status();
-                store.complete_chat_turn(&ctx.turn_id).unwrap_or(false)
-            } else {
-                false
-            };
-            if _terminal_won {
-                let _ = Store::open()
-                    .and_then(|store| store.finalize_turn_usage(&ctx.turn_id, usage_outcome));
             }
             crate::telemetry::retry_outbox();
             ctx.assistant.completed_at = Some(now_ms());
@@ -7113,6 +7101,54 @@ fn resolve_permission_change(
             (revision, requested)
         }
     }
+}
+
+enum TurnSettlement {
+    Completed,
+    Failed {
+        delivery: DeliveryState,
+        kind: String,
+        message: String,
+        recovery_action: &'static str,
+    },
+}
+
+/// Keep transition + accounting ordered within one bounded worker and reuse
+/// its connection. The CAS must win before accounting can be finalized.
+async fn settle_turn_with_store(
+    turn_id: &str,
+    settlement: TurnSettlement,
+    open: impl FnOnce() -> Result<Store> + Send + 'static,
+) -> Result<bool> {
+    let turn_id = turn_id.to_owned();
+    crate::local::blocking::run(move || {
+        let store = open()?;
+        let (changed, outcome) = match settlement {
+            TurnSettlement::Completed => (store.complete_chat_turn(&turn_id)?, "done"),
+            TurnSettlement::Failed {
+                delivery,
+                kind,
+                message,
+                recovery_action,
+            } => (
+                store.fail_chat_turn(
+                    &turn_id,
+                    delivery.as_str(),
+                    &kind,
+                    &message,
+                    Some(recovery_action),
+                )?,
+                "failed",
+            ),
+        };
+        if changed {
+            // Preserve the existing best-effort accounting contract. A usage
+            // error must not make the caller forget its successful transition.
+            let _ = store.finalize_turn_usage(&turn_id, outcome);
+        }
+        Ok(changed)
+    })
+    .await?
 }
 
 pub struct TurnCtx {
@@ -12259,6 +12295,174 @@ mod checkpoint_tests {
             },
         );
         (dir, store, ctx)
+    }
+
+    fn usage_outcome(store: &Store) -> Option<String> {
+        store
+            .begin()
+            .unwrap()
+            .query_row(
+                "SELECT outcome FROM chat_usage_executions WHERE execution_id='settlement-exec'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn settlement_keeps_async_worker_responsive_and_reuses_one_store() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for failed in [false, true] {
+            let (dir, store, ctx) = checkpoint_fixture();
+            store
+                .begin_usage_execution("settlement-exec", "turn", "opencode")
+                .unwrap();
+            let settlement = if failed {
+                TurnSettlement::Failed {
+                    delivery: DeliveryState::Accepted,
+                    kind: "test_failure".into(),
+                    message: "failure".into(),
+                    recovery_action: "continue",
+                }
+            } else {
+                TurnSettlement::Completed
+            };
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            let opened = Arc::new(AtomicUsize::new(0));
+            let counter = opened.clone();
+            let root = dir.clone();
+            let job = settle_turn_with_store("turn", settlement, move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let _ = started.send(());
+                wait.recv_timeout(Duration::from_secs(2))
+                    .map_err(|e| anyhow!("settlement blocked async heartbeat: {e}"))?;
+                Store::open_at(root)
+            });
+            let heartbeat = async {
+                ready.await.unwrap();
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                release.send(()).unwrap();
+            };
+            let (result, ()) = tokio::join!(job, heartbeat);
+            assert!(result.unwrap());
+            assert_eq!(opened.load(Ordering::SeqCst), 1);
+            let turn = store.get_chat_turn("session", "turn").unwrap().unwrap();
+            assert_eq!(turn.state, if failed { "failed" } else { "completed" });
+            assert_eq!(
+                usage_outcome(&store).as_deref(),
+                Some(if failed { "failed" } else { "done" })
+            );
+            if failed {
+                assert_eq!(turn.error_kind.as_deref(), Some("test_failure"));
+                assert_eq!(turn.recovery_action.as_deref(), Some("continue"));
+            }
+            // A losing duplicate transition must not change accounting.
+            let root = dir.clone();
+            assert!(
+                !settle_turn_with_store("turn", TurnSettlement::Completed, move || Store::open_at(
+                    root
+                ))
+                .await
+                .unwrap()
+            );
+            assert_eq!(
+                usage_outcome(&store).as_deref(),
+                Some(if failed { "failed" } else { "done" })
+            );
+            drop(ctx);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn queued_settlement_cannot_replace_interrupted_state_or_accounting() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        store
+            .begin_usage_execution("settlement-exec", "turn", "opencode")
+            .unwrap();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let root = dir.clone();
+        let job = settle_turn_with_store("turn", TurnSettlement::Completed, move || {
+            let _ = started.send(());
+            wait.recv_timeout(Duration::from_secs(3)).unwrap();
+            Store::open_at(root)
+        });
+        let stop = async {
+            ready.await.unwrap();
+            store.interrupt_chat_turn("turn").unwrap();
+            store.finalize_turn_usage("turn", "cancelled").unwrap();
+            release.send(()).unwrap();
+        };
+        let (result, ()) = tokio::join!(job, stop);
+        assert!(!result.unwrap());
+        assert_eq!(
+            store
+                .get_chat_turn("session", "turn")
+                .unwrap()
+                .unwrap()
+                .state,
+            "interrupted"
+        );
+        assert_eq!(usage_outcome(&store).as_deref(), Some("cancelled"));
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn settlement_errors_preserve_transition_and_existing_usage_recovery() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        store
+            .begin_usage_execution("settlement-exec", "turn", "opencode")
+            .unwrap();
+        assert!(
+            settle_turn_with_store("turn", TurnSettlement::Completed, || Err(anyhow!(
+                "injected open failure"
+            )))
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            store
+                .get_chat_turn("session", "turn")
+                .unwrap()
+                .unwrap()
+                .state,
+            "running"
+        );
+        assert!(usage_outcome(&store).is_none());
+        let tx = store.begin().unwrap();
+        tx.execute_batch("CREATE TRIGGER reject_settlement_usage BEFORE UPDATE ON chat_usage_executions BEGIN SELECT RAISE(FAIL, 'injected accounting failure'); END;").unwrap();
+        tx.commit().unwrap();
+        let root = dir.clone();
+        assert!(
+            settle_turn_with_store("turn", TurnSettlement::Completed, move || Store::open_at(
+                root
+            ))
+            .await
+            .unwrap()
+        );
+        assert_eq!(
+            store
+                .get_chat_turn("session", "turn")
+                .unwrap()
+                .unwrap()
+                .state,
+            "completed"
+        );
+        assert!(usage_outcome(&store).is_none());
+        let tx = store.begin().unwrap();
+        tx.execute_batch("DROP TRIGGER reject_settlement_usage")
+            .unwrap();
+        tx.commit().unwrap();
+        store.recover_terminal_usage().unwrap();
+        assert_eq!(usage_outcome(&store).as_deref(), Some("done"));
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
