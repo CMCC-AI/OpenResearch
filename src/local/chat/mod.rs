@@ -2386,6 +2386,9 @@ pub struct ChatHost {
     /// A key remains present throughout the lifecycle, so a replacement turn
     /// cannot race native shutdown for the preceding one.
     turns: Mutex<HashMap<String, TurnState>>,
+    /// Serialize final metadata writes with interruption for one session.
+    /// Workers own the guard so cancellation cannot hand off a live write.
+    cleanup_locks: std::sync::Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
     /// Cross-process ownership tokens for locally active turn slots.
     durable_turns: std::sync::Mutex<HashMap<String, String>>,
     /// Set once `orx up` commits to restarting into an update; no turn starts after.
@@ -3391,6 +3394,7 @@ impl ChatHost {
                 .expect("loopback http client"),
             events,
             turns: Mutex::new(HashMap::new()),
+            cleanup_locks: std::sync::Mutex::new(HashMap::new()),
             durable_turns: std::sync::Mutex::new(HashMap::new()),
             restarting: std::sync::atomic::AtomicBool::new(false),
             deleting_sessions: Arc::new(std::sync::Mutex::new(HashSet::new())),
@@ -6011,6 +6015,50 @@ impl ChatHost {
         Ok(TurnSubmission::Started(turn_id))
     }
 
+    fn cleanup_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.cleanup_locks.lock().unwrap();
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(session_id).and_then(std::sync::Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(session_id.to_string(), Arc::downgrade(&lock));
+        lock
+    }
+
+    async fn finish_session_metadata_with_store(
+        self: &Arc<Self>,
+        session_id: &str,
+        message_id: Option<&str>,
+        open: impl FnOnce() -> Result<Store> + Send + 'static,
+    ) -> Result<Option<StoredChatSession>> {
+        let guard = self.cleanup_lock(session_id).lock_owned().await;
+        let owns_slot = {
+            let turns = self.turns.lock().await;
+            match (turns.get(session_id), message_id) {
+                (Some(TurnState::Active(active)), Some(message_id)) => {
+                    active.message_id == message_id
+                }
+                (Some(TurnState::Cancelling), None) => true,
+                _ => false,
+            }
+        };
+        if !owns_slot {
+            return Ok(None);
+        }
+        let session_id = session_id.to_string();
+        crate::local::blocking::run(move || {
+            let _guard = guard;
+            let store = open()?;
+            let _ = store.touch_chat_session(&session_id);
+            // Preserve the distinction between completion and lease expiry
+            // after a process crash, even when there is no chat_turns row.
+            let _ = store.mark_chat_spawn_finished(&session_id);
+            store.get_chat_session(&session_id)
+        })
+        .await?
+    }
+
     /// Turn cleanup: drop the handle, bump the session, broadcast idle.
     async fn finish_turn(self: &Arc<Self>, session_id: &str, message_id: Option<&str>) {
         let should_finish = {
@@ -6029,15 +6077,11 @@ impl ChatHost {
         // Any bridge card still pending belongs to the turn that just ended —
         // deny it so the (dying) bridge child's long-poll unblocks.
         self.cancel_pending_permissions(session_id);
-        let mut session = if let Ok(store) = Store::open() {
-            let _ = store.touch_chat_session(session_id);
-            // Without this a crash mid-turn is indistinguishable from a
-            // completed one once the turn lease lapses.
-            let _ = store.mark_chat_spawn_finished(session_id);
-            store.get_chat_session(session_id).ok().flatten()
-        } else {
-            None
-        };
+        let mut session = self
+            .finish_session_metadata_with_store(session_id, message_id, Store::open)
+            .await
+            .ok()
+            .flatten();
         let (reserved_queue, release) = {
             let refreshed = self
                 .refresh_persisted_queue_async_with_store(session_id, Store::open)
@@ -6111,6 +6155,9 @@ impl ChatHost {
     /// actually aborted — `false` means the session was already idle.
     pub async fn interrupt(self: &Arc<Self>, session_id: &str) -> Result<bool> {
         let active = {
+            // Wait outside the global turn map. An in-flight metadata worker
+            // retains this guard even if its original awaiter was cancelled.
+            let _cleanup = self.cleanup_lock(session_id).lock_owned().await;
             let mut turns = self.turns.lock().await;
             let Some(state) = turns.get_mut(session_id) else {
                 return Ok(false);
@@ -12408,6 +12455,214 @@ mod checkpoint_tests {
             },
         );
         (dir, store, ctx)
+    }
+
+    #[tokio::test]
+    async fn finish_metadata_preserves_normal_compaction_and_interruption_updates() {
+        for mode in ["normal", "compaction", "interruption"] {
+            let (dir, store, ctx) = checkpoint_fixture();
+            let host = ctx.host.clone();
+            store
+                .create_chat_spawn(&crate::store::ChatSpawn {
+                    session_id: "session".into(),
+                    parent_session_id: "parent".into(),
+                    prompt: "test".into(),
+                    wake_parent: true,
+                    attempts: 0,
+                    finished_at: None,
+                })
+                .unwrap();
+            let message_id = if mode == "interruption" {
+                host.turns
+                    .lock()
+                    .await
+                    .insert("session".into(), TurnState::Cancelling);
+                None
+            } else {
+                host.turns.lock().await.insert(
+                    "session".into(),
+                    TurnState::Active(ActiveTurn {
+                        handle: tokio::spawn(std::future::pending()),
+                        message_id: "assistant".into(),
+                        turn_id: if mode == "compaction" {
+                            "compact_assistant"
+                        } else {
+                            "turn"
+                        }
+                        .into(),
+                    }),
+                );
+                Some("assistant")
+            };
+            let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let count = opened.clone();
+            let root = dir.clone();
+            let session = host
+                .finish_session_metadata_with_store("session", message_id, move || {
+                    count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Store::open_at(root)
+                })
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(opened.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert!(session.updated_at > 1);
+            assert_eq!(
+                session.updated_at,
+                store
+                    .get_chat_session("session")
+                    .unwrap()
+                    .unwrap()
+                    .updated_at
+            );
+            assert!(store
+                .get_chat_spawn("session")
+                .unwrap()
+                .unwrap()
+                .finished_at
+                .is_some());
+            if let Some(TurnState::Active(active)) = host.turns.lock().await.remove("session") {
+                active.handle.abort();
+            }
+            drop(host);
+            drop(ctx);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn finish_metadata_rechecks_ownership_after_waiting_for_cleanup_gate() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        let gate = host.cleanup_lock("session").lock_owned().await;
+        host.turns.lock().await.insert(
+            "session".into(),
+            TurnState::Active(ActiveTurn {
+                handle: tokio::spawn(std::future::pending()),
+                message_id: "old-assistant".into(),
+                turn_id: "old-turn".into(),
+            }),
+        );
+        let worker_host = host.clone();
+        let worker = tokio::spawn(async move {
+            worker_host
+                .finish_session_metadata_with_store("session", Some("old-assistant"), || {
+                    panic!("a stale turn must not open storage")
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+        if let Some(TurnState::Active(active)) = host
+            .turns
+            .lock()
+            .await
+            .insert("session".into(), TurnState::Cancelling)
+        {
+            active.handle.abort();
+        }
+        drop(gate);
+        assert!(worker.await.unwrap().unwrap().is_none());
+        assert_eq!(
+            store
+                .get_chat_session("session")
+                .unwrap()
+                .unwrap()
+                .updated_at,
+            1
+        );
+        let root = dir.clone();
+        assert!(host
+            .finish_session_metadata_with_store("session", None, move || Store::open_at(root))
+            .await
+            .unwrap()
+            .is_some());
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn finish_metadata_cancelled_waiter_keeps_interruption_fenced_until_write_ends() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        host.turns
+            .lock()
+            .await
+            .insert("session".into(), TurnState::Cancelling);
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let root = dir.clone();
+        let worker_host = host.clone();
+        let worker = tokio::spawn(async move {
+            worker_host
+                .finish_session_metadata_with_store("session", None, move || {
+                    let _ = started.send(());
+                    wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                    Store::open_at(root)
+                })
+                .await
+        });
+        ready.await.unwrap();
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        let interrupt_host = host.clone();
+        let interrupt = tokio::spawn(async move { interrupt_host.interrupt("session").await });
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        assert!(!interrupt.is_finished());
+        assert!(host.cleanup_lock("session").try_lock_owned().is_err());
+        assert!(host.turns.lock().await.contains_key("session"));
+        assert!(!host.interrupt("other-session").await.unwrap());
+        release.send(()).unwrap();
+        assert!(!interrupt.await.unwrap().unwrap());
+        assert!(
+            store
+                .get_chat_session("session")
+                .unwrap()
+                .unwrap()
+                .updated_at
+                > 1
+        );
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn finish_metadata_open_failure_releases_gate_and_allows_explicit_retry() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        host.turns
+            .lock()
+            .await
+            .insert("session".into(), TurnState::Cancelling);
+        assert!(host
+            .finish_session_metadata_with_store("session", None, || Err(anyhow!(
+                "injected metadata open failure"
+            )))
+            .await
+            .is_err());
+        assert!(host.cleanup_lock("session").try_lock_owned().is_ok());
+        assert_eq!(
+            store
+                .get_chat_session("session")
+                .unwrap()
+                .unwrap()
+                .updated_at,
+            1
+        );
+        let root = dir.clone();
+        assert!(host
+            .finish_session_metadata_with_store("session", None, move || Store::open_at(root))
+            .await
+            .unwrap()
+            .is_some());
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
