@@ -2414,12 +2414,44 @@ impl Store {
     /// Does not bump `updated_at` — usage is a passive by-product of a turn that
     /// already bumped it, and re-ordering the session on every token report would
     /// be noise.
+    #[cfg(test)]
     pub fn set_chat_session_context_usage(&self, id: &str, json: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE chat_sessions SET context_usage_json = ?2 WHERE id = ?1",
             params![id, json],
         )?;
         Ok(())
+    }
+
+    /// A deferred usage write must still belong to the visible final message.
+    /// Match its timestamps as a retry/stop fence, not just its reusable id.
+    pub fn set_chat_session_context_usage_for_message(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        message_id: &str,
+        created_at: i64,
+        completed_at: i64,
+        json: &str,
+    ) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE chat_sessions SET context_usage_json = ?5
+             WHERE id = ?1 AND active_leaf_id = ?2
+             AND EXISTS(SELECT 1 FROM chat_messages WHERE id = ?2
+                 AND session_id = ?1 AND created_at = ?3 AND completed_at = ?4)
+             AND EXISTS(SELECT 1 FROM chat_turns WHERE id = ?6
+                 AND session_id = ?1 AND assistant_message_id = ?2
+                 AND state IN ('preparing','retrying','running','completed','failed')
+                 AND recovered_by_turn_id IS NULL)",
+            params![
+                session_id,
+                message_id,
+                created_at,
+                completed_at,
+                json,
+                turn_id
+            ],
+        )? > 0)
     }
 
     /// The session bound to an agent's own chat, if one was already adopted.

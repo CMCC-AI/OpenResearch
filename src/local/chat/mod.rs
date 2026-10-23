@@ -3876,6 +3876,28 @@ impl ChatHost {
     }
 
     fn refresh_persisted_queue_locked(&self, session_id: &str) -> Result<()> {
+        self.refresh_persisted_queue_with_open_locked(session_id, Store::open)
+    }
+
+    async fn refresh_persisted_queue_async_with_store(
+        self: &Arc<Self>,
+        session_id: &str,
+        open: impl FnOnce() -> Result<Store> + Send + 'static,
+    ) -> Result<()> {
+        let host = self.clone();
+        let session_id = session_id.to_owned();
+        crate::local::blocking::run(move || {
+            let _mutation = host.queue_persistence.lock().unwrap();
+            host.refresh_persisted_queue_with_open_locked(&session_id, open)
+        })
+        .await?
+    }
+
+    fn refresh_persisted_queue_with_open_locked(
+        &self,
+        session_id: &str,
+        open: impl FnOnce() -> Result<Store>,
+    ) -> Result<()> {
         if self
             .queue_dispatch_cancelled
             .lock()
@@ -3890,7 +3912,7 @@ impl ChatHost {
             .unwrap()
             .get(session_id)
             .cloned();
-        let restored = Store::open()?
+        let restored = open()?
             .list_queued_chat_messages_for_session(session_id)?
             .into_iter()
             .filter_map(|row| serde_json::from_str::<QueuedMessage>(&row.payload_json).ok())
@@ -5916,11 +5938,7 @@ impl ChatHost {
                 let _ = std::fs::remove_file(path);
             }
             remove_target_pointer_if_matches(&ctx.session_id, &ctx.assistant.id);
-            if let Some(usage) = &ctx.context_usage {
-                if let (Ok(store), Ok(json)) = (Store::open(), serde_json::to_string(usage)) {
-                    let _ = store.set_chat_session_context_usage(&ctx.session_id, &json);
-                }
-            }
+            let _ = ctx.save_context_usage_with_store(Store::open).await;
             ctx.host
                 .finish_turn(&ctx.session_id, Some(&ctx.assistant.id))
                 .await;
@@ -5942,7 +5960,7 @@ impl ChatHost {
     }
 
     /// Turn cleanup: drop the handle, bump the session, broadcast idle.
-    async fn finish_turn(&self, session_id: &str, message_id: Option<&str>) {
+    async fn finish_turn(self: &Arc<Self>, session_id: &str, message_id: Option<&str>) {
         let should_finish = {
             let turns = self.turns.lock().await;
             match (turns.get(session_id), message_id) {
@@ -5969,7 +5987,10 @@ impl ChatHost {
             None
         };
         let reserved_queue = {
-            let refreshed = self.refresh_persisted_queue(session_id).is_ok();
+            let refreshed = self
+                .refresh_persisted_queue_async_with_store(session_id, Store::open)
+                .await
+                .is_ok();
             let mut turns = self.turns.lock().await;
             let matches = match (turns.get(session_id), message_id) {
                 (Some(TurnState::Active(active)), Some(message_id)) => {
@@ -7998,6 +8019,33 @@ impl TurnCtx {
         open: impl FnOnce() -> Result<Store> + Send + 'static,
     ) -> Result<()> {
         self.flush_async_kind(force, false, open).await
+    }
+
+    async fn save_context_usage_with_store(
+        &mut self,
+        open: impl FnOnce() -> Result<Store> + Send + 'static,
+    ) -> Result<bool> {
+        let (Some(usage), Some(completed_at)) =
+            (self.context_usage.clone(), self.assistant.completed_at)
+        else {
+            return Ok(false);
+        };
+        let session_id = self.session_id.clone();
+        let turn_id = self.turn_id.clone();
+        let message_id = self.assistant.id.clone();
+        let created_at = self.assistant.created_at;
+        crate::local::blocking::run(move || {
+            let json = serde_json::to_string(&usage)?;
+            open()?.set_chat_session_context_usage_for_message(
+                &session_id,
+                &turn_id,
+                &message_id,
+                created_at,
+                completed_at,
+                &json,
+            )
+        })
+        .await?
     }
 
     async fn flush_final_async_with_store(
@@ -12295,6 +12343,250 @@ mod checkpoint_tests {
             },
         );
         (dir, store, ctx)
+    }
+
+    #[tokio::test]
+    async fn context_usage_requires_matching_final_message_and_preserves_session_order() {
+        let (dir, store, mut ctx) = checkpoint_fixture();
+        ctx.save_context_usage_with_store(|| panic!("missing usage must not open storage"))
+            .await
+            .unwrap();
+        ctx.context_usage = Some(ContextUsage {
+            used_tokens: 200,
+            context_window: Some(1000),
+        });
+        ctx.save_context_usage_with_store(|| panic!("unfinished message must not open storage"))
+            .await
+            .unwrap();
+        assert!(store.complete_chat_turn("turn").unwrap());
+        ctx.assistant.completed_at = Some(9);
+        let root = dir.clone();
+        ctx.flush_final_async_with_store(move || Store::open_at(root))
+            .await
+            .unwrap();
+        store
+            .set_chat_session_context_usage("session", "{\"usedTokens\":100}")
+            .unwrap();
+        let updated = store
+            .get_chat_session("session")
+            .unwrap()
+            .unwrap()
+            .updated_at;
+        assert!(ctx
+            .save_context_usage_with_store(|| Err(anyhow!("injected usage open failure")))
+            .await
+            .is_err());
+        let root = dir.clone();
+        assert!(ctx
+            .save_context_usage_with_store(move || Store::open_at(root))
+            .await
+            .unwrap());
+        let session = store.get_chat_session("session").unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_str::<ContextUsage>(&session.context_usage_json.unwrap()).unwrap(),
+            ctx.context_usage.clone().unwrap()
+        );
+        assert_eq!(session.updated_at, updated);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delayed_usage_cannot_replace_new_branch_stop_or_retry() {
+        for scenario in ["branch", "stop", "stop-state", "retry", "recovered"] {
+            let (dir, store, mut ctx) = checkpoint_fixture();
+            assert!(store
+                .fail_chat_turn("turn", "not_sent", "test", "failure", Some("retry"))
+                .unwrap());
+            ctx.assistant.completed_at = Some(9);
+            let root = dir.clone();
+            ctx.flush_final_async_with_store(move || Store::open_at(root))
+                .await
+                .unwrap();
+            store
+                .set_chat_session_context_usage("session", "{\"usedTokens\":100}")
+                .unwrap();
+            ctx.context_usage = Some(ContextUsage {
+                used_tokens: 200,
+                context_window: None,
+            });
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            let root = dir.clone();
+            let save = ctx.save_context_usage_with_store(move || {
+                let _ = started.send(());
+                wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                Store::open_at(root)
+            });
+            let change = async {
+                ready.await.unwrap();
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                match scenario {
+                    "branch" => {
+                        let mut next = store.get_chat_message("assistant").unwrap().unwrap();
+                        next.id = "next-user".into();
+                        next.role = "user".into();
+                        next.created_at = 10;
+                        next.completed_at = Some(10);
+                        store.upsert_chat_message_on_branch(&next).unwrap();
+                    }
+                    "stop" => {
+                        store.interrupt_chat_turn("turn").unwrap();
+                        let mut stopped = store.get_chat_message("assistant").unwrap().unwrap();
+                        stopped.completed_at = Some(8);
+                        store.upsert_chat_message(&stopped).unwrap();
+                    }
+                    "retry" => {
+                        assert!(store.reset_chat_turn_for_retry("turn", 123).unwrap());
+                    }
+                    "stop-state" => {
+                        store.interrupt_chat_turn("turn").unwrap();
+                    }
+                    "recovered" => {
+                        store.mark_chat_turn_recovered("turn", "next-turn").unwrap();
+                    }
+                    _ => unreachable!(),
+                }
+                release.send(()).unwrap();
+            };
+            let (result, ()) = tokio::join!(save, change);
+            assert!(!result.unwrap());
+            assert_eq!(
+                store
+                    .get_chat_session("session")
+                    .unwrap()
+                    .unwrap()
+                    .context_usage_json
+                    .as_deref(),
+                Some("{\"usedTokens\":100}")
+            );
+            drop(ctx);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn queue_refresh_keeps_worker_responsive_and_filters_in_flight_item() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        for text in ["first", "second"] {
+            host.park_steer_with_store(
+                "session",
+                SteerMessage {
+                    text: text.into(),
+                    display: text.into(),
+                },
+                &store,
+            )
+            .unwrap();
+        }
+        let first_id = host.queued.lock().unwrap()["session"][0].id.clone();
+        host.queue_dispatch_in_flight
+            .lock()
+            .unwrap()
+            .insert("session".into(), first_id);
+        host.queued.lock().unwrap().remove("session");
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let root = dir.clone();
+        let refresh = host.refresh_persisted_queue_async_with_store("session", move || {
+            let _ = started.send(());
+            wait.recv_timeout(Duration::from_secs(3)).unwrap();
+            Store::open_at(root)
+        });
+        let heartbeat = async {
+            ready.await.unwrap();
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            release.send(()).unwrap();
+        };
+        let (result, ()) = tokio::join!(refresh, heartbeat);
+        result.unwrap();
+        assert_eq!(host.queued_items("session").len(), 1);
+        assert_eq!(host.queued_items("session")[0]["text"], "second");
+        host.queue_dispatch_cancelled
+            .lock()
+            .unwrap()
+            .insert("session".into());
+        let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = opened.clone();
+        let root = dir.clone();
+        assert!(host
+            .refresh_persisted_queue_async_with_store("session", move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Store::open_at(root)
+            })
+            .await
+            .is_err());
+        assert_eq!(opened.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(host.queued_items("session")[0]["text"], "second");
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn queue_refresh_serializes_with_concurrent_enqueue() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        host.park_steer_with_store(
+            "session",
+            SteerMessage {
+                text: "first".into(),
+                display: "first".into(),
+            },
+            &store,
+        )
+        .unwrap();
+        host.queued.lock().unwrap().remove("session");
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let root = dir.clone();
+        let refresh = host.refresh_persisted_queue_async_with_store("session", move || {
+            let _ = started.send(());
+            wait.recv_timeout(Duration::from_secs(3)).unwrap();
+            Store::open_at(root)
+        });
+        let other_host = host.clone();
+        let other_root = dir.clone();
+        let enqueue = async {
+            ready.await.unwrap();
+            let (competing, queued) = tokio::sync::oneshot::channel();
+            let worker = tokio::spawn(crate::local::blocking::run(move || {
+                let store = Store::open_at(other_root).unwrap();
+                let _ = competing.send(());
+                other_host.park_steer_with_store(
+                    "session",
+                    SteerMessage {
+                        text: "second".into(),
+                        display: "second".into(),
+                    },
+                    &store,
+                )
+            }));
+            queued.await.unwrap();
+            release.send(()).unwrap();
+            worker.await.unwrap().unwrap().unwrap();
+        };
+        let (result, ()) = tokio::join!(refresh, enqueue);
+        result.unwrap();
+        let items = host.queued_items("session");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["text"], "first");
+        assert_eq!(items[1]["text"], "second");
+        assert_eq!(
+            store
+                .list_queued_chat_messages_for_session("session")
+                .unwrap()
+                .len(),
+            2
+        );
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn usage_outcome(store: &Store) -> Option<String> {
