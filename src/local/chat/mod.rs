@@ -2580,9 +2580,14 @@ struct GateToken {
 }
 
 enum TurnState {
-    Reserved { turn_id: Option<String> },
+    Reserved {
+        turn_id: Option<String>,
+        reservation_id: String,
+    },
     Draining,
-    Releasing { release_id: String },
+    Releasing {
+        release_id: String,
+    },
     Active(ActiveTurn),
     Cancelling,
 }
@@ -3151,6 +3156,9 @@ struct TurnGuard {
     host: Arc<ChatHost>,
     session_id: String,
     armed: bool,
+    reservation_id: String,
+    store: Option<Box<Store>>,
+    admitted_turn: Option<String>,
 }
 
 pub struct SessionDeletionLease {
@@ -3165,11 +3173,26 @@ impl Drop for SessionDeletionLease {
 }
 
 impl TurnGuard {
-    fn adopt(host: &Arc<ChatHost>, session_id: &str) -> Self {
+    fn reserve(
+        host: &Arc<ChatHost>,
+        session_id: &str,
+        turns: &mut HashMap<String, TurnState>,
+    ) -> Self {
+        let reservation_id = uuid::Uuid::new_v4().to_string();
+        turns.insert(
+            session_id.to_string(),
+            TurnState::Reserved {
+                turn_id: None,
+                reservation_id: reservation_id.clone(),
+            },
+        );
         Self {
             host: host.clone(),
             session_id: session_id.to_string(),
             armed: true,
+            reservation_id,
+            store: None,
+            admitted_turn: None,
         }
     }
 
@@ -3191,10 +3214,7 @@ impl TurnGuard {
         if !host.claim_durable_turn(session_id) {
             return None;
         }
-        turns.insert(
-            session_id.to_string(),
-            TurnState::Reserved { turn_id: None },
-        );
+        let guard = Self::reserve(host, session_id, &mut turns);
         if let Some(overrides) = overrides {
             let mut plan_changes = host.plan_changes.lock().unwrap();
             let mut permission_changes = host.permission_changes.lock().unwrap();
@@ -3205,11 +3225,7 @@ impl TurnGuard {
                 &mut permission_changes,
             );
         }
-        Some(Self {
-            host: host.clone(),
-            session_id: session_id.to_string(),
-            armed: true,
-        })
+        Some(guard)
     }
 
     /// Reserve a wake-up turn only when no turn or queued user message exists.
@@ -3230,15 +3246,7 @@ impl TurnGuard {
         if !host.claim_durable_turn(session_id) {
             return None;
         }
-        turns.insert(
-            session_id.to_string(),
-            TurnState::Reserved { turn_id: None },
-        );
-        Some(Self {
-            host: host.clone(),
-            session_id: session_id.to_string(),
-            armed: true,
-        })
+        Some(Self::reserve(host, session_id, &mut turns))
     }
 
     /// Hand ownership of the slot to the spawned turn — stop clearing it on drop.
@@ -3247,95 +3255,61 @@ impl TurnGuard {
     }
 
     async fn release(&mut self) {
+        if let Some(task) = self.spawn_release() {
+            let _ = task.await;
+        }
+    }
+
+    fn spawn_release(&mut self) -> Option<tokio::task::JoinHandle<()>> {
         if !self.armed {
-            return;
+            return None;
         }
         self.armed = false;
-        let (removed, drain_queued) = {
-            let mut turns = self.host.turns.lock().await;
-            if matches!(
-                turns.get(&self.session_id),
-                Some(TurnState::Reserved { .. })
-            ) {
-                let drain_queued = !self
-                    .host
+        let host = self.host.clone();
+        let session_id = self.session_id.clone();
+        let reservation_id = self.reservation_id.clone();
+        let admitted = self.admitted_turn.take();
+        let store = self.store.take();
+        Some(tokio::spawn(async move {
+            let (removed, drain_queued) = {
+                let _cleanup = host.cleanup_lock(&session_id).lock_owned().await;
+                if !matches!(host.turns.lock().await.get(&session_id), Some(TurnState::Reserved { reservation_id: current, .. }) if current == &reservation_id)
+                {
+                    return;
+                }
+                if let (Some(store), Some(turn_id)) = (store, admitted) {
+                    let _ =
+                        crate::local::blocking::run(move || store.interrupt_chat_turn(&turn_id))
+                            .await;
+                }
+                let mut turns = host.turns.lock().await;
+                if !matches!(turns.get(&session_id), Some(TurnState::Reserved { reservation_id: current, .. }) if current == &reservation_id)
+                {
+                    return;
+                }
+                let drain_queued = !host
                     .queue_dispatch_suppressed
                     .lock()
                     .unwrap()
-                    .contains(&self.session_id)
-                    && !self
-                        .host
+                    .contains(&session_id)
+                    && !host
                         .queue_dispatch_cancelled
                         .lock()
                         .unwrap()
-                        .contains(&self.session_id)
-                    && self
-                        .host
+                        .contains(&session_id)
+                    && host
                         .queued
                         .lock()
                         .unwrap()
-                        .get(&self.session_id)
+                        .get(&session_id)
                         .is_some_and(|queue| !queue.is_empty());
                 if drain_queued {
-                    turns.insert(self.session_id.clone(), TurnState::Draining);
+                    turns.insert(session_id.clone(), TurnState::Draining);
                 } else {
-                    self.host.release_durable_turn(&self.session_id);
-                    turns.remove(&self.session_id);
+                    host.release_durable_turn(&session_id);
+                    turns.remove(&session_id);
                 }
                 (true, drain_queued)
-            } else {
-                (false, false)
-            }
-        };
-        if removed {
-            self.host.emit(
-                "chat.busy",
-                json!({ "sessionId": &self.session_id, "busy": drain_queued }),
-            );
-            if drain_queued {
-                self.host.drain_queue(&self.session_id).await;
-            }
-        }
-    }
-}
-
-impl Drop for TurnGuard {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let host = self.host.clone();
-        let session_id = self.session_id.clone();
-        tokio::spawn(async move {
-            let (removed, drain_queued) = {
-                let mut turns = host.turns.lock().await;
-                if matches!(turns.get(&session_id), Some(TurnState::Reserved { .. })) {
-                    let drain_queued = !host
-                        .queue_dispatch_suppressed
-                        .lock()
-                        .unwrap()
-                        .contains(&session_id)
-                        && !host
-                            .queue_dispatch_cancelled
-                            .lock()
-                            .unwrap()
-                            .contains(&session_id)
-                        && host
-                            .queued
-                            .lock()
-                            .unwrap()
-                            .get(&session_id)
-                            .is_some_and(|queue| !queue.is_empty());
-                    if drain_queued {
-                        turns.insert(session_id.clone(), TurnState::Draining);
-                    } else {
-                        host.release_durable_turn(&session_id);
-                        turns.remove(&session_id);
-                    }
-                    (true, drain_queued)
-                } else {
-                    (false, false)
-                }
             };
             if removed {
                 host.emit(
@@ -3346,7 +3320,13 @@ impl Drop for TurnGuard {
                     host.drain_queue(&session_id).await;
                 }
             }
-        });
+        }))
+    }
+}
+
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        self.spawn_release();
     }
 }
 
@@ -3812,8 +3792,10 @@ impl ChatHost {
 
     fn release_durable_turn(&self, session_id: &str) {
         let token = self.durable_turns.lock().unwrap().remove(session_id);
-        if let (Some(token), Ok(store)) = (token, Store::open()) {
-            let _ = store.release_chat_turn(session_id, &token);
+        if let Some(token) = token {
+            if let Ok(store) = Store::open() {
+                let _ = store.release_chat_turn(session_id, &token);
+            }
         }
     }
 
@@ -4373,20 +4355,16 @@ impl ChatHost {
                 let mut turns = self.turns.lock().await;
                 match turns.get(session_id) {
                     Some(TurnState::Draining) => {
-                        turns.insert(
-                            session_id.to_string(),
-                            TurnState::Reserved { turn_id: None },
-                        );
-                        Some(true)
+                        Some(Some(TurnGuard::reserve(self, session_id, &mut turns)))
                     }
                     Some(_) => None,
-                    None => Some(false),
+                    None => Some(None),
                 }
             };
             let mut guard = match turn_state {
-                Some(true) => TurnGuard::adopt(self, session_id),
+                Some(Some(guard)) => guard,
                 None => return,
-                Some(false) => {
+                Some(None) => {
                     let Some(guard) = TurnGuard::claim(self, session_id, None).await else {
                         return;
                     };
@@ -4848,8 +4826,9 @@ impl ChatHost {
                 let Some(guard) = TurnGuard::claim(self, session_id, None).await else {
                     return Err(anyhow!("session is busy — interrupt it first"));
                 };
-                if let Some(TurnState::Reserved { turn_id: reserved }) =
-                    self.turns.lock().await.get_mut(session_id)
+                if let Some(TurnState::Reserved {
+                    turn_id: reserved, ..
+                }) = self.turns.lock().await.get_mut(session_id)
                 {
                     *reserved = Some(turn_id.to_string());
                 }
@@ -5343,7 +5322,7 @@ impl ChatHost {
         // reservation happen under one lock so two concurrent sends (or a
         // send racing a /respond resume) can't both spawn a turn against the
         // same session. `_guard` releases the reservation on any early error.
-        let (mut guard, mut pending_client_turn) = match admission {
+        let (guard, pending_client_turn) = match admission {
             TurnAdmission::Preclaimed(guard) => (guard, None),
             TurnAdmission::RejectIfBusy => {
                 match TurnGuard::claim(self, session_id, Some(&mut overrides)).await {
@@ -5496,10 +5475,7 @@ impl ChatHost {
                 if !self.claim_durable_turn(session_id) {
                     return Err(anyhow!("session is busy in another `orx up` process"));
                 }
-                turns.insert(
-                    session_id.to_string(),
-                    TurnState::Reserved { turn_id: None },
-                );
+                let guard = TurnGuard::reserve(self, session_id, &mut turns);
                 let mut plan_changes = self.plan_changes.lock().unwrap();
                 let mut permission_changes = self.permission_changes.lock().unwrap();
                 stamp_turn_revisions(
@@ -5518,7 +5494,7 @@ impl ChatHost {
                     },
                 );
                 (
-                    TurnGuard::adopt(self, session_id),
+                    guard,
                     Some(PendingClientTurnGuard {
                         host: self.clone(),
                         key: pending_key,
@@ -5805,32 +5781,35 @@ impl ChatHost {
             created_at,
             updated_at: created_at,
         };
-        let mut turns = self.turns.lock().await;
-        let Some(TurnState::Reserved { turn_id: reserved }) = turns.get_mut(session_id) else {
-            drop(turns);
-            guard.release().await;
+        let Some((admission, mut guard)) = self
+            .admit_turn_with_store(guard, store, stored_user, turn.clone(), pending_client_turn)
+            .await?
+        else {
             return Ok(TurnSubmission::NotStarted);
         };
-        *reserved = Some(turn_id.clone());
-        match store.admit_chat_turn(stored_user.as_ref(), &turn)? {
+        match admission {
             ChatTurnAdmission::Inserted => {}
             ChatTurnAdmission::Existing(existing) => {
-                if let Some(pending) = pending_client_turn.take() {
-                    pending.finish();
-                }
-                drop(turns);
                 guard.release().await;
                 return Ok(TurnSubmission::Existing(existing.id));
             }
             ChatTurnAdmission::Conflict => {
-                drop(turns);
                 guard.release().await;
                 return Err(client_turn_conflict());
             }
         }
-        if let Some(pending) = pending_client_turn.take() {
-            pending.finish();
+        let turns = self.turns.lock().await;
+        if !matches!(turns.get(session_id), Some(TurnState::Reserved { reservation_id, turn_id: Some(current) })
+            if reservation_id == &guard.reservation_id && current == &turn_id)
+        {
+            drop(turns);
+            guard.release().await;
+            return Ok(TurnSubmission::NotStarted);
         }
+        let store = guard
+            .store
+            .as_ref()
+            .expect("admission retains its connection");
         if starts_session {
             crate::telemetry::capture_chat_session_started(&session.harness);
         }
@@ -5877,9 +5856,13 @@ impl ChatHost {
         let sid = ctx.session_id.clone();
         let turn_id = ctx.turn_id.clone();
         let turns = self.turns.lock().await;
-        if self.deleting_sessions.lock().unwrap().contains(&sid)
-            || !matches!(turns.get(&sid), Some(TurnState::Reserved { .. }))
+        if !matches!(turns.get(&sid), Some(TurnState::Reserved { reservation_id, .. }) if reservation_id == &guard.reservation_id)
         {
+            drop(turns);
+            guard.release().await;
+            return Ok(TurnSubmission::NotStarted);
+        }
+        if self.deleting_sessions.lock().unwrap().contains(&sid) {
             drop(turns);
             let _ = Store::open().and_then(|store| store.interrupt_chat_turn(&turn_id));
             guard.release().await;
@@ -6017,6 +6000,47 @@ impl ChatHost {
         }
         guard.defuse();
         Ok(TurnSubmission::Started(turn_id))
+    }
+
+    async fn admit_turn_with_store(
+        self: &Arc<Self>,
+        guard: TurnGuard,
+        store: Store,
+        user: Option<StoredChatMessage>,
+        turn: StoredChatTurn,
+        pending: Option<PendingClientTurnGuard>,
+    ) -> Result<Option<(ChatTurnAdmission, TurnGuard)>> {
+        let cleanup = self.cleanup_lock(&guard.session_id).lock_owned().await;
+        {
+            let mut turns = self.turns.lock().await;
+            let Some(TurnState::Reserved {
+                reservation_id,
+                turn_id,
+            }) = turns.get_mut(&guard.session_id)
+            else {
+                return Ok(None);
+            };
+            if reservation_id != &guard.reservation_id {
+                return Ok(None);
+            }
+            *turn_id = Some(turn.id.clone());
+        }
+        crate::local::blocking::run(move || {
+            let _cleanup = cleanup;
+            let admission = store.admit_chat_turn(user.as_ref(), &turn)?;
+            if !matches!(admission, ChatTurnAdmission::Conflict) {
+                if let Some(pending) = pending {
+                    pending.finish();
+                }
+            }
+            let mut guard = guard;
+            if matches!(admission, ChatTurnAdmission::Inserted) {
+                guard.admitted_turn = Some(turn.id);
+            }
+            guard.store = Some(Box::new(store));
+            Ok(Some((admission, guard)))
+        })
+        .await?
     }
 
     fn cleanup_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
@@ -6158,7 +6182,7 @@ impl ChatHost {
     /// stops generating. Returns whether a turn (or a reservation) was
     /// actually aborted — `false` means the session was already idle.
     pub async fn interrupt(self: &Arc<Self>, session_id: &str) -> Result<bool> {
-        let active = {
+        let (active, reserved_turn) = {
             // Wait outside the global turn map. An in-flight metadata worker
             // retains this guard even if its original awaiter was cancelled.
             let _cleanup = self.cleanup_lock(session_id).lock_owned().await;
@@ -6167,16 +6191,9 @@ impl ChatHost {
                 return Ok(false);
             };
             match std::mem::replace(state, TurnState::Cancelling) {
-                TurnState::Active(active) => Some(active),
-                TurnState::Reserved { turn_id } => {
-                    if let Some(turn_id) = turn_id {
-                        if let Ok(store) = Store::open() {
-                            let _ = store.interrupt_chat_turn(&turn_id);
-                        }
-                    }
-                    None
-                }
-                TurnState::Draining => None,
+                TurnState::Active(active) => (Some(active), None),
+                TurnState::Reserved { turn_id, .. } => (None, turn_id),
+                TurnState::Draining => (None, None),
                 TurnState::Releasing { release_id } => {
                     *state = TurnState::Releasing { release_id };
                     return Ok(false);
@@ -6184,33 +6201,25 @@ impl ChatHost {
                 TurnState::Cancelling => return Ok(false),
             }
         };
-        if let Some(active) = active.as_ref() {
-            if let Ok(store) = Store::open() {
-                let _ = store.interrupt_chat_turn(&active.turn_id);
-                if let Ok(Some(stored)) = store.get_chat_message(&active.message_id) {
-                    let mut assistant = stored_to_wire(&stored);
-                    assistant.completed_at = Some(now_ms());
-                    assistant.parts.retain(|part| part.id != "turn-retry");
-                    fail_running_compaction(&mut assistant.parts);
-                    let _ = store.upsert_chat_message(&StoredChatMessage {
-                        id: assistant.id.clone(),
-                        session_id: session_id.to_string(),
-                        role: assistant.role.clone(),
-                        parts_json: serde_json::to_string(&assistant.parts).unwrap_or_default(),
-                        created_at: assistant.created_at,
-                        completed_at: assistant.completed_at,
-                        parent_id: assistant.parent_id.clone(),
-                        base_native_session_id: None,
-                        result_native_session_id: None,
-                    });
-                    self.emit("chat.message", message_json(&assistant, session_id));
-                }
-            }
-            active.handle.abort();
-        }
         let host = self.clone();
         let session_id = session_id.to_string();
         let settlement = tokio::spawn(async move {
+            let turn_id = active.as_ref().map(|a| a.turn_id.clone()).or(reserved_turn);
+            let message_id = active.as_ref().map(|a| a.message_id.clone());
+            if let Ok(Some(message)) = persist_interruption_with_store(
+                host.clone(),
+                &session_id,
+                turn_id,
+                message_id,
+                Store::open,
+            )
+            .await
+            {
+                host.emit("chat.message", message_json(&message, &session_id));
+            }
+            if let Some(active) = active.as_ref() {
+                active.handle.abort();
+            }
             host.cancel_pending_permissions(&session_id);
             let native_shutdown = async {
                 if let Ok(Some(session)) =
@@ -7237,6 +7246,46 @@ fn resolve_permission_change(
             (revision, requested)
         }
     }
+}
+
+async fn persist_interruption_with_store(
+    host: Arc<ChatHost>,
+    session_id: &str,
+    turn_id: Option<String>,
+    message_id: Option<String>,
+    open: impl FnOnce() -> Result<Store> + Send + 'static,
+) -> Result<Option<WireMessage>> {
+    if turn_id.is_none() && message_id.is_none() {
+        return Ok(None);
+    }
+    let session_id = session_id.to_string();
+    crate::local::blocking::run(move || {
+        let store = open()?;
+        let _message = host.msg_write.lock().unwrap();
+        if let Some(turn_id) = turn_id {
+            let _ = store.interrupt_chat_turn(&turn_id);
+        }
+        let Some(stored) = message_id
+            .as_deref()
+            .map(|id| store.get_chat_message(id))
+            .transpose()?
+            .flatten()
+            .filter(|message| message.session_id == session_id)
+        else {
+            return Ok(None);
+        };
+        let mut assistant = stored_to_wire(&stored);
+        assistant.completed_at = Some(now_ms());
+        assistant.parts.retain(|part| part.id != "turn-retry");
+        fail_running_compaction(&mut assistant.parts);
+        let _ = store.upsert_chat_message(&StoredChatMessage {
+            parts_json: serde_json::to_string(&assistant.parts)?,
+            completed_at: assistant.completed_at,
+            ..stored
+        });
+        Ok(Some(assistant))
+    })
+    .await?
 }
 
 /// Read-only work may finish after the native-shutdown timeout. It must not
@@ -9812,15 +9861,7 @@ mod cap_tests {
             Arc::new(crate::local::codex::CodexHost::new()),
             Arc::new(crate::local::claude::ClaudeHost::new()),
         ));
-        host.turns
-            .lock()
-            .await
-            .insert("session".into(), TurnState::Reserved { turn_id: None });
-        let guard = TurnGuard {
-            host: host.clone(),
-            session_id: "session".into(),
-            armed: true,
-        };
+        let guard = TurnGuard::reserve(&host, "session", &mut *host.turns.lock().await);
         let turns = host.turns.lock().await;
         drop(guard);
         drop(turns);
@@ -10073,10 +10114,13 @@ mod cap_tests {
             Arc::new(crate::local::codex::CodexHost::new()),
             Arc::new(crate::local::claude::ClaudeHost::new()),
         ));
-        host.turns
-            .lock()
-            .await
-            .insert("session".into(), TurnState::Reserved { turn_id: None });
+        host.turns.lock().await.insert(
+            "session".into(),
+            TurnState::Reserved {
+                turn_id: None,
+                reservation_id: uuid::Uuid::new_v4().to_string(),
+            },
+        );
 
         let error = host
             .compact_session("session")
@@ -10515,10 +10559,13 @@ mod bridge_tests {
     #[tokio::test]
     async fn while_idle_refuses_a_running_session_and_runs_otherwise() {
         let host = test_host();
-        host.turns
-            .lock()
-            .await
-            .insert("busy".into(), TurnState::Reserved { turn_id: None });
+        host.turns.lock().await.insert(
+            "busy".into(),
+            TurnState::Reserved {
+                turn_id: None,
+                reservation_id: uuid::Uuid::new_v4().to_string(),
+            },
+        );
         let mut ran = false;
         assert!(host
             .while_idle(&["busy".into()], || {
@@ -10534,10 +10581,13 @@ mod bridge_tests {
     #[tokio::test]
     async fn restart_stops_admitting_turns_only_when_idle() {
         let host = test_host();
-        host.turns
-            .lock()
-            .await
-            .insert("busy".into(), TurnState::Reserved { turn_id: None });
+        host.turns.lock().await.insert(
+            "busy".into(),
+            TurnState::Reserved {
+                turn_id: None,
+                reservation_id: uuid::Uuid::new_v4().to_string(),
+            },
+        );
         assert!(!host.stop_admitting_if_idle().await);
         host.turns.lock().await.clear();
         assert!(host.stop_admitting_if_idle().await);
@@ -11189,10 +11239,13 @@ with other project runs using `orx runs p1` and inspect the file located by `orx
         session(&store, "parent");
         spawn_row(&store, "child", "parent", ChatSpawnState::Running);
         let host = bare_host();
-        host.turns
-            .lock()
-            .await
-            .insert("child".into(), TurnState::Reserved { turn_id: None });
+        host.turns.lock().await.insert(
+            "child".into(),
+            TurnState::Reserved {
+                turn_id: None,
+                reservation_id: uuid::Uuid::new_v4().to_string(),
+            },
+        );
 
         drop(store);
         process_chat_spawns(&host, Store::open_at(dir.clone()).unwrap(), None)
@@ -12377,6 +12430,324 @@ mod steering_tests {
 mod checkpoint_tests {
     use super::*;
 
+    fn admission_turn(store: &Store) -> StoredChatTurn {
+        let mut turn = store.get_chat_turn("session", "turn").unwrap().unwrap();
+        turn.id = "next-turn".into();
+        turn.client_turn_id = "next-client".into();
+        turn.assistant_message_id = "next-assistant".into();
+        turn.user_message_id = None;
+        turn.state = "preparing".into();
+        turn
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_admission_waiter_keeps_slot_until_write_and_cleanup_finish() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        let opened = Store::open_at(dir.clone()).unwrap();
+        let turn = admission_turn(&store);
+        let guard = TurnGuard::reserve(&host, "session", &mut *host.turns.lock().await);
+        let tx = store.begin_immediate().unwrap();
+        let worker_host = host.clone();
+        let worker = tokio::spawn(async move {
+            worker_host
+                .admit_turn_with_store(guard, opened, None, turn, None)
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if matches!(host.turns.lock().await.get("session"), Some(TurnState::Reserved { turn_id: Some(id), .. }) if id == "next-turn") { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(!worker.is_finished());
+        assert!(host.cleanup_lock("session").try_lock_owned().is_err());
+        worker.abort();
+        assert!(matches!(worker.await, Err(error) if error.is_cancelled()));
+        assert!(host.turns.lock().await.contains_key("session"));
+        tx.commit().unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while host.turns.lock().await.contains_key("session") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            store
+                .get_chat_turn("session", "next-turn")
+                .unwrap()
+                .unwrap()
+                .state,
+            "interrupted"
+        );
+        drop(ctx);
+        drop(host);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn admission_preserves_idempotency_conflicts_and_replacement_slots() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        for conflict in [false, true] {
+            let guard = TurnGuard::reserve(&host, "session", &mut *host.turns.lock().await);
+            let mut turn = store.get_chat_turn("session", "turn").unwrap().unwrap();
+            if conflict {
+                turn.request_hash = "different".into();
+            }
+            let (admission, mut guard) = host
+                .admit_turn_with_store(
+                    guard,
+                    Store::open_at(dir.clone()).unwrap(),
+                    None,
+                    turn,
+                    None,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                (&admission, conflict),
+                (ChatTurnAdmission::Existing(_), false) | (ChatTurnAdmission::Conflict, true)
+            ));
+            guard.release().await;
+            assert_eq!(
+                store
+                    .get_chat_turn("session", "turn")
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                "running"
+            );
+        }
+        let old = TurnGuard::reserve(&host, "session", &mut *host.turns.lock().await);
+        let mut new = TurnGuard::reserve(&host, "session", &mut *host.turns.lock().await);
+        assert!(host
+            .admit_turn_with_store(
+                old,
+                Store::open_at(dir.clone()).unwrap(),
+                None,
+                admission_turn(&store),
+                None
+            )
+            .await
+            .unwrap()
+            .is_none());
+        tokio::task::yield_now().await;
+        assert!(
+            matches!(host.turns.lock().await.get("session"), Some(TurnState::Reserved { reservation_id, .. }) if reservation_id == &new.reservation_id)
+        );
+        assert!(store
+            .get_chat_turn("session", "next-turn")
+            .unwrap()
+            .is_none());
+        new.release().await;
+        drop(ctx);
+        drop(host);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stop_persists_state_and_message_without_blocking_scheduler() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let mut parts = ctx.assistant.parts.clone();
+        parts.push(WirePart::tool("turn-retry", "retry", "running", None));
+        store
+            .upsert_chat_message(&StoredChatMessage {
+                id: "assistant".into(),
+                session_id: "session".into(),
+                role: "assistant".into(),
+                parts_json: serde_json::to_string(&parts).unwrap(),
+                created_at: 2,
+                completed_at: None,
+                parent_id: Some("user".into()),
+                base_native_session_id: Some("base".into()),
+                result_native_session_id: Some("result".into()),
+            })
+            .unwrap();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let root = dir.clone();
+        let stop = persist_interruption_with_store(
+            ctx.host.clone(),
+            "session",
+            Some("turn".into()),
+            Some("assistant".into()),
+            move || {
+                let _ = started.send(());
+                wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                Store::open_at(root)
+            },
+        );
+        let heartbeat = async {
+            ready.await.unwrap();
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            release.send(()).unwrap();
+        };
+        let (message, ()) = tokio::join!(stop, heartbeat);
+        let message = message.unwrap().unwrap();
+        assert!(message.completed_at.is_some());
+        assert!(!message.parts.iter().any(|p| p.id == "turn-retry"));
+        assert_eq!(
+            store
+                .get_chat_turn("session", "turn")
+                .unwrap()
+                .unwrap()
+                .state,
+            "interrupted"
+        );
+        let stopped = store.get_chat_message("assistant").unwrap().unwrap();
+        assert_eq!(stopped.result_native_session_id.as_deref(), Some("result"));
+        assert_eq!(stopped.base_native_session_id.as_deref(), Some("base"));
+        assert!(store
+            .checkpoint_chat_message("turn", &stopped)
+            .unwrap()
+            .is_none());
+        let root = dir.clone();
+        assert!(persist_interruption_with_store(
+            ctx.host.clone(),
+            "foreign",
+            None,
+            Some("assistant".into()),
+            move || Store::open_at(root)
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert_eq!(
+            store
+                .get_chat_message("assistant")
+                .unwrap()
+                .unwrap()
+                .completed_at,
+            stopped.completed_at
+        );
+        assert!(persist_interruption_with_store(
+            ctx.host.clone(),
+            "session",
+            None,
+            None,
+            || panic!("no durable work must not open storage")
+        )
+        .await
+        .unwrap()
+        .is_none());
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stop_snapshot_serializes_with_resolved_prompt_answers() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let prompt = WirePrompt {
+            kind: "question".into(),
+            native_id: Some("question".into()),
+            ..Default::default()
+        };
+        let mut stored = StoredChatMessage {
+            id: "assistant".into(),
+            session_id: "session".into(),
+            role: "assistant".into(),
+            parts_json: serde_json::to_string(&vec![WirePart::prompt("question", prompt.clone())])
+                .unwrap(),
+            created_at: 2,
+            completed_at: None,
+            parent_id: Some("user".into()),
+            base_native_session_id: None,
+            result_native_session_id: None,
+        };
+        store.upsert_chat_message(&stored).unwrap();
+        let guard = ctx.host.msg_write.lock().unwrap();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let root = dir.clone();
+        let stop = persist_interruption_with_store(
+            ctx.host.clone(),
+            "session",
+            Some("turn".into()),
+            Some("assistant".into()),
+            move || {
+                let opened = Store::open_at(root)?;
+                let _ = started.send(());
+                Ok(opened)
+            },
+        );
+        let answer = async {
+            ready.await.unwrap();
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            let answered = WirePrompt {
+                resolved: true,
+                approved: Some(true),
+                answers: vec!["keep".into()],
+                ..prompt
+            };
+            stored.parts_json =
+                serde_json::to_string(&vec![WirePart::prompt("question", answered)]).unwrap();
+            store.upsert_chat_message(&stored).unwrap();
+            drop(guard);
+        };
+        let (message, ()) = tokio::join!(stop, answer);
+        assert_eq!(
+            message.unwrap().unwrap().parts[0]
+                .prompt
+                .as_ref()
+                .unwrap()
+                .answers,
+            ["keep"]
+        );
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn reserved_stop_and_storage_failure_preserve_retryable_state() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        assert!(persist_interruption_with_store(
+            ctx.host.clone(),
+            "session",
+            Some("turn".into()),
+            None,
+            || Err(anyhow!("injected open failure"))
+        )
+        .await
+        .is_err());
+        assert_eq!(
+            store
+                .get_chat_turn("session", "turn")
+                .unwrap()
+                .unwrap()
+                .state,
+            "running"
+        );
+        let root = dir.clone();
+        assert!(persist_interruption_with_store(
+            ctx.host.clone(),
+            "session",
+            Some("turn".into()),
+            None,
+            move || { Store::open_at(root) }
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert_eq!(
+            store
+                .get_chat_turn("session", "turn")
+                .unwrap()
+                .unwrap()
+                .state,
+            "interrupted"
+        );
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn interruption_snapshot_read_keeps_scheduler_available_and_propagates_errors() {
         let (dir, store, ctx) = checkpoint_fixture();
@@ -12963,7 +13334,13 @@ mod checkpoint_tests {
                 turns.get("session"),
                 Some(TurnState::Releasing { .. })
             ));
-            turns.insert("other".into(), TurnState::Reserved { turn_id: None });
+            turns.insert(
+                "other".into(),
+                TurnState::Reserved {
+                    turn_id: None,
+                    reservation_id: uuid::Uuid::new_v4().to_string(),
+                },
+            );
         }
         release.send(()).unwrap();
         worker.await.unwrap();
@@ -13008,10 +13385,13 @@ mod checkpoint_tests {
             .lock()
             .unwrap()
             .insert("session".into(), "new-token".into());
-        host.turns
-            .lock()
-            .await
-            .insert("session".into(), TurnState::Reserved { turn_id: None });
+        host.turns.lock().await.insert(
+            "session".into(),
+            TurnState::Reserved {
+                turn_id: None,
+                reservation_id: uuid::Uuid::new_v4().to_string(),
+            },
+        );
         release.send(()).unwrap();
         worker.await.unwrap();
         assert!(matches!(

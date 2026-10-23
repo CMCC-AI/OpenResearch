@@ -23,11 +23,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-
-/// A key probe is one short reply; a cold CLI start is most of it.
-const KEY_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -60,7 +56,7 @@ pub struct OpenCode;
 
 impl OpenCode {
     /// `snapshot` skips every catalog probe — `models`/`debug config` children,
-    /// the V2 server bring-up, local-server and dead-key checks — and answers
+    /// the V2 server bring-up, local-server checks — and answers
     /// install/auth only; readiness is deferred entirely and the entry is
     /// marked `catalog_pending` until a full pass replaces it. The one
     /// non-free check kept is the isolated DB lease preflight (file I/O, no
@@ -298,45 +294,8 @@ impl OpenCode {
             info.agent_ready = info.installed && !info.install_broken && !models.is_empty();
         }
         if info.agent_ready {
-            // Hide the models of providers whose stored key a live request rejects.
-            let cloud_providers: Vec<_> = providers
-                .iter()
-                .filter(|id| !local.iter().any(|(local_id, _)| local_id == id))
-                .cloned()
-                .collect();
-            let dead = match &resolved_binary {
-                Some(binary) => dead_providers(binary, &cloud_providers, &models).await,
-                None => Vec::new(),
-            };
-            if !dead.is_empty() {
-                models.retain(|model| !dead.iter().any(|p| model_provider(&model.id) == p));
-                info.account = Some(
-                    providers
-                        .iter()
-                        .map(|p| {
-                            if dead.contains(p) {
-                                format!("{p} (key rejected)")
-                            } else {
-                                p.clone()
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
-                let note = format!(
-                    "{} rejected the stored API key, so its models are hidden. Re-add it with `opencode auth login`.",
-                    dead.join(", ")
-                );
-                info.agent_note = Some(match info.agent_note.take() {
-                    Some(local_note) => format!("{local_note} {note}"),
-                    None => note,
-                });
-            }
-            // Every key rejected and nothing free left: nothing can run a turn.
-            if models.is_empty() {
-                info.agent_ready = false;
-                info.auth_state = HarnessAuthState::NeedsLogin;
-            }
+            // Catalog discovery must never generate text on an arbitrary
+            // provider model. User-initiated requests report authentication failures.
             info.models = models;
         } else if info.install_broken {
             info.agent_note = Some(info.broken_note(OPENCODE_REINSTALL));
@@ -602,104 +561,6 @@ fn opencode_providers() -> Vec<String> {
         Some(map) => map.keys().cloned().collect(),
         None => Vec::new(),
     }
-}
-
-/// Providers whose stored key a live request rejects: one tiny read-only
-/// request per provider on its first catalogued model. Verdicts are kept per
-/// auth.json version so a paid probe runs once, not once per detection, and
-/// only when the child actually answered — a timeout or spawn failure is not
-/// remembered, so a dead key is still found on the next detection.
-async fn dead_providers(
-    binary: &ResolvedBinary,
-    providers: &[String],
-    models: &[ModelInfo],
-) -> Vec<String> {
-    static VERDICTS: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-    let verdicts = VERDICTS.get_or_init(Default::default);
-    let version = opencode_auth_path()
-        .and_then(|p| std::fs::metadata(p).ok())
-        .and_then(|m| m.modified().ok())
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let probes = providers.iter().filter_map(|provider| {
-        let model = models
-            .iter()
-            .find(|model| model_provider(&model.id) == provider)?
-            .id
-            .clone();
-        let key = format!("{version}:{provider}");
-        let cached = verdicts
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&key)
-            .copied();
-        Some(async move {
-            let dead = match cached {
-                Some(dead) => dead,
-                None => {
-                    let dead = probe_rejects_key(binary, &model).await;
-                    if let Some(dead) = dead {
-                        verdicts
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .insert(key, dead);
-                    }
-                    dead.unwrap_or(false)
-                }
-            };
-            dead.then(|| provider.clone())
-        })
-    });
-    futures::future::join_all(probes)
-        .await
-        .into_iter()
-        .flatten()
-        .collect()
-}
-
-/// `Some(true)` when the provider answered with an authentication error,
-/// `Some(false)` for any other answer, `None` when the child never answered.
-async fn probe_rejects_key(binary: &ResolvedBinary, model: &str) -> Option<bool> {
-    let out = opencode_child(
-        binary,
-        Some(model),
-        "Reply with the single word ok",
-        KEY_PROBE_TIMEOUT,
-    )
-    .await?;
-    let text = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    Some(!out.status.success() && is_auth_rejection(&text))
-}
-
-/// Phrases the major providers use when a key is invalid, revoked, or expired.
-/// A bare `401` is deliberately absent: line numbers and counts contain it.
-const AUTH_REJECTION_MARKERS: &[&str] = &[
-    "api key not valid",
-    "invalid api key",
-    "incorrect api key",
-    "invalid x-api-key",
-    "invalid_api_key",
-    "authentication_error",
-    "authentication failed",
-    "unauthorized",
-    "status 401",
-    "http 401",
-    "code 401",
-    "error 401",
-    "(401)",
-    "key has expired",
-    "api key expired",
-    "no auth credentials",
-];
-
-fn is_auth_rejection(output: &str) -> bool {
-    let lower = output.to_ascii_lowercase();
-    AUTH_REJECTION_MARKERS.iter().any(|m| lower.contains(m))
 }
 
 /// The `provider` half of an opencode `provider/model` id.
@@ -2789,22 +2650,6 @@ opencode/unknown
             &json!({"info":{"time":{"created":99}}}),
             100
         ));
-    }
-
-    #[test]
-    fn auth_rejections_are_recognized_but_other_failures_are_not() {
-        assert!(is_auth_rejection(
-            "Error: API key not valid. Please pass a valid API key."
-        ));
-        assert!(is_auth_rejection("Incorrect API key provided: sk-abc"));
-        assert!(is_auth_rejection("{\"type\":\"authentication_error\"}"));
-        assert!(is_auth_rejection("HTTP 401 Unauthorized"));
-        assert!(!is_auth_rejection("Error: fetch failed (ENOTFOUND)"));
-        assert!(!is_auth_rejection(
-            "    at plugin.ts:401:12\ncontext: 1401 tokens"
-        ));
-        assert!(!is_auth_rejection("ok"));
-        assert!(!is_auth_rejection("model not found: google/nope"));
     }
 
     #[test]

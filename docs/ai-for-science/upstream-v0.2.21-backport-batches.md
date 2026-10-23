@@ -1,0 +1,62 @@
+# v0.2.21 产品回移批次
+
+更新日期：2026-10-23。依据[逐项评估](upstream-v0.2.21-gap-2026-10-23.md)分批实施，保留 OpenCode 服务器、材料合同、研究审批、私人空间及既有性能修复。官方固定目标为 `5af82bb531a731698afc6e8e46f3e5157e20210b`，本批基线为 `ca0fdf0`。
+
+## 当前产品版本
+
+产品版本更新为 **0.2.21-mobilesci.1**，Cargo.toml/Cargo.lock 同步；本机 CLI 已输出该版本。UI 的内部 npm 包版本不作为产品发行版本，本批未改 UI 源码或 ui/dist。
+
+`product-upstream.json` 中 version/tag/commit 继续记录真实的 v0.2.19 祖先，新增 productVersion 与 backportTarget.status=partial。未合并完整 v0.2.21，不移动官方 tag，也不将本地基线伪装成目标 tag。官方更新通道继续禁用。
+
+基线检查同时校验产品版本和上游祖先；新增 Node 回归并接入既有 CI 检查，覆盖旧元数据、产品预发布版本、版本不匹配、错误 tag/SHA 和将 partial 冒称完整版本。未来完整整合上游时需另行更新元数据和规则。
+
+## 第一批：Stop/持久准入隔离及 #670 零隐式生成
+
+### Stop 最初的持久化
+
+- Active/Reserved/Draining 只在 turns 锁内完成内存状态交接，Reserved 不再在该锁内打开 Store 写 interrupted。
+- 捕获 turn/message ID 后立刻创建独立 settlement 任务；首次 Store 打开、interrupted 更新、消息读取、完成标记、重试卡清理及压缩状态整理，整体移入现有 8 并发 blocking 执行池。之后才中止活动 handle，再按既有原生停止、用量和租约清理顺序继续。
+- 等待者取消不取消该独立任务；Cancelling 期间不放行新 turn。消息快照与问题答案读改写共用 msg_write 锁，保留已保存答案及 native session 元数据；跨会话消息不改写。没有 durable 工作时不打开 Store。
+- 首次存储失败仍沿用 best effort，随后中止活动任务并继续收尾；没有新增磁盘故障下的自动重试或事务保证。
+
+### 持久准入事务
+
+- `admit_chat_turn` 移入后台池，复用 setup 已打开的连接；不持有全局 turns 锁执行准入 SQL。
+- cleanup 锁串行准入和 Stop，worker 拥有 cleanup guard 与 TurnGuard。即使等待者取消，仍由正在执行的 worker 持有占位直到 SQL 完成。
+- 每个 Reserved 有唯一 reservation_id。准入返回后、旧 guard 释放及恢复启动均核对该标识，旧请求不能释放或启动替代占位；Existing/Conflict 保留原有幂等语义。
+- 取消等待后若 SQL 已插入、却没有启动任务，guard 的独立清理会用原连接尝试将该 turn 标为 interrupted，再释放原占位；这项写入也沿用 best effort，存储故障时没有新增自动重试保证。重复请求的 pending 结果在 durable admission 成功后发布。
+- TurnGuard 保存的连接使用 Box，避免放大 TurnAdmission 枚举；正常启动时 guard defuse，保留 active 槽位。释放没有 durable token 的占位不再多开一次 Store。
+
+这不是整个启动路径已异步化：setup 的初始 Store 打开、上下文准备、准入后的会话 touch/读取、启动用量注册、部分租约 claim/release，以及用户 Stop 历史标记仍有同步存储，需要后续继续分批隔离。
+
+### #670 第一阶段
+
+来源：[官方 #670](https://github.com/alphaXiv/OpenResearch/pull/670)，`f1b6c2d8f0c503519115a352c8fc64f4459caa83`。
+
+- 移除 OpenCode detect 中对 provider 首个目录模型的生成式 key probe、verdict 缓存及对应无用代码。目录不再为验证 key 发起文本生成；实际认证错误交给用户发起的请求报告。管理员配置 provider 识别与现有可用性判断保留。
+- 回移取消 AI 技能筛选：发现的原生技能保留 harness 归属、显式 excluded 与上传覆盖规则，不再调用模型分类；旧 imports.json 不再控制列表，也不删除该历史文件。保留 refresh_imports=false 的兼容函数，使现有 catalog 客户端仍收到 importing=false。
+- 同步官方的发现/排除/归属测试；本地已存在的 claude-code fixture 修正保留，不重复应用旧上下文。
+
+**#670 仍未完整完成**：云端所选模型贯通、V1 small_model/辅助 agent、V2 agent 配置、生效配置验证、starter 预热/无模型回退和压缩模型切换保护属于下一批。本批不宣称所有辅助调用都已固定到用户模型。
+
+## 验证与边界
+
+新增 Rust 回归覆盖：慢准入时计时器和 turns 锁可前进、取消等待后完成写入及 interrupted 清理、幂等冲突、替代槽位保留、Stop 慢存储、旧检查点拒绝、native 元数据和问题答案保留、无消息 Reserved 停止及打开失败显式重试。已有原生技能发现测试也随全量回归执行。
+
+最终候选通过 `cargo fmt --all --check`、`cargo clippy --locked --all-targets -- -D warnings`、`git diff --check` 和上游基线检查；完整 `cargo test --locked` 退出 0，1232 项单元测试、18 项集成测试通过，11 项专用测试默认忽略，本批未复跑这些忽略项。版本/启动 Node 测试为 22 项通过；初次 dev-slot 端口检查被默认沙箱拒绝，授予本地端口权限后完整重跑通过。第一次测试编译与 Clippy 的夹具 Debug/枚举体积问题已处理，不能引用修正前日志作为最终候选证据。
+
+日志与候选哈希保存在忽略目录 `.mobilesci-run/backport-v0.2.21/batch-1/`。`full-tests-before-prompt-lock.log` 属补强消息锁前的候选，最终以 `full-tests-final.log` 为准。不提交测试数据库或模型日志。
+
+本批未发起真实模型请求、未运行实验、未重启既有实例或部署服务器。没有新增吞吐或端到端性能百分比测量，不代表完整跨平台 CI 或生产故障验收。
+
+## 后续批次
+
+| 批次 | 范围 | 当前状态 |
+| --- | --- | --- |
+| 2 | #670 所选模型、辅助模型、starter 与压缩一致性；保留有界写入和取消边界 | 待实施 |
+| 3 | #752 OpenCode V1/V2 问答、once 权限、跳过及失效卡片；统一界面可后置 | 待实施 |
+| 4 | #690/#689/#753 删除顺序与原生历史，保留产品 recovery、研究及材料保护 | 待实施 |
+| 5 | #691/#751 运行/快照回收与进程组保护，#755 legacy 附件引用治理 | 待实施 |
+| 6 | #672/#694/#732/#762 小型修复；#743 须先有空间证据及保留策略 | 待实施 |
+
+#733 已有产品等效方案；#728/#754/#756 暂缓，#764 官方版本和产物不直接回移。所有批次保持真实上游元数据与 product-disabled；服务器恢复部署另行安排。

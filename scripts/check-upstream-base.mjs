@@ -5,6 +5,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { validateProductVersion } from './product-version.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const release = JSON.parse(readFileSync(path.join(root, 'product-upstream.json'), 'utf8'))
@@ -14,8 +15,7 @@ const version = /^version = "([^"]+)"/m.exec(cargo)?.[1]
 
 assert.match(release.tag, /^v\d+\.\d+\.\d+$/)
 assert.match(release.commit, /^[0-9a-f]{40}$/)
-assert.equal(version, release.version, 'Cargo.toml and product-upstream.json versions differ')
-assert.equal(release.tag, `v${version}`)
+const productVersion = validateProductVersion(release, version)
 assert.equal(release.updateChannel, 'product-disabled')
 assert.match(updates, /pub const OFFICIAL_UPDATE_CHANNEL_ENABLED: bool = false;/)
 
@@ -27,4 +27,4 @@ const included = candidates.some((candidate) =>
   spawnSync('git', ['merge-base', '--is-ancestor', release.commit, candidate], { cwd: root }).status === 0)
 assert.ok(included, 'Upstream base commit is not part of this product branch')
 
-console.log(`Upstream base verified: ${release.tag} (${release.commit.slice(0, 7)}); official updater disabled`)
+console.log(`Product ${productVersion}; upstream base verified: ${release.tag} (${release.commit.slice(0, 7)}); official updater disabled`)
