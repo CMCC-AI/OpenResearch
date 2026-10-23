@@ -2575,6 +2575,7 @@ struct GateToken {
 enum TurnState {
     Reserved { turn_id: Option<String> },
     Draining,
+    Releasing { release_id: String },
     Active(ActiveTurn),
     Cancelling,
 }
@@ -3806,6 +3807,57 @@ impl ChatHost {
         if let (Some(token), Ok(store)) = (token, Store::open()) {
             let _ = store.release_chat_turn(session_id, &token);
         }
+    }
+
+    /// Keep admission fenced until the captured lease has been released. The
+    /// owned task also finishes cleanup if its caller stops awaiting it.
+    fn release_finished_turn_with_store(
+        self: &Arc<Self>,
+        turns: &mut HashMap<String, TurnState>,
+        session_id: &str,
+        session: Option<StoredChatSession>,
+        open: impl FnOnce() -> Result<Store> + Send + 'static,
+    ) -> tokio::task::JoinHandle<()> {
+        let release_id = uuid::Uuid::new_v4().to_string();
+        turns.insert(
+            session_id.to_string(),
+            TurnState::Releasing {
+                release_id: release_id.clone(),
+            },
+        );
+        let token = self.durable_turns.lock().unwrap().remove(session_id);
+        let host = self.clone();
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            let lease_session = session_id.clone();
+            // Preserve best-effort release, including on open failure. Never
+            // open the database when this turn did not own a durable lease.
+            let _ = crate::local::blocking::run(move || {
+                if let Some(token) = token {
+                    open()?.release_chat_turn(&lease_session, &token)?;
+                }
+                Ok::<_, anyhow::Error>(())
+            })
+            .await;
+            let mut turns = host.turns.lock().await;
+            if !matches!(turns.get(&session_id),
+                Some(TurnState::Releasing { release_id: current }) if current == &release_id)
+            {
+                return;
+            }
+            turns.remove(&session_id);
+            drop(turns);
+            if let Some(session) = session {
+                host.emit(
+                    "chat.session",
+                    json!({ "session": session_json(&session, false) }),
+                );
+            }
+            host.emit(
+                "chat.busy",
+                json!({ "sessionId": session_id, "busy": false }),
+            );
+        })
     }
 
     fn renew_turn_leases(&self) -> Vec<String> {
@@ -5977,7 +6029,7 @@ impl ChatHost {
         // Any bridge card still pending belongs to the turn that just ended —
         // deny it so the (dying) bridge child's long-poll unblocks.
         self.cancel_pending_permissions(session_id);
-        let session = if let Ok(store) = Store::open() {
+        let mut session = if let Ok(store) = Store::open() {
             let _ = store.touch_chat_session(session_id);
             // Without this a crash mid-turn is indistinguishable from a
             // completed one once the turn lease lapses.
@@ -5986,7 +6038,7 @@ impl ChatHost {
         } else {
             None
         };
-        let reserved_queue = {
+        let (reserved_queue, release) = {
             let refreshed = self
                 .refresh_persisted_queue_async_with_store(session_id, Store::open)
                 .await
@@ -6022,12 +6074,21 @@ impl ChatHost {
                     .is_some_and(|queue| !queue.is_empty());
             if reserved_queue {
                 turns.insert(session_id.to_string(), TurnState::Draining);
+                (true, None)
             } else {
-                self.release_durable_turn(session_id);
-                turns.remove(session_id);
+                let release = self.release_finished_turn_with_store(
+                    &mut turns,
+                    session_id,
+                    session.take(),
+                    Store::open,
+                );
+                (false, Some(release))
             }
-            reserved_queue
         };
+        if let Some(release) = release {
+            let _ = release.await;
+            return;
+        }
         if let Some(session) = session {
             self.emit(
                 "chat.session",
@@ -6065,6 +6126,10 @@ impl ChatHost {
                     None
                 }
                 TurnState::Draining => None,
+                TurnState::Releasing { release_id } => {
+                    *state = TurnState::Releasing { release_id };
+                    return Ok(false);
+                }
                 TurnState::Cancelling => return Ok(false),
             }
         };
@@ -12343,6 +12408,158 @@ mod checkpoint_tests {
             },
         );
         (dir, store, ctx)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn finished_lease_release_keeps_scheduler_and_other_sessions_available() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        let mut events = host.subscribe();
+        assert!(store.claim_chat_turn("session", "old-token").unwrap());
+        host.durable_turns
+            .lock()
+            .unwrap()
+            .insert("session".into(), "old-token".into());
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let root = dir.clone();
+        let worker = {
+            let mut turns = host.turns.lock().await;
+            host.release_finished_turn_with_store(&mut turns, "session", None, move || {
+                let _ = started.send(());
+                wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                Store::open_at(root)
+            })
+        };
+        ready.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        assert!(host.busy_sessions().await.contains(&"session".into()));
+        assert!(store.chat_turn_leased("session").unwrap());
+        assert!(!host.interrupt("session").await.unwrap());
+        host.drain_queue("session").await;
+        {
+            let mut turns = host.turns.lock().await;
+            assert!(matches!(
+                turns.get("session"),
+                Some(TurnState::Releasing { .. })
+            ));
+            turns.insert("other".into(), TurnState::Reserved { turn_id: None });
+        }
+        release.send(()).unwrap();
+        worker.await.unwrap();
+        assert!(!host.turns.lock().await.contains_key("session"));
+        assert!(host.turns.lock().await.contains_key("other"));
+        assert!(!store.chat_turn_leased("session").unwrap());
+        let (name, event) = events.try_recv().unwrap();
+        assert_eq!(name, "chat.busy");
+        assert_eq!(event["busy"], false);
+        assert!(events.try_recv().is_err());
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn finished_lease_release_cannot_clear_a_replacement_slot_or_token() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        let mut events = host.subscribe();
+        assert!(store.claim_chat_turn("session", "old-token").unwrap());
+        host.durable_turns
+            .lock()
+            .unwrap()
+            .insert("session".into(), "old-token".into());
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let root = dir.clone();
+        let worker = {
+            let mut turns = host.turns.lock().await;
+            host.release_finished_turn_with_store(&mut turns, "session", None, move || {
+                let _ = started.send(());
+                wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                Store::open_at(root)
+            })
+        };
+        ready.await.unwrap();
+        store.release_chat_turn("session", "old-token").unwrap();
+        assert!(store.claim_chat_turn("session", "new-token").unwrap());
+        host.durable_turns
+            .lock()
+            .unwrap()
+            .insert("session".into(), "new-token".into());
+        host.turns
+            .lock()
+            .await
+            .insert("session".into(), TurnState::Reserved { turn_id: None });
+        release.send(()).unwrap();
+        worker.await.unwrap();
+        assert!(matches!(
+            host.turns.lock().await.get("session"),
+            Some(TurnState::Reserved { .. })
+        ));
+        assert_eq!(
+            host.durable_turns
+                .lock()
+                .unwrap()
+                .get("session")
+                .map(String::as_str),
+            Some("new-token")
+        );
+        assert!(store.renew_chat_turn("session", "new-token").unwrap());
+        assert!(events.try_recv().is_err());
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn finished_lease_release_survives_cancelled_waiter_and_open_failure() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        // A compaction may not own a durable lease; avoid an unnecessary open.
+        let worker = {
+            let mut turns = host.turns.lock().await;
+            host.release_finished_turn_with_store(&mut turns, "session", None, || {
+                panic!("a missing lease must not open storage")
+            })
+        };
+        worker.await.unwrap();
+        assert!(!host.turns.lock().await.contains_key("session"));
+        host.durable_turns
+            .lock()
+            .unwrap()
+            .insert("session".into(), "old-token".into());
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let worker = {
+            let mut turns = host.turns.lock().await;
+            host.release_finished_turn_with_store(&mut turns, "session", None, move || {
+                let _ = started.send(());
+                wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                Err(anyhow!("injected lease open failure"))
+            })
+        };
+        let waiter = tokio::spawn(async move {
+            let _ = worker.await;
+        });
+        ready.await.unwrap();
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while host.turns.lock().await.contains_key("session") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!host.durable_turns.lock().unwrap().contains_key("session"));
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
