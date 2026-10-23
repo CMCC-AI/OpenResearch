@@ -2607,6 +2607,28 @@ impl Store {
         turn_id: &str,
         m: &StoredChatMessage,
     ) -> Result<Option<Option<String>>> {
+        self.write_turn_message(turn_id, m, false)
+    }
+
+    /// Persist the final snapshot without overwriting an interruption, an
+    /// already-completed message, or a newer retry incarnation.
+    pub fn finish_chat_message(
+        &self,
+        turn_id: &str,
+        m: &StoredChatMessage,
+    ) -> Result<Option<Option<String>>> {
+        if m.completed_at.is_none() {
+            return Err(anyhow!("final chat message requires completed_at"));
+        }
+        self.write_turn_message(turn_id, m, true)
+    }
+
+    fn write_turn_message(
+        &self,
+        turn_id: &str,
+        m: &StoredChatMessage,
+        final_write: bool,
+    ) -> Result<Option<Option<String>>> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
@@ -2614,10 +2636,12 @@ impl Store {
         let active: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM chat_turns WHERE id = ?1
              AND session_id = ?2 AND assistant_message_id = ?3
-             AND state IN ('preparing','retrying','running'))
+             AND recovered_by_turn_id IS NULL
+             AND (state IN ('preparing','retrying','running')
+                  OR (?5 AND state IN ('completed','failed'))))
              AND NOT EXISTS(SELECT 1 FROM chat_messages WHERE id = ?3
                AND (session_id != ?2 OR completed_at IS NOT NULL OR created_at != ?4))",
-            params![turn_id, m.session_id, m.id, m.created_at],
+            params![turn_id, m.session_id, m.id, m.created_at, final_write],
             |row| row.get(0),
         )?;
         let parent = if active {

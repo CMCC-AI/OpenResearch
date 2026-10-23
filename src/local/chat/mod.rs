@@ -5923,7 +5923,7 @@ impl ChatHost {
             }
             crate::telemetry::retry_outbox();
             ctx.assistant.completed_at = Some(now_ms());
-            let _ = ctx.flush();
+            let _ = ctx.flush_final_async_with_store(Store::open).await;
             if let Some(path) = ctx.target_event_path.as_ref() {
                 let _ = std::fs::remove_file(path);
             }
@@ -7951,7 +7951,7 @@ impl TurnCtx {
     }
 
     /// Immediate writes during an active turn (setup progress/prompt cards).
-    /// Final writes after the turn becomes terminal still use `flush`.
+    /// The turn epilogue uses the separately fenced final-write path.
     pub(crate) async fn flush_active_async(&mut self) -> Result<()> {
         self.flush_async_with_store(true, Store::open).await
     }
@@ -7959,6 +7959,22 @@ impl TurnCtx {
     async fn flush_async_with_store(
         &mut self,
         force: bool,
+        open: impl FnOnce() -> Result<Store> + Send + 'static,
+    ) -> Result<()> {
+        self.flush_async_kind(force, false, open).await
+    }
+
+    async fn flush_final_async_with_store(
+        &mut self,
+        open: impl FnOnce() -> Result<Store> + Send + 'static,
+    ) -> Result<()> {
+        self.flush_async_kind(true, true, open).await
+    }
+
+    async fn flush_async_kind(
+        &mut self,
+        force: bool,
+        final_write: bool,
         open: impl FnOnce() -> Result<Store> + Send + 'static,
     ) -> Result<()> {
         self.last_flush = Instant::now();
@@ -8004,7 +8020,12 @@ impl TurnCtx {
                 base_native_session_id: None,
                 result_native_session_id: native_session_id,
             };
-            let Some(parent) = store.checkpoint_chat_message(&turn_id, &stored)? else {
+            let parent = if final_write {
+                store.finish_chat_message(&turn_id, &stored)?
+            } else {
+                store.checkpoint_chat_message(&turn_id, &stored)?
+            };
+            let Some(parent) = parent else {
                 return Ok(None);
             };
             assistant.parent_id = parent;
@@ -12238,6 +12259,155 @@ mod checkpoint_tests {
             },
         );
         (dir, store, ctx)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn final_flush_is_off_worker_and_preserves_completed_or_failed_snapshot() {
+        for failed in [false, true] {
+            let (dir, store, mut ctx) = checkpoint_fixture();
+            ctx.flush_with_store(true, || Store::open_at(dir.clone()))
+                .unwrap();
+            if failed {
+                assert!(store
+                    .fail_chat_turn("turn", "sent", "test_failure", "failure", Some("retry"))
+                    .unwrap());
+            } else {
+                assert!(store.complete_chat_turn("turn").unwrap());
+            }
+            ctx.assistant.parts[0].text = Some("final tail".into());
+            ctx.assistant.completed_at = Some(9);
+            ctx.native_session_id = Some("native-result".into());
+            let acknowledged = ctx.last_persisted_snapshot.clone();
+            assert!(ctx
+                .flush_final_async_with_store(|| Err(anyhow!("injected final write failure")))
+                .await
+                .is_err());
+            assert_eq!(ctx.last_persisted_snapshot, acknowledged);
+            assert!(store
+                .get_chat_message("assistant")
+                .unwrap()
+                .unwrap()
+                .parts_json
+                .contains("first"));
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            let root = dir.clone();
+            let write = ctx.flush_final_async_with_store(move || {
+                let _ = started.send(());
+                wait.recv_timeout(Duration::from_secs(2))
+                    .map_err(|e| anyhow!("final writer blocked async heartbeat: {e}"))?;
+                Store::open_at(root)
+            });
+            let heartbeat = async {
+                ready.await.unwrap();
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                release.send(()).unwrap();
+            };
+            let (result, ()) = tokio::join!(write, heartbeat);
+            result.unwrap();
+            let saved = store.get_chat_message("assistant").unwrap().unwrap();
+            assert!(saved.parts_json.contains("final tail"));
+            assert_eq!(saved.completed_at, Some(9));
+            assert_eq!(saved.parent_id.as_deref(), Some("user"));
+            assert_eq!(
+                saved.result_native_session_id.as_deref(),
+                Some("native-result")
+            );
+            // A late duplicate final cannot replace an already final message.
+            ctx.assistant.parts[0].text = Some("late overwrite".into());
+            let root = dir.clone();
+            ctx.flush_final_async_with_store(move || Store::open_at(root))
+                .await
+                .unwrap();
+            assert_eq!(
+                store
+                    .get_chat_message("assistant")
+                    .unwrap()
+                    .unwrap()
+                    .parts_json,
+                saved.parts_json
+            );
+            drop(ctx);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn abandoned_final_worker_cannot_overwrite_stop_even_after_completion_won() {
+        for completed_first in [false, true] {
+            let (dir, store, mut ctx) = checkpoint_fixture();
+            ctx.flush_with_store(true, || Store::open_at(dir.clone()))
+                .unwrap();
+            if completed_first {
+                assert!(store.complete_chat_turn("turn").unwrap());
+            }
+            ctx.assistant.parts[0].text = Some("abandoned final".into());
+            ctx.assistant.completed_at = Some(9);
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            let root = dir.clone();
+            let mut write = Box::pin(ctx.flush_final_async_with_store(move || {
+                let _ = started.send(());
+                wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                Store::open_at(root)
+            }));
+            tokio::select! {
+                _ = ready => {},
+                result = &mut write => panic!("final worker ended before release: {result:?}"),
+            }
+            drop(write);
+            store.interrupt_chat_turn("turn").unwrap();
+            let mut stopped = store.get_chat_message("assistant").unwrap().unwrap();
+            stopped.parts_json =
+                serde_json::to_string(&vec![WirePart::text("part", "stopped content")]).unwrap();
+            stopped.completed_at = Some(8);
+            store.upsert_chat_message(&stopped).unwrap();
+            release.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while Arc::strong_count(&ctx.host) > 1 {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let saved = store.get_chat_message("assistant").unwrap().unwrap();
+            assert_eq!(saved.parts_json, stopped.parts_json);
+            assert_eq!(saved.completed_at, Some(8));
+            drop(ctx);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn final_flush_adopts_prompt_echo_and_rejects_stale_incarnation() {
+        let (dir, store, mut ctx) = checkpoint_fixture();
+        ctx.assistant.parts[0].prompt = Some(
+            serde_json::from_value(json!({"kind":"permission","resolved":true,"approved":true}))
+                .unwrap(),
+        );
+        ctx.flush_with_store(true, || Store::open_at(dir.clone()))
+            .unwrap();
+        ctx.assistant.parts[0].prompt =
+            Some(serde_json::from_value(json!({"kind":"permission"})).unwrap());
+        assert!(store.complete_chat_turn("turn").unwrap());
+        ctx.assistant.completed_at = Some(9);
+        let root = dir.clone();
+        ctx.flush_final_async_with_store(move || Store::open_at(root))
+            .await
+            .unwrap();
+        let saved = stored_to_wire(&store.get_chat_message("assistant").unwrap().unwrap());
+        assert!(saved.parts[0].prompt.as_ref().unwrap().resolved);
+        assert_eq!(saved.parts[0].prompt.as_ref().unwrap().approved, Some(true));
+        let mut stale = store.get_chat_message("assistant").unwrap().unwrap();
+        stale.created_at = 123;
+        assert!(store.finish_chat_message("turn", &stale).unwrap().is_none());
+        stale.completed_at = None;
+        assert!(store.finish_chat_message("turn", &stale).is_err());
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
