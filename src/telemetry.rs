@@ -852,13 +852,42 @@ fn transfer_pending_events() {
     }
 }
 
-// Stat each path once: concurrent orx processes delete outbox files mid-sort, and a key
-// that changes between comparisons breaks total order, which makes `sort` panic.
-fn sort_oldest_first(
-    paths: &mut [PathBuf],
-    mtime: impl FnMut(&PathBuf) -> Option<std::time::SystemTime>,
-) {
-    paths.sort_by_cached_key(mtime);
+// Cache each stat once, including failures. Keep only the retry window, with
+// enumeration order as a stable tie breaker just like the former stable sort.
+fn oldest_retry_paths(
+    paths: impl IntoIterator<Item = PathBuf>,
+    limit: usize,
+    mut mtime: impl FnMut(&PathBuf) -> Option<std::time::SystemTime>,
+) -> Vec<PathBuf> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let mut oldest = std::collections::BinaryHeap::new();
+    for (index, path) in paths.into_iter().enumerate() {
+        let entry = (mtime(&path), index, path);
+        if oldest.len() < limit {
+            oldest.push(entry);
+        } else if oldest.peek().is_some_and(|last| &entry < last) {
+            oldest.pop();
+            oldest.push(entry);
+        }
+    }
+    oldest
+        .into_sorted_vec()
+        .into_iter()
+        .map(|(_, _, path)| path)
+        .collect()
+}
+
+/// Wait for local outbox preparation, not network delivery. The blocking
+/// worker retains Tokio's runtime context for registering delivery tasks.
+pub(crate) async fn retry_outbox_async() {
+    // Source builds and runtime-disabled builds keep the original no-I/O fast
+    // path, without spending a blocking permit on a guaranteed no-op.
+    if environment_disabled_reason().is_some() {
+        return;
+    }
+    let _ = crate::local::blocking::run(retry_outbox).await;
 }
 
 pub(crate) fn retry_outbox() {
@@ -866,21 +895,24 @@ pub(crate) fn retry_outbox() {
         return;
     }
     transfer_pending_events();
-    let Ok(entries) = std::fs::read_dir(outbox_dir()) else {
+    retry_outbox_files(&outbox_dir());
+}
+
+fn retry_outbox_files(directory: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
         return;
     };
-    let mut paths: Vec<_> = entries
+    let paths = entries
         .flatten()
         .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("json"))
-        .collect();
-    sort_oldest_first(&mut paths, |path| {
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("json"));
+    let paths = oldest_retry_paths(paths, 20, |path| {
         std::fs::metadata(path)
             .and_then(|meta| meta.modified())
             .ok()
     });
     // ponytail: no eviction preserves retryable events; move to SQLite if queue scans become costly.
-    for path in paths.into_iter().take(20) {
+    for path in paths {
         let Ok(bytes) = std::fs::read(&path) else {
             continue;
         };
@@ -1157,7 +1189,7 @@ impl TelemetrySession {
     /// site in `main` already threads it, so keeping the param avoids
     /// re-touching main).
     pub(crate) async fn finish(self, _success: bool) {
-        retry_outbox();
+        retry_outbox_async().await;
         flush_pending().await;
     }
 }
@@ -2018,7 +2050,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn consent_retry_bypasses_persisted_opt_out() {
         use tokio::io::AsyncWriteExt;
 
@@ -2057,8 +2089,12 @@ mod tests {
             json!({ "agreed": false }),
         );
         std::fs::write(&consent_path, serde_json::to_vec(&consent).unwrap()).unwrap();
-        deliver_retry_payload(consent_path.clone(), consent).await;
+        crate::local::blocking::run(|| retry_outbox_files(&outbox_dir()))
+            .await
+            .unwrap();
+        flush_pending().await;
         assert!(!consent_path.exists());
+        assert!(product_path.exists());
 
         server.await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);
@@ -2474,15 +2510,79 @@ mod tests {
     }
 
     #[test]
-    fn outbox_sort_stats_each_file_once() {
-        let mut paths: Vec<PathBuf> = (0..64)
+    fn outbox_selection_stats_each_file_once() {
+        let paths: Vec<PathBuf> = (0..64)
             .map(|i| PathBuf::from(format!("{i}.json")))
             .collect();
         let mut stats = 0;
-        sort_oldest_first(&mut paths, |_| {
+        let selected = oldest_retry_paths(paths.clone(), 20, |_| {
             stats += 1;
             None
         });
         assert_eq!(stats, paths.len());
+        assert_eq!(selected, paths[..20]);
+    }
+
+    #[test]
+    fn outbox_selection_matches_stable_sort_with_missing_and_tied_times() {
+        let paths: Vec<_> = (0..1000)
+            .map(|i| PathBuf::from(format!("{i}.json")))
+            .collect();
+        let time = |path: &PathBuf| {
+            let i: u64 = path.file_stem().unwrap().to_str().unwrap().parse().unwrap();
+            (!i.is_multiple_of(11))
+                .then_some(std::time::UNIX_EPOCH + Duration::from_secs((i * 17) % 29))
+        };
+        let mut expected = paths.clone();
+        expected.sort_by_cached_key(time);
+        for limit in [0, 1, 20, 1000, 1500] {
+            let mut stats = 0;
+            let selected = oldest_retry_paths(paths.clone(), limit, |path| {
+                stats += 1;
+                time(path)
+            });
+            assert_eq!(selected, expected[..limit.min(expected.len())]);
+            assert_eq!(stats, if limit == 0 { 0 } else { paths.len() });
+        }
+        assert!(oldest_retry_paths(std::iter::empty(), 20, |_| panic!("empty input")).is_empty());
+    }
+
+    #[test]
+    #[ignore = "local outbox selection profile; no network or production data"]
+    fn outbox_selection_profile_benchmark() {
+        let root =
+            std::env::temp_dir().join(format!("orx-outbox-profile-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        for count in [2000, 10000] {
+            for i in 0..count {
+                std::fs::write(root.join(format!("{i}.json")), b"{}").unwrap();
+            }
+            let paths: Vec<_> = std::fs::read_dir(&root)
+                .unwrap()
+                .map(|p| p.unwrap().path())
+                .collect();
+            let mtime = |p: &PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+            for round in 0..3 {
+                let mut timings = [0; 2];
+                let mut selected = [Vec::new(), Vec::new()];
+                for kind in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
+                    let start = std::time::Instant::now();
+                    for _ in 0..10 {
+                        selected[kind] = if kind == 0 {
+                            let mut all = paths.clone();
+                            all.sort_by_cached_key(mtime);
+                            all.truncate(20);
+                            all
+                        } else {
+                            oldest_retry_paths(paths.iter().cloned(), 20, mtime)
+                        };
+                    }
+                    timings[kind] = start.elapsed().as_micros();
+                }
+                assert_eq!(selected[0], selected[1]);
+                eprintln!("outbox_selection count={count} round={round} iterations=10 stable_sort_us={} bounded_heap_us={}", timings[0], timings[1]);
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -4929,7 +4929,7 @@ fn spawn_background_tasks(check_updates: bool) {
     tokio::spawn(async {
         loop {
             tokio::time::sleep(Duration::from_secs(60)).await;
-            crate::telemetry::retry_outbox();
+            crate::telemetry::retry_outbox_async().await;
         }
     });
 }

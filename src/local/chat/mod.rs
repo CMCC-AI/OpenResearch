@@ -621,7 +621,11 @@ fn settle_interrupted_tool_parts(parts: &mut [WirePart]) {
 fn remove_target_pointer_if_matches(session_id: &str, message_id: &str) {
     let pointer = target_event_pointer(session_id);
     let expected = target_event_path(session_id, message_id);
-    if std::fs::read_to_string(&pointer)
+    remove_target_pointer_if_matches_at(&pointer, &expected);
+}
+
+fn remove_target_pointer_if_matches_at(pointer: &std::path::Path, expected: &std::path::Path) {
+    if std::fs::read_to_string(pointer)
         .ok()
         .is_some_and(|path| path == expected.to_string_lossy())
     {
@@ -5987,7 +5991,7 @@ impl ChatHost {
                     );
                 }
             }
-            crate::telemetry::retry_outbox();
+            crate::telemetry::retry_outbox_async().await;
             ctx.assistant.completed_at = Some(now_ms());
             let _ = ctx.flush_final_async_with_store(Store::open).await;
             if let Some(path) = ctx.target_event_path.as_ref() {
@@ -6232,7 +6236,7 @@ impl ChatHost {
                 let _ = active.handle.await;
                 let _ = Store::open()
                     .and_then(|store| store.finalize_turn_usage(&active.turn_id, "cancelled"));
-                crate::telemetry::retry_outbox();
+                crate::telemetry::retry_outbox_async().await;
                 let mut message = reconcile_target_file(&session_id, &active.message_id);
                 if let Some(items) = interrupted_items.as_deref() {
                     message = crate::local::harness::codex::reconcile_interrupted_items(
@@ -12353,6 +12357,52 @@ mod steering_tests {
 #[cfg(test)]
 mod checkpoint_tests {
     use super::*;
+
+    #[test]
+    fn target_pointer_cleanup_preserves_replacement_and_accepts_missing_file() {
+        let dir = std::env::temp_dir().join(format!("orx-pointer-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pointer = dir.join("session.current");
+        let old = dir.join("old.events");
+        let new = dir.join("new.events");
+        std::fs::write(&pointer, new.to_string_lossy().as_bytes()).unwrap();
+        remove_target_pointer_if_matches_at(&pointer, &old);
+        assert_eq!(
+            std::fs::read_to_string(&pointer).unwrap(),
+            new.to_string_lossy()
+        );
+        remove_target_pointer_if_matches_at(&pointer, &new);
+        assert!(!pointer.exists());
+        remove_target_pointer_if_matches_at(&pointer, &new);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "local target cleanup profile; isolated temporary files"]
+    fn target_cleanup_profile_benchmark() {
+        let dir = std::env::temp_dir().join(format!("orx-target-profile-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pointer = dir.join("session.current");
+        let events = dir.join("message.events");
+        let mut samples = Vec::new();
+        for _ in 0..200 {
+            std::fs::write(&events, b"test").unwrap();
+            std::fs::write(&pointer, events.to_string_lossy().as_bytes()).unwrap();
+            let start = std::time::Instant::now();
+            std::fs::remove_file(&events).unwrap();
+            remove_target_pointer_if_matches_at(&pointer, &events);
+            samples.push(start.elapsed().as_nanos());
+            assert!(!pointer.exists());
+        }
+        samples.sort();
+        eprintln!(
+            "target_cleanup iterations=200 mean_ns={} p95_ns={} max_ns={}",
+            samples.iter().sum::<u128>() / 200,
+            samples[189],
+            samples[199]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn checkpoint_fixture() -> (PathBuf, Store, TurnCtx) {
         let dir = std::env::temp_dir().join(format!("orx-checkpoint-{}", uuid::Uuid::new_v4()));
