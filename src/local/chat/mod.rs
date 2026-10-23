@@ -6213,17 +6213,17 @@ impl ChatHost {
         let settlement = tokio::spawn(async move {
             host.cancel_pending_permissions(&session_id);
             let native_shutdown = async {
-                if let Ok(store) = Store::open() {
-                    if let Ok(Some(session)) = store.get_chat_session(&session_id) {
-                        if session.harness == "opencode" {
-                            if let Some(nid) = &session.native_session_id {
-                                let _ = host.opencode.interrupt(&session_id, nid).await;
-                            }
-                        } else if session.harness == "codex" {
-                            return host.codex.interrupt_session(&session_id).await;
-                        } else if session.harness == "claude-code" {
-                            host.claude.kill_session(&session_id).await;
+                if let Ok(Some(session)) =
+                    interruption_session_with_store(&session_id, Store::open).await
+                {
+                    if session.harness == "opencode" {
+                        if let Some(nid) = &session.native_session_id {
+                            let _ = host.opencode.interrupt(&session_id, nid).await;
                         }
+                    } else if session.harness == "codex" {
+                        return host.codex.interrupt_session(&session_id).await;
+                    } else if session.harness == "claude-code" {
+                        host.claude.kill_session(&session_id).await;
                     }
                 }
                 None
@@ -6234,8 +6234,7 @@ impl ChatHost {
                 .flatten();
             if let Some(active) = active {
                 let _ = active.handle.await;
-                let _ = Store::open()
-                    .and_then(|store| store.finalize_turn_usage(&active.turn_id, "cancelled"));
+                let _ = finalize_interrupted_usage_with_store(&active.turn_id, Store::open).await;
                 crate::telemetry::retry_outbox_async().await;
                 let mut message = reconcile_target_file(&session_id, &active.message_id);
                 if let Some(items) = interrupted_items.as_deref() {
@@ -7238,6 +7237,26 @@ fn resolve_permission_change(
             (revision, requested)
         }
     }
+}
+
+/// Read-only work may finish after the native-shutdown timeout. It must not
+/// perform shutdown or mutate the slot from inside the blocking worker.
+async fn interruption_session_with_store(
+    session_id: &str,
+    open: impl FnOnce() -> Result<Store> + Send + 'static,
+) -> Result<Option<StoredChatSession>> {
+    let session_id = session_id.to_string();
+    crate::local::blocking::run(move || open()?.get_chat_session(&session_id)).await?
+}
+
+/// Called by the owned interruption task after the active handle has stopped,
+/// while its Cancelling slot and durable lease still exclude a replacement.
+async fn finalize_interrupted_usage_with_store(
+    turn_id: &str,
+    open: impl FnOnce() -> Result<Store> + Send + 'static,
+) -> Result<()> {
+    let turn_id = turn_id.to_string();
+    crate::local::blocking::run(move || open()?.finalize_turn_usage(&turn_id, "cancelled")).await?
 }
 
 enum TurnSettlement {
@@ -12357,6 +12376,202 @@ mod steering_tests {
 #[cfg(test)]
 mod checkpoint_tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn interruption_snapshot_read_keeps_scheduler_available_and_propagates_errors() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let root = dir.clone();
+        let read = interruption_session_with_store("session", move || {
+            let _ = started.send(());
+            wait.recv_timeout(Duration::from_secs(3)).unwrap();
+            Store::open_at(root)
+        });
+        let heartbeat = async {
+            ready.await.unwrap();
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            release.send(()).unwrap();
+        };
+        let (session, ()) = tokio::join!(read, heartbeat);
+        assert_eq!(session.unwrap().unwrap().id, "session");
+        assert_eq!(
+            store
+                .get_chat_session("session")
+                .unwrap()
+                .unwrap()
+                .updated_at,
+            1
+        );
+        let root = dir.clone();
+        assert!(
+            interruption_session_with_store("missing", move || Store::open_at(root))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(interruption_session_with_store("session", || Err(anyhow!(
+            "injected snapshot open failure"
+        )))
+        .await
+        .is_err());
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn interruption_usage_keeps_slot_and_other_turn_accounting_untouched() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let (_, other_store, other_ctx) = checkpoint_fixture_at(dir.clone(), "-other");
+        store
+            .begin_usage_execution("settlement-exec", "turn", "opencode")
+            .unwrap();
+        store
+            .begin_usage_execution("other-exec", "turn-other", "opencode")
+            .unwrap();
+        store.interrupt_chat_turn("turn").unwrap();
+        ctx.host
+            .turns
+            .lock()
+            .await
+            .insert("session".into(), TurnState::Cancelling);
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let root = dir.clone();
+        let close = finalize_interrupted_usage_with_store("turn", move || {
+            let _ = started.send(());
+            wait.recv_timeout(Duration::from_secs(3)).unwrap();
+            Store::open_at(root)
+        });
+        let heartbeat = async {
+            ready.await.unwrap();
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            assert!(matches!(
+                ctx.host.turns.lock().await.get("session"),
+                Some(TurnState::Cancelling)
+            ));
+            assert!(usage_outcome(&store).is_none());
+            release.send(()).unwrap();
+        };
+        let (result, ()) = tokio::join!(close, heartbeat);
+        result.unwrap();
+        assert_eq!(usage_outcome(&store).as_deref(), Some("cancelled"));
+        let other: Option<String> = store
+            .begin()
+            .unwrap()
+            .query_row(
+                "SELECT outcome FROM chat_usage_executions WHERE execution_id='other-exec'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(other.is_none());
+        assert!(matches!(
+            ctx.host.turns.lock().await.get("session"),
+            Some(TurnState::Cancelling)
+        ));
+        let root = dir.clone();
+        finalize_interrupted_usage_with_store("turn", move || Store::open_at(root))
+            .await
+            .unwrap();
+        assert_eq!(usage_outcome(&store).as_deref(), Some("cancelled"));
+        drop(ctx);
+        drop(other_ctx);
+        drop(store);
+        drop(other_store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn interruption_usage_failure_can_be_retried_without_changing_turn_state() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        store
+            .begin_usage_execution("settlement-exec", "turn", "opencode")
+            .unwrap();
+        store.interrupt_chat_turn("turn").unwrap();
+        assert!(
+            finalize_interrupted_usage_with_store("turn", || Err(anyhow!(
+                "injected usage open failure"
+            )))
+            .await
+            .is_err()
+        );
+        assert!(usage_outcome(&store).is_none());
+        let root = dir.clone();
+        finalize_interrupted_usage_with_store("turn", move || Store::open_at(root))
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .get_chat_turn("session", "turn")
+                .unwrap()
+                .unwrap()
+                .state,
+            "interrupted"
+        );
+        assert_eq!(usage_outcome(&store).as_deref(), Some("cancelled"));
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "local admission and interruption storage profile; no model execution"]
+    fn turn_boundary_store_profile_benchmark() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let mut samples = [Vec::new(), Vec::new(), Vec::new()];
+        for i in 0..30 {
+            let mut turn = store.get_chat_turn("session", "turn").unwrap().unwrap();
+            turn.id = format!("profile-turn-{i}");
+            turn.client_turn_id = format!("profile-client-{i}");
+            turn.assistant_message_id = format!("profile-message-{i}");
+            turn.user_message_id = None;
+            turn.prepared_input = "x".repeat(32768);
+            let start = std::time::Instant::now();
+            let opened = Store::open_at(dir.clone()).unwrap();
+            let after_open = start.elapsed().as_nanos();
+            assert!(matches!(
+                opened.admit_chat_turn(None, &turn).unwrap(),
+                ChatTurnAdmission::Inserted
+            ));
+            samples[0].push((after_open, start.elapsed().as_nanos()));
+            drop(opened);
+            let start = std::time::Instant::now();
+            let opened = Store::open_at(dir.clone()).unwrap();
+            let after_open = start.elapsed().as_nanos();
+            assert!(opened.get_chat_session("session").unwrap().is_some());
+            samples[1].push((after_open, start.elapsed().as_nanos()));
+            opened
+                .begin_usage_execution(&format!("profile-exec-{i}"), &turn.id, "opencode")
+                .unwrap();
+            opened.interrupt_chat_turn(&turn.id).unwrap();
+            drop(opened);
+            let start = std::time::Instant::now();
+            let opened = Store::open_at(dir.clone()).unwrap();
+            let after_open = start.elapsed().as_nanos();
+            opened.finalize_turn_usage(&turn.id, "cancelled").unwrap();
+            samples[2].push((after_open, start.elapsed().as_nanos()));
+            drop(opened);
+        }
+        for (name, group) in [
+            "admission-no-user",
+            "interruption-snapshot",
+            "interruption-usage",
+        ]
+        .into_iter()
+        .zip(samples)
+        {
+            let open_mean = group.iter().map(|s| s.0).sum::<u128>() / group.len() as u128;
+            let total_mean = group.iter().map(|s| s.1).sum::<u128>() / group.len() as u128;
+            let mut totals: Vec<_> = group.iter().map(|s| s.1).collect();
+            totals.sort();
+            eprintln!("turn_boundary phase={name} iterations=30 open_mean_ns={open_mean} operation_mean_ns={} total_mean_ns={total_mean} total_p95_ns={}", total_mean - open_mean, totals[28]);
+        }
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn target_pointer_cleanup_preserves_replacement_and_accepts_missing_file() {
