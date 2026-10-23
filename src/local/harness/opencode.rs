@@ -379,7 +379,9 @@ impl Harness for OpenCode {
             SummarizeOutcome::NoServer => Err(anyhow!(
                 "OpenCode is not running for this chat — send a message first, then compact"
             )),
-            SummarizeOutcome::NoModel => Ok(CompactOutcome::Fallback),
+            SummarizeOutcome::NoModel | SummarizeOutcome::ModelChanged => {
+                Ok(CompactOutcome::Fallback)
+            }
         }
     }
 
