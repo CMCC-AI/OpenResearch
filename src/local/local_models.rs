@@ -285,12 +285,11 @@ pub(crate) fn merge_config(
             "options":{"baseURL":c.base_url,"apiKey":c.api_key}, "models":models}),
         );
     }
-    if let Some(model) = model.filter(|model| {
+    if model.is_some_and(|model| {
         connections
             .keys()
             .any(|id| model.starts_with(&format!("{id}/")))
     }) {
-        config.insert("small_model".into(), json!(model));
         config.insert("share".into(), json!("disabled"));
     }
     Ok(())
@@ -396,7 +395,7 @@ mod tests {
         );
         assert_eq!(config["model"], "anthropic/claude");
         assert_eq!(config["permission"]["bash"], "ask");
-        assert_eq!(config["small_model"], "orx-local-test/mlx-community/qwen");
+        assert_eq!(config["small_model"], "anthropic/haiku");
         assert_eq!(
             config["provider"]["orx-local-test"]["models"]["mlx-community/qwen"]["limit"]
                 ["context"],

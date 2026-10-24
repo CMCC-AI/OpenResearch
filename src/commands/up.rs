@@ -1902,6 +1902,7 @@ struct CreateProjectReq {
     github_sync_enabled: Option<bool>,
     /// UI locale, for the starter prompts warmed up in the background.
     locale: Option<String>,
+    starter_agent: Option<local::starter::Agent>,
 }
 
 async fn create_project(
@@ -1972,7 +1973,7 @@ async fn create_project(
     let project = result.map_err(bad_request)?;
     // Starter prompts take a model call; start it now so the empty chat that
     // opens next usually finds them cached.
-    local::starter::warm(project.clone(), locale);
+    local::starter::warm(project.clone(), locale, req.starter_agent);
     drop(creation_guard);
     let _project_admission = state
         .project_lifecycle
@@ -3129,6 +3130,7 @@ struct PrewarmStarterPromptsReq {
     /// An existing folder the project will be created from.
     path: Option<String>,
     locale: Option<String>,
+    starter_agent: Option<local::starter::Agent>,
 }
 
 /// Start generating starter prompts for a project the user is still naming in
@@ -3153,6 +3155,7 @@ async fn prewarm_starter_prompts(Json(req): Json<PrewarmStarterPromptsReq>) -> A
             paper_id,
             path,
             req.locale.unwrap_or_else(|| "en".to_string()),
+            req.starter_agent,
         );
         Ok(Json(json!({ "ok": true })))
     })

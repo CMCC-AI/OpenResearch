@@ -8,7 +8,7 @@ import {
   resolvePaperQuery,
   searchPapersQuery,
 } from "../queries/projects";
-import { getProjectDefaultsQuery } from "../queries/settings";
+import { getHarnessesQuery, getProjectDefaultsQuery } from "../queries/settings";
 import { m } from "../paraglide/messages.js";
 import { getLocale } from "../paraglide/runtime.js";
 import { ltr } from "../i18n";
@@ -20,10 +20,12 @@ import {
   type PaperHit,
   type Project,
   type ResolvedPaper,
+  type AgentSelection,
   prewarmStarterPrompts,
 } from "../api";
 import { Button } from "./ui";
 import { PaperTitle } from "./PaperTitle";
+import { defaultSelection } from "./ModelPicker";
 
 function useDebouncedValue(value: string, delay: number) {
   const [debounced, setDebounced] = useState(value);
@@ -78,15 +80,22 @@ export function NewProjectForm({
   onCreated,
   onCancel,
   remote = false,
+  preferredAgent,
   initialPaperId,
   initialName,
 }: {
   onCreated: (project: Project, githubPublicationError: string | null) => void;
   onCancel?: () => void;
   remote?: boolean;
+  preferredAgent: AgentSelection | null;
   initialPaperId?: string;
   initialName?: string;
 }) {
+  const { data: harnesses = [] } = useQuery(getHarnessesQuery());
+  const starterSelection = preferredAgent ?? defaultSelection(harnesses);
+  const starterHarness = starterSelection?.harness;
+  const starterModel = starterSelection?.model ?? null;
+  const starterAgent = starterHarness ? { harness: starterHarness, model: starterModel } : undefined;
   const [mode, setMode] = useState<Mode>(initialPaperId ? "paper" : "blank");
   const [name, setName] = useState(initialName ?? "");
   const [nameTouched, setNameTouched] = useState(false);
@@ -257,6 +266,7 @@ export function NewProjectForm({
         initializeGit: true,
         githubSyncEnabled,
         locale: getLocale(),
+        starterAgent,
         ...(mode === "paper" && paper
           ? { paperId: paper.paperId, cloneUrl: paper.repoUrl ?? undefined }
           : {}),
@@ -284,10 +294,11 @@ export function NewProjectForm({
         paperId: prewarmPaperId ?? undefined,
         path: prewarmPath ?? undefined,
         locale: getLocale(),
+        starterAgent: starterHarness ? { harness: starterHarness, model: starterModel } : undefined,
       }).catch(() => {});
     }, 1200);
     return () => window.clearTimeout(timer);
-  }, [prewarmReady, prewarmName, prewarmPaperId, prewarmPath]);
+  }, [prewarmReady, prewarmName, prewarmPaperId, prewarmPath, starterHarness, starterModel]);
 
   const gitMissing = pathStatus?.gitVersion === null;
   const missingLocalFolder =

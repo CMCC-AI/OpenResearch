@@ -96,6 +96,7 @@ export function ProjectsPage() {
         : !projects || !state ? <RoutePending />
           : (
             <ProjectsHome
+              preferredAgent={state.preferredAgent}
               remote={runtime.kind === "ssh"}
               projects={projects}
               initialDialogOpen={Boolean(start.new || start.paper)}

@@ -287,6 +287,7 @@ export interface NewProject {
   githubSyncEnabled?: boolean;
   /** UI locale for the starter prompts the server warms up on creation. */
   locale?: string;
+  starterAgent?: Pick<AgentSelection, "harness" | "model">;
 }
 
 export interface CreateProjectResult {
@@ -419,8 +420,8 @@ export interface ProjectStarterPrompts {
   /** Empty when the project already has experiments or is blank; null when
    *  the harness could not answer. */
   prompts: StarterPrompt[] | null;
-  /** The project has nothing to read yet, so the UI offers its pre-written
-   *  prompts instead of model-generated ones. */
+  /** Use pre-written prompts when there is no project brief or no selected
+   *  OpenCode model for generation. */
   blank: boolean;
 }
 
@@ -431,6 +432,7 @@ export const prewarmStarterPrompts = (body: {
   paperId?: string;
   path?: string;
   locale: string;
+  starterAgent?: Pick<AgentSelection, "harness" | "model">;
 }) => post<{ ok: boolean }>("/api/projects/starter-prompts/prewarm", body);
 
 /** Slow on a cache miss (one headless model call over a brief of the project). */

@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   timeAgo,
   type Project,
+  type AgentSelection,
 } from "../api";
 
 import { DeleteProjectDialog } from "./DeleteProjectDialog";
@@ -21,12 +22,14 @@ export function NewProjectDialog({
   onClose,
   onCreated,
   remote = false,
+  preferredAgent,
   initialPaperId,
   initialName,
 }: {
   onClose: () => void;
   onCreated: (project: Project, githubPublicationError: string | null, draft?: ComposerStash) => void;
   remote?: boolean;
+  preferredAgent: AgentSelection | null;
   initialPaperId?: string;
   initialName?: string;
 }) {
@@ -102,7 +105,7 @@ export function NewProjectDialog({
         tabIndex={-1}
       >
         <h2 id="new-project-dialog-title">{m.projects_home_new_project()}</h2>
-        <NewProjectForm onCancel={onClose} onCreated={onCreated} remote={remote} initialPaperId={initialPaperId} initialName={initialName} />
+        <NewProjectForm onCancel={onClose} onCreated={onCreated} remote={remote} preferredAgent={preferredAgent} initialPaperId={initialPaperId} initialName={initialName} />
       </div>
     </div>
   );
@@ -120,6 +123,7 @@ export function ProjectsHome({
   onCreated,
   onDeleted,
   remote = false,
+  preferredAgent,
   initialDialogOpen = false,
   initialPaperId,
   initialProjectId,
@@ -130,6 +134,7 @@ export function ProjectsHome({
   onCreated: (project: Project, githubPublicationError: string | null, draft?: ComposerStash) => void;
   onDeleted: (id: string) => void;
   remote?: boolean;
+  preferredAgent: AgentSelection | null;
   initialDialogOpen?: boolean;
   initialPaperId?: string;
   initialProjectId?: string;
@@ -177,6 +182,7 @@ export function ProjectsHome({
 
       {modalOpen && (
         <NewProjectDialog
+          preferredAgent={preferredAgent}
           remote={remote}
           initialPaperId={initialPaperId}
           initialName={draft.trim().split(/[。\n]/)[0].slice(0, 24)}
