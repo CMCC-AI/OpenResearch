@@ -2681,6 +2681,79 @@ pub(crate) fn legacy_opening_message(
     })
 }
 
+fn persist_busy_queue_with_revisions(
+    store: &Store,
+    session_id: &str,
+    mut message: QueuedMessage,
+    plans: &mut HashMap<String, (u64, bool)>,
+    permissions: &mut HashMap<String, (u64, String)>,
+) -> Result<QueuedMessage> {
+    let old_plan = plans.get(session_id).cloned();
+    let old_permission = permissions.get(session_id).cloned();
+    stamp_turn_revisions(&mut message.overrides, session_id, plans, permissions);
+    match persist_busy_queued_message(store, session_id, message) {
+        Ok(message) => Ok(message),
+        Err(error) => {
+            match old_plan {
+                Some(value) => {
+                    plans.insert(session_id.to_string(), value);
+                }
+                None => {
+                    plans.remove(session_id);
+                }
+            }
+            match old_permission {
+                Some(value) => {
+                    permissions.insert(session_id.to_string(), value);
+                }
+                None => {
+                    permissions.remove(session_id);
+                }
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Persist busy-send settings and its queued payload as one atomic write.
+/// The caller publishes to the in-memory queue only after this commits.
+fn persist_busy_queued_message(
+    store: &Store,
+    session_id: &str,
+    mut message: QueuedMessage,
+) -> Result<QueuedMessage> {
+    let tx = store.begin_immediate()?;
+    if let Some(plan_mode) = message.overrides.plan_mode {
+        let current = store
+            .get_chat_session(session_id)?
+            .ok_or_else(|| anyhow!("chat session not found"))?;
+        let reset_pending = !plan_mode
+            && current.harness == "codex"
+            && (current.plan_mode || current.plan_reset_pending);
+        // Every busy send carries the composer's plan state, so
+        // only write when it actually moves.
+        if current.plan_mode != plan_mode || current.plan_reset_pending != reset_pending {
+            store.set_chat_session_plan_state(session_id, plan_mode, reset_pending)?;
+        }
+        message.overrides.plan_mode = None;
+        message.overrides.plan_revision = None;
+    }
+    if let Some(permission_mode) = message.overrides.permission_mode.take() {
+        store.set_chat_session_permission_mode(session_id, &permission_mode)?;
+        message.overrides.permission_revision = None;
+    }
+    store.insert_queued_chat_message(&StoredQueuedChatMessage {
+        id: message.id.clone(),
+        session_id: session_id.to_string(),
+        client_turn_id: message.client_turn_id.clone(),
+        request_hash: message.request_hash.clone(),
+        payload_json: serde_json::to_string(&message)?,
+        created_at: now_ms(),
+    })?;
+    tx.commit()?;
+    Ok(message)
+}
+
 /// The running turn's end of the steering channel.
 pub type SteerReceiver = mpsc::UnboundedReceiver<SteerMessage>;
 
@@ -5356,7 +5429,7 @@ impl ChatHost {
         });
         let TurnSubmissionSetup {
             store,
-            mut session,
+            session,
             existing,
             admission,
         } = load_turn_submission_with_store(
@@ -5491,37 +5564,6 @@ impl ChatHost {
                     let mut plan_changes = self.plan_changes.lock().unwrap();
                     let mut permission_changes = self.permission_changes.lock().unwrap();
                     let mut queued = self.queued.lock().unwrap();
-                    stamp_turn_revisions(
-                        &mut overrides,
-                        session_id,
-                        &mut plan_changes,
-                        &mut permission_changes,
-                    );
-                    if let Some(plan_mode) = overrides.plan_mode {
-                        let current = store
-                            .get_chat_session(session_id)?
-                            .ok_or_else(|| anyhow!("chat session not found"))?;
-                        let reset_pending = !plan_mode
-                            && current.harness == "codex"
-                            && (current.plan_mode || current.plan_reset_pending);
-                        // Every busy send carries the composer's plan state, so
-                        // only write when it actually moves.
-                        if current.plan_mode != plan_mode
-                            || current.plan_reset_pending != reset_pending
-                        {
-                            store.set_chat_session_plan_state(
-                                session_id,
-                                plan_mode,
-                                reset_pending,
-                            )?;
-                        }
-                        overrides.plan_mode = None;
-                        overrides.plan_revision = None;
-                    }
-                    if let Some(permission_mode) = overrides.permission_mode.take() {
-                        store.set_chat_session_permission_mode(session_id, &permission_mode)?;
-                        overrides.permission_revision = None;
-                    }
                     let queued_message = QueuedMessage {
                         id: format!("q_{}", uuid::Uuid::new_v4()),
                         client_turn_id: client_turn_id.clone(),
@@ -5535,14 +5577,13 @@ impl ChatHost {
                         dispatch_error: None,
                         next_retry_at: None,
                     };
-                    store.insert_queued_chat_message(&StoredQueuedChatMessage {
-                        id: queued_message.id.clone(),
-                        session_id: session_id.to_string(),
-                        client_turn_id: client_turn_id.clone(),
-                        request_hash: request_hash.clone(),
-                        payload_json: serde_json::to_string(&queued_message)?,
-                        created_at: now_ms(),
-                    })?;
+                    let queued_message = persist_busy_queue_with_revisions(
+                        &store,
+                        session_id,
+                        queued_message,
+                        &mut plan_changes,
+                        &mut permission_changes,
+                    )?;
                     queued
                         .entry(session_id.to_string())
                         .or_default()
@@ -5592,184 +5633,219 @@ impl ChatHost {
                 )
             }
         };
-        let reset_codex_model = if overrides.clear_model && session.harness == "codex" {
-            match session.native_session_id.as_deref() {
-                Some(native_id) => {
-                    session.model.is_some()
-                        || store.chat_native_thread_has_named_model(session_id, native_id)?
-                }
-                None => false,
-            }
-        } else {
-            false
-        };
-        if replace_settings {
-            let plan_state = overrides.plan_mode.map(|plan_mode| {
-                let reset_pending = !plan_mode
-                    && session.harness == "codex"
-                    && (session.plan_mode || session.plan_reset_pending);
-                (plan_mode, reset_pending)
-            });
-            store.set_chat_session_recovery_settings(
-                session_id,
-                overrides.model.as_deref(),
-                overrides.service_tier.as_deref(),
-                overrides.permission_mode.as_deref(),
-                plan_state,
-                overrides.reasoning_level.as_deref(),
-            )?;
-            session.model = overrides.model.clone();
-            session.service_tier = overrides.service_tier.clone();
-            session.permission_mode = overrides.permission_mode.clone();
-            if let Some((plan_mode, reset_pending)) = plan_state {
-                session.plan_mode = plan_mode;
-                session.plan_reset_pending = reset_pending;
-            }
-            session.reasoning_level = overrides.reasoning_level.clone();
-        }
-        // Composer selections are sticky: an override that differs from the
-        // stored value is persisted so the next turn (and a reload) keep it.
-        if overrides.clear_model && session.model.is_some() {
-            store.set_chat_session_model_value(&session.id, None)?;
-            session.model = None;
-        }
-        if let Some(model) = overrides.model.filter(|m| !m.is_empty()) {
-            if session.model.as_deref() != Some(model.as_str()) {
-                store.set_chat_session_model(&session.id, &model)?;
-                session.model = Some(model);
-            }
-        }
-        if let Some(tier) = overrides.service_tier.filter(|tier| !tier.is_empty()) {
-            if session.service_tier.as_deref() != Some(tier.as_str()) {
-                store.set_chat_session_service_tier(&session.id, Some(&tier))?;
-                session.service_tier = Some(tier);
-            }
-        }
-        if let Some(requested_mode) = overrides.permission_mode.filter(|m| !m.is_empty()) {
-            let mut changes = self.permission_changes.lock().unwrap();
-            let current = store
-                .get_chat_session(session_id)?
-                .ok_or_else(|| anyhow!("chat session not found"))?;
-            let (revision, mode) = resolve_permission_change(
-                &changes,
-                session_id,
-                requested_mode,
-                overrides.permission_revision,
-            );
-            if current.permission_mode.as_deref() != Some(mode.as_str()) {
-                store.set_chat_session_permission_mode(&session.id, &mode)?;
-            }
-            session.permission_mode = Some(mode.clone());
-            changes.insert(session_id.to_string(), (revision, mode));
-        }
-        // Normalize an unknown legacy value to the provider's current default.
-        // Incoming values were rejected above; this branch is only stored data
-        // from an older build or a manually edited database.
-        let effective_permission = crate::local::harness::effective_permission_id(
-            &session.harness,
-            session.permission_mode.as_deref(),
-        );
-        if session.permission_mode != effective_permission {
-            if let Some(mode) = effective_permission.as_deref() {
-                store.set_chat_session_permission_mode(&session.id, mode)?;
-            }
-            session.permission_mode = effective_permission;
-        }
-        if let Some(requested_plan_mode) = overrides.plan_mode {
-            let mut changes = self.plan_changes.lock().unwrap();
-            let current = store
-                .get_chat_session(session_id)?
-                .ok_or_else(|| anyhow!("chat session not found"))?;
-            let (revision, plan_mode) = resolve_plan_change(
-                &changes,
-                session_id,
-                requested_plan_mode,
-                overrides.plan_revision,
-            );
-            let reset_pending = !plan_mode
-                && current.harness == "codex"
-                && (current.plan_mode || current.plan_reset_pending);
-            if current.plan_mode != plan_mode || current.plan_reset_pending != reset_pending {
-                store.set_chat_session_plan_state(&session.id, plan_mode, reset_pending)?;
-            }
-            session.plan_mode = plan_mode;
-            session.plan_reset_pending = reset_pending;
-            changes.insert(session_id.to_string(), (revision, plan_mode));
-        }
-        let has_messages = store.has_chat_messages(session_id)?;
-        let starts_session = is_initial_chat_message(transcript_text.as_deref(), has_messages)
-            || (has_annotations && !has_messages);
-        let project = store
-            .get_local_project(&session.project_id)?
-            .ok_or_else(|| anyhow!("project not found"))?;
-        if let Some(level) = overrides.reasoning_level.filter(|l| !l.is_empty()) {
-            if session.reasoning_level.as_deref() != Some(level.as_str()) {
-                store.set_chat_session_reasoning_level(&session.id, &level)?;
-                session.reasoning_level = Some(level);
-            }
-        }
-        // Activity unarchives (Claude-desktop behavior): a session being talked
-        // to shouldn't stay hidden from the default Recents view.
-        if session.archived {
-            store.set_chat_session_archived(&session.id, false)?;
-            session.archived = false;
-        }
-        let saved_images = images.save(&project.id)?;
-        let display_text = transcript_text.as_deref().unwrap_or(&text);
-        // The input auto-titling runs on — set only on the first message.
-        // Owned because the title carries what the user typed, not the expanded
-        // harness prompt built from its selected slash skills.
-        let mut title_seed = None;
-        if session.title.is_none() {
-            // First *non-empty* line: a message that opens with a blank line
-            // would otherwise write no placeholder at all, leaving `title` NULL
-            // so every later message re-ran the whole first-message path.
-            let first_line = display_text
-                .lines()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or("")
-                .trim();
-            // Text only: an image-only message has nothing to name from.
-            title_seed = (!first_line.is_empty()).then(|| display_text.to_string());
-            let mut title: String = first_line.chars().take(64).collect();
-            if first_line.chars().count() > 64 {
-                title = title.trim_end().to_string();
-                title.push('…');
-            }
-            if title.is_empty() && !saved_images.is_empty() {
-                // Name an attachment-only message after the first PDF (the
-                // "upload my paper" flow), falling back to a generic label.
-                title = saved_images
-                    .iter()
-                    .find(|a| a.is_pdf || a.material_id.is_some())
-                    .map(|a| a.display_name.chars().take(64).collect())
-                    .unwrap_or_else(|| "Image".into());
-            }
-            if !title.is_empty() {
-                store.set_chat_session_title(&session.id, &title, "fallback")?;
-                session.title = Some(title);
-            }
-        }
-
-        let parts = transcript_parts(display_text, &saved_images, &transcript_annotations);
-        // A resume whose transcript text is empty (e.g. a note-less plan
-        // approval) records no user message: the resolved card already tells
-        // that part of the story, and an empty bubble would just be noise.
-        let user_msg = if !record_user_message || parts.is_empty() {
-            None
-        } else {
-            Some(WireMessage {
-                id: format!("msg_{}", uuid::Uuid::new_v4()),
-                role: "user".into(),
-                parts,
-                created_at: now_ms(),
-                completed_at: None,
-                parent_id: session.active_leaf_id.clone(),
-            })
-        };
-
         let mut guard = guard;
         guard.store = Some(Box::new(store));
+        let settings_host = self.clone();
+        let settings_session_id = session_id.to_string();
+        let Some((
+            (
+                session,
+                project,
+                saved_images,
+                title_seed,
+                user_msg,
+                reset_codex_model,
+                starts_session,
+            ),
+            guard,
+        )) = self
+            .reserved_store_phase(guard, move |store| {
+                let session_id = settings_session_id.as_str();
+                let mut session = session;
+                let reset_codex_model = if overrides.clear_model && session.harness == "codex" {
+                    match session.native_session_id.as_deref() {
+                        Some(native_id) => {
+                            session.model.is_some()
+                                || store
+                                    .chat_native_thread_has_named_model(session_id, native_id)?
+                        }
+                        None => false,
+                    }
+                } else {
+                    false
+                };
+                if replace_settings {
+                    let plan_state = overrides.plan_mode.map(|plan_mode| {
+                        let reset_pending = !plan_mode
+                            && session.harness == "codex"
+                            && (session.plan_mode || session.plan_reset_pending);
+                        (plan_mode, reset_pending)
+                    });
+                    store.set_chat_session_recovery_settings(
+                        session_id,
+                        overrides.model.as_deref(),
+                        overrides.service_tier.as_deref(),
+                        overrides.permission_mode.as_deref(),
+                        plan_state,
+                        overrides.reasoning_level.as_deref(),
+                    )?;
+                    session.model = overrides.model.clone();
+                    session.service_tier = overrides.service_tier.clone();
+                    session.permission_mode = overrides.permission_mode.clone();
+                    if let Some((plan_mode, reset_pending)) = plan_state {
+                        session.plan_mode = plan_mode;
+                        session.plan_reset_pending = reset_pending;
+                    }
+                    session.reasoning_level = overrides.reasoning_level.clone();
+                }
+                // Composer selections are sticky: an override that differs from the
+                // stored value is persisted so the next turn (and a reload) keep it.
+                if overrides.clear_model && session.model.is_some() {
+                    store.set_chat_session_model_value(&session.id, None)?;
+                    session.model = None;
+                }
+                if let Some(model) = overrides.model.filter(|m| !m.is_empty()) {
+                    if session.model.as_deref() != Some(model.as_str()) {
+                        store.set_chat_session_model(&session.id, &model)?;
+                        session.model = Some(model);
+                    }
+                }
+                if let Some(tier) = overrides.service_tier.filter(|tier| !tier.is_empty()) {
+                    if session.service_tier.as_deref() != Some(tier.as_str()) {
+                        store.set_chat_session_service_tier(&session.id, Some(&tier))?;
+                        session.service_tier = Some(tier);
+                    }
+                }
+                if let Some(requested_mode) = overrides.permission_mode.filter(|m| !m.is_empty()) {
+                    let mut changes = settings_host.permission_changes.lock().unwrap();
+                    let current = store
+                        .get_chat_session(session_id)?
+                        .ok_or_else(|| anyhow!("chat session not found"))?;
+                    let (revision, mode) = resolve_permission_change(
+                        &changes,
+                        session_id,
+                        requested_mode,
+                        overrides.permission_revision,
+                    );
+                    if current.permission_mode.as_deref() != Some(mode.as_str()) {
+                        store.set_chat_session_permission_mode(&session.id, &mode)?;
+                    }
+                    session.permission_mode = Some(mode.clone());
+                    changes.insert(session_id.to_string(), (revision, mode));
+                }
+                // Normalize an unknown legacy value to the provider's current default.
+                // Incoming values were rejected above; this branch is only stored data
+                // from an older build or a manually edited database.
+                let effective_permission = crate::local::harness::effective_permission_id(
+                    &session.harness,
+                    session.permission_mode.as_deref(),
+                );
+                if session.permission_mode != effective_permission {
+                    if let Some(mode) = effective_permission.as_deref() {
+                        store.set_chat_session_permission_mode(&session.id, mode)?;
+                    }
+                    session.permission_mode = effective_permission;
+                }
+                if let Some(requested_plan_mode) = overrides.plan_mode {
+                    let mut changes = settings_host.plan_changes.lock().unwrap();
+                    let current = store
+                        .get_chat_session(session_id)?
+                        .ok_or_else(|| anyhow!("chat session not found"))?;
+                    let (revision, plan_mode) = resolve_plan_change(
+                        &changes,
+                        session_id,
+                        requested_plan_mode,
+                        overrides.plan_revision,
+                    );
+                    let reset_pending = !plan_mode
+                        && current.harness == "codex"
+                        && (current.plan_mode || current.plan_reset_pending);
+                    if current.plan_mode != plan_mode || current.plan_reset_pending != reset_pending
+                    {
+                        store.set_chat_session_plan_state(&session.id, plan_mode, reset_pending)?;
+                    }
+                    session.plan_mode = plan_mode;
+                    session.plan_reset_pending = reset_pending;
+                    changes.insert(session_id.to_string(), (revision, plan_mode));
+                }
+                let has_messages = store.has_chat_messages(session_id)?;
+                let starts_session =
+                    is_initial_chat_message(transcript_text.as_deref(), has_messages)
+                        || (has_annotations && !has_messages);
+                let project = store
+                    .get_local_project(&session.project_id)?
+                    .ok_or_else(|| anyhow!("project not found"))?;
+                if let Some(level) = overrides.reasoning_level.filter(|l| !l.is_empty()) {
+                    if session.reasoning_level.as_deref() != Some(level.as_str()) {
+                        store.set_chat_session_reasoning_level(&session.id, &level)?;
+                        session.reasoning_level = Some(level);
+                    }
+                }
+                // Activity unarchives (Claude-desktop behavior): a session being talked
+                // to shouldn't stay hidden from the default Recents view.
+                if session.archived {
+                    store.set_chat_session_archived(&session.id, false)?;
+                    session.archived = false;
+                }
+                let saved_images = images.save(&project.id)?;
+                let display_text = transcript_text.as_deref().unwrap_or(&text);
+                // The input auto-titling runs on — set only on the first message.
+                // Owned because the title carries what the user typed, not the expanded
+                // harness prompt built from its selected slash skills.
+                let mut title_seed = None;
+                if session.title.is_none() {
+                    // First *non-empty* line: a message that opens with a blank line
+                    // would otherwise write no placeholder at all, leaving `title` NULL
+                    // so every later message re-ran the whole first-message path.
+                    let first_line = display_text
+                        .lines()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or("")
+                        .trim();
+                    // Text only: an image-only message has nothing to name from.
+                    title_seed = (!first_line.is_empty()).then(|| display_text.to_string());
+                    let mut title: String = first_line.chars().take(64).collect();
+                    if first_line.chars().count() > 64 {
+                        title = title.trim_end().to_string();
+                        title.push('…');
+                    }
+                    if title.is_empty() && !saved_images.is_empty() {
+                        // Name an attachment-only message after the first PDF (the
+                        // "upload my paper" flow), falling back to a generic label.
+                        title = saved_images
+                            .iter()
+                            .find(|a| a.is_pdf || a.material_id.is_some())
+                            .map(|a| a.display_name.chars().take(64).collect())
+                            .unwrap_or_else(|| "Image".into());
+                    }
+                    if !title.is_empty() {
+                        store.set_chat_session_title(&session.id, &title, "fallback")?;
+                        session.title = Some(title);
+                    }
+                }
+
+                let parts = transcript_parts(display_text, &saved_images, &transcript_annotations);
+                // A resume whose transcript text is empty (e.g. a note-less plan
+                // approval) records no user message: the resolved card already tells
+                // that part of the story, and an empty bubble would just be noise.
+                let user_msg = if !record_user_message || parts.is_empty() {
+                    None
+                } else {
+                    Some(WireMessage {
+                        id: format!("msg_{}", uuid::Uuid::new_v4()),
+                        role: "user".into(),
+                        parts,
+                        created_at: now_ms(),
+                        completed_at: None,
+                        parent_id: session.active_leaf_id.clone(),
+                    })
+                };
+
+                Ok((
+                    session,
+                    project,
+                    saved_images,
+                    title_seed,
+                    user_msg,
+                    reset_codex_model,
+                    starts_session,
+                ))
+            })
+            .await?
+        else {
+            return Ok(TurnSubmission::NotStarted);
+        };
+
         let context_project = project.clone();
         let context_session = session.clone();
         let context_images = saved_images;
@@ -12741,6 +12817,171 @@ mod steering_tests {
 #[cfg(test)]
 mod checkpoint_tests {
     use super::*;
+
+    fn busy_metadata_message() -> QueuedMessage {
+        QueuedMessage {
+            id: "metadata-queue".into(),
+            client_turn_id: "metadata-client".into(),
+            request_hash: "metadata-hash".into(),
+            text: "queued text".into(),
+            transcript_text: None,
+            overrides: TurnOverrides {
+                plan_mode: Some(true),
+                permission_mode: Some("manual".into()),
+                model: Some("custom/model".into()),
+                ..Default::default()
+            },
+            images: Vec::new(),
+            annotations: Vec::new(),
+            dispatch_attempts: 0,
+            dispatch_error: None,
+            next_retry_at: None,
+        }
+    }
+
+    #[test]
+    fn busy_queue_settings_commit_with_payload_and_roll_back_on_insert_failure() {
+        for reject in [false, true] {
+            let (dir, store, ctx) = checkpoint_fixture();
+            if reject {
+                let tx = store.begin().unwrap();
+                tx.execute_batch("CREATE TRIGGER reject_queue BEFORE INSERT ON chat_queued_messages BEGIN SELECT RAISE(ABORT,'injected queue failure'); END;").unwrap();
+                tx.commit().unwrap();
+            }
+            let mut plans =
+                HashMap::from([("session".into(), (7, false)), ("other".into(), (3, true))]);
+            let mut permissions = HashMap::from([("session".into(), (9, "old-permission".into()))]);
+            let old_plans = plans.clone();
+            let old_permissions = permissions.clone();
+            let result = persist_busy_queue_with_revisions(
+                &store,
+                "session",
+                busy_metadata_message(),
+                &mut plans,
+                &mut permissions,
+            );
+            if reject {
+                assert_eq!(plans, old_plans);
+                assert_eq!(permissions, old_permissions);
+            } else {
+                assert!(plans["session"].1);
+                assert_eq!(permissions["session"].1, "manual");
+            }
+            assert_eq!(plans["other"], (3, true));
+            let saved = store.get_chat_session("session").unwrap().unwrap();
+            let tx = store.begin().unwrap();
+            let count: i64 = tx
+                .query_row("SELECT count(*) FROM chat_queued_messages", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            if reject {
+                assert!(result.is_err());
+                assert!(!saved.plan_mode);
+                assert!(saved.permission_mode.is_none());
+                assert_eq!(count, 0);
+            } else {
+                let message = result.unwrap();
+                assert!(saved.plan_mode);
+                assert_eq!(saved.permission_mode.as_deref(), Some("manual"));
+                assert_eq!(count, 1);
+                let payload: String = tx
+                    .query_row("SELECT payload_json FROM chat_queued_messages", [], |r| {
+                        r.get(0)
+                    })
+                    .unwrap();
+                let payload: QueuedMessage = serde_json::from_str(&payload).unwrap();
+                assert!(payload.overrides.plan_mode.is_none());
+                assert!(payload.overrides.permission_mode.is_none());
+                assert_eq!(payload.overrides.model, message.overrides.model);
+                assert_eq!(payload.text, "queued text");
+                assert_eq!(payload.client_turn_id, "metadata-client");
+            }
+            drop(tx);
+            drop(ctx);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn metadata_phase_preserves_sticky_settings_archive_and_title_on_admission_failure() {
+        const CHILD: &str = "ORX_TEST_SEND_METADATA";
+        if std::env::var_os(CHILD).is_some() {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let store = Store::open().unwrap();
+                let host = Arc::new(ChatHost::new(
+                    Arc::new(AgentHost::new(None)),
+                    Arc::new(crate::local::codex::CodexHost::new()),
+                    Arc::new(crate::local::claude::ClaudeHost::new()),
+                ));
+                let guard = TurnGuard::reserve(&host, "session", &mut *host.turns.lock().await);
+                let result = host
+                    .send_message_showing(
+                        "session",
+                        SendTurnRequest {
+                            messages: vec![AnnotatedText {
+                                text: "A new title\nBody".into(),
+                                annotations: vec![],
+                            }],
+                            prepared_input: Some("Prepared context".into()),
+                            replace_settings: false,
+                            transcript: TranscriptDisplay {
+                                text: None,
+                                annotations: None,
+                                record_user_message: true,
+                            },
+                            overrides: TurnOverrides {
+                                model: Some("custom/model".into()),
+                                ..Default::default()
+                            },
+                            images: TurnAttachments::Uploaded(vec![]),
+                            admission: TurnAdmission::Preclaimed(guard),
+                            client_turn_id: Some("metadata-client".into()),
+                            request_hash: Some("metadata-hash".into()),
+                        },
+                    )
+                    .await;
+                assert!(
+                    matches!(result,Err(e) if e.to_string().contains("injected admission failure"))
+                );
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    while host.turns.lock().await.contains_key("session") {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                let session = store.get_chat_session("session").unwrap().unwrap();
+                assert_eq!(session.model.as_deref(), Some("custom/model"));
+                assert!(!session.archived);
+                assert_eq!(session.title.as_deref(), Some("A new title"));
+                assert!(store
+                    .get_chat_turn_by_client_id("session", "metadata-client")
+                    .unwrap()
+                    .is_none());
+            });
+            return;
+        }
+        let (dir, store, ctx) = checkpoint_fixture();
+        store.create_local_project(&ctx.project).unwrap();
+        store.set_chat_session_archived("session", true).unwrap();
+        let tx = store.begin().unwrap();
+        tx.execute_batch("CREATE TRIGGER reject_metadata_turn BEFORE INSERT ON chat_turns WHEN NEW.client_turn_id='metadata-client' BEGIN SELECT RAISE(ABORT,'injected admission failure'); END;").unwrap();
+        tx.commit().unwrap();
+        let output=std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","local::chat::checkpoint_tests::metadata_phase_preserves_sticky_settings_archive_and_title_on_admission_failure","--nocapture"])
+            .env(CHILD,"1").env("ORX_DATA_DIR",&dir).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn execution_outcome(store: &Store, id: &str) -> Option<String> {
         store
