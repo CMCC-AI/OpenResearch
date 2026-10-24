@@ -418,6 +418,13 @@ impl Store {
         Ok(())
     }
 
+    /// Only for a registered execution that never reached a running harness.
+    /// Scope cleanup to this execution, leaving retries on the same turn alone.
+    pub(crate) fn cancel_unstarted_usage_execution(&self, execution_id: &str) -> Result<()> {
+        self.conn.execute("UPDATE chat_usage_executions SET outcome = 'cancelled' WHERE execution_id = ?1 AND outcome IS NULL AND NOT EXISTS (SELECT 1 FROM chat_usage_samples WHERE execution_id = ?1)", [execution_id])?;
+        Ok(())
+    }
+
     pub(crate) fn recover_terminal_usage(&self) -> Result<()> {
         let mut stmt = self.conn.prepare("SELECT DISTINCT t.id, t.state FROM chat_usage_executions u JOIN chat_turns t ON t.id = u.turn_id WHERE u.outcome IS NULL AND t.state IN ('completed', 'failed', 'interrupted') AND NOT EXISTS (SELECT 1 FROM chat_turn_leases l WHERE l.chat_session_id = t.session_id)")?;
         let rows = stmt
