@@ -3301,6 +3301,7 @@ struct TurnGuard {
     store: Option<Box<Store>>,
     admitted_turn: Option<String>,
     unstarted_usage: Option<String>,
+    drain_queued_on_release: bool,
 }
 
 pub struct SessionDeletionLease {
@@ -3336,6 +3337,7 @@ impl TurnGuard {
             store: None,
             admitted_turn: None,
             unstarted_usage: None,
+            drain_queued_on_release: true,
         }
     }
 
@@ -3414,6 +3416,7 @@ impl TurnGuard {
         let admitted = self.admitted_turn.take();
         let unstarted_usage = self.unstarted_usage.take();
         let store = self.store.take();
+        let drain_queued_on_release = self.drain_queued_on_release;
         Some(tokio::spawn(async move {
             let (removed, drain_queued) = {
                 let _cleanup = host.cleanup_lock(&session_id).lock_owned().await;
@@ -3441,11 +3444,12 @@ impl TurnGuard {
                 {
                     return;
                 }
-                let drain_queued = !host
-                    .queue_dispatch_suppressed
-                    .lock()
-                    .unwrap()
-                    .contains(&session_id)
+                let drain_queued = drain_queued_on_release
+                    && !host
+                        .queue_dispatch_suppressed
+                        .lock()
+                        .unwrap()
+                        .contains(&session_id)
                     && !host
                         .queue_dispatch_cancelled
                         .lock()
@@ -4066,13 +4070,31 @@ impl ChatHost {
         self.emit("chat.queued", self.queued_json(session_id));
     }
 
-    fn refresh_persisted_queue(&self, session_id: &str) -> Result<()> {
-        let _mutation = self.queue_persistence.lock().unwrap();
-        self.refresh_persisted_queue_locked(session_id)
-    }
-
     fn refresh_persisted_queue_locked(&self, session_id: &str) -> Result<()> {
         self.refresh_persisted_queue_with_open_locked(session_id, Store::open)
+    }
+
+    async fn refresh_queue_for_dispatch(
+        self: &Arc<Self>,
+        mut guard: TurnGuard,
+    ) -> Result<Option<TurnGuard>> {
+        let host = self.clone();
+        let session_id = guard.session_id.clone();
+        // Failed/cancelled refreshes wait for the existing lease reconciliation
+        // sweep instead of immediately draining the same cached queue again.
+        guard.drain_queued_on_release = false;
+        let refreshed = self
+            .reserved_store_phase(guard, move |store| {
+                let _mutation = host.queue_persistence.lock().unwrap();
+                host.refresh_persisted_queue_rows_locked(&session_id, || {
+                    store.list_queued_chat_messages_for_session(&session_id)
+                })
+            })
+            .await?;
+        Ok(refreshed.map(|((), mut guard)| {
+            guard.drain_queued_on_release = true;
+            guard
+        }))
     }
 
     async fn refresh_persisted_queue_async_with_store(
@@ -4534,19 +4556,15 @@ impl ChatHost {
                     guard
                 }
             };
-            let refresh_host = self.clone();
-            let refresh_session = session_id.to_string();
-            match self
-                .reserved_store_phase(guard, move |store| {
-                    let _mutation = refresh_host.queue_persistence.lock().unwrap();
-                    refresh_host.refresh_persisted_queue_rows_locked(&refresh_session, || {
-                        store.list_queued_chat_messages_for_session(&refresh_session)
-                    })
-                })
-                .await
-            {
-                Ok(Some(((), refreshed))) => guard = refreshed,
-                _ => return,
+            match self.refresh_queue_for_dispatch(guard).await {
+                Ok(Some(refreshed)) => guard = refreshed,
+                Ok(None) => return,
+                Err(err) => {
+                    eprintln!(
+                        "orx: could not refresh queued chat messages for {session_id}: {err}"
+                    );
+                    return;
+                }
             }
             // Scope the guard: a std mutex must never be held across an await.
             let (item, dispatch_cleanup) = {
@@ -14890,6 +14908,121 @@ mod checkpoint_tests {
             drop(store);
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn dispatch_refresh_failure_preserves_queue_without_immediate_redrain() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        host.park_steer_with_store(
+            "session",
+            SteerMessage {
+                text: "pending".into(),
+                display: "pending".into(),
+            },
+            &store,
+        )
+        .unwrap();
+        let mut events = host.subscribe();
+        let mut guard = TurnGuard::reserve(&host, "session", &mut *host.turns.lock().await);
+        let broken = Store::open_at(dir.clone()).unwrap();
+        // Shadow only this connection's queue table, leaving durable data intact.
+        let tx = broken.begin().unwrap();
+        tx.execute_batch("CREATE TEMP TABLE chat_queued_messages(invalid INTEGER)")
+            .unwrap();
+        tx.commit().unwrap();
+        guard.store = Some(Box::new(broken));
+        assert!(host.refresh_queue_for_dispatch(guard).await.is_err());
+        let (name, event) = tokio::time::timeout(Duration::from_secs(3), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(name, "chat.busy");
+        assert_eq!(event["busy"], false);
+        assert!(!host.turns.lock().await.contains_key("session"));
+        assert_eq!(host.queued_items("session").len(), 1);
+        assert_eq!(
+            store
+                .list_queued_chat_messages_for_session("session")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(!host
+            .queue_dispatch_suppressed
+            .lock()
+            .unwrap()
+            .contains("session"));
+
+        // A later reconciliation can refresh the unchanged item and restores
+        // normal queue handoff after the transient read failure is gone.
+        let mut guard = TurnGuard::reserve(&host, "session", &mut *host.turns.lock().await);
+        guard.store = Some(Box::new(Store::open_at(dir.clone()).unwrap()));
+        let mut guard = host
+            .refresh_queue_for_dispatch(guard)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(guard.drain_queued_on_release);
+        assert_eq!(host.queued_items("session")[0]["text"], "pending");
+        host.queue_dispatch_cancelled
+            .lock()
+            .unwrap()
+            .insert("session".into());
+        guard.release().await;
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_dispatch_refresh_does_not_redrain_cached_queue() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        host.park_steer_with_store(
+            "session",
+            SteerMessage {
+                text: "pending".into(),
+                display: "pending".into(),
+            },
+            &store,
+        )
+        .unwrap();
+        let mut events = host.subscribe();
+        let cleanup = host.cleanup_lock("session").lock_owned().await;
+        let mut guard = TurnGuard::reserve(&host, "session", &mut *host.turns.lock().await);
+        guard.store = Some(Box::new(Store::open_at(dir.clone()).unwrap()));
+        let worker_host = host.clone();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let worker = tokio::spawn(async move {
+            let _ = started.send(());
+            worker_host.refresh_queue_for_dispatch(guard).await
+        });
+        ready.await.unwrap();
+        worker.abort();
+        assert!(matches!(worker.await, Err(error) if error.is_cancelled()));
+        assert!(host.turns.lock().await.contains_key("session"));
+        drop(cleanup);
+        let (name, event) = tokio::time::timeout(Duration::from_secs(3), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(name, "chat.busy");
+        assert_eq!(event["busy"], false);
+        assert!(!host.turns.lock().await.contains_key("session"));
+        assert_eq!(host.queued_items("session").len(), 1);
+        assert_eq!(
+            store
+                .list_queued_chat_messages_for_session("session")
+                .unwrap()
+                .len(),
+            1
+        );
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
