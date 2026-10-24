@@ -85,7 +85,7 @@
 本节把上游回移与此前技术债合并排序，避免把“#670 → #752 → 删除/回收”误读为全部技术债计划。
 
 1. 完成本批 #670 源码回移与自动化验证。
-2. 回到 TD-05：初始 Store 打开、会话/clientTurnId 读取见[发送入口治理](performance-submission-setup-2026-10-25.md)；上下文、技能工作树与准入后 touch/读取见[连续治理](performance-turn-context-2026-10-25.md)；用量注册与首次 running 写入见[启动用量治理](performance-launch-usage-2026-10-25.md)；普通发送设置/附件隔离及忙队列事务合并见[元数据治理](performance-send-metadata-2026-10-25.md)。忙队列异步隔离、其他队列入口、其余租约及 Stop 历史标记继续排期。保留有界池、取消后 worker 所有权、状态归属与消息顺序，不整体重写聊天模块。
+2. 回到 TD-05：初始 Store 打开、会话/clientTurnId 读取见[发送入口治理](performance-submission-setup-2026-10-25.md)；上下文、技能工作树与准入后 touch/读取见[连续治理](performance-turn-context-2026-10-25.md)；用量注册与首次 running 写入见[启动用量治理](performance-launch-usage-2026-10-25.md)；普通设置/附件及队列事务见[元数据治理](performance-send-metadata-2026-10-25.md)；忙队列后台入队与派发刷新见[队列隔离记录](performance-busy-queue-2026-10-25.md)。忙队列全局锁范围、出队/失败重排、其他队列入口、其余租约及 Stop 历史标记继续排期。保留有界池、取消后 worker 所有权、状态归属与消息顺序，不整体重写聊天模块。
 3. 回移 #752 的 OpenCode 问答协议、once 权限及停止后失效保护；统一界面可后置。
 4. 将 #689/#690/#753 与现有删除恢复保护整合，再治理 #691/#751/#755 的磁盘生命周期；先做引用核查、活进程保护和统计，再启用回收。
 5. 按实际耗时和磁盘占用继续安排其余性能工作。写入失败重试与聊天 ENOSPC 恢复仍是贯穿项；若出现消息丢失或卡死证据，提升到当前批次优先处理。

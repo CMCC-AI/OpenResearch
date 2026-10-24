@@ -2411,7 +2411,7 @@ pub struct ChatHost {
     /// Sessions with a turn reserved, running, or settling after interruption.
     /// A key remains present throughout the lifecycle, so a replacement turn
     /// cannot race native shutdown for the preceding one.
-    turns: Mutex<HashMap<String, TurnState>>,
+    turns: Arc<Mutex<HashMap<String, TurnState>>>,
     /// Serialize final metadata writes with interruption for one session.
     /// Workers own the guard so cancellation cannot hand off a live write.
     cleanup_locks: std::sync::Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
@@ -2875,8 +2875,19 @@ async fn load_turn_submission_with_store(
     crate::local::blocking::run(move || {
         // A preclaimed retry owns its reservation until the actual worker
         // finishes, even if the request waiting on this read is cancelled.
-        let admission = admission;
-        let store = open()?;
+        let mut admission = admission;
+        let reusable = match &mut admission {
+            TurnAdmission::Preclaimed(guard)
+                if guard.admitted_turn.is_none() && guard.unstarted_usage.is_none() =>
+            {
+                guard.store.take()
+            }
+            _ => None,
+        };
+        let store = match reusable {
+            Some(store) => *store,
+            None => open()?,
+        };
         let session = store
             .get_chat_session(&session_id)?
             .ok_or_else(|| anyhow!("chat session not found"))?;
@@ -3520,7 +3531,7 @@ impl ChatHost {
                 .build()
                 .expect("loopback http client"),
             events,
-            turns: Mutex::new(HashMap::new()),
+            turns: Arc::new(Mutex::new(HashMap::new())),
             cleanup_locks: std::sync::Mutex::new(HashMap::new()),
             durable_turns: std::sync::Mutex::new(HashMap::new()),
             restarting: std::sync::atomic::AtomicBool::new(false),
@@ -4083,6 +4094,16 @@ impl ChatHost {
         session_id: &str,
         open: impl FnOnce() -> Result<Store>,
     ) -> Result<()> {
+        self.refresh_persisted_queue_rows_locked(session_id, || {
+            open()?.list_queued_chat_messages_for_session(session_id)
+        })
+    }
+
+    fn refresh_persisted_queue_rows_locked(
+        &self,
+        session_id: &str,
+        read: impl FnOnce() -> Result<Vec<StoredQueuedChatMessage>>,
+    ) -> Result<()> {
         if self
             .queue_dispatch_cancelled
             .lock()
@@ -4097,8 +4118,7 @@ impl ChatHost {
             .unwrap()
             .get(session_id)
             .cloned();
-        let restored = open()?
-            .list_queued_chat_messages_for_session(session_id)?
+        let restored = read()?
             .into_iter()
             .filter_map(|row| serde_json::from_str::<QueuedMessage>(&row.payload_json).ok())
             .filter(|message| in_flight.as_deref() != Some(message.id.as_str()))
@@ -4514,9 +4534,19 @@ impl ChatHost {
                     guard
                 }
             };
-            if self.refresh_persisted_queue(session_id).is_err() {
-                guard.release().await;
-                return;
+            let refresh_host = self.clone();
+            let refresh_session = session_id.to_string();
+            match self
+                .reserved_store_phase(guard, move |store| {
+                    let _mutation = refresh_host.queue_persistence.lock().unwrap();
+                    refresh_host.refresh_persisted_queue_rows_locked(&refresh_session, || {
+                        store.list_queued_chat_messages_for_session(&refresh_session)
+                    })
+                })
+                .await
+            {
+                Ok(Some(((), refreshed))) => guard = refreshed,
+                _ => return,
             }
             // Scope the guard: a std mutex must never be held across an await.
             let (item, dispatch_cleanup) = {
@@ -5492,7 +5522,7 @@ impl ChatHost {
                 }
             }
             TurnAdmission::QueueIfBusy => {
-                let mut turns = self.turns.lock().await;
+                let mut turns = self.turns.clone().lock_owned().await;
                 if self.deleting_sessions.lock().unwrap().contains(session_id) {
                     return Err(anyhow!("chat session not found"));
                 }
@@ -5560,10 +5590,6 @@ impl ChatHost {
                         .next()
                         .ok_or_else(|| anyhow!("message content is required"))?;
                     let AnnotatedText { text, annotations } = message;
-                    let _queue_mutation = self.queue_persistence.lock().unwrap();
-                    let mut plan_changes = self.plan_changes.lock().unwrap();
-                    let mut permission_changes = self.permission_changes.lock().unwrap();
-                    let mut queued = self.queued.lock().unwrap();
                     let queued_message = QueuedMessage {
                         id: format!("q_{}", uuid::Uuid::new_v4()),
                         client_turn_id: client_turn_id.clone(),
@@ -5577,28 +5603,14 @@ impl ChatHost {
                         dispatch_error: None,
                         next_retry_at: None,
                     };
-                    let queued_message = persist_busy_queue_with_revisions(
-                        &store,
-                        session_id,
+                    self.persist_busy_submission(
+                        session_id.to_string(),
+                        store,
                         queued_message,
-                        &mut plan_changes,
-                        &mut permission_changes,
-                    )?;
-                    queued
-                        .entry(session_id.to_string())
-                        .or_default()
-                        .push_back(queued_message);
-                    drop(queued);
-                    drop(permission_changes);
-                    drop(plan_changes);
-                    drop(turns);
-                    self.emit_queued(session_id);
-                    if let Some(session) = store.get_chat_session(session_id)? {
-                        self.emit(
-                            "chat.session",
-                            json!({ "session": session_json(&session, true) }),
-                        );
-                    }
+                        turns,
+                        || Ok(()),
+                    )
+                    .await?;
                     return Ok(TurnSubmission::Queued(client_turn_id));
                 }
                 if !self.claim_durable_turn(session_id) {
@@ -6208,6 +6220,51 @@ impl ChatHost {
         Ok(TurnSubmission::Started(turn_id))
     }
 
+    async fn persist_busy_submission(
+        self: &Arc<Self>,
+        session_id: String,
+        store: Store,
+        message: QueuedMessage,
+        turns: tokio::sync::OwnedMutexGuard<HashMap<String, TurnState>>,
+        before_write: impl FnOnce() -> Result<()> + Send + 'static,
+    ) -> Result<()> {
+        let host = self.clone();
+        crate::local::blocking::run(move || {
+            let turns = turns;
+            before_write()?;
+            let mutation = host.queue_persistence.lock().unwrap();
+            let mut plans = host.plan_changes.lock().unwrap();
+            let mut permissions = host.permission_changes.lock().unwrap();
+            let mut queued = host.queued.lock().unwrap();
+            let message = persist_busy_queue_with_revisions(
+                &store,
+                &session_id,
+                message,
+                &mut plans,
+                &mut permissions,
+            )?;
+            queued
+                .entry(session_id.clone())
+                .or_default()
+                .push_back(message);
+            drop(queued);
+            drop(permissions);
+            drop(plans);
+            drop(mutation);
+            drop(turns);
+            // Publish even if the HTTP waiter disappeared after the write began.
+            host.emit_queued(&session_id);
+            if let Some(session) = store.get_chat_session(&session_id)? {
+                host.emit(
+                    "chat.session",
+                    json!({ "session": session_json(&session, true) }),
+                );
+            }
+            Ok(())
+        })
+        .await?
+    }
+
     async fn prepare_launch_usage(
         self: &Arc<Self>,
         mut guard: TurnGuard,
@@ -6270,7 +6327,7 @@ impl ChatHost {
 
     async fn reserved_store_phase<T: Send + 'static>(
         self: &Arc<Self>,
-        guard: TurnGuard,
+        mut guard: TurnGuard,
         work: impl FnOnce(&Store) -> Result<T> + Send + 'static,
     ) -> Result<Option<(T, TurnGuard)>> {
         let cleanup = self.cleanup_lock(&guard.session_id).lock_owned().await;
@@ -6281,6 +6338,9 @@ impl ChatHost {
         }
         crate::local::blocking::run(move || {
             let _cleanup = cleanup;
+            if guard.store.is_none() {
+                guard.store = Some(Box::new(Store::open()?));
+            }
             let value = work(
                 guard
                     .store
@@ -12817,6 +12877,126 @@ mod steering_tests {
 #[cfg(test)]
 mod checkpoint_tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn busy_queue_worker_finishes_publication_after_waiter_cancel_and_unlocks_on_error() {
+        for fail in [false, true] {
+            let (dir, store, ctx) = checkpoint_fixture();
+            let host = ctx.host.clone();
+            let idle_refs = Arc::strong_count(&host);
+            let mut events = host.events.subscribe();
+            let mut turns = host.turns.clone().lock_owned().await;
+            turns.insert("session".into(), TurnState::Draining);
+            let opened = Store::open_at(dir.clone()).unwrap();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            let worker_host = host.clone();
+            let worker = tokio::spawn(async move {
+                worker_host
+                    .persist_busy_submission(
+                        "session".into(),
+                        opened,
+                        busy_metadata_message(),
+                        turns,
+                        move || {
+                            let _ = started.send(());
+                            wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                            if fail {
+                                Err(anyhow!("injected enqueue failure"))
+                            } else {
+                                Ok(())
+                            }
+                        },
+                    )
+                    .await
+            });
+            ready.await.unwrap();
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            assert!(host.turns.try_lock().is_err());
+            worker.abort();
+            assert!(matches!(worker.await, Err(e) if e.is_cancelled()));
+            assert!(
+                host.turns.try_lock().is_err(),
+                "actual worker must retain serialization"
+            );
+            release.send(()).unwrap();
+            let mut turns = tokio::time::timeout(Duration::from_secs(3), host.turns.lock())
+                .await
+                .unwrap();
+            assert_eq!(host.queued_count(), usize::from(!fail));
+            assert_eq!(
+                store
+                    .list_queued_chat_messages_for_session("session")
+                    .unwrap()
+                    .len(),
+                usize::from(!fail)
+            );
+            turns.remove("session");
+            drop(turns);
+            if !fail {
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    loop {
+                        if events.recv().await.unwrap().0 == "chat.session" {
+                            break;
+                        }
+                    }
+                })
+                .await
+                .unwrap();
+            }
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while Arc::strong_count(&host) > idle_refs {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            drop(ctx);
+            drop(host);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_setup_reuses_refresh_connection() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        let mut guard = TurnGuard::reserve(&host, "session", &mut *host.turns.lock().await);
+        let opened = Store::open_at(dir.clone()).unwrap();
+        let tx = opened.begin().unwrap();
+        tx.execute_batch("CREATE TEMP TABLE dispatch_marker(value INTEGER); INSERT INTO dispatch_marker VALUES(42);").unwrap();
+        tx.commit().unwrap();
+        guard.store = Some(Box::new(opened));
+        let setup = load_turn_submission_with_store(
+            "session".into(),
+            "new-dispatch".into(),
+            TurnAdmission::Preclaimed(guard),
+            || panic!("reuse refresh connection"),
+        )
+        .await
+        .unwrap();
+        let marker: i64 = setup
+            .store
+            .begin()
+            .unwrap()
+            .query_row("SELECT value FROM dispatch_marker", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(marker, 42);
+        assert!(setup.existing.is_none());
+        drop(setup);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while host.turns.lock().await.contains_key("session") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(ctx);
+        drop(host);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn busy_metadata_message() -> QueuedMessage {
         QueuedMessage {
