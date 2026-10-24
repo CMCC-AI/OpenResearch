@@ -2786,6 +2786,38 @@ enum TurnAdmission {
     Preclaimed(TurnGuard),
 }
 
+struct TurnSubmissionSetup {
+    store: Store,
+    session: StoredChatSession,
+    existing: Option<StoredChatTurn>,
+    admission: TurnAdmission,
+}
+
+async fn load_turn_submission_with_store(
+    session_id: String,
+    client_turn_id: String,
+    admission: TurnAdmission,
+    open: impl FnOnce() -> Result<Store> + Send + 'static,
+) -> Result<TurnSubmissionSetup> {
+    crate::local::blocking::run(move || {
+        // A preclaimed retry owns its reservation until the actual worker
+        // finishes, even if the request waiting on this read is cancelled.
+        let admission = admission;
+        let store = open()?;
+        let session = store
+            .get_chat_session(&session_id)?
+            .ok_or_else(|| anyhow!("chat session not found"))?;
+        let existing = store.get_chat_turn_by_client_id(&session_id, &client_turn_id)?;
+        Ok(TurnSubmissionSetup {
+            store,
+            session,
+            existing,
+            admission,
+        })
+    })
+    .await?
+}
+
 /// Replayed files are already on disk, so a fork never re-decodes or duplicates
 /// them.
 enum TurnAttachments {
@@ -5306,11 +5338,19 @@ impl ChatHost {
                 .cloned()
                 .collect()
         });
-        let store = Store::open()?;
-        let mut session = store
-            .get_chat_session(session_id)?
-            .ok_or_else(|| anyhow!("chat session not found"))?;
-        if let Some(existing) = store.get_chat_turn_by_client_id(session_id, &client_turn_id)? {
+        let TurnSubmissionSetup {
+            store,
+            mut session,
+            existing,
+            admission,
+        } = load_turn_submission_with_store(
+            session_id.to_string(),
+            client_turn_id.clone(),
+            admission,
+            Store::open,
+        )
+        .await?;
+        if let Some(existing) = existing {
             return if existing.request_hash == request_hash {
                 Ok(TurnSubmission::Existing(existing.id))
             } else {
@@ -5345,7 +5385,17 @@ impl ChatHost {
         // send racing a /respond resume) can't both spawn a turn against the
         // same session. `_guard` releases the reservation on any early error.
         let (guard, pending_client_turn) = match admission {
-            TurnAdmission::Preclaimed(guard) => (guard, None),
+            TurnAdmission::Preclaimed(guard) => {
+                // Setup now yields while storage is read. Stop may have
+                // settled this reservation before the worker returned.
+                let owns_slot = matches!(self.turns.lock().await.get(session_id),
+                    Some(TurnState::Reserved { reservation_id, .. })
+                        if reservation_id == &guard.reservation_id);
+                if !owns_slot {
+                    return Ok(TurnSubmission::NotStarted);
+                }
+                (guard, None)
+            }
             TurnAdmission::RejectIfBusy => {
                 match TurnGuard::claim(self, session_id, Some(&mut overrides)).await {
                     Some(guard) => (guard, None),
@@ -12549,6 +12599,205 @@ mod steering_tests {
 #[cfg(test)]
 mod checkpoint_tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_submission_setup_retains_worker_reservation_and_preserves_successor() {
+        for replace_reservation in [false, true] {
+            let (dir, store, ctx) = checkpoint_fixture();
+            let host = ctx.host.clone();
+            let idle_host_refs = Arc::strong_count(&host);
+            let guard = TurnGuard::reserve(&host, "session", &mut *host.turns.lock().await);
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            let root = dir.clone();
+            let worker = tokio::spawn(load_turn_submission_with_store(
+                "session".into(),
+                "client".into(),
+                TurnAdmission::Preclaimed(guard),
+                move || {
+                    let _ = started.send(());
+                    wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                    Store::open_at(root)
+                },
+            ));
+            ready.await.unwrap();
+            // On a single-thread runtime the timer and turns lock must advance
+            // while opening storage is blocked on the real worker thread.
+            tokio::time::timeout(Duration::from_millis(500), async {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                assert!(host.turns.lock().await.contains_key("session"));
+            })
+            .await
+            .unwrap();
+            worker.abort();
+            assert!(matches!(worker.await, Err(error) if error.is_cancelled()));
+            assert!(host.turns.lock().await.contains_key("session"));
+            let successor = replace_reservation.then(|| "successor".to_string());
+            if let Some(id) = &successor {
+                host.turns.lock().await.insert(
+                    "session".into(),
+                    TurnState::Reserved {
+                        turn_id: None,
+                        reservation_id: id.clone(),
+                    },
+                );
+            }
+            let cleanup = host.cleanup_lock("session").lock_owned().await;
+            release.send(()).unwrap();
+            drop(cleanup);
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while Arc::strong_count(&host) > idle_host_refs {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            if let Some(id) = successor {
+                // The worker and detached guard cleanup have both finished.
+                assert!(
+                    matches!(host.turns.lock().await.get("session"), Some(TurnState::Reserved { reservation_id, .. }) if reservation_id == &id)
+                );
+                host.turns.lock().await.remove("session");
+            } else {
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    while host.turns.lock().await.contains_key("session") {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+            }
+            assert_eq!(
+                store
+                    .get_chat_turn("session", "turn")
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                "running"
+            );
+            drop(ctx);
+            drop(host);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn submission_setup_reuses_connection_and_preserves_client_lookup() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let opened = Store::open_at(dir.clone()).unwrap();
+        let tx = opened.begin_immediate().unwrap();
+        tx.execute_batch(
+            "CREATE TEMP TABLE setup_connection_marker(value INTEGER); INSERT INTO setup_connection_marker VALUES(42);"
+        ).unwrap();
+        tx.commit().unwrap();
+        let result = load_turn_submission_with_store(
+            "session".into(),
+            "client".into(),
+            TurnAdmission::QueueIfBusy,
+            move || Ok(opened),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.session.id, "session");
+        let existing = result.existing.as_ref().unwrap();
+        assert_eq!(existing.id, "turn");
+        assert_eq!(
+            existing.request_hash,
+            store
+                .get_chat_turn("session", "turn")
+                .unwrap()
+                .unwrap()
+                .request_hash
+        );
+        assert!(matches!(result.admission, TurnAdmission::QueueIfBusy));
+        let value: i64 = result
+            .store
+            .begin_immediate()
+            .unwrap()
+            .query_row("SELECT value FROM setup_connection_marker", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            value, 42,
+            "continue with the exact connection opened by setup"
+        );
+        let root = dir.clone();
+        let fresh = load_turn_submission_with_store(
+            "session".into(),
+            "new-client".into(),
+            TurnAdmission::RejectIfBusy,
+            move || Store::open_at(root),
+        )
+        .await
+        .unwrap();
+        assert!(fresh.existing.is_none());
+        assert!(matches!(fresh.admission, TurnAdmission::RejectIfBusy));
+        drop(fresh);
+        drop(result);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn submission_setup_errors_release_preclaimed_slots_without_mutating_turns() {
+        for missing_session in [false, true] {
+            let (dir, store, ctx) = checkpoint_fixture();
+            let host = ctx.host.clone();
+            let session_id = if missing_session {
+                "missing"
+            } else {
+                "session"
+            };
+            let guard = TurnGuard::reserve(&host, session_id, &mut *host.turns.lock().await);
+            let root = dir.clone();
+            let result = load_turn_submission_with_store(
+                session_id.into(),
+                "client".into(),
+                TurnAdmission::Preclaimed(guard),
+                move || {
+                    if missing_session {
+                        Store::open_at(root)
+                    } else {
+                        Err(anyhow!("injected open failure"))
+                    }
+                },
+            )
+            .await;
+            let Err(error) = result else {
+                panic!("setup unexpectedly succeeded")
+            };
+            assert_eq!(
+                error.to_string(),
+                if missing_session {
+                    "chat session not found"
+                } else {
+                    "injected open failure"
+                }
+            );
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while host.turns.lock().await.contains_key(session_id) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                store
+                    .get_chat_turn("session", "turn")
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                "running"
+            );
+            drop(ctx);
+            drop(host);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
 
     fn admission_turn(store: &Store) -> StoredChatTurn {
         let mut turn = store.get_chat_turn("session", "turn").unwrap().unwrap();
