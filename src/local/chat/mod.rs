@@ -4226,13 +4226,32 @@ impl ChatHost {
         }
     }
 
-    pub fn reconcile_expired_turn_leases(self: &Arc<Self>) -> Result<()> {
-        let store = Store::open()?;
-        for (session_id, message) in materialize_unfinished_turns(&store, false)? {
-            self.emit("chat.message", message_json(&message, &session_id));
-        }
-        self.resume_persisted_queues();
-        Ok(())
+    pub async fn reconcile_expired_turn_leases(
+        self: &Arc<Self>,
+        data_dir_guard: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<()> {
+        self.reconcile_expired_turn_leases_with_store(data_dir_guard, Store::open)
+            .await
+    }
+
+    async fn reconcile_expired_turn_leases_with_store(
+        self: &Arc<Self>,
+        data_dir_guard: tokio::sync::OwnedMutexGuard<()>,
+        open: impl FnOnce() -> Result<Store> + Send + 'static,
+    ) -> Result<()> {
+        let host = self.clone();
+        crate::local::blocking::run(move || {
+            // Directory migration must wait for the actual worker, even when
+            // its async waiter is cancelled during SQLite recovery.
+            let _data_dir_guard = data_dir_guard;
+            let store = open()?;
+            for (session_id, message) in materialize_unfinished_turns(&store, false)? {
+                host.emit("chat.message", message_json(&message, &session_id));
+            }
+            host.resume_persisted_queues();
+            Ok(())
+        })
+        .await?
     }
 
     /// Register the running turn's steering sink. The returned guard
@@ -12895,6 +12914,109 @@ mod steering_tests {
 #[cfg(test)]
 mod checkpoint_tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn lease_reconciliation_retains_directory_gate_after_waiter_cancellation() {
+        for live_lease in [false, true] {
+            let (dir, store, ctx) = checkpoint_fixture();
+            let host = ctx.host.clone();
+            assert!(store.claim_chat_turn("session", "lease-token").unwrap());
+            if !live_lease {
+                let tx = store.begin().unwrap();
+                tx.execute("UPDATE chat_turn_leases SET heartbeat_at = 0 WHERE chat_session_id = 'session'", []).unwrap();
+                tx.commit().unwrap();
+            }
+            let mut events = host.subscribe();
+            let gate = Arc::new(tokio::sync::Mutex::new(()));
+            let data_dir_guard = gate.clone().lock_owned().await;
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            let root = dir.clone();
+            let worker_host = host.clone();
+            let worker = tokio::spawn(async move {
+                worker_host
+                    .reconcile_expired_turn_leases_with_store(data_dir_guard, move || {
+                        let _ = started.send(());
+                        wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                        Store::open_at(root)
+                    })
+                    .await
+            });
+            ready.await.unwrap();
+            // This timer and the host's ordinary state lock must remain usable
+            // while the synchronous recovery worker is deliberately stalled.
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            assert!(host.busy_sessions().await.is_empty());
+            assert!(gate.try_lock().is_err());
+            worker.abort();
+            assert!(matches!(worker.await, Err(error) if error.is_cancelled()));
+            assert!(gate.try_lock().is_err());
+            release.send(()).unwrap();
+            let recovered_gate = tokio::time::timeout(Duration::from_secs(3), gate.lock())
+                .await
+                .unwrap();
+            let turn = store.get_chat_turn("session", "turn").unwrap().unwrap();
+            if live_lease {
+                assert_eq!(turn.state, "running");
+                assert!(store.chat_turn_leased("session").unwrap());
+                assert!(events.try_recv().is_err());
+            } else {
+                assert_eq!(turn.state, "failed");
+                assert!(!store.chat_turn_leased("session").unwrap());
+                assert_eq!(turn.recovery_action.as_deref(), Some("continue"));
+                let message = store.get_chat_message("assistant").unwrap().unwrap();
+                assert!(message.parts_json.contains("turn-recovery"));
+                let (name, _) = events.try_recv().unwrap();
+                assert_eq!(name, "chat.message");
+                assert!(events.try_recv().is_err());
+            }
+            drop(recovered_gate);
+            drop(host);
+            drop(ctx);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn lease_reconciliation_errors_release_directory_gate_without_changing_turn() {
+        for fail_open in [true, false] {
+            let (dir, store, ctx) = checkpoint_fixture();
+            let host = ctx.host.clone();
+            let mut events = host.subscribe();
+            let gate = Arc::new(tokio::sync::Mutex::new(()));
+            let data_dir_guard = gate.clone().lock_owned().await;
+            let root = dir.clone();
+            let result = host
+                .reconcile_expired_turn_leases_with_store(data_dir_guard, move || {
+                    if fail_open {
+                        return Err(anyhow!("injected recovery open failure"));
+                    }
+                    let broken = Store::open_at(root)?;
+                    let tx = broken.begin()?;
+                    tx.execute_batch("CREATE TEMP TABLE chat_turns(invalid INTEGER)")?;
+                    tx.commit()?;
+                    Ok(broken)
+                })
+                .await;
+            assert!(result.is_err());
+            assert!(gate.try_lock().is_ok());
+            assert_eq!(
+                store
+                    .get_chat_turn("session", "turn")
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                "running"
+            );
+            assert!(store.get_chat_message("assistant").unwrap().is_none());
+            assert!(events.try_recv().is_err());
+            drop(host);
+            drop(ctx);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn busy_queue_worker_finishes_publication_after_waiter_cancel_and_unlocks_on_error() {

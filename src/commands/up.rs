@@ -150,11 +150,11 @@ pub async fn run(args: UpArgs) -> Result<()> {
                 if moving.load(std::sync::atomic::Ordering::SeqCst) {
                     continue;
                 }
-                let _gate = gate.lock().await;
+                let data_dir_guard = gate.clone().lock_owned().await;
                 if moving.load(std::sync::atomic::Ordering::SeqCst) {
                     continue;
                 }
-                if let Err(err) = chat.reconcile_expired_turn_leases() {
+                if let Err(err) = chat.reconcile_expired_turn_leases(data_dir_guard).await {
                     eprintln!("orx up: could not reconcile expired chat turns: {err}");
                 }
             }
