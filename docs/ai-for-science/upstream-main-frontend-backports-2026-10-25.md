@@ -2,6 +2,8 @@
 
 本批以 `a2ed06b` 为基线，选择性回移 v0.2.21 之后的官方 main 变更：[压缩状态 #761](https://github.com/alphaXiv/OpenResearch/pull/761)（`228231a0e29b804a1079151114304e862a670704`）和[聊天虚拟化 #774](https://github.com/alphaXiv/OpenResearch/pull/774)（`05d58d07d7392ad242120e2f3c6c3d422df6c0c0`）。产品仍为 `0.2.21-mobilesci.1`、v0.2.19 真实祖先、v0.2.21 partial 回移；不把这些提交称为已发布的新版本。
 
+> 后续批次已补 OpenCode 原生压缩冷恢复、切换模型及 Stop 回归，见[后端记录](opencode-cold-compaction-2026-10-25.md)。下文的待办与验证结果保留为本前端批次的历史边界。
+
 ## 压缩完成状态保护
 
 压缩 HTTP 返回的是起始进度行，SSE 可能已经先完成同一消息。原先无条件 upsert 会把 completed/error 替换为 running。`compactSession` 的返回值现在携带 `onlyIfMissing`；reducer 在已有同 ID 消息时保留当前消息和分支指针，普通 SSE 更新仍可替换状态。

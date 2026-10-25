@@ -36,6 +36,7 @@ pub(crate) use runtime::{
 pub(crate) const PLAYBOOK_REL: &str = ".openresearch/agent/autoresearch-local.md";
 
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
+const COMPACTION_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub(crate) struct ResolvedRuntime {
     pub binary: ResolvedBinary,
@@ -575,7 +576,7 @@ async fn compact_v2(
         .pointer("/data/id")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("OpenCode compaction response has no id"))?;
-    tokio::time::timeout(Duration::from_secs(120), async {
+    tokio::time::timeout(COMPACTION_TIMEOUT, async {
         loop {
             let response = endpoint
                 .client
@@ -714,6 +715,75 @@ impl AgentHost {
             .await?
             .error_for_status()?;
         Ok(())
+    }
+
+    /// Reuse or restore the saved session, never replace its native history
+    /// with a transcript summary merely because its server/model changed.
+    pub(crate) async fn compact(
+        &self,
+        project: &LocalProject,
+        session_id: &str,
+        native_id: &str,
+        model: Option<&str>,
+    ) -> Result<()> {
+        let operation = async {
+            match self.summarize(session_id, native_id, model).await? {
+                SummarizeOutcome::Compacted => return Ok(()),
+                SummarizeOutcome::NoModel => {
+                    return Err(anyhow!(
+                        "Select an OpenCode model before compacting this chat"
+                    ));
+                }
+                SummarizeOutcome::NoServer | SummarizeOutcome::ModelChanged => {}
+            }
+            let resident_model = self.resident_model(session_id).await;
+            let model = self.selected_model(model).or(resident_model.as_deref());
+            let model = model
+                .filter(|model| {
+                    model.split_once('/').is_some_and(|(provider, id)| {
+                        !provider.trim().is_empty() && !id.trim().is_empty()
+                    })
+                })
+                .ok_or_else(|| anyhow!("Select an OpenCode model before compacting this chat"))?;
+            let saved_id = native_id.to_string();
+            let native =
+                crate::local::blocking::run(move || native_store::opencode_session(&saved_id))
+                    .await??
+                    .ok_or_else(|| {
+                        anyhow!("OpenCode's saved session is missing — cannot compact this chat")
+                    })?;
+            let binary = resolve_binary().await?;
+            let (progress, _) = tokio::sync::watch::channel(String::new());
+            self.ensure(
+                project,
+                session_id,
+                Some(model),
+                ResolvedRuntime {
+                    binary,
+                    database: native.path,
+                    store: native.store,
+                },
+                progress,
+            )
+            .await?;
+            match self.summarize(session_id, native_id, Some(model)).await? {
+                SummarizeOutcome::Compacted => Ok(()),
+                SummarizeOutcome::NoServer => Err(anyhow!("OpenCode stopped during compaction")),
+                SummarizeOutcome::NoModel | SummarizeOutcome::ModelChanged => Err(anyhow!(
+                    "OpenCode could not restore the selected compaction model"
+                )),
+            }
+        };
+        match tokio::time::timeout(COMPACTION_TIMEOUT, operation).await {
+            Ok(result) => result,
+            Err(_) => {
+                self.kill_session(session_id).await;
+                Err(anyhow!(
+                    "OpenCode did not finish compacting within {}s",
+                    COMPACTION_TIMEOUT.as_secs()
+                ))
+            }
+        }
     }
 
     /// Ask opencode to summarize (compact) a session in place.
@@ -928,7 +998,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn resident_reuses_selected_cloud_model_and_falls_back_before_mismatched_compaction() {
+    async fn native_compaction_reuses_the_resident_model_and_requires_reconfiguration_on_change() {
         use axum::{
             routing::{get, post},
             Json, Router,
@@ -1029,14 +1099,319 @@ mod tests {
             host.resident_model("chat").await.as_deref(),
             Some("cloud/selected")
         );
-        assert!(matches!(
-            host.summarize("chat", "native", None).await.unwrap(),
-            SummarizeOutcome::Compacted
-        ));
+        host.compact(&project, "chat", "native", None)
+            .await
+            .unwrap();
         assert_eq!(compacted.load(Ordering::SeqCst), 1);
         host.shutdown().await;
         assert!(host.resident_model("chat").await.is_none());
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn cold_compaction_requires_a_valid_selected_model_before_startup() {
+        let host = AgentHost::new(None);
+        for model in [
+            None,
+            Some(" "),
+            Some("model"),
+            Some("provider/"),
+            Some("/model"),
+        ] {
+            let error = host
+                .compact(&sample_project(), "cold-chat", "native", model)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("Select an OpenCode model"));
+            assert!(host.inner.lock().await.is_empty());
+            assert!(host.starting.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn cold_compaction_does_not_replace_a_missing_native_session() {
+        const CHILD: &str = "ORX_TEST_OPENCODE_MISSING_COMPACTION_SESSION";
+        if std::env::var_os(CHILD).is_some() {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let host = AgentHost::new(None);
+                let error = host
+                    .compact(
+                        &sample_project(),
+                        "cold-chat",
+                        "missing-native",
+                        Some("provider/model"),
+                    )
+                    .await
+                    .unwrap_err();
+                assert!(error.to_string().contains("saved session is missing"));
+                assert!(host.status().await.is_empty());
+                assert!(!native_store::opencode_db(NativeStore::Isolated).exists());
+                assert!(!native_store::opencode_db(NativeStore::Legacy).exists());
+            });
+            return;
+        }
+        let fixture = git::TemporaryDirectory::new("orx-missing-opencode-compaction").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "local::opencode::tests::cold_compaction_does_not_replace_a_missing_native_session",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("ORX_DATA_DIR", fixture.path().join("orx"))
+            .env("XDG_CONFIG_HOME", fixture.path().join("config"))
+            .env("XDG_DATA_HOME", fixture.path().join("xdg"))
+            .env("OPENCODE_DB", fixture.path().join("missing.db"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cold_compaction_restores_saved_history_and_reconfigures_the_model() {
+        use axum::{
+            http::StatusCode,
+            routing::{get, post},
+            Json, Router,
+        };
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::Arc;
+        const TEST: &str = "local::opencode::tests::cold_compaction_restores_saved_history_and_reconfigures_the_model";
+        const CHILD: &str = "ORX_TEST_COLD_COMPACTION";
+        // The fake executable delegates serve mode to this same test binary:
+        // exercise real process startup, health checks and model verification.
+        if let Ok(port) = std::env::var("ORX_TEST_COMPACTION_PORT") {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let config: Value =
+                    serde_json::from_str(&std::env::var("OPENCODE_CONFIG_CONTENT").unwrap())
+                        .unwrap();
+                let model = config["agent"]["compaction"]["model"].as_str().unwrap();
+                assert_eq!(config["agent"]["title"]["model"], model);
+                let (provider, id) = model.split_once('/').unwrap();
+                let agents = json!([
+                    {"name":"title","model":{"providerID":provider,"modelID":id}},
+                    {"name":"compaction","model":{"providerID":provider,"modelID":id}}
+                ]);
+                let log = store::data_dir().join("summaries.jsonl");
+                let app = Router::new()
+                    .route(
+                        "/global/health",
+                        get(|| async { Json(json!({"healthy":true})) }),
+                    )
+                    .route(
+                        "/agent",
+                        get(move || {
+                            let agents = agents.clone();
+                            async move { Json(agents) }
+                        }),
+                    )
+                    .route(
+                        "/session/native/summarize",
+                        post(move |Json(body): Json<Value>| {
+                            use std::io::Write;
+                            let mut file = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(&log)
+                                .unwrap();
+                            writeln!(file, "{body}").unwrap();
+                            async {
+                                if store::data_dir().join("pause-summary").exists() {
+                                    std::fs::write(store::data_dir().join("summary-started"), "1")
+                                        .unwrap();
+                                    while !store::data_dir().join("summary-aborted").exists() {
+                                        tokio::time::sleep(Duration::from_millis(10)).await;
+                                    }
+                                }
+                                if store::data_dir().join("fail-summary").exists() {
+                                    StatusCode::INTERNAL_SERVER_ERROR
+                                } else {
+                                    StatusCode::OK
+                                }
+                            }
+                        }),
+                    )
+                    .route(
+                        "/session/native/abort",
+                        post(|| async {
+                            std::fs::write(store::data_dir().join("summary-aborted"), "1").unwrap();
+                            StatusCode::OK
+                        }),
+                    );
+                let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
+                    .await
+                    .unwrap();
+                axum::serve(listener, app).await.unwrap();
+            });
+            return;
+        }
+        if let Ok(mode) = std::env::var(CHILD) {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let selected_store = if mode == "legacy" {
+                    NativeStore::Legacy
+                } else {
+                    NativeStore::Isolated
+                };
+                let database = native_store::opencode_db(selected_store);
+                std::fs::create_dir_all(database.parent().unwrap()).unwrap();
+                let connection = rusqlite::Connection::open(&database).unwrap();
+                connection
+                    .execute_batch(
+                        "CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT);
+                    CREATE TABLE message (id TEXT, session_id TEXT, data TEXT);
+                    CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT, data TEXT);
+                    INSERT INTO session VALUES ('native','/saved');
+                    INSERT INTO message VALUES ('history','native','preserved native history');",
+                    )
+                    .unwrap();
+                let mut project = sample_project();
+                project.github_sync_enabled = false;
+                project.repo_path = store::data_dir().join("repo").display().to_string();
+                git::git(None, &["init", "-b", "main", &project.repo_path]).unwrap();
+                git::git(
+                    Some(Path::new(&project.repo_path)),
+                    &[
+                        "-c",
+                        "user.name=Test",
+                        "-c",
+                        "user.email=test@example.invalid",
+                        "commit",
+                        "--allow-empty",
+                        "-m",
+                        "fixture",
+                    ],
+                )
+                .unwrap();
+                let host = Arc::new(AgentHost::new(Some("host/default".into())));
+                let chat = Arc::new(crate::local::chat::ChatHost::new(
+                    host.clone(), Arc::new(crate::local::codex::CodexHost::new()),
+                    Arc::new(crate::local::claude::ClaudeHost::new()),
+                ));
+                let store = store::Store::open().unwrap();
+                store.create_local_project(&project).unwrap();
+                let transaction = store.begin().unwrap();
+                transaction.execute("INSERT INTO chat_sessions(id,project_id,harness,native_session_id,model,bootstrap_context,created_at,updated_at)
+                    VALUES('cold-chat',?1,'opencode','native','cloud/selected','earlier context',1,1)", [&project.id]).unwrap();
+                transaction.commit().unwrap();
+                store.upsert_chat_message_on_branch(&store::StoredChatMessage {
+                    id: "original-user".into(), session_id: "cold-chat".into(), role: "user".into(),
+                    parts_json: r#"[{"id":"text","type":"text","text":"Synthetic history"}]"#.into(),
+                    created_at: 1, completed_at: Some(1), parent_id: None,
+                    base_native_session_id: Some("native".into()), result_native_session_id: None,
+                }).unwrap();
+                let marker = chat.compact_session("cold-chat").await.unwrap();
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while chat.is_busy("cold-chat").await { tokio::time::sleep(Duration::from_millis(10)).await; }
+                }).await.unwrap();
+                let settled = store.get_chat_message(&marker.id).unwrap().unwrap();
+                let parts: Value = serde_json::from_str(&settled.parts_json).unwrap();
+                assert_eq!(parts[0]["state"]["status"], "completed");
+                let saved = store.get_chat_session("cold-chat").unwrap().unwrap();
+                assert_eq!(saved.native_session_id.as_deref(), Some("native"));
+                assert_eq!(saved.bootstrap_context.as_deref(), Some("earlier context"));
+                let first_pid = host.inner.lock().await["cold-chat"].child.id();
+                assert_eq!(
+                    host.inner.lock().await["cold-chat"].database.path(),
+                    crate::paths::canonicalize(&database).unwrap()
+                );
+                host.compact(&project, "cold-chat", "native", Some("cloud/selected"))
+                    .await
+                    .unwrap();
+                assert_eq!(host.inner.lock().await["cold-chat"].child.id(), first_pid);
+                host.compact(&project, "cold-chat", "native", Some("cloud/switched"))
+                    .await
+                    .unwrap();
+                assert_ne!(host.inner.lock().await["cold-chat"].child.id(), first_pid);
+                assert_eq!(
+                    host.resident_model("cold-chat").await.as_deref(),
+                    Some("cloud/switched")
+                );
+                std::fs::write(store::data_dir().join("fail-summary"), "1").unwrap();
+                assert!(host
+                    .compact(&project, "cold-chat", "native", Some("cloud/switched"))
+                    .await
+                    .is_err());
+                let bodies: Vec<Value> =
+                    std::fs::read_to_string(store::data_dir().join("summaries.jsonl"))
+                        .unwrap()
+                        .lines()
+                        .map(|line| serde_json::from_str(line).unwrap())
+                        .collect();
+                assert_eq!(
+                    bodies,
+                    vec![
+                        json!({"providerID":"cloud","modelID":"selected"}),
+                        json!({"providerID":"cloud","modelID":"selected"}),
+                        json!({"providerID":"cloud","modelID":"switched"}),
+                        json!({"providerID":"cloud","modelID":"switched"})
+                    ]
+                );
+                std::fs::remove_file(store::data_dir().join("fail-summary")).unwrap();
+                std::fs::write(store::data_dir().join("pause-summary"), "1").unwrap();
+                store.set_chat_session_model("cold-chat", "cloud/switched").unwrap();
+                store.set_chat_session_context_usage("cold-chat", r#"{"usedTokens":9000}"#).unwrap();
+                let stopped = chat.compact_session("cold-chat").await.unwrap();
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while !store::data_dir().join("summary-started").exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
+                }).await.unwrap();
+                chat.interrupt_by_user("cold-chat").await.unwrap();
+                assert!(!chat.is_busy("cold-chat").await);
+                let stopped = store.get_chat_message(&stopped.id).unwrap().unwrap();
+                let parts: Value = serde_json::from_str(&stopped.parts_json).unwrap();
+                assert_eq!(parts[0]["state"]["status"], "error");
+                let saved = store.get_chat_session("cold-chat").unwrap().unwrap();
+                assert_eq!(saved.native_session_id.as_deref(), Some("native"));
+                assert_eq!(saved.bootstrap_context.as_deref(), Some("earlier context"));
+                assert!(saved.context_usage_json.is_some(), "Stop must not commit compaction usage reset");
+                let history: String = connection
+                    .query_row("SELECT data FROM message WHERE id='history'", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(history, "preserved native history");
+                assert!(native_store::opencode_has_session(&database, "native").unwrap());
+                host.shutdown().await;
+                assert!(host.status().await.is_empty());
+            });
+            return;
+        }
+        let fixture = git::TemporaryDirectory::new("orx-cold-compaction").unwrap();
+        let bin = fixture.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let binary = bin.join("opencode");
+        std::fs::write(&binary, format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 1.19.0; exit 0; fi\n[ \"$1\" = serve ] || exit 99\nshift\nwhile [ \"$#\" -gt 0 ]; do\n if [ \"$1\" = --port ]; then export ORX_TEST_COMPACTION_PORT=\"$2\"; shift; fi\n shift\ndone\nexec \"$ORX_TEST_COMPACTION_EXE\" --exact {TEST} --nocapture\n")).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = std::env::join_paths(
+            std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        for mode in ["isolated", "legacy"] {
+            let root = fixture.path().join(mode);
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD, mode)
+                .env("ORX_TEST_COMPACTION_EXE", std::env::current_exe().unwrap())
+                .env("PATH", &path)
+                .env("ORX_DATA_DIR", root.join("orx"))
+                .env("XDG_CONFIG_HOME", root.join("config"))
+                .env("XDG_DATA_HOME", root.join("data"))
+                .env("OPENCODE_DB", root.join("legacy.db"))
+                .env("OPENCODE_CONFIG_CONTENT", "{}")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{mode}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[tokio::test]
