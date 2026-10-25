@@ -4626,22 +4626,8 @@ impl ChatHost {
             };
             let mut dispatch_cleanup = dispatch_cleanup.expect("popped queue item has cleanup");
             let overrides = item.overrides.clone();
-            if let Some(plan_mode) = overrides.plan_mode {
-                if let Ok(store) = Store::open() {
-                    if let Ok(Some(current)) = store.get_chat_session(session_id) {
-                        let reset_pending = !plan_mode
-                            && current.harness == "codex"
-                            && (current.plan_mode || current.plan_reset_pending);
-                        if store
-                            .set_chat_session_plan_state(session_id, plan_mode, reset_pending)
-                            .is_ok()
-                        {
-                            self.emit_session(store.get_chat_session(session_id).ok().flatten())
-                                .await;
-                        }
-                    }
-                }
-            }
+            // Apply Plan once in the normal settings phase, after the client
+            // turn idempotency check and with the usual revision resolution.
             self.emit_queued(session_id);
             let messages = vec![AnnotatedText {
                 text: item.text.clone(),
@@ -13221,6 +13207,137 @@ mod checkpoint_tests {
             drop(ctx);
             drop(store);
             std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn queued_plan_dispatch_skips_completed_replays_and_preserves_legacy_overrides() {
+        const CHILD: &str = "ORX_TEST_QUEUE_PLAN_DISPATCH";
+        if let Ok(case) = std::env::var(CHILD) {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let store = Store::open().unwrap();
+                let host = Arc::new(ChatHost::new(
+                    Arc::new(AgentHost::new(None)),
+                    Arc::new(crate::local::codex::CodexHost::new()),
+                    Arc::new(crate::local::claude::ClaudeHost::new()),
+                ));
+                host.drain_queue("session").await;
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    while host.turns.lock().await.contains_key("session") {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                let session = store.get_chat_session("session").unwrap().unwrap();
+                assert_eq!(session.plan_mode, case == "legacy", "{case}");
+                assert_eq!(
+                    session.plan_reset_pending,
+                    case == "exit" && session.harness == "codex",
+                    "{case}"
+                );
+                let writes: i64 = store
+                    .begin()
+                    .unwrap()
+                    .query_row("SELECT count(*) FROM plan_write_audit", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(
+                    writes,
+                    i64::from(matches!(case.as_str(), "legacy" | "exit")),
+                    "{case}"
+                );
+                if case == "replay" {
+                    assert!(host.queued_items("session").is_empty());
+                    assert!(store
+                        .list_queued_chat_messages_for_session("session")
+                        .unwrap()
+                        .is_empty());
+                    assert_eq!(
+                        store
+                            .get_chat_turn_by_client_id("session", "plan-client")
+                            .unwrap()
+                            .unwrap()
+                            .id,
+                        "existing-plan-turn"
+                    );
+                } else {
+                    let queued = host.queued.lock().unwrap();
+                    let item = &queued["session"][0];
+                    assert!(item
+                        .dispatch_error
+                        .as_deref()
+                        .unwrap()
+                        .contains("injected plan admission failure"));
+                    assert!(queued_delivery_exhausted(item));
+                    assert!(store
+                        .get_chat_turn_by_client_id("session", "plan-client")
+                        .unwrap()
+                        .is_none());
+                }
+            });
+            return;
+        }
+        for (harness, case) in ["codex", "opencode"].into_iter().flat_map(|harness| {
+            ["replay", "unchanged", "legacy", "exit"].map(|case| (harness, case))
+        }) {
+            let (dir, store, ctx) = checkpoint_fixture();
+            store.create_local_project(&ctx.project).unwrap();
+            store
+                .set_chat_session_plan_state("session", case == "exit", false)
+                .unwrap();
+            let tx = store.begin().unwrap();
+            tx.execute(
+                "UPDATE chat_sessions SET harness = ?1 WHERE id = 'session'",
+                [harness],
+            )
+            .unwrap();
+            tx.execute_batch("CREATE TABLE plan_write_audit(mode INTEGER, reset_pending INTEGER);
+                CREATE TRIGGER audit_plan_update AFTER UPDATE OF plan_mode, plan_reset_pending ON chat_sessions
+                BEGIN INSERT INTO plan_write_audit VALUES(NEW.plan_mode, NEW.plan_reset_pending); END;
+                CREATE TRIGGER reject_plan_turn BEFORE INSERT ON chat_turns WHEN NEW.client_turn_id='plan-client' AND NEW.id != 'existing-plan-turn'
+                BEGIN SELECT RAISE(ABORT,'injected plan admission failure'); END;").unwrap();
+            tx.commit().unwrap();
+            let mut message = busy_metadata_message();
+            message.client_turn_id = "plan-client".into();
+            message.overrides = TurnOverrides {
+                plan_mode: Some(matches!(case, "replay" | "legacy")),
+                ..Default::default()
+            };
+            if case == "replay" {
+                let mut existing = store.get_chat_turn("session", "turn").unwrap().unwrap();
+                existing.id = "existing-plan-turn".into();
+                existing.client_turn_id = message.client_turn_id.clone();
+                existing.request_hash = message.request_hash.clone();
+                existing.assistant_message_id = "existing-plan-assistant".into();
+                existing.state = "completed".into();
+                store.admit_chat_turn(None, &existing).unwrap();
+            }
+            // Exercise exactly one failed admission, with no scheduled model retry.
+            message.dispatch_attempts = crate::local::harness::ORX_MAX_ATTEMPTS - 1;
+            store
+                .insert_queued_chat_message(&StoredQueuedChatMessage {
+                    id: message.id.clone(),
+                    session_id: "session".into(),
+                    client_turn_id: message.client_turn_id.clone(),
+                    request_hash: message.request_hash.clone(),
+                    payload_json: serde_json::to_string(&message).unwrap(),
+                    created_at: 3,
+                })
+                .unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "local::chat::checkpoint_tests::queued_plan_dispatch_skips_completed_replays_and_preserves_legacy_overrides", "--nocapture"])
+                .env(CHILD,case).env("ORX_DATA_DIR",&dir).output().unwrap();
+            drop(ctx);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+            assert!(
+                output.status.success(),
+                "{harness}/{case}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
     }
 

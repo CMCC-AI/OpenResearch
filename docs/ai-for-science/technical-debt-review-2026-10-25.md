@@ -38,3 +38,15 @@
 新增单线程慢打开回归验证 timer 与普通状态查询仍可前进，取消等待后 gate 仍被持有，随后过期租约转为可继续恢复状态并发出消息；存活租约和 running turn 保留。另用打开失败及连接私有临时表触发真实 SQL 错误，验证无 turn/消息改写且 gate 释放。
 
 最终完整 `cargo test --locked` 退出 0：1265 项单元、18 项集成测试通过，11 项专用测试默认忽略；fmt、Clippy all-targets/-D warnings、diff、上游基线和两项版本回归通过。最终完整回归包含补强后的过期租约断言，首轮定向日志仅记录补强前候选。日志和候选哈希保存在忽略目录 `.mobilesci-run/lease-reconciliation/`。本批只解决周期巡检的调度阻塞，不宣称全局锁竞争、目录迁移耗时、其余同步入口或磁盘故障恢复已解决；仍不重启服务、不部署服务器。
+
+## 后续：删除队列派发前的重复 Plan 写入
+
+以 `7a08886` 为基线，检查队列与停止路径时确认：`drain_queue` 在进入普通发送流程前，会对携带 Plan override 的队列行额外执行一次 Store 打开、两次会话读取及一次无条件 Plan 写入，并发送会话通知。随后已有 settings phase 还会按 revision 再处理一次设置。
+
+前一次写入发生在 clientTurnId/请求哈希幂等检查之前。开启 Plan 的队列行如果已经准入、尚未从队列清理，后来用户关闭 Plan，再次派发该行仍会先写回 true，随后才发现 turn 已存在。无变化的 Plan 也会产生多余写入。内部 plan_revision 不参与 TurnOverrides 序列化，不能声称旧持久队列会按该版本号拒绝设置；首轮“持久旧版本”夹具的假设不成立，已将回归改为真实的已准入重放。
+
+本批删除这段前置逻辑，幂等检查通过后仅由已有后台 settings phase 处理设置。旧格式没有 revision 的 override 继续生效，退出 Codex Plan 仍按原规则设置一次重置标记；没有新建状态、执行阶段或协议。当前普通忙队列在入队时已归一化大多数 Plan override，因此减少的打开/读取/提交限于仍携带该字段的恢复或历史队列，不能推算为所有排队消息的性能收益。
+
+回归通过隔离子进程走真实 `drain_queue → send_message_showing`，覆盖 OpenCode/Codex 各四种情形。SQLite 审计触发器验证已准入重放与无变化设置均无 Plan 写入，旧格式请求和真实退出各写一次，仅 Codex 退出会置重置标记。重放沿用既有 turn 并清理队列；其余场景在准入插入处注入失败，检查队列保留且没有插入新 turn，确保不会调用真实模型。将原前置写入临时放回后，Codex 重放回归确实失败；最终候选已经恢复为删除该逻辑的源码，证据见 `replay-before-fix.log` 和 `targeted-final.log`。
+
+最终完整 `cargo test --locked` 退出 0：1266 项单元、18 项集成测试通过，11 项专用测试默认忽略；八种情形的定向回归、fmt、Clippy all-targets/-D warnings、diff、上游基线和两项版本回归通过。日志和候选哈希位于忽略目录 `.mobilesci-run/queue-plan-dedup/`。全局锁范围、队列失败重排、其他停止与租约入口继续保留为未解决项；不重启现有服务、不部署服务器，产品版本保持不变。
