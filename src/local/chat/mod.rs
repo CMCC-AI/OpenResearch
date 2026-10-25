@@ -815,6 +815,9 @@ pub struct WirePrompt {
     pub options: Vec<WireQuestionOption>,
     #[serde(default)]
     pub multi_select: bool,
+    /// Native skip semantics: one question (V1) or the entire form (V2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_scope: Option<String>,
     /// OpenCode question emitted by its native `plan_exit` tool. The adapter
     /// uses the tool call id to distinguish this from ordinary Yes/No prompts.
     #[serde(default)]
@@ -6802,6 +6805,7 @@ impl ChatHost {
             host: self.clone(),
             session_id: session.id.clone(),
             native_session_id: session.native_session_id.clone(),
+            prompt_message_id: Some(prompt_message_id.clone()),
         };
         let action = harness
             .resume_from_prompt(&resume_ctx, &prompt, &req)
@@ -6818,6 +6822,17 @@ impl ChatHost {
         // retryable: nothing has been mutated, the card is still actionable.
         // (The resolve itself is best-effort — see `resolve_prompt_card`.)
         match action {
+            ResumeAction::PendingAnswers => {
+                let message = persist_partial_prompt_answer_with_store(
+                    self.clone(),
+                    prompt_message_id,
+                    req,
+                    Store::open,
+                )
+                .await?;
+                self.emit("chat.message", message_json(&message, &session.id));
+                Ok(())
+            }
             ResumeAction::SendMessage {
                 text,
                 mode,
@@ -7231,7 +7246,7 @@ pub fn cleanup_session_worktree(project: &LocalProject, session_id: &str) {
 pub struct PromptAnswer {
     pub session_id: String,
     pub prompt_id: String,
-    /// Approve (proceed) vs reject (dismiss). For questions, always true.
+    /// Approve vs reject; false skips a native question where supported.
     #[serde(default = "default_true")]
     pub approve: bool,
     /// For plan/permission approval: a provider-owned permission id to resume
@@ -7298,9 +7313,27 @@ pub struct ResumeCtx {
     /// The harness's own session id, if one has been minted (opencode needs it
     /// to address the reply endpoint).
     pub native_session_id: Option<String>,
+    /// Message owning this card; batch replies read this row rather than history.
+    pub prompt_message_id: Option<String>,
 }
 
 impl ResumeCtx {
+    pub(crate) async fn prompt_parts(&self) -> Result<Vec<WirePart>> {
+        let message_id = self
+            .prompt_message_id
+            .clone()
+            .ok_or_else(|| anyhow!("prompt has no owning message"))?;
+        let session_id = self.session_id.clone();
+        crate::local::blocking::run(move || {
+            let message = Store::open()?
+                .get_chat_message(&message_id)?
+                .filter(|message| message.session_id == session_id && message.role == "assistant")
+                .ok_or_else(|| anyhow!("prompt message is gone"))?;
+            Ok(serde_json::from_str(&message.parts_json)?)
+        })
+        .await?
+    }
+
     /// Shared HTTP client (mirrors `TurnCtx::http`).
     pub fn http(&self) -> &reqwest::Client {
         &self.host.http
@@ -7707,6 +7740,40 @@ async fn interruption_session_with_store(
 ) -> Result<Option<StoredChatSession>> {
     let session_id = session_id.to_string();
     crate::local::blocking::run(move || open()?.get_chat_session(&session_id)).await?
+}
+
+/// Intermediate batch answers have no native ACK yet: failed writes remain retryable.
+async fn persist_partial_prompt_answer_with_store(
+    host: Arc<ChatHost>,
+    message_id: String,
+    answer: PromptAnswer,
+    open: impl FnOnce() -> Result<Store> + Send + 'static,
+) -> Result<WireMessage> {
+    crate::local::blocking::run(move || {
+        let store = open()?;
+        let _guard = host.msg_write.lock().unwrap();
+        let stored = store
+            .get_chat_message(&message_id)?
+            .filter(|message| {
+                message.session_id == answer.session_id && message.completed_at.is_none()
+            })
+            .ok_or_else(|| anyhow!("question batch is no longer running"))?;
+        let mut message = stored_to_wire(&stored);
+        let prompt = message
+            .parts
+            .iter_mut()
+            .find(|part| part.id == answer.prompt_id)
+            .and_then(|part| part.prompt.as_mut())
+            .filter(|prompt| !prompt.resolved)
+            .ok_or_else(|| anyhow!("question is no longer pending"))?;
+        stamp_resolved(prompt, Some(&answer));
+        store.upsert_chat_message(&StoredChatMessage {
+            parts_json: serde_json::to_string(&message.parts)?,
+            ..stored
+        })?;
+        Ok(message)
+    })
+    .await?
 }
 
 /// After the stopped turn's final reconciliation, close its native cards before
@@ -14782,6 +14849,99 @@ mod checkpoint_tests {
             samples[189],
             samples[199]
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn partial_question_answers_require_storage_and_survive_turn_flushes() {
+        let (dir, store, mut ctx) = checkpoint_fixture();
+        let prompt = WirePrompt {
+            kind: "question".into(),
+            native_id: Some("batch".into()),
+            ..Default::default()
+        };
+        ctx.assistant.parts = vec![WirePart::prompt("part", prompt)];
+        store
+            .upsert_chat_message(&StoredChatMessage {
+                id: "assistant".into(),
+                session_id: "session".into(),
+                role: "assistant".into(),
+                parts_json: serde_json::to_string(&ctx.assistant.parts).unwrap(),
+                created_at: 2,
+                completed_at: None,
+                parent_id: None,
+                base_native_session_id: None,
+                result_native_session_id: None,
+            })
+            .unwrap();
+        let answer = || PromptAnswer {
+            session_id: "session".into(),
+            prompt_id: "part".into(),
+            approve: true,
+            resume_mode: None,
+            answers: vec![],
+            note: Some("Persisted free text".into()),
+            annotations: vec![],
+        };
+        assert!(persist_partial_prompt_answer_with_store(
+            ctx.host.clone(),
+            "assistant".into(),
+            answer(),
+            || Err(anyhow!("injected open failure"))
+        )
+        .await
+        .is_err());
+        let tx = store.begin().unwrap();
+        tx.execute_batch("CREATE TRIGGER reject_answer BEFORE UPDATE OF parts_json ON chat_messages BEGIN SELECT RAISE(ABORT,'injected answer write failure'); END;").unwrap();
+        tx.commit().unwrap();
+        let root = dir.clone();
+        assert!(persist_partial_prompt_answer_with_store(
+            ctx.host.clone(),
+            "assistant".into(),
+            answer(),
+            move || Store::open_at(root)
+        )
+        .await
+        .is_err());
+        let tx = store.begin().unwrap();
+        tx.execute_batch("DROP TRIGGER reject_answer;").unwrap();
+        tx.commit().unwrap();
+        let before = stored_to_wire(&store.get_chat_message("assistant").unwrap().unwrap());
+        assert!(!before.parts[0].prompt.as_ref().unwrap().resolved);
+        let root = dir.clone();
+        let saved = persist_partial_prompt_answer_with_store(
+            ctx.host.clone(),
+            "assistant".into(),
+            answer(),
+            move || Store::open_at(root),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            saved.parts[0].prompt.as_ref().unwrap().note.as_deref(),
+            Some("Persisted free text")
+        );
+        let root = dir.clone();
+        ctx.flush_async_kind(true, false, move || Store::open_at(root))
+            .await
+            .unwrap();
+        let saved = stored_to_wire(&store.get_chat_message("assistant").unwrap().unwrap());
+        assert!(saved.parts[0].prompt.as_ref().unwrap().resolved);
+        assert_eq!(
+            saved.parts[0].prompt.as_ref().unwrap().note.as_deref(),
+            Some("Persisted free text")
+        );
+        let root = dir.clone();
+        assert!(persist_partial_prompt_answer_with_store(
+            ctx.host.clone(),
+            "assistant".into(),
+            answer(),
+            move || Store::open_at(root)
+        )
+        .await
+        .is_err());
+        drop(ctx);
+        drop(store);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

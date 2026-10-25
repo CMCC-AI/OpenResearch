@@ -447,8 +447,11 @@ impl Harness for OpenCode {
             }
             return Ok(ResumeAction::Handled { plan_mode: None });
         }
-        reply_inline(ctx, prompt, answer).await?;
-        Ok(ResumeAction::Handled { plan_mode: None })
+        if reply_inline(ctx, prompt, answer).await? {
+            Ok(ResumeAction::Handled { plan_mode: None })
+        } else {
+            Ok(ResumeAction::PendingAnswers)
+        }
     }
 
     fn config_home(&self) -> Option<PathBuf> {
@@ -1193,9 +1196,7 @@ fn permission_card(props: &Value) -> Option<WirePrompt> {
 
 /// opencode `question.asked` payload → a `question` card. opencode's
 /// `QuestionInfo` (`{question, header, options:[{label,description}], multiple}`)
-/// is the same shape as Claude's AskUserQuestion, so it maps 1:1. Only the first
-/// question is surfaced (the composer answers one at a time); its request id
-/// rides on `native_id` for `POST /question/{id}/reply`.
+/// maps to one card. `question_cards` expands a batch and retains its ordering.
 fn question_card(props: &Value, plan_exit_calls: &HashSet<String>) -> Option<WirePrompt> {
     let id = props.get("id").and_then(Value::as_str)?.to_string();
     let q = props
@@ -1228,6 +1229,7 @@ fn question_card(props: &Value, plan_exit_calls: &HashSet<String>) -> Option<Wir
         header: q.get("header").and_then(Value::as_str).map(str::to_string),
         options,
         multi_select: q.get("multiple").and_then(Value::as_bool).unwrap_or(false),
+        skip_scope: Some("question".into()),
         plan_exit: props
             .get("tool")
             .and_then(|tool| tool.get("callID"))
@@ -1236,6 +1238,82 @@ fn question_card(props: &Value, plan_exit_calls: &HashSet<String>) -> Option<Wir
         native_id: Some(id),
         ..Default::default()
     })
+}
+
+fn question_cards(props: &Value, plan_exit_calls: &HashSet<String>) -> Option<Vec<WirePrompt>> {
+    let id = props["id"].as_str()?;
+    let questions = props["questions"].as_array()?.as_slice();
+    if questions.is_empty() {
+        return None;
+    }
+    questions
+        .iter()
+        .enumerate()
+        .map(|(index, question)| {
+            let single = json!({"id":id, "tool":props["tool"], "questions":[question]});
+            let mut card = question_card(&single, plan_exit_calls)?;
+            if questions.len() > 1 {
+                card.native_id = Some(serde_json::to_string(&(id, index)).ok()?);
+                card.tool_input = Some(json!({"questionCount":questions.len()}));
+            }
+            Some(card)
+        })
+        .collect()
+}
+
+fn question_reply(
+    prompt: &WirePrompt,
+    answer: &PromptAnswer,
+    saved: &[WirePart],
+) -> Result<(String, Option<Vec<Vec<String>>>)> {
+    let id = prompt
+        .native_id
+        .as_deref()
+        .ok_or_else(|| anyhow!("question has no reply id"))?;
+    let submitted = if answer.approve {
+        submitted_answers(&answer.answers, answer.note.as_ref()).to_vec()
+    } else {
+        Vec::new()
+    };
+    let count = prompt
+        .tool_input
+        .as_ref()
+        .and_then(|input| input["questionCount"].as_u64())
+        .unwrap_or(1) as usize;
+    if count <= 1 {
+        return Ok((id.into(), Some(vec![submitted])));
+    }
+    let (request, index): (String, usize) = serde_json::from_str(id)?;
+    let mut answers = vec![None; count];
+    for part in saved {
+        let Some(prior) = part
+            .prompt
+            .as_ref()
+            .filter(|p| p.resolved && p.approved.is_some())
+        else {
+            continue;
+        };
+        let Some((saved_request, saved_index)) = prior
+            .native_id
+            .as_deref()
+            .and_then(|id| serde_json::from_str::<(String, usize)>(id).ok())
+        else {
+            continue;
+        };
+        if saved_request == request {
+            if let Some(slot) = answers.get_mut(saved_index) {
+                *slot = Some(if prior.approved == Some(true) {
+                    submitted_answers(&prior.answers, prior.note.as_ref()).to_vec()
+                } else {
+                    Vec::new()
+                });
+            }
+        }
+    }
+    *answers
+        .get_mut(index)
+        .ok_or_else(|| anyhow!("question index is out of range"))? = Some(submitted);
+    Ok((request, answers.into_iter().collect()))
 }
 
 /// POST a permission decision to the live serve session (v1 API). `response` is
@@ -1271,7 +1349,7 @@ fn submitted_answers<'a>(answers: &'a [String], note: Option<&'a String>) -> &'a
 /// paused `session.prompt` POST. Permission → `{response: once|always|reject}`;
 /// question → `{answers: [[label,...]]}` (or reject). The reply target is the
 /// card's `native_id` (the opencode permission/question request id).
-async fn reply_inline(ctx: &ResumeCtx, prompt: &WirePrompt, answer: &PromptAnswer) -> Result<()> {
+async fn reply_inline(ctx: &ResumeCtx, prompt: &WirePrompt, answer: &PromptAnswer) -> Result<bool> {
     // The reply only lands if the turn is still paused waiting for it. If the
     // turn already ended (errored / interrupted), serve may still accept the
     // POST but no one is consuming the resumed stream, so the reply would be
@@ -1299,7 +1377,26 @@ async fn reply_inline(ctx: &ResumeCtx, prompt: &WirePrompt, answer: &PromptAnswe
     if endpoint.protocol == crate::local::opencode::Protocol::V2 {
         return v2::reply(ctx, &endpoint, prompt, answer).await;
     }
-    reply_v1(&endpoint, ctx.native_session_id.as_deref(), prompt, answer).await
+    let saved = if prompt.kind == "question"
+        && prompt
+            .tool_input
+            .as_ref()
+            .and_then(|input| input["questionCount"].as_u64())
+            .unwrap_or(1)
+            > 1
+    {
+        ctx.prompt_parts().await?
+    } else {
+        Vec::new()
+    };
+    reply_v1(
+        &endpoint,
+        ctx.native_session_id.as_deref(),
+        prompt,
+        answer,
+        &saved,
+    )
+    .await
 }
 
 async fn reply_v1(
@@ -1307,7 +1404,8 @@ async fn reply_v1(
     native_session: Option<&str>,
     prompt: &WirePrompt,
     answer: &PromptAnswer,
-) -> Result<()> {
+    saved: &[WirePart],
+) -> Result<bool> {
     let request_id = prompt
         .native_id
         .as_deref()
@@ -1324,20 +1422,19 @@ async fn reply_v1(
             post_permission(http, base, native_session, request_id, response).await?;
         }
         "question" => {
-            let submitted = submitted_answers(&answer.answers, answer.note.as_ref());
-            if submitted.is_empty() {
-                // No selection: reject the question rather than reply empty, so
-                // opencode surfaces the model's fallback path.
+            let (request_id, answers) = question_reply(prompt, answer, saved)?;
+            let Some(answers) = answers else {
+                return Ok(false);
+            };
+            if answers.iter().all(Vec::is_empty) {
                 http.post(format!("{base}/question/{request_id}/reject"))
                     .json(&json!({}))
                     .send()
                     .await?
                     .error_for_status()?;
             } else {
-                // opencode takes an array of answers, one per question; we only
-                // surface the first question, so send a single answer array.
                 http.post(format!("{base}/question/{request_id}/reply"))
-                    .json(&json!({ "answers": [submitted] }))
+                    .json(&json!({ "answers": answers }))
                     .send()
                     .await?
                     .error_for_status()?;
@@ -1349,7 +1446,7 @@ async fn reply_v1(
             ))
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Session mode → opencode built-in agent name. `Plan` runs the read-only
@@ -1370,10 +1467,10 @@ fn opencode_auto_approve(mode: Option<PermissionMode>) -> bool {
 
 fn plan_exit_transition(prompt: &WirePrompt, answer: &PromptAnswer) -> Option<bool> {
     prompt.plan_exit.then(|| {
-        !answer
-            .answers
-            .iter()
-            .any(|choice| choice.eq_ignore_ascii_case("yes"))
+        !(answer.approve
+            && submitted_answers(&answer.answers, answer.note.as_ref())
+                .iter()
+                .any(|choice| choice.eq_ignore_ascii_case("yes")))
     })
 }
 
@@ -2077,8 +2174,17 @@ async fn handle_prompt_event(
             Ok(true)
         }
         Some("question.asked") => {
-            match question_card(props, plan_exit_calls) {
-                Some(card) => surface_card(ctx, card).await,
+            match question_cards(props, plan_exit_calls) {
+                Some(cards) => {
+                    for card in cards {
+                        let request_id = card.native_id.as_deref().unwrap_or_default();
+                        ctx.upsert_part(WirePart::prompt(
+                            format!("{}:{request_id}", ctx.assistant.id),
+                            card,
+                        ));
+                    }
+                    ctx.flush_active_async().await?;
+                }
                 None => {
                     ctx.push_error("opencode asked a question we couldn't parse".into());
                     let _ = ctx.flush_active_async().await;
@@ -2093,6 +2199,110 @@ async fn handle_prompt_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn question_batches_send_one_ordered_reply_and_preserve_partial_skips() {
+        use axum::{routing::post, Json, Router};
+        use std::sync::{Arc, Mutex};
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let replies = requests.clone();
+        let rejects = requests.clone();
+        let app = Router::new()
+            .route(
+                "/question/batch/reply",
+                post(move |Json(body): Json<Value>| {
+                    replies.lock().unwrap().push(body);
+                    async {}
+                }),
+            )
+            .route(
+                "/question/batch/reject",
+                post(move || {
+                    rejects.lock().unwrap().push(json!("rejected"));
+                    async {}
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = crate::local::opencode::AgentEndpoint {
+            base_url: format!("http://{}", listener.local_addr().unwrap()),
+            client: crate::net::loopback_client().build().unwrap(),
+            protocol: crate::local::opencode::Protocol::V1,
+            legacy_v2_api: false,
+        };
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let cards = question_cards(
+            &json!({"id":"batch","questions":[
+            {"question":"Color?","options":[{"label":"Green"}]},
+            {"question":"Shape?"},{"question":"Size?"}]}),
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert_eq!(cards.len(), 3);
+        assert_eq!(
+            cards[0].tool_input.as_ref().unwrap(),
+            &json!({"questionCount":3})
+        );
+        for skip_all in [false, true] {
+            let mut saved = Vec::new();
+            for index in [2, 1, 0] {
+                let answer = PromptAnswer {
+                    session_id: "session".into(),
+                    prompt_id: format!("part-{index}"),
+                    approve: !skip_all && index != 1,
+                    resume_mode: None,
+                    answers: if index == 0 {
+                        vec!["Green".into()]
+                    } else {
+                        vec![]
+                    },
+                    note: Some("Free text".into()),
+                    annotations: Vec::new(),
+                };
+                assert_eq!(
+                    reply_v1(&endpoint, None, &cards[index], &answer, &saved)
+                        .await
+                        .unwrap(),
+                    index == 0
+                );
+                if index != 0 {
+                    assert_eq!(requests.lock().unwrap().len(), usize::from(skip_all));
+                }
+                let mut prompt = cards[index].clone();
+                prompt.resolved = true;
+                prompt.approved = Some(answer.approve);
+                prompt.answers = answer.answers;
+                prompt.note = answer.note;
+                saved.push(WirePart::prompt(answer.prompt_id, prompt));
+            }
+        }
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![
+                json!({"answers":[["Green"],[],["Free text"]]}),
+                json!("rejected")
+            ]
+        );
+        let mut foreign = cards[2].clone();
+        foreign.resolved = true;
+        foreign.approved = Some(true);
+        foreign.native_id = Some(serde_json::to_string(&("other", 2)).unwrap());
+        let answer = PromptAnswer {
+            session_id: "session".into(),
+            prompt_id: "part".into(),
+            approve: true,
+            resume_mode: None,
+            answers: vec!["Green".into()],
+            note: None,
+            annotations: vec![],
+        };
+        assert!(
+            question_reply(&cards[0], &answer, &[WirePart::prompt("foreign", foreign)])
+                .unwrap()
+                .1
+                .is_none()
+        );
+        server.abort();
+    }
 
     #[tokio::test]
     async fn v1_permission_replies_are_once_for_manual_and_automatic_approval() {
@@ -2130,7 +2340,7 @@ mod tests {
                 note: None,
                 annotations: Vec::new(),
             };
-            reply_v1(&endpoint, Some("native"), &prompt, &answer)
+            reply_v1(&endpoint, Some("native"), &prompt, &answer, &[])
                 .await
                 .unwrap();
         }
@@ -2846,6 +3056,12 @@ opencode/unknown
         };
         assert_eq!(plan_exit_transition(&prompt, &response("Yes")), Some(false));
         assert_eq!(plan_exit_transition(&prompt, &response("No")), Some(true));
+        let mut custom = response("Yes");
+        custom.answers.clear();
+        custom.note = Some("Yes".into());
+        assert_eq!(plan_exit_transition(&prompt, &custom), Some(false));
+        custom.approve = false;
+        assert_eq!(plan_exit_transition(&prompt, &custom), Some(true));
         prompt.plan_exit = false;
         assert_eq!(plan_exit_transition(&prompt, &response("Yes")), None);
     }

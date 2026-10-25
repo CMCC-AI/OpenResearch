@@ -1310,5 +1310,8 @@
   "remote_repair_run": "Run in terminal",
   "remote_repair_copy": "Copy command",
   "remote_repair_copied": "Copied",
-  "remote_repair_terminal": "Repair terminal"
+  "remote_repair_terminal": "Repair terminal",
+  "chat_skip_question": "질문 건너뛰기",
+  "chat_skip_questions": "이 질문 그룹 건너뛰기",
+  "chat_question_skipped": "건너뜀"
 }

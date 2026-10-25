@@ -6031,6 +6031,7 @@ requires_openai_auth = false
             )),
             session_id: "s".into(),
             native_session_id: None,
+            prompt_message_id: None,
         }
     }
 

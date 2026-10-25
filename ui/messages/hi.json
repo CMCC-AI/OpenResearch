@@ -1310,5 +1310,8 @@
   "remote_repair_run": "Run in terminal",
   "remote_repair_copy": "Copy command",
   "remote_repair_copied": "Copied",
-  "remote_repair_terminal": "Repair terminal"
+  "remote_repair_terminal": "Repair terminal",
+  "chat_skip_question": "प्रश्न छोड़ें",
+  "chat_skip_questions": "प्रश्नों का यह समूह छोड़ें",
+  "chat_question_skipped": "छोड़ा गया"
 }

@@ -1310,5 +1310,8 @@
   "remote_repair_run": "Run in terminal",
   "remote_repair_copy": "Copy command",
   "remote_repair_copied": "Copied",
-  "remote_repair_terminal": "Repair terminal"
+  "remote_repair_terminal": "Repair terminal",
+  "chat_skip_question": "Omitir pregunta",
+  "chat_skip_questions": "Omitir este grupo de preguntas",
+  "chat_question_skipped": "Omitida"
 }

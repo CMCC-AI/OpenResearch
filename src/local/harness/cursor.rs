@@ -1558,6 +1558,7 @@ ActionRequiredError: Named models unavailable Free plans can only use Auto. Swit
             host: TurnCtx::test_stub().host.clone(),
             session_id: "s".into(),
             native_session_id: None,
+            prompt_message_id: None,
         };
         let approve = harness
             .resume_from_prompt(

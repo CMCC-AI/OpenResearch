@@ -202,7 +202,7 @@ pub(super) async fn run_turn(
             let outcome = final_projection
                 .pointer("/data/info/outcome")
                 .and_then(Value::as_str);
-            if delivered && answered && outcome == Some("succeeded") {
+            if delivered && answered && matches!(outcome, Some("succeeded" | "interrupted")) {
                 ctx.persist_delivery(DeliveryState::Accepted)?;
                 ctx.mark_final_text_tail();
                 return Ok(());
@@ -222,7 +222,7 @@ pub(super) async fn run_turn(
                 "OpenCode V2 became idle without completing this prompt"
             ));
         }
-        ctx.flush()?;
+        ctx.flush_active_async().await?;
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
 }
@@ -251,7 +251,10 @@ async fn merge_projection(
                 .pointer("/time/completed")
                 .is_some_and(|value| !value.is_null())
         {
-            if let Some(error) = message.get("error").filter(|error| !error.is_null()) {
+            if let Some(error) = message
+                .get("error")
+                .filter(|error| !error.is_null() && !is_interrupted_step(error))
+            {
                 let message = error_text(error);
                 ctx.mark_native_retry_exhausted();
                 ctx.mark_terminal_failure("opencode_terminal", &message);
@@ -417,10 +420,22 @@ fn projected_parts(message: &Value) -> Vec<(WirePart, &Value)> {
                         .collect::<Vec<_>>()
                         .join("\n"));
                 }
+                if content["name"] == "question"
+                    && state["status"] == "error"
+                    && state["error"]["message"] == "The user dismissed this question"
+                {
+                    part["state"]["status"] = json!("completed");
+                    part["state"]["output"] = state["error"]["message"].clone();
+                    part["state"]["error"] = Value::Null;
+                }
             }
             to_wire_part(&part).map(|part| (part, content))
         })
         .collect()
+}
+
+fn is_interrupted_step(error: &Value) -> bool {
+    error["type"] == "aborted" && error["message"] == "Step interrupted"
 }
 
 async fn prompts(
@@ -560,6 +575,7 @@ fn form_card(form: &Value, field: &Value, native_id: String) -> Result<WirePromp
         }),
         options,
         multi_select: field["type"] == "multiselect",
+        skip_scope: Some("form".into()),
         ..Default::default()
     })
 }
@@ -569,7 +585,7 @@ pub(super) async fn reply(
     endpoint: &AgentEndpoint,
     prompt: &WirePrompt,
     answer: &PromptAnswer,
-) -> Result<()> {
+) -> Result<bool> {
     let session = ctx
         .native_session_id
         .as_deref()
@@ -580,12 +596,13 @@ pub(super) async fn reply(
         .ok_or_else(|| anyhow!("OpenCode prompt has no id"))?;
     let path = format!("/api/session/{session}");
     if prompt.kind == "permission" {
-        return reply_permission(
+        reply_permission(
             endpoint,
             &format!("{path}/permission/{id}/reply"),
             if answer.approve { "once" } else { "reject" },
         )
-        .await;
+        .await?;
+        return Ok(true);
     }
     let (form_id, field_key): (String, String) = serde_json::from_str(id)?;
     let submitted = submitted_answers(&answer.answers, answer.note.as_ref());
@@ -597,29 +614,30 @@ pub(super) async fn reply(
                 .send()
                 .await?
                 .error_for_status()?;
-            return Ok(());
+            return Ok(true);
         }
-        return post(
+        post(
             endpoint,
             &format!("{path}/form/{form_id}/cancel"),
             &json!({}),
         )
-        .await;
+        .await?;
+        return Ok(true);
     }
     let form = get(endpoint, &format!("{path}/form/{form_id}")).await?;
     let fields = form["data"]["fields"]
         .as_array()
         .ok_or_else(|| anyhow!("OpenCode V2 form has no fields"))?;
     let mut values = serde_json::Map::new();
-    let messages = crate::store::Store::open()?.list_chat_messages(&ctx.session_id)?;
-    for message in messages {
-        let parts: Vec<WirePart> = serde_json::from_str(&message.parts_json)?;
-        saved_form_answers(&form_id, fields, &parts, &mut values)?;
-    }
+    let parts = ctx.prompt_parts().await?;
+    saved_form_answers(&form_id, fields, &parts, &mut values)?;
     let field = fields
         .iter()
         .find(|field| field["key"].as_str() == Some(&field_key))
         .ok_or_else(|| anyhow!("OpenCode form field no longer exists"))?;
+    if !field_active(field, &values) {
+        return Err(anyhow!("OpenCode form field is no longer active"));
+    }
     values.insert(field_key, field_answer(field, submitted)?);
     let active: Vec<_> = fields
         .iter()
@@ -641,8 +659,9 @@ pub(super) async fn reply(
             &json!({"answer":values}),
         )
         .await?;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 fn saved_form_answers(
@@ -652,7 +671,11 @@ fn saved_form_answers(
     answers: &mut serde_json::Map<String, Value>,
 ) -> Result<()> {
     for part in parts {
-        let Some(prompt) = part.prompt.as_ref().filter(|prompt| prompt.resolved) else {
+        let Some(prompt) = part
+            .prompt
+            .as_ref()
+            .filter(|prompt| prompt.resolved && prompt.approved != Some(false))
+        else {
             continue;
         };
         let Some(native_id) = &prompt.native_id else {
@@ -938,6 +961,97 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dismissed_question_is_not_a_provider_failure() {
+        assert!(is_interrupted_step(
+            &json!({"type":"aborted","message":"Step interrupted"})
+        ));
+        assert!(!is_interrupted_step(
+            &json!({"type":"provider.error","message":"Step interrupted"})
+        ));
+        for (tool, error, status) in [
+            ("question", "The user dismissed this question", "completed"),
+            ("question", "Unexpected question failure", "error"),
+            ("shell", "The user dismissed this question", "error"),
+        ] {
+            let parts = wire_parts(
+                &json!({"id":"m","content":[{"type":"tool","name":tool,"state":{"status":"error","error":{"message":error}}}]}),
+            );
+            let state = parts[0].state.as_ref().unwrap();
+            assert_eq!(state.status, status);
+            if status == "completed" {
+                assert_eq!(state.output.as_deref(), Some(error));
+                assert!(state.error.is_none());
+            } else {
+                assert_eq!(state.error.as_deref(), Some(error));
+            }
+        }
+    }
+
+    #[test]
+    fn form_replies_read_only_the_owning_message_and_wait_for_active_fields() {
+        const TEST:&str="local::harness::opencode::v2::tests::form_replies_read_only_the_owning_message_and_wait_for_active_fields";
+        const CHILD: &str = "ORX_TEST_FORM_BATCH";
+        if std::env::var_os(CHILD).is_some() {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                use axum::{routing::{get,post},Json,Router};
+                use std::sync::{Arc,Mutex};
+                let fields=json!([{"key":"gate","type":"boolean"},
+                    {"key":"count","type":"integer","when":[{"key":"gate","op":"eq","value":true}]},
+                    {"key":"text","type":"string"}]);
+                let responses=Arc::new(Mutex::new(Vec::new()));let received=responses.clone();let form_fields=fields.clone();
+                let app=Router::new()
+                    .route("/api/session/native/form/form",get(move || {let fields=form_fields.clone();async move{Json(json!({"data":{"fields":fields}}))}}))
+                    .route("/api/session/native/form/form/reply",post(move |Json(body):Json<Value>|{received.lock().unwrap().push(body);async {}}));
+                let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let endpoint=AgentEndpoint{base_url:format!("http://{}",listener.local_addr().unwrap()),client:crate::net::loopback_client().build().unwrap(),
+                    protocol:crate::local::opencode::Protocol::V2,legacy_v2_api:false};
+                let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
+                let store=crate::store::Store::open().unwrap();
+                let tx=store.begin().unwrap();
+                tx.execute("INSERT INTO chat_sessions(id,project_id,harness,created_at,updated_at) VALUES('session','p','opencode',1,1)",[]).unwrap();
+                tx.commit().unwrap();
+                let mut parts:Vec<_>=fields.as_array().unwrap().iter().map(|field|{
+                    let id=serde_json::to_string(&("form",field["key"].as_str().unwrap())).unwrap();
+                    WirePart::prompt(field["key"].as_str().unwrap(),form_card(&json!({}),field,id).unwrap())
+                }).collect();
+                let save=|parts:&Vec<WirePart>|{
+                    store.upsert_chat_message(&crate::store::StoredChatMessage{id:"owner".into(),session_id:"session".into(),role:"assistant".into(),parts_json:serde_json::to_string(parts).unwrap(),created_at:1,completed_at:None,parent_id:None,base_native_session_id:None,result_native_session_id:None}).unwrap();
+                };
+                save(&parts);
+                // A malformed unrelated historical row must not participate in aggregation.
+                store.upsert_chat_message(&crate::store::StoredChatMessage{id:"foreign-history".into(),session_id:"session".into(),role:"assistant".into(),parts_json:"malformed JSON".into(),created_at:0,completed_at:Some(1),parent_id:None,base_native_session_id:None,result_native_session_id:None}).unwrap();
+                let ctx=ResumeCtx{host:TurnCtx::test_stub().host,session_id:"session".into(),native_session_id:Some("native".into()),prompt_message_id:Some("owner".into())};
+                let answer=|key:&str,value:&str|PromptAnswer{session_id:"session".into(),prompt_id:key.into(),approve:true,resume_mode:None,answers:vec![],note:Some(value.into()),annotations:vec![]};
+                assert!(reply(&ctx,&endpoint,parts[1].prompt.as_ref().unwrap(),&answer("count","42")).await.unwrap_err().to_string().contains("no longer active"));
+                for (step,(index,value)) in [(2,"Free text"),(0,"Yes"),(1,"42")].into_iter().enumerate() {
+                    let req=answer(parts[index].id.as_str(),value);
+                    assert_eq!(reply(&ctx,&endpoint,parts[index].prompt.as_ref().unwrap(),&req).await.unwrap(),step==2);
+                    let prompt=parts[index].prompt.as_mut().unwrap();prompt.resolved=true;prompt.approved=Some(true);prompt.note=req.note;
+                    save(&parts);
+                }
+                assert_eq!(*responses.lock().unwrap(),vec![json!({"answer":{"gate":true,"count":42,"text":"Free text"}})]);
+                let mut bad=ctx;bad.session_id="another-session".into();assert!(bad.prompt_parts().await.is_err());
+                server.abort();
+            });
+            return;
+        }
+        let fixture = crate::local::git::TemporaryDirectory::new("orx-form-batch").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env(CHILD, "1")
+            .env("ORX_DATA_DIR", fixture.path().join("data"))
+            .env("XDG_CONFIG_HOME", fixture.path().join("config"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn v2_permission_card_preserves_exact_command_and_reason() {
         let card = permission_card(
             &json!({"action":"shell", "resources":["printf test-marker"], "metadata":null, "message":"Review this command"}),
@@ -993,6 +1107,7 @@ mod tests {
                 host: TurnCtx::test_stub().host,
                 session_id: "session".into(),
                 native_session_id: Some("native".into()),
+                prompt_message_id: None,
             };
             let prompt = WirePrompt {
                 kind: "permission".into(),
@@ -1059,6 +1174,7 @@ mod tests {
                 host: TurnCtx::test_stub().host,
                 session_id: "session".into(),
                 native_session_id: Some("native".into()),
+                prompt_message_id: None,
             };
             let prompt = WirePrompt {
                 kind: "question".into(),

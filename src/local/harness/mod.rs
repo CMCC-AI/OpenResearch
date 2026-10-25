@@ -239,6 +239,8 @@ pub type TurnResult = std::result::Result<TurnOutcome, TurnFailure>;
 /// harness-agnostic (mark resolved, busy-check, broadcast idle) while never
 /// routing an inline-approval harness through the new-message resume path.
 pub enum ResumeAction {
+    /// No native reply yet: durably record this answer before acknowledging it.
+    PendingAnswers,
     /// Resume by sending `text` as a new user message under `mode` (Claude).
     SendMessage {
         text: String,

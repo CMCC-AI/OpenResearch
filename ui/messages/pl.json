@@ -1310,5 +1310,8 @@
   "projects_delete_folder_kept": "Folder projektu i jego pliki zostaną zachowane.",
   "projects_delete_github_kept": "Powiązane repozytorium GitHub zostanie zachowane.",
   "projects_delete_with_folder": "Usuń projekt i folder",
-  "projects_delete_recovery_path": "Projekt usunięty. Ścieżka odzyskiwania folderu: {path}"
+  "projects_delete_recovery_path": "Projekt usunięty. Ścieżka odzyskiwania folderu: {path}",
+  "chat_skip_question": "Pomiń pytanie",
+  "chat_skip_questions": "Pomiń tę grupę pytań",
+  "chat_question_skipped": "Pominięto"
 }

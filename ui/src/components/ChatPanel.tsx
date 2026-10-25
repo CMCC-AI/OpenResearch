@@ -2673,7 +2673,8 @@ function PromptCard({
     // question — one line: header/question + what was chosen (or the typed
     // custom answer). No echo at all (stale-resolved): neutral "Resolved",
     // matching the plan row.
-    const chosen = (p.answers ?? []).join(", ") || p.note || "";
+    const skipped = !!p.skipScope && p.approved === false;
+    const chosen = skipped ? m.chat_question_skipped() : (p.answers ?? []).join(", ") || p.note || "";
     const annotations: ComposerAnnotation[] = (p.annotations ?? []).map((annotation, index) => ({
       id: `${part.id}-annotation-${index}`,
       text: annotation.text,
@@ -2684,7 +2685,7 @@ function PromptCard({
         <details className={PROMPT_COLLAPSED_CLASS_NAME}>
           <summary>
             <span className="prompt-collapsed-title font-[375] wrap-anywhere">{p.header || p.question || m.chat_question()}</span>
-            <span className={`prompt-outcome font-[375] text-subtext wrap-anywhere [&.approved]:text-accent-green [&.chosen]:text-accent-green [&.approved::before]:content-['✓_'] [&.chosen::before]:content-['✓_'] [&.revised]:text-accent-amber [&.rejected]:text-accent-amber ${chosen ? "chosen" : ""}`}>{chosen || m.chat_resolved()}</span>
+            <span className={`prompt-outcome font-[375] text-subtext wrap-anywhere [&.approved]:text-accent-green [&.chosen]:text-accent-green [&.approved::before]:content-['✓_'] [&.chosen::before]:content-['✓_'] [&.revised]:text-accent-amber [&.rejected]:text-accent-amber ${skipped ? "rejected" : chosen ? "chosen" : ""}`}>{chosen || m.chat_resolved()}</span>
           </summary>
           <div className={PROMPT_COLLAPSED_BODY_CLASS_NAME}>
             {/* The summary title already shows the question when there's no header. */}
@@ -2692,14 +2693,14 @@ function PromptCard({
             {(p.options ?? []).length > 0 && (
               <ul className="prompt-collapsed-options mt-1.5 mx-0 mb-0 ps-4.5 [&_.sel]:text-text [&_.sel]:font-medium">
                 {(p.options ?? []).map((o) => (
-                  <li key={o.label} className={p.answers?.includes(o.label) ? "sel" : ""}>
+                  <li key={o.label} className={!skipped && p.answers?.includes(o.label) ? "sel" : ""}>
                     {o.label}
                   </li>
                 ))}
               </ul>
             )}
             {/* A note-only answer is already the summary outcome — don't echo it twice. */}
-            {p.note && p.note !== chosen && <div className="prompt-collapsed-note mt-1.5 italic">{p.note}</div>}
+            {!skipped && p.note && p.note !== chosen && <div className="prompt-collapsed-note mt-1.5 italic">{p.note}</div>}
           </div>
         </details>
       </div>
@@ -2846,6 +2847,13 @@ function PromptCard({
             onClick={() => respond({ answers: picked })}
           >
             {m.chat_panel_submit()}
+          </Button>
+        </div>
+      )}
+      {p.skipScope && !done && (
+        <div className={PROMPT_ACTIONS_CLASS_NAME}>
+          <Button size="small" onClick={() => respond({ approve: false, answers: [] })}>
+            {p.skipScope === "form" ? m.chat_skip_questions() : m.chat_skip_question()}
           </Button>
         </div>
       )}

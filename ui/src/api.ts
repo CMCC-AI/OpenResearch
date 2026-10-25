@@ -1941,6 +1941,8 @@ export interface ChatPrompt {
   header?: string;
   options?: ChatQuestionOption[];
   multiSelect?: boolean;
+  /** Native skip granularity; absent when the harness cannot skip. */
+  skipScope?: "question" | "form";
   planExit?: boolean;
   /** Answer echo, stamped on resolve: chosen labels (questions), whether the
    * card was approved (plan/permission), and any freeform note. Absent on
