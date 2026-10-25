@@ -1272,16 +1272,17 @@ fn submitted_answers<'a>(answers: &'a [String], note: Option<&'a String>) -> &'a
 /// question → `{answers: [[label,...]]}` (or reject). The reply target is the
 /// card's `native_id` (the opencode permission/question request id).
 async fn reply_inline(ctx: &ResumeCtx, prompt: &WirePrompt, answer: &PromptAnswer) -> Result<()> {
-    let request_id = prompt
-        .native_id
-        .as_deref()
-        .ok_or_else(|| anyhow!("opencode prompt has no reply id"))?;
     // The reply only lands if the turn is still paused waiting for it. If the
     // turn already ended (errored / interrupted), serve may still accept the
     // POST but no one is consuming the resumed stream, so the reply would be
-    // lost and the card would falsely mark resolved. Reject it instead — the
-    // card stays actionable and the user sees the turn is no longer live.
+    // lost and the card would falsely mark answered. Close the dead card
+    // without recording an approval.
     if !ctx.is_busy().await {
+        let host = ctx.host.clone();
+        let session_id = ctx.session_id.clone();
+        let prompt_id = answer.prompt_id.clone();
+        crate::local::blocking::run(move || host.resolve_zombie_prompt(&session_id, &prompt_id))
+            .await?;
         return Err(anyhow!(
             "this turn is no longer running — its prompt can't be answered"
         ));
@@ -1298,18 +1299,29 @@ async fn reply_inline(ctx: &ResumeCtx, prompt: &WirePrompt, answer: &PromptAnswe
     if endpoint.protocol == crate::local::opencode::Protocol::V2 {
         return v2::reply(ctx, &endpoint, prompt, answer).await;
     }
-    let base = endpoint.base_url;
+    reply_v1(&endpoint, ctx.native_session_id.as_deref(), prompt, answer).await
+}
+
+async fn reply_v1(
+    endpoint: &crate::local::opencode::AgentEndpoint,
+    native_session: Option<&str>,
+    prompt: &WirePrompt,
+    answer: &PromptAnswer,
+) -> Result<()> {
+    let request_id = prompt
+        .native_id
+        .as_deref()
+        .ok_or_else(|| anyhow!("opencode prompt has no reply id"))?;
+    let base = &endpoint.base_url;
     let http = &endpoint.client;
 
     match prompt.kind.as_str() {
         "permission" => {
-            // approve → "always" (so the same tool won't re-prompt this turn);
-            // reject closes it. The reply is session-scoped in opencode's v1 API.
-            let native_session = ctx.native_session_id.as_deref().ok_or_else(|| {
+            let native_session = native_session.ok_or_else(|| {
                 anyhow!("opencode session has no native id — cannot deliver the reply")
             })?;
-            let response = if answer.approve { "always" } else { "reject" };
-            post_permission(http, &base, native_session, request_id, response).await?;
+            let response = if answer.approve { "once" } else { "reject" };
+            post_permission(http, base, native_session, request_id, response).await?;
         }
         "question" => {
             let submitted = submitted_answers(&answer.answers, answer.note.as_ref());
@@ -2001,15 +2013,16 @@ fn handle_event(
 }
 
 /// Surface a prompt card and flush it so it renders immediately (before the
-/// turn resumes). The card's `native_id` (the reply target) is also its
-/// `WirePart` id, so the user's answer round-trips back to the right request.
+/// turn resumes). Scope the UI part id to its assistant message so a native
+/// request id reused by a later turn cannot capture clicks on an old card.
 async fn surface_card(ctx: &mut TurnCtx, card: WirePrompt) {
     // `native_id` is always set by permission_card/question_card (opencode
     // requires the request id); the fallback id only guards a malformed payload.
-    let part_id = card
+    let request_id = card
         .native_id
         .clone()
         .unwrap_or_else(|| format!("prompt-{}", ctx.assistant.parts.len()));
+    let part_id = format!("{}:{request_id}", ctx.assistant.id);
     ctx.upsert_part(WirePart::prompt(part_id, card));
     let _ = ctx.flush_active_async().await;
 }
@@ -2018,7 +2031,7 @@ async fn surface_card(ctx: &mut TurnCtx, card: WirePrompt) {
 /// for this session. Returns `true` if it consumed the event (so the caller
 /// skips `handle_event`), `false` otherwise.
 ///
-/// Permissions honor the session's policy: Auto-approve replies `always` to an
+/// Permissions honor the session's policy: Auto-approve replies `once` to an
 /// `ask` request, while Default surfaces a card. Explicit denies never emit an
 /// approval request, so neither policy overrides them. Questions always surface — there's no
 /// sensible auto-answer. A single flaky auto-reply must not lose the whole turn,
@@ -2053,8 +2066,7 @@ async fn handle_prompt_event(
                     // Reply without surfacing a card — keep the turn flowing. If
                     // the reply POST fails, don't kill the turn: fall back to a
                     // card so the user can decide.
-                    if let Err(err) =
-                        post_permission(ctx.http(), base, native_id, id, "always").await
+                    if let Err(err) = post_permission(ctx.http(), base, native_id, id, "once").await
                     {
                         eprintln!("orx up: opencode auto-approve failed, surfacing card: {err}");
                         surface_card(ctx, card).await;
@@ -2081,6 +2093,64 @@ async fn handle_prompt_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn v1_permission_replies_are_once_for_manual_and_automatic_approval() {
+        use axum::{http::StatusCode, routing::post, Json, Router};
+        use std::sync::{Arc, Mutex};
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let received = bodies.clone();
+        let app = Router::new().route(
+            "/session/native/permissions/request",
+            post(move |Json(body): Json<Value>| {
+                received.lock().unwrap().push(body);
+                async { StatusCode::NO_CONTENT }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = crate::local::opencode::AgentEndpoint {
+            base_url: format!("http://{}", listener.local_addr().unwrap()),
+            client: crate::net::loopback_client().build().unwrap(),
+            protocol: crate::local::opencode::Protocol::V1,
+            legacy_v2_api: false,
+        };
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let prompt = WirePrompt {
+            kind: "permission".into(),
+            native_id: Some("request".into()),
+            ..Default::default()
+        };
+        for approve in [true, false] {
+            let answer = PromptAnswer {
+                session_id: "session".into(),
+                prompt_id: "part".into(),
+                approve,
+                resume_mode: None,
+                answers: Vec::new(),
+                note: None,
+                annotations: Vec::new(),
+            };
+            reply_v1(&endpoint, Some("native"), &prompt, &answer)
+                .await
+                .unwrap();
+        }
+        let mut ctx = TurnCtx::test_stub();
+        ctx.permission_mode = Some(PermissionMode::Auto);
+        assert!(handle_prompt_event(&mut ctx, "native", &endpoint.base_url, &json!({
+            "type":"permission.asked", "properties":{"sessionID":"native", "id":"request", "permission":"bash"}
+        }), &HashSet::new()).await.unwrap());
+        assert!(ctx.assistant.parts.is_empty());
+        assert_eq!(
+            *bodies.lock().unwrap(),
+            vec![
+                json!({"response":"once"}),
+                json!({"response":"reject"}),
+                json!({"response":"once"})
+            ]
+        );
+        server.abort();
+    }
+
     #[cfg(unix)]
     #[test]
     fn v1_one_shot_verifies_file_captured_config_and_generates_on_selected_model() {

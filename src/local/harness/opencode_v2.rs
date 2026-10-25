@@ -24,6 +24,54 @@ async fn post(endpoint: &AgentEndpoint, path: &str, body: &Value) -> Result<()> 
     Ok(())
 }
 
+async fn reply_permission(endpoint: &AgentEndpoint, path: &str, decision: &str) -> Result<()> {
+    let body = if endpoint.legacy_v2_api {
+        json!({"reply":decision})
+    } else {
+        json!({"decision":decision})
+    };
+    post(endpoint, path, &body).await
+}
+
+fn permission_card(request: &Value, id: &str) -> WirePrompt {
+    let mut input = request["metadata"]["input"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let resources = request["resources"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !resources.is_empty()
+        && !["command", "cmd", "filePath", "file_path", "path"]
+            .iter()
+            .any(|key| input.get(*key).and_then(Value::as_str).is_some())
+    {
+        let key = if request["action"] == "shell" {
+            "command"
+        } else {
+            "path"
+        };
+        input.insert(key.into(), json!(resources));
+    }
+    if let Some(message) = request["message"]
+        .as_str()
+        .filter(|message| !message.trim().is_empty())
+    {
+        input.entry("reason").or_insert_with(|| json!(message));
+    }
+    WirePrompt {
+        kind: "permission".into(),
+        native_id: Some(id.into()),
+        tool: request["action"].as_str().map(str::to_owned),
+        tool_input: Some(Value::Object(input)),
+        ..Default::default()
+    }
+}
+
 pub(super) async fn run_turn(
     ctx: &mut TurnCtx,
     store: NativeStore,
@@ -390,28 +438,14 @@ async fn prompts(
             continue;
         }
         if opencode_auto_approve(ctx.permission_mode)
-            && post(
-                endpoint,
-                &format!("{path}/permission/{id}/reply"),
-                &json!({"reply":"always"}),
-            )
-            .await
-            .is_ok()
+            && reply_permission(endpoint, &format!("{path}/permission/{id}/reply"), "once")
+                .await
+                .is_ok()
         {
             surfaced.insert(id.to_owned());
             continue;
         }
-        surface_card(
-            ctx,
-            WirePrompt {
-                kind: "permission".into(),
-                native_id: Some(id.into()),
-                tool: request["action"].as_str().map(str::to_owned),
-                tool_input: Some(request["resources"].clone()),
-                ..Default::default()
-            },
-        )
-        .await;
+        surface_card(ctx, permission_card(request, id)).await;
         surfaced.insert(id.to_owned());
     }
     let forms = get(endpoint, &format!("{path}/form")).await?;
@@ -546,16 +580,16 @@ pub(super) async fn reply(
         .ok_or_else(|| anyhow!("OpenCode prompt has no id"))?;
     let path = format!("/api/session/{session}");
     if prompt.kind == "permission" {
-        return post(
+        return reply_permission(
             endpoint,
             &format!("{path}/permission/{id}/reply"),
-            &json!({"reply":if answer.approve {"always"} else {"reject"}}),
+            if answer.approve { "once" } else { "reject" },
         )
         .await;
     }
     let (form_id, field_key): (String, String) = serde_json::from_str(id)?;
     let submitted = submitted_answers(&answer.answers, answer.note.as_ref());
-    if submitted.is_empty() {
+    if !answer.approve || submitted.is_empty() {
         if !endpoint.legacy_v2_api {
             endpoint
                 .client
@@ -902,6 +936,148 @@ pub(super) async fn generate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v2_permission_card_preserves_exact_command_and_reason() {
+        let card = permission_card(
+            &json!({"action":"shell", "resources":["printf test-marker"], "metadata":null, "message":"Review this command"}),
+            "request",
+        );
+        assert_eq!(
+            card.tool_input.unwrap(),
+            json!({"command":"printf test-marker", "reason":"Review this command"})
+        );
+        let card = permission_card(
+            &json!({"action":"shell", "resources":["printf *"],
+            "metadata":{"input":{"command":"printf exact-command", "reason":"Original reason"}}, "message":"Provider reason"}),
+            "request",
+        );
+        assert_eq!(
+            card.tool_input.unwrap(),
+            json!({"command":"printf exact-command", "reason":"Original reason"})
+        );
+        let card = permission_card(
+            &json!({"action":"edit", "resources":["a.txt", "b.txt"]}),
+            "request",
+        );
+        assert_eq!(card.tool_input.unwrap()["path"], "a.txt\nb.txt");
+    }
+
+    #[tokio::test]
+    async fn v2_permission_replies_match_native_schema_and_once_scope() {
+        use axum::{
+            http::StatusCode,
+            routing::{get, post},
+            Json, Router,
+        };
+        use std::sync::{Arc, Mutex};
+        for legacy in [false, true] {
+            let bodies = Arc::new(Mutex::new(Vec::new()));
+            let received = bodies.clone();
+            let app = Router::new()
+                .route("/api/session/native/permission/request/reply", post(move |Json(body): Json<Value>| {
+                    received.lock().unwrap().push(body);
+                    async { StatusCode::NO_CONTENT }
+                }))
+                .route("/api/session/native/permission", get(|| async { Json(json!({"data":[{"id":"request","action":"shell","resources":["echo fixture"]}]})) }))
+                .route("/api/session/native/form", get(|| async { Json(json!({"data":[]})) }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = AgentEndpoint {
+                base_url: format!("http://{}", listener.local_addr().unwrap()),
+                client: crate::net::loopback_client().build().unwrap(),
+                protocol: crate::local::opencode::Protocol::V2,
+                legacy_v2_api: legacy,
+            };
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let ctx = ResumeCtx {
+                host: TurnCtx::test_stub().host,
+                session_id: "session".into(),
+                native_session_id: Some("native".into()),
+            };
+            let prompt = WirePrompt {
+                kind: "permission".into(),
+                native_id: Some("request".into()),
+                ..Default::default()
+            };
+            for approve in [true, false] {
+                let answer = PromptAnswer {
+                    session_id: "session".into(),
+                    prompt_id: "part".into(),
+                    approve,
+                    resume_mode: None,
+                    answers: Vec::new(),
+                    note: None,
+                    annotations: Vec::new(),
+                };
+                reply(&ctx, &endpoint, &prompt, &answer).await.unwrap();
+            }
+            let mut ctx = TurnCtx::test_stub();
+            ctx.permission_mode = Some(PermissionMode::Auto);
+            let mut surfaced = HashSet::new();
+            prompts(&mut ctx, &endpoint, "/api/session/native", &mut surfaced)
+                .await
+                .unwrap();
+            assert!(surfaced.contains("request"));
+            assert!(ctx.assistant.parts.is_empty());
+            let key = if legacy { "reply" } else { "decision" };
+            assert_eq!(
+                *bodies.lock().unwrap(),
+                vec![
+                    json!({key:"once"}),
+                    json!({key:"reject"}),
+                    json!({key:"once"})
+                ]
+            );
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn skipped_v2_form_cancels_even_when_a_display_note_is_present() {
+        use axum::{http::StatusCode, routing, Router};
+        for legacy in [false, true] {
+            let app = if legacy {
+                Router::new().route(
+                    "/api/session/native/form/form/cancel",
+                    routing::post(|| async { StatusCode::NO_CONTENT }),
+                )
+            } else {
+                Router::new().route(
+                    "/api/session/native/form/form",
+                    routing::delete(|| async { StatusCode::NO_CONTENT }),
+                )
+            };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = AgentEndpoint {
+                base_url: format!("http://{}", listener.local_addr().unwrap()),
+                client: crate::net::loopback_client().build().unwrap(),
+                protocol: crate::local::opencode::Protocol::V2,
+                legacy_v2_api: legacy,
+            };
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let ctx = ResumeCtx {
+                host: TurnCtx::test_stub().host,
+                session_id: "session".into(),
+                native_session_id: Some("native".into()),
+            };
+            let prompt = WirePrompt {
+                kind: "question".into(),
+                native_id: Some(serde_json::to_string(&("form", "count")).unwrap()),
+                ..Default::default()
+            };
+            let answer = PromptAnswer {
+                session_id: "session".into(),
+                prompt_id: "part".into(),
+                approve: false,
+                resume_mode: None,
+                answers: vec!["stale selection".into()],
+                note: Some("Skipped".into()),
+                annotations: Vec::new(),
+            };
+            reply(&ctx, &endpoint, &prompt, &answer).await.unwrap();
+            server.abort();
+        }
+    }
 
     #[tokio::test]
     async fn discovery_waits_for_a_cold_v2_catalog() {

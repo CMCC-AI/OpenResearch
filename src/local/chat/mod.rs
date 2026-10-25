@@ -1673,7 +1673,7 @@ impl ChatHost {
         let outcome = self
             .compaction_outcome(&session_id, &session, &snapshot)
             .await;
-        if self.owns_compaction(&session_id, &marker.id).await {
+        if self.owns_active_message(&session_id, &marker.id).await {
             // Best-effort: whatever the harness did already happened, and a
             // failed row update must not be reported as a failed compaction.
             if let Ok(store) = Store::open() {
@@ -1686,7 +1686,7 @@ impl ChatHost {
                     None => ("completed", None),
                 };
                 // Stop can land mid-write; its `error` row is the truthful one.
-                if self.owns_compaction(&session_id, &marker.id).await {
+                if self.owns_active_message(&session_id, &marker.id).await {
                     let _ = self.publish_compaction_marker(
                         &store,
                         &session_id,
@@ -1754,7 +1754,7 @@ impl ChatHost {
         Ok(())
     }
 
-    async fn owns_compaction(&self, session_id: &str, message_id: &str) -> bool {
+    async fn owns_active_message(&self, session_id: &str, message_id: &str) -> bool {
         matches!(
             self.turns.lock().await.get(session_id),
             Some(TurnState::Active(active)) if active.message_id == message_id
@@ -6638,6 +6638,20 @@ impl ChatHost {
                 if let Some(message) = message {
                     host.emit("chat.message", message_json(&message, &session_id));
                 }
+                match resolve_stopped_native_prompts_with_store(
+                    host.clone(),
+                    &session_id,
+                    &active.message_id,
+                    Store::open,
+                )
+                .await
+                {
+                    Ok(Some(message)) => {
+                        host.emit("chat.message", message_json(&message, &session_id))
+                    }
+                    Ok(None) => {}
+                    Err(error) => eprintln!("orx up: stopped prompt cleanup failed: {error}"),
+                }
                 let _ = std::fs::remove_file(target_event_path(&session_id, &active.message_id));
                 remove_target_pointer_if_matches(&session_id, &active.message_id);
             }
@@ -6741,13 +6755,29 @@ impl ChatHost {
         let session = Store::open()?
             .get_chat_session(&req.session_id)?
             .ok_or_else(|| anyhow!("chat session not found"))?;
-        // Already resolved (the loser of a double-submit, or a re-click) is a
-        // clean no-op — NOT an error. Returning `Err` here would make the UI's
-        // catch clear `busy` on a session whose turn is still streaming; a plain
-        // `Ok` leaves the live turn (and its busy state) untouched.
-        let Some(prompt) = unresolved_prompt(&req.session_id, &req.prompt_id)? else {
+        // An already resolved card (double-submit or re-click) is a clean
+        // no-op; leave the live turn and its busy state untouched.
+        let Some((prompt_message_id, prompt)) = unresolved_prompt(&req.session_id, &req.prompt_id)?
+        else {
             return Ok(());
         };
+        if session.harness == "opencode"
+            && prompt.native_id.is_some()
+            && !self
+                .owns_active_message(&req.session_id, &prompt_message_id)
+                .await
+        {
+            let host = self.clone();
+            let session_id = req.session_id.clone();
+            let prompt_id = req.prompt_id.clone();
+            crate::local::blocking::run(move || {
+                host.resolve_zombie_prompt(&session_id, &prompt_id)
+            })
+            .await?;
+            return Err(anyhow!(
+                "this turn is no longer running — its prompt can't be answered"
+            ));
+        }
         if prompt.kind == "permission"
             && first_unresolved_permission_id(&req.session_id)?.as_deref()
                 != Some(req.prompt_id.as_str())
@@ -7289,7 +7319,7 @@ impl ResumeCtx {
 /// any mutation so the harness can inspect it (kind, reply target) and validate
 /// the answer first. Returns `None` if there's no such card *or* it's already
 /// resolved, so a double-answer is a no-op rather than a second resume.
-fn unresolved_prompt(session_id: &str, prompt_id: &str) -> Result<Option<WirePrompt>> {
+fn unresolved_prompt(session_id: &str, prompt_id: &str) -> Result<Option<(String, WirePrompt)>> {
     let store = Store::open()?;
     for msg in store.list_chat_messages(session_id)?.iter().rev() {
         if msg.role != "assistant" {
@@ -7301,7 +7331,7 @@ fn unresolved_prompt(session_id: &str, prompt_id: &str) -> Result<Option<WirePro
             .find(|p| p.id == prompt_id)
             .and_then(|p| p.prompt.as_ref())
         {
-            return Ok((!prompt.resolved).then(|| prompt.clone()));
+            return Ok((!prompt.resolved).then(|| (msg.id.clone(), prompt.clone())));
         }
     }
     Ok(None)
@@ -7677,6 +7707,38 @@ async fn interruption_session_with_store(
 ) -> Result<Option<StoredChatSession>> {
     let session_id = session_id.to_string();
     crate::local::blocking::run(move || open()?.get_chat_session(&session_id)).await?
+}
+
+/// After the stopped turn's final reconciliation, close its native cards before
+/// releasing Cancelling. Target one message, not the whole conversation history.
+async fn resolve_stopped_native_prompts_with_store(
+    host: Arc<ChatHost>,
+    session_id: &str,
+    message_id: &str,
+    open: impl FnOnce() -> Result<Store> + Send + 'static,
+) -> Result<Option<WireMessage>> {
+    let session_id = session_id.to_string();
+    let message_id = message_id.to_string();
+    crate::local::blocking::run(move || {
+        let store = open()?;
+        let _guard = host.msg_write.lock().unwrap();
+        let Some(stored) = store
+            .get_chat_message(&message_id)?
+            .filter(|message| message.session_id == session_id && message.role == "assistant")
+        else {
+            return Ok(None);
+        };
+        let mut message = stored_to_wire(&stored);
+        if !resolve_stale_prompts_in_parts(&mut message.parts, true) {
+            return Ok(None);
+        }
+        store.upsert_chat_message(&StoredChatMessage {
+            parts_json: serde_json::to_string(&message.parts)?,
+            ..stored
+        })?;
+        Ok(Some(message))
+    })
+    .await?
 }
 
 /// Called by the owned interruption task after the active handle has stopped,
@@ -11048,6 +11110,166 @@ mod bridge_tests {
 
         assert!(resolve_stale_prompts_in_parts(&mut parts, true));
         assert!(parts[0].children[0].prompt.as_ref().unwrap().resolved);
+    }
+
+    #[test]
+    fn opencode_stop_closes_native_cards_and_rejects_cards_from_another_turn() {
+        const TEST: &str = "local::chat::bridge_tests::opencode_stop_closes_native_cards_and_rejects_cards_from_another_turn";
+        const CHILD: &str = "ORX_TEST_OPENCODE_STOP_PROMPTS";
+        if std::env::var_os(CHILD).is_some() {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let host = Arc::new(test_host());
+                let store = Store::open().unwrap();
+                let mut session = bare_session();
+                session.harness = "opencode".into();
+                session.native_session_id = Some("native".into());
+                session.plan_mode = true;
+                store.create_chat_session(&session).unwrap();
+                let native_prompt = |id: &str| {
+                    WirePart::prompt(
+                        id,
+                        WirePrompt {
+                            kind: "question".into(),
+                            native_id: Some("reused-native-request".into()),
+                            plan_exit: true,
+                            ..Default::default()
+                        },
+                    )
+                };
+                let save = |id: &str, parts: Vec<WirePart>| {
+                    store
+                        .upsert_chat_message_on_branch(&StoredChatMessage {
+                            id: id.into(),
+                            session_id: session.id.clone(),
+                            role: "assistant".into(),
+                            parts_json: serde_json::to_string(&parts).unwrap(),
+                            created_at: 1,
+                            completed_at: None,
+                            parent_id: None,
+                            base_native_session_id: None,
+                            result_native_session_id: Some("native".into()),
+                        })
+                        .unwrap();
+                };
+                let answered = WirePart::prompt(
+                    "answered",
+                    WirePrompt {
+                        kind: "question".into(),
+                        native_id: Some("answered-request".into()),
+                        resolved: true,
+                        answers: vec!["Keep".into()],
+                        approved: Some(true),
+                        note: Some("Preserve note".into()),
+                        ..Default::default()
+                    },
+                );
+                let mut nested = WirePart::text("nested", "");
+                nested.children.push(native_prompt("nested-question"));
+                save(
+                    "stopped",
+                    vec![
+                        native_prompt("stopped:request"),
+                        answered,
+                        nested,
+                        WirePart::prompt(
+                            "end-turn-plan",
+                            WirePrompt {
+                                kind: "plan".into(),
+                                ..Default::default()
+                            },
+                        ),
+                    ],
+                );
+                save("older", vec![native_prompt("older:request")]);
+                let active = |message_id: &str| {
+                    TurnState::Active(ActiveTurn {
+                        handle: tokio::spawn(std::future::pending()),
+                        message_id: message_id.into(),
+                        turn_id: format!("turn-{message_id}"),
+                    })
+                };
+                host.turns
+                    .lock()
+                    .await
+                    .insert(session.id.clone(), active("stopped"));
+                host.interrupt_by_user(&session.id).await.unwrap();
+                assert!(!host.is_busy(&session.id).await);
+                let stopped = stored_to_wire(&store.get_chat_message("stopped").unwrap().unwrap());
+                let prompt = stopped.parts[0].prompt.as_ref().unwrap();
+                assert!(prompt.resolved);
+                assert_eq!(prompt.approved, None);
+                assert!(prompt.answers.is_empty());
+                let answered = stopped.parts[1].prompt.as_ref().unwrap();
+                assert_eq!(answered.answers, ["Keep"]);
+                assert_eq!(answered.note.as_deref(), Some("Preserve note"));
+                assert!(
+                    stopped.parts[2].children[0]
+                        .prompt
+                        .as_ref()
+                        .unwrap()
+                        .resolved
+                );
+                assert!(!stopped.parts[3].prompt.as_ref().unwrap().resolved);
+                let older = stored_to_wire(&store.get_chat_message("older").unwrap().unwrap());
+                assert!(
+                    !older.parts[0].prompt.as_ref().unwrap().resolved,
+                    "Stop cleanup must target its own message"
+                );
+
+                save("successor", vec![native_prompt("successor:request")]);
+                host.turns
+                    .lock()
+                    .await
+                    .insert(session.id.clone(), active("successor"));
+                let answer = |prompt_id: &str| PromptAnswer {
+                    session_id: session.id.clone(),
+                    prompt_id: prompt_id.into(),
+                    approve: true,
+                    resume_mode: None,
+                    answers: vec!["Yes".into()],
+                    note: None,
+                    annotations: Vec::new(),
+                };
+                host.respond(answer("stopped:request")).await.unwrap();
+                let error = host.respond(answer("older:request")).await.unwrap_err();
+                assert!(error.to_string().contains("no longer running"), "{error}");
+                let older = stored_to_wire(&store.get_chat_message("older").unwrap().unwrap());
+                assert!(older.parts[0].prompt.as_ref().unwrap().resolved);
+                assert_eq!(older.parts[0].prompt.as_ref().unwrap().approved, None);
+                let successor =
+                    stored_to_wire(&store.get_chat_message("successor").unwrap().unwrap());
+                assert!(!successor.parts[0].prompt.as_ref().unwrap().resolved);
+                assert!(host.is_busy(&session.id).await);
+                assert!(
+                    store
+                        .get_chat_session(&session.id)
+                        .unwrap()
+                        .unwrap()
+                        .plan_mode
+                );
+                assert!(
+                    host.plan_changes.lock().unwrap().is_empty(),
+                    "stale Plan replies must not change revisions"
+                );
+                host.interrupt(&session.id).await.unwrap();
+            });
+            return;
+        }
+        let fixture =
+            crate::local::git::TemporaryDirectory::new("orx-stop-native-prompts").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env(CHILD, "1")
+            .env("ORX_DATA_DIR", fixture.path().join("data"))
+            .env("XDG_CONFIG_HOME", fixture.path().join("config"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     /// The decision wire shapes are Claude Code's permission-prompt-tool
