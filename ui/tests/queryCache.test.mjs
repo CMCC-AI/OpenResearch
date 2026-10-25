@@ -216,6 +216,38 @@ test("a pending local turn survives reconciliation regardless of server clock sk
   assert.equal(result.activeLeafId, localId);
 });
 
+test("a delayed compaction response cannot replace streamed completion or move the branch", async (t) => {
+  const { client, load } = setup(t, {});
+  const store = load("chatStore");
+  const options = load("chat").getChatMessagesQuery("s");
+  const running = { id: "compact", role: "assistant", parentId: "user", createdAt: 2,
+    parts: [{ id: "progress", type: "tool", state: { status: "running" } }] };
+  const response = deferred();
+  const request = response.promise.then(message => store.dispatchChat("p", {
+    type: "upsertMessage", sessionId: "s", message, onlyIfMissing: true,
+  }));
+  client.setQueryData(options.queryKey, { messages: [], queued: [], activeLeafId: "user" });
+  const completed = { ...running, completedAt: 3, parts: [{ ...running.parts[0], state: { status: "completed" } }] };
+  store.dispatchChat("p", { type: "upsertMessage", sessionId: "s", message: completed });
+  store.dispatchChat("p", { type: "activeLeaf", sessionId: "s", leafId: "other-branch" });
+  response.resolve(running);
+  await request;
+  assert.deepEqual(client.getQueryData(options.queryKey).messages, [completed]);
+  assert.equal(client.getQueryData(options.queryKey).activeLeafId, "other-branch");
+});
+
+test("a compaction HTTP seed appears before SSE and still accepts a later terminal event", (t) => {
+  const { client, load } = setup(t, {});
+  const store = load("chatStore");
+  const options = load("chat").getChatMessagesQuery("s");
+  const running = { id: "compact", role: "assistant", createdAt: 1, parts: [] };
+  store.dispatchChat("p", { type: "upsertMessage", sessionId: "s", message: running, onlyIfMissing: true });
+  assert.deepEqual(client.getQueryData(options.queryKey).messages, [running]);
+  const failed = { ...running, completedAt: 2, parts: [{ id: "progress", type: "tool", state: { status: "error" } }] };
+  store.dispatchChat("p", { type: "upsertMessage", sessionId: "s", message: failed });
+  assert.deepEqual(client.getQueryData(options.queryKey).messages, [failed]);
+});
+
 test("write invalidation stays scoped and excludes immutable commit bodies", async (t) => {
   const { client, load } = setup(t, {});
   const scope = load("client").workspaceScope();

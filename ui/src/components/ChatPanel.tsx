@@ -16,7 +16,7 @@ import { researchModes, type ResearchMode } from "../research";
 import { ComposerProjectPicker } from "./ComposerProjectPicker";
 import { ProjectInfoCard } from "./ProjectInfoCard";
 import { fitSidebarRows, sidebarRowHeight, sidebarClasses, type SidebarRow } from "../sidebarLayout";
-import { useVirtualizer, defaultRangeExtractor, type Range as VirtualRange } from "@tanstack/react-virtual";
+import { useVirtualizer, defaultRangeExtractor, measureElement as measureVirtualElement, type Range as VirtualRange } from "@tanstack/react-virtual";
 import { markLiveUpdate } from "../queries/live";
 import { removeSession as removeCachedSession } from "../queries/invalidation";
 import {
@@ -3750,6 +3750,10 @@ function useTranscriptAnnouncement(messages: ChatMessage[]): TranscriptAnnouncem
   return announcement;
 }
 
+// Only dimensions survive a chat remount, never message bodies or DOM nodes.
+const transcriptRowSizes = new Map<string, { size: number; width: number; scope: string; completedAt: ChatMessage["completedAt"] }>();
+const TRANSCRIPT_ROW_SIZES_LIMIT = 5_000;
+
 export const Transcript = memo(function Transcript({
   messages,
   scrollRef,
@@ -3815,6 +3819,9 @@ export const Transcript = memo(function Transcript({
   }, [messages, visibleMessages, allMessages]);
   // ponytail: interacted rows stay mounted for this visit; lift row state if retention becomes costly.
   const retainedRows = useRef(new Set<string>());
+  const latestMessages = useRef(visibleMessages);
+  latestMessages.current = visibleMessages;
+  const measurementScope = JSON.stringify([workspaceKey("transcript")[1], getLocale()]);
   const [fullHistory, setFullHistory] = useState(false);
   const getItemKey = useCallback((index: number) => visibleMessages[index].id, [visibleMessages]);
   const rangeExtractor = useCallback((range: VirtualRange) => {
@@ -3825,15 +3832,33 @@ export const Transcript = memo(function Transcript({
     });
     return [...indexes].sort((a, b) => a - b);
   }, [visibleMessages, fullHistory]);
+  // Real measurements also seed anchoring; estimates alone do not mark rows measured.
+  const [initialMeasurementsCache] = useState(() => visibleMessages.flatMap((message, index) => {
+    const remembered = transcriptRowSizes.get(message.id);
+    if (!remembered || remembered.scope !== measurementScope || remembered.width !== scrollRef.current?.offsetWidth
+      || remembered.completedAt !== message.completedAt || (message.role === "assistant" && message.completedAt == null)) return [];
+    const { size } = remembered;
+    return [{ key: message.id, index, start: 0, end: size, size, lane: 0 }];
+  }));
+  const measuredWidths = useRef(new Map<string, number>());
   const virtualizer = useVirtualizer({
     count: visibleMessages.length,
-    useFlushSync: false,
     getScrollElement: () => scrollRef.current,
     getItemKey,
     estimateSize: () => 400,
-    overscan: 1,
+    initialMeasurementsCache,
+    measureElement: (element, entry, instance) => {
+      const id = element.getAttribute("data-message-id");
+      // Entry-less calls can reuse a cached height. Preserve its actual measuring width.
+      if (id && (entry || !instance.itemSizeCache.has(id))) measuredWidths.current.set(id, instance.scrollElement?.offsetWidth ?? 0);
+      return measureVirtualElement(element, entry, instance);
+    },
+    overscan: 4,
     initialRect: { width: scrollRef.current?.clientWidth ?? 0, height: scrollRef.current?.clientHeight ?? 0 },
-    initialOffset: () => Math.max(0, visibleMessages.length * 400 - (scrollRef.current?.clientHeight ?? 0)),
+    initialOffset: () => {
+      const measured = initialMeasurementsCache.reduce((sum, item) => sum + item.size, 0);
+      return Math.max(0, measured + (visibleMessages.length - initialMeasurementsCache.length) * 400 - (scrollRef.current?.clientHeight ?? 0));
+    },
     anchorTo: stickToBottom.current ? "end" : "start",
     followOnAppend: true,
     scrollEndThreshold: 60,
@@ -3845,6 +3870,24 @@ export const Transcript = memo(function Transcript({
     onPinToBottom();
     return () => { scrollToEndRef.current = null; };
   }, [virtualizer, scrollToEndRef, onPinToBottom]);
+  useLayoutEffect(() => () => {
+    const currentMessages = new Map(latestMessages.current.map(message => [message.id, message]));
+    for (const [key, size] of virtualizer.itemSizeCache) {
+      const id = String(key);
+      const previous = transcriptRowSizes.get(id);
+      const width = measuredWidths.current.get(id) ?? (previous?.scope === measurementScope ? previous.width : undefined);
+      const message = currentMessages.get(id);
+      transcriptRowSizes.delete(id);
+      // Disclosure state resets on remount; a streaming tail can change while away.
+      if (message && !retainedRows.current.has(id) && width && (message.role === "user" || message.completedAt != null)) {
+        transcriptRowSizes.set(id, { size, width, scope: measurementScope, completedAt: message.completedAt });
+      }
+    }
+    for (const id of transcriptRowSizes.keys()) {
+      if (transcriptRowSizes.size <= TRANSCRIPT_ROW_SIZES_LIMIT) break;
+      transcriptRowSizes.delete(id);
+    }
+  }, [virtualizer, measurementScope]);
   useEffect(() => {
     const retainSelection = () => {
       const selection = window.getSelection();
@@ -4824,10 +4867,10 @@ export function ChatPanel({
     if (sessionFilter === "archived") setSessionFilter("active");
     const sourceScope = composerScopeRef.current;
     try {
-      // The row lands over SSE too; upserting the response paints it without
-      // waiting for the broadcast, as the `!` shell path does.
+      // SSE may already have completed this row before the HTTP response arrives.
+      // Seed a missing row, but never replace the newer streamed state.
       const { message } = await compactChatSession(sessionId);
-      dispatch({ type: "upsertMessage", sessionId, message });
+      dispatch({ type: "upsertMessage", sessionId, message, onlyIfMissing: true });
     } catch (err) {
       if (composerScopeRef.current.activeId !== sourceScope.activeId) return;
       setSettingsError(m.chat_compact_failed({ error: ltr(err instanceof Error ? err.message : String(err)) }));

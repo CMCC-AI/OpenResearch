@@ -111,3 +111,65 @@ test("mounting a different conversation resets both bottom-pin representations",
   cleanup();
   assert.equal(scrollToEndRef.current, null);
 });
+
+function measurementLifecycle({ messages, sizes, widths, retained = [], cache = new Map(), scope = "workspace-a" }) {
+  const effect = find(node => ts.isCallExpression(node) && node.expression.getText(file) === "useLayoutEffect"
+    && node.getText(file).includes("transcriptRowSizes.set")).arguments[0];
+  const mount = evaluate(`return ${effect.getText(file)}`, {
+    latestMessages: { current: messages }, virtualizer: { itemSizeCache: sizes },
+    measuredWidths: { current: widths }, retainedRows: { current: new Set(retained) },
+    transcriptRowSizes: cache, measurementScope: scope, TRANSCRIPT_ROW_SIZES_LIMIT: 5000,
+  });
+  mount()();
+  const declaration = find(node => ts.isVariableDeclaration(node) && node.name.getText(file) === "[initialMeasurementsCache]");
+  const seed = (width = 840, measurementScope = scope, visibleMessages = messages) => evaluate(
+    `return (${declaration.initializer.arguments[0].getText(file)})();`, {
+      visibleMessages, transcriptRowSizes: cache, measurementScope, scrollRef: { current: { offsetWidth: width } },
+    });
+  return { cache, seed };
+}
+
+test("chat remount reuses stable measured rows but rejects expanded, streaming and removed rows", () => {
+  const messages = [
+    { id: "user", role: "user" }, { id: "answer", role: "assistant", completedAt: 10 },
+    { id: "expanded", role: "assistant", completedAt: 10 }, { id: "stream", role: "assistant" },
+  ];
+  const { cache, seed } = measurementLifecycle({ messages,
+    sizes: new Map([["user", 120], ["answer", 780], ["expanded", 900], ["stream", 230], ["removed", 100]]),
+    widths: new Map(messages.map(message => [message.id, 840])), retained: ["expanded"],
+  });
+  assert.deepEqual([...cache.keys()], ["user", "answer"]);
+  assert.deepEqual(seed().map(row => [row.key, row.index, row.size]), [["user", 0, 120], ["answer", 1, 780]]);
+  assert.deepEqual(seed(420), [], "a narrow panel must remeasure");
+  assert.deepEqual(seed(840, "workspace-b"), [], "other workspaces cannot reuse heights");
+  assert.deepEqual(seed(840, "workspace-a", [{ ...messages[1], completedAt: 20 }]), [], "changed completion invalidates old height");
+});
+
+test("measurement cache evicts oldest dimensions at its fixed limit", () => {
+  const messages = Array.from({ length: 5002 }, (_, id) => ({ id: String(id), role: "user" }));
+  const { cache } = measurementLifecycle({ messages,
+    sizes: new Map(messages.map(message => [message.id, 100])),
+    widths: new Map(messages.map(message => [message.id, 840])),
+  });
+  assert.equal(cache.size, 5000);
+  assert.equal(cache.has("0"), false);
+  assert.equal(cache.has("1"), false);
+  assert.equal(cache.has("5001"), true);
+  assert.deepEqual(Object.keys(cache.get("5001")).sort(), ["completedAt", "scope", "size", "width"]);
+});
+
+test("entry-less cached measurements do not adopt the width of an unmeasured resize", () => {
+  const options = find(node => ts.isCallExpression(node) && node.expression.getText(file) === "useVirtualizer"
+    && node.getText(file).includes("initialMeasurementsCache")).arguments[0];
+  const measure = options.properties.find(property => property.name?.getText(file) === "measureElement").initializer;
+  const measuredWidths = { current: new Map([["answer", 840]]) };
+  const callback = evaluate(`return ${measure.getText(file)}`, {
+    measuredWidths, measureVirtualElement: () => 100,
+  });
+  const element = { getAttribute: () => "answer" };
+  const instance = { itemSizeCache: new Map([["answer", 100]]), scrollElement: { offsetWidth: 420 } };
+  callback(element, undefined, instance);
+  assert.equal(measuredWidths.current.get("answer"), 840);
+  callback(element, {}, instance);
+  assert.equal(measuredWidths.current.get("answer"), 420);
+});
