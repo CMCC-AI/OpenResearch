@@ -3352,6 +3352,30 @@ impl TurnGuard {
         }
     }
 
+    /// Claim and reserve under the owned turn-map lock. The actual worker
+    /// owns both the lock and the resulting guard, so cancelling its waiter
+    /// cannot leave a successful database claim without reservation cleanup.
+    async fn claim_locked_with_store(
+        host: &Arc<ChatHost>,
+        session_id: &str,
+        mut turns: tokio::sync::OwnedMutexGuard<HashMap<String, TurnState>>,
+        open: impl FnOnce() -> Result<Store> + Send + 'static,
+    ) -> Option<(
+        Self,
+        tokio::sync::OwnedMutexGuard<HashMap<String, TurnState>>,
+    )> {
+        let host = host.clone();
+        let session_id = session_id.to_string();
+        crate::local::blocking::run(move || {
+            let store = host.claim_durable_turn_with_store(&session_id, open)?;
+            let mut guard = Self::reserve(&host, &session_id, &mut turns);
+            guard.store = Some(Box::new(store));
+            Some((guard, turns))
+        })
+        .await
+        .ok()?
+    }
+
     /// `Some` if the slot was free and is now reserved; `None` if already busy.
     async fn claim(
         host: &Arc<ChatHost>,
@@ -3361,16 +3385,14 @@ impl TurnGuard {
         if host.deleting_sessions.lock().unwrap().contains(session_id) {
             return None;
         }
-        let mut turns = host.turns.lock().await;
+        let turns = host.turns.clone().lock_owned().await;
         if host.deleting_sessions.lock().unwrap().contains(session_id)
             || turns.contains_key(session_id)
         {
             return None;
         }
-        if !host.claim_durable_turn(session_id) {
-            return None;
-        }
-        let guard = Self::reserve(host, session_id, &mut turns);
+        let (guard, _turns) =
+            Self::claim_locked_with_store(host, session_id, turns, Store::open).await?;
         if let Some(overrides) = overrides {
             let mut plan_changes = host.plan_changes.lock().unwrap();
             let mut permission_changes = host.permission_changes.lock().unwrap();
@@ -3389,20 +3411,21 @@ impl TurnGuard {
         if host.deleting_sessions.lock().unwrap().contains(session_id) {
             return None;
         }
-        let mut turns = host.turns.lock().await;
-        let queued = host.queued.lock().unwrap();
+        let turns = host.turns.clone().lock_owned().await;
         if host.deleting_sessions.lock().unwrap().contains(session_id)
             || turns.contains_key(session_id)
-            || queued
+            || host
+                .queued
+                .lock()
+                .unwrap()
                 .get(session_id)
                 .is_some_and(|messages| !messages.is_empty())
         {
             return None;
         }
-        if !host.claim_durable_turn(session_id) {
-            return None;
-        }
-        Some(Self::reserve(host, session_id, &mut turns))
+        let (guard, _turns) =
+            Self::claim_locked_with_store(host, session_id, turns, Store::open).await?;
+        Some(guard)
     }
 
     /// Hand ownership of the slot to the spawned turn — stop clearing it on drop.
@@ -3432,9 +3455,9 @@ impl TurnGuard {
             let (removed, drain_queued) = {
                 let _cleanup = host.cleanup_lock(&session_id).lock_owned().await;
                 let owns_slot = matches!(host.turns.lock().await.get(&session_id), Some(TurnState::Reserved { reservation_id: current, .. }) if current == &reservation_id);
-                if let Some(store) = store {
+                let store = if let Some(store) = store {
                     if unstarted_usage.is_some() || (owns_slot && admitted.is_some()) {
-                        let _ = crate::local::blocking::run(move || {
+                        crate::local::blocking::run(move || {
                             if let Some(id) = unstarted_usage {
                                 let _ = store.cancel_unstarted_usage_execution(&id);
                             }
@@ -3443,10 +3466,16 @@ impl TurnGuard {
                                     let _ = store.interrupt_chat_turn(&turn_id);
                                 }
                             }
+                            store
                         })
-                        .await;
+                        .await
+                        .ok()
+                    } else {
+                        Some(store)
                     }
-                }
+                } else {
+                    None
+                };
                 if !owns_slot {
                     return;
                 }
@@ -3475,8 +3504,18 @@ impl TurnGuard {
                 if drain_queued {
                     turns.insert(session_id.clone(), TurnState::Draining);
                 } else {
-                    host.release_durable_turn(&session_id);
-                    turns.remove(&session_id);
+                    let release = host.release_finished_turn_with_store(
+                        &mut turns,
+                        &session_id,
+                        None,
+                        move || match store {
+                            Some(store) => Ok(*store),
+                            None => Store::open(),
+                        },
+                    );
+                    drop(turns);
+                    let _ = release.await;
+                    return;
                 }
                 (true, drain_queued)
             };
@@ -3940,32 +3979,28 @@ impl ChatHost {
         idle
     }
 
-    fn claim_durable_turn(&self, session_id: &str) -> bool {
-        if self.restarting.load(std::sync::atomic::Ordering::SeqCst) {
-            return false;
-        }
-        let mut claims = self.durable_turns.lock().unwrap();
-        if claims.contains_key(session_id) {
-            return false;
+    // Callers serialize claims and releases under the turn-map lock. Do not
+    // retain the synchronous token-map mutex while SQLite waits for storage.
+    fn claim_durable_turn_with_store(
+        &self,
+        session_id: &str,
+        open: impl FnOnce() -> Result<Store>,
+    ) -> Option<Store> {
+        if self.restarting.load(std::sync::atomic::Ordering::SeqCst)
+            || self.durable_turns.lock().unwrap().contains_key(session_id)
+        {
+            return None;
         }
         let token = uuid::Uuid::new_v4().to_string();
-        let Ok(store) = Store::open() else {
-            return false;
-        };
+        let store = open().ok()?;
         if !matches!(store.claim_chat_turn(session_id, &token), Ok(true)) {
-            return false;
+            return None;
         }
-        claims.insert(session_id.to_string(), token);
-        true
-    }
-
-    fn release_durable_turn(&self, session_id: &str) {
-        let token = self.durable_turns.lock().unwrap().remove(session_id);
-        if let Some(token) = token {
-            if let Ok(store) = Store::open() {
-                let _ = store.release_chat_turn(session_id, &token);
-            }
-        }
+        self.durable_turns
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), token);
+        Some(store)
     }
 
     /// Keep admission fenced until the captured lease has been released. The
@@ -4230,15 +4265,20 @@ impl ChatHost {
                     tokio::time::sleep(delay).await;
                 }
                 let should_drain = {
-                    let mut turns = host.turns.lock().await;
+                    let turns = host.turns.clone().lock_owned().await;
                     if host.deleting_sessions.lock().unwrap().contains(&session_id)
                         || turns.contains_key(&session_id)
-                        || !host.claim_durable_turn(&session_id)
                     {
                         false
-                    } else {
+                    } else if let Some((guard, mut turns)) =
+                        TurnGuard::claim_locked_with_store(&host, &session_id, turns, Store::open)
+                            .await
+                    {
                         turns.insert(session_id.clone(), TurnState::Draining);
+                        guard.defuse();
                         true
+                    } else {
+                        false
                     }
                 };
                 if should_drain {
@@ -4793,15 +4833,25 @@ impl ChatHost {
                                 .unwrap()
                                 .remove(&session_id);
                             let should_drain = {
-                                let mut turns = host.turns.lock().await;
+                                let turns = host.turns.clone().lock_owned().await;
                                 if host.deleting_sessions.lock().unwrap().contains(&session_id)
                                     || turns.contains_key(&session_id)
-                                    || !host.claim_durable_turn(&session_id)
                                 {
                                     false
-                                } else {
+                                } else if let Some((guard, mut turns)) =
+                                    TurnGuard::claim_locked_with_store(
+                                        &host,
+                                        &session_id,
+                                        turns,
+                                        Store::open,
+                                    )
+                                    .await
+                                {
                                     turns.insert(session_id.clone(), TurnState::Draining);
+                                    guard.defuse();
                                     true
+                                } else {
+                                    false
                                 }
                             };
                             if should_drain {
@@ -5567,7 +5617,7 @@ impl ChatHost {
                 }
             }
             TurnAdmission::QueueIfBusy => {
-                let mut turns = self.turns.clone().lock_owned().await;
+                let turns = self.turns.clone().lock_owned().await;
                 if self.deleting_sessions.lock().unwrap().contains(session_id) {
                     return Err(anyhow!("chat session not found"));
                 }
@@ -5658,10 +5708,11 @@ impl ChatHost {
                     .await?;
                     return Ok(TurnSubmission::Queued(client_turn_id));
                 }
-                if !self.claim_durable_turn(session_id) {
+                let Some((guard, _turns)) =
+                    TurnGuard::claim_locked_with_store(self, session_id, turns, Store::open).await
+                else {
                     return Err(anyhow!("session is busy in another `orx up` process"));
-                }
-                let guard = TurnGuard::reserve(self, session_id, &mut turns);
+                };
                 let mut plan_changes = self.plan_changes.lock().unwrap();
                 let mut permission_changes = self.permission_changes.lock().unwrap();
                 stamp_turn_revisions(
@@ -11144,7 +11195,9 @@ mod bridge_tests {
         assert!(!host.stop_admitting_if_idle().await);
         host.turns.lock().await.clear();
         assert!(host.stop_admitting_if_idle().await);
-        assert!(!host.claim_durable_turn("next"));
+        assert!(host
+            .claim_durable_turn_with_store("next", || panic!("restarting must not open storage"))
+            .is_none());
     }
 
     #[tokio::test]
@@ -13240,6 +13293,185 @@ mod steering_tests {
 #[cfg(test)]
 mod checkpoint_tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn admission_claim_wait_keeps_scheduler_and_token_map_available() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        let turns = host.turns.clone().lock_owned().await;
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let root = dir.clone();
+        let claim = TurnGuard::claim_locked_with_store(&host, "session", turns, move || {
+            let _ = started.send(());
+            wait.recv_timeout(Duration::from_secs(3)).unwrap();
+            Store::open_at(root)
+        });
+        let heartbeat = async {
+            ready.await.unwrap();
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            assert!(host.durable_turns.try_lock().is_ok());
+            assert!(host.turns.try_lock().is_err());
+            release.send(()).unwrap();
+        };
+        let (result, ()) = tokio::join!(claim, heartbeat);
+        let (mut guard, turns) = result.unwrap();
+        assert!(matches!(
+            turns.get("session"),
+            Some(TurnState::Reserved { .. })
+        ));
+        assert!(store.chat_turn_leased("session").unwrap());
+        drop(turns);
+        assert!(TurnGuard::claim(&host, "session", None).await.is_none());
+        guard.release().await;
+        assert!(!store.chat_turn_leased("session").unwrap());
+        assert!(host.turns.lock().await.is_empty());
+        drop(guard);
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn admission_claim_cancelled_waiter_releases_worker_owned_lease() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        let mut events = host.subscribe();
+        let turns = host.turns.clone().lock_owned().await;
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let root = dir.clone();
+        let worker_host = host.clone();
+        let worker = tokio::spawn(async move {
+            TurnGuard::claim_locked_with_store(&worker_host, "session", turns, move || {
+                let _ = started.send(());
+                wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                Store::open_at(root)
+            })
+            .await
+        });
+        ready.await.unwrap();
+        worker.abort();
+        assert!(matches!(worker.await, Err(error) if error.is_cancelled()));
+        assert!(host.turns.try_lock().is_err());
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let (name, payload) = events.recv().await.unwrap();
+            assert_eq!(name, "chat.busy");
+            assert_eq!(payload["busy"], false);
+        })
+        .await
+        .unwrap();
+        assert!(!store.chat_turn_leased("session").unwrap());
+        assert!(host.durable_turns.lock().unwrap().is_empty());
+        assert!(host.turns.lock().await.is_empty());
+        assert!(events.try_recv().is_err());
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn admission_claim_release_does_not_hold_turn_map_during_sql_wait() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        let turns = host.turns.clone().lock_owned().await;
+        let root = dir.clone();
+        let (mut guard, turns) =
+            TurnGuard::claim_locked_with_store(&host, "session", turns, move || {
+                Store::open_at(root)
+            })
+            .await
+            .unwrap();
+        drop(turns);
+        let tx = store.begin().unwrap();
+        tx.execute(
+            "UPDATE chat_turn_leases SET heartbeat_at = heartbeat_at",
+            [],
+        )
+        .unwrap();
+        let mut events = host.subscribe();
+        let release = tokio::spawn(async move { guard.release().await });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if matches!(
+                    host.turns.lock().await.get("session"),
+                    Some(TurnState::Releasing { .. })
+                ) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(host.turns.try_lock().is_ok());
+        assert!(events.try_recv().is_err());
+        tx.commit().unwrap();
+        release.await.unwrap();
+        assert!(!store.chat_turn_leased("session").unwrap());
+        assert!(host.turns.lock().await.is_empty());
+        let (name, payload) = events.try_recv().unwrap();
+        assert_eq!(name, "chat.busy");
+        assert_eq!(payload["busy"], false);
+        assert!(events.try_recv().is_err());
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn admission_claim_failures_leave_no_reservation_or_local_token() {
+        for mode in ["open-error", "sql-error", "foreign-lease", "restarting"] {
+            let (dir, store, ctx) = checkpoint_fixture();
+            let host = ctx.host.clone();
+            if mode == "foreign-lease" {
+                assert!(store.claim_chat_turn("session", "foreign").unwrap());
+            }
+            if mode == "restarting" {
+                host.restarting
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            let root = dir.clone();
+            let mut events = host.subscribe();
+            let turns = host.turns.clone().lock_owned().await;
+            assert!(
+                TurnGuard::claim_locked_with_store(&host, "session", turns, move || {
+                    assert_ne!(mode, "restarting", "restarting must not open storage");
+                    if mode == "open-error" {
+                        return Err(anyhow!("injected admission open failure"));
+                    }
+                    let opened = Store::open_at(root)?;
+                    if mode == "sql-error" {
+                        let tx = opened.begin()?;
+                        tx.execute_batch("CREATE TEMP TABLE chat_turn_leases(invalid INTEGER)")?;
+                        tx.commit()?;
+                    }
+                    Ok(opened)
+                })
+                .await
+                .is_none()
+            );
+            assert!(host.turns.lock().await.is_empty());
+            assert!(host.durable_turns.lock().unwrap().is_empty());
+            assert_eq!(
+                store.chat_turn_leased("session").unwrap(),
+                mode == "foreign-lease"
+            );
+            if mode == "foreign-lease" {
+                assert!(store.renew_chat_turn("session", "foreign").unwrap());
+            }
+            assert!(events.try_recv().is_err());
+            drop(host);
+            drop(ctx);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn lease_heartbeat_idle_skips_storage_and_retains_directory_gate() {
