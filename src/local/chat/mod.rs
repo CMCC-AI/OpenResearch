@@ -4019,18 +4019,29 @@ impl ChatHost {
         })
     }
 
-    fn renew_turn_leases(&self) -> Vec<String> {
+    async fn renew_turn_leases_with_store(
+        &self,
+        data_dir_guard: tokio::sync::OwnedMutexGuard<()>,
+        open: impl FnOnce() -> Result<Store> + Send + 'static,
+    ) -> Result<(tokio::sync::OwnedMutexGuard<()>, Vec<(String, String)>)> {
         let claims = self.durable_turns.lock().unwrap().clone();
-        let Ok(store) = Store::open() else {
-            return Vec::new();
-        };
-        let mut lost = Vec::new();
-        for (session_id, token) in claims {
-            if matches!(store.renew_chat_turn(&session_id, &token), Ok(false)) {
-                lost.push(session_id);
-            }
+        if claims.is_empty() {
+            return Ok((data_dir_guard, Vec::new()));
         }
-        lost
+        crate::local::blocking::run(move || {
+            // Keep migration excluded until the actual SQLite worker finishes,
+            // including when the watcher waiting for it is cancelled.
+            let store = open()?;
+            let lost = claims
+                .into_iter()
+                .filter(|(session_id, token)| {
+                    // A storage error is not evidence that ownership was lost.
+                    matches!(store.renew_chat_turn(session_id, token), Ok(false))
+                })
+                .collect();
+            Ok((data_dir_guard, lost))
+        })
+        .await?
     }
 
     pub fn begin_session_delete(&self, session_id: &str) -> Option<SessionDeletionLease> {
@@ -6566,11 +6577,33 @@ impl ChatHost {
     /// stops generating. Returns whether a turn (or a reservation) was
     /// actually aborted — `false` means the session was already idle.
     pub async fn interrupt(self: &Arc<Self>, session_id: &str) -> Result<bool> {
+        self.interrupt_with_lease(session_id, None).await
+    }
+
+    async fn interrupt_with_lease(
+        self: &Arc<Self>,
+        session_id: &str,
+        expected_token: Option<&str>,
+    ) -> Result<bool> {
         let (active, reserved_turn) = {
             // Wait outside the global turn map. An in-flight metadata worker
             // retains this guard even if its original awaiter was cancelled.
             let _cleanup = self.cleanup_lock(session_id).lock_owned().await;
             let mut turns = self.turns.lock().await;
+            // Check ownership under the same turn-map lock as cancellation.
+            // A delayed heartbeat for an old turn must not stop its successor.
+            if let Some(token) = expected_token {
+                if self
+                    .durable_turns
+                    .lock()
+                    .unwrap()
+                    .get(session_id)
+                    .map(String::as_str)
+                    != Some(token)
+                {
+                    return Ok(false);
+                }
+            }
             let Some(state) = turns.get_mut(session_id) else {
                 return Ok(false);
             };
@@ -9760,12 +9793,22 @@ pub async fn watch_runs(
         if data_dir_move_in_progress.load(std::sync::atomic::Ordering::SeqCst) {
             continue;
         }
-        let _data_dir_guard = data_dir_gate.lock().await;
+        let data_dir_guard = data_dir_gate.clone().lock_owned().await;
         if data_dir_move_in_progress.load(std::sync::atomic::Ordering::SeqCst) {
             continue;
         }
-        for session_id in chat.renew_turn_leases() {
-            let _ = chat.interrupt(&session_id).await;
+        let (_data_dir_guard, lost) = match chat
+            .renew_turn_leases_with_store(data_dir_guard, Store::open)
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                eprintln!("orx up: lease heartbeat: {error}");
+                continue;
+            }
+        };
+        for (session_id, token) in lost {
+            let _ = chat.interrupt_with_lease(&session_id, Some(&token)).await;
         }
         let Ok(store) = Store::open() else { continue };
         if let Err(err) =
@@ -13197,6 +13240,174 @@ mod steering_tests {
 #[cfg(test)]
 mod checkpoint_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn lease_heartbeat_idle_skips_storage_and_retains_directory_gate() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let gate = Arc::new(tokio::sync::Mutex::new(()));
+        let (guard, lost) = ctx
+            .host
+            .renew_turn_leases_with_store(gate.clone().lock_owned().await, || {
+                panic!("idle heartbeat must not open storage")
+            })
+            .await
+            .unwrap();
+        assert!(lost.is_empty());
+        assert!(gate.try_lock().is_err());
+        drop(guard);
+        assert!(gate.try_lock().is_ok());
+        drop(store);
+        drop(ctx);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn lease_heartbeat_worker_retains_gate_after_waiter_cancellation() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        assert!(store.claim_chat_turn("session", "token").unwrap());
+        host.durable_turns
+            .lock()
+            .unwrap()
+            .insert("session".into(), "token".into());
+        let gate = Arc::new(tokio::sync::Mutex::new(()));
+        let guard = gate.clone().lock_owned().await;
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let root = dir.clone();
+        let worker_host = host.clone();
+        let worker = tokio::spawn(async move {
+            worker_host
+                .renew_turn_leases_with_store(guard, move || {
+                    let _ = started.send(());
+                    wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                    Store::open_at(root)
+                })
+                .await
+        });
+        ready.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        assert!(host.busy_sessions().await.is_empty());
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        assert!(gate.try_lock().is_err());
+        release.send(()).unwrap();
+        let guard = tokio::time::timeout(Duration::from_secs(3), gate.lock())
+            .await
+            .unwrap();
+        assert!(store.chat_turn_leased("session").unwrap());
+        drop(guard);
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn lease_heartbeat_stale_result_cannot_interrupt_replacement_turn() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        assert!(store.claim_chat_turn("session", "old-token").unwrap());
+        host.durable_turns
+            .lock()
+            .unwrap()
+            .insert("session".into(), "old-token".into());
+        let gate = Arc::new(tokio::sync::Mutex::new(()));
+        let guard = gate.clone().lock_owned().await;
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let root = dir.clone();
+        let renew = host.renew_turn_leases_with_store(guard, move || {
+            let _ = started.send(());
+            wait.recv_timeout(Duration::from_secs(3)).unwrap();
+            Store::open_at(root)
+        });
+        let replace = async {
+            ready.await.unwrap();
+            store.release_chat_turn("session", "old-token").unwrap();
+            assert!(store.claim_chat_turn("session", "new-token").unwrap());
+            let mut turns = host.turns.lock().await;
+            host.durable_turns
+                .lock()
+                .unwrap()
+                .insert("session".into(), "new-token".into());
+            turns.insert(
+                "session".into(),
+                TurnState::Reserved {
+                    turn_id: None,
+                    reservation_id: "successor".into(),
+                },
+            );
+            release.send(()).unwrap();
+        };
+        let (result, ()) = tokio::join!(renew, replace);
+        let (guard, lost) = result.unwrap();
+        assert_eq!(lost, vec![("session".into(), "old-token".into())]);
+        let mut events = host.subscribe();
+        assert!(!host
+            .interrupt_with_lease(&lost[0].0, Some(&lost[0].1))
+            .await
+            .unwrap());
+        assert!(matches!(host.turns.lock().await.get("session"),
+            Some(TurnState::Reserved { reservation_id, .. }) if reservation_id == "successor"));
+        assert!(store.renew_chat_turn("session", "new-token").unwrap());
+        assert!(events.try_recv().is_err());
+        drop(guard);
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn lease_heartbeat_storage_errors_do_not_report_ownership_loss() {
+        for mode in ["live", "open-error", "sql-error"] {
+            let (dir, store, ctx) = checkpoint_fixture();
+            assert!(store.claim_chat_turn("session", "token").unwrap());
+            if mode == "live" {
+                let tx = store.begin().unwrap();
+                tx.execute("UPDATE chat_turn_leases SET heartbeat_at = 0", [])
+                    .unwrap();
+                tx.commit().unwrap();
+                assert!(!store.chat_turn_leased("session").unwrap());
+            }
+            ctx.host
+                .durable_turns
+                .lock()
+                .unwrap()
+                .insert("session".into(), "token".into());
+            let gate = Arc::new(tokio::sync::Mutex::new(()));
+            let root = dir.clone();
+            let result = ctx
+                .host
+                .renew_turn_leases_with_store(gate.clone().lock_owned().await, move || {
+                    if mode == "open-error" {
+                        return Err(anyhow!("injected heartbeat open failure"));
+                    }
+                    let opened = Store::open_at(root)?;
+                    if mode == "sql-error" {
+                        let tx = opened.begin()?;
+                        tx.execute_batch("CREATE TEMP TABLE chat_turn_leases(invalid INTEGER)")?;
+                        tx.commit()?;
+                    }
+                    Ok(opened)
+                })
+                .await;
+            if mode == "open-error" {
+                assert!(result.is_err());
+            } else {
+                let (guard, lost) = result.unwrap();
+                assert!(lost.is_empty());
+                assert!(gate.try_lock().is_err());
+                drop(guard);
+            }
+            assert!(gate.try_lock().is_ok());
+            assert!(store.chat_turn_leased("session").unwrap());
+            drop(ctx);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn lease_reconciliation_retains_directory_gate_after_waiter_cancellation() {
