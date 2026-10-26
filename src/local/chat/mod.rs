@@ -3967,12 +3967,28 @@ impl ChatHost {
         f()
     }
 
+    /// Background queue settlement may remain after the turn slot is freed.
+    /// Migration callers must refuse it without waiting on synchronous SQL.
+    pub fn queue_storage_busy(&self) -> bool {
+        let Ok(_mutation) = self.queue_persistence.try_lock() else {
+            return true;
+        };
+        !self.queue_dispatch_in_flight.lock().unwrap().is_empty()
+    }
+
     /// Stop admitting turns if none is running, queued, or awaiting an answer. Every
     /// admission claims under the turn map's lock, so none can slip in after this check.
     pub async fn stop_admitting_if_idle(&self) -> bool {
         let turns = self.turns.lock().await;
-        let idle =
-            turns.is_empty() && self.queued_count() == 0 && self.pending_permission_count() == 0;
+        // A popped item can outlive its turn while storage settlement runs.
+        // Never wait on this synchronous lock from the async restart path.
+        let Ok(_queue_mutation) = self.queue_persistence.try_lock() else {
+            return false;
+        };
+        let idle = turns.is_empty()
+            && self.queued_count() == 0
+            && self.pending_permission_count() == 0
+            && self.queue_dispatch_in_flight.lock().unwrap().is_empty();
         if idle {
             self.restarting
                 .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -4126,10 +4142,6 @@ impl ChatHost {
 
     fn emit_queued(&self, session_id: &str) {
         self.emit("chat.queued", self.queued_json(session_id));
-    }
-
-    fn refresh_persisted_queue_locked(&self, session_id: &str) -> Result<()> {
-        self.refresh_persisted_queue_with_open_locked(session_id, Store::open)
     }
 
     async fn refresh_queue_for_dispatch(
@@ -4713,7 +4725,7 @@ impl ChatHost {
                 guard.release().await;
                 return;
             };
-            let mut dispatch_cleanup = dispatch_cleanup.expect("popped queue item has cleanup");
+            let dispatch_cleanup = dispatch_cleanup.expect("popped queue item has cleanup");
             let overrides = item.overrides.clone();
             // Apply Plan once in the normal settings phase, after the client
             // turn idempotency check and with the usual revision resolution.
@@ -4742,153 +4754,190 @@ impl ChatHost {
                     },
                 )
                 .await;
-            match send_result {
-                Ok(TurnSubmission::NotStarted) => {
-                    let requeued = {
-                        let _mutation = self.queue_persistence.lock().unwrap();
-                        let cancelled = self
+            if let Err(error) = self
+                .settle_queue_dispatch_with_store(
+                    session_id,
+                    item,
+                    dispatch_cleanup,
+                    send_result,
+                    Store::open,
+                )
+                .await
+            {
+                eprintln!("orx up: queued-message settlement failed: {error}");
+            }
+        })
+    }
+
+    async fn settle_queue_dispatch_with_store(
+        self: &Arc<Self>,
+        session_id: &str,
+        item: QueuedMessage,
+        mut dispatch_cleanup: QueueDispatchGuard,
+        send_result: Result<TurnSubmission>,
+        mut open: impl FnMut() -> Result<Store> + Send + 'static,
+    ) -> Result<()> {
+        let host = self.clone();
+        let session = session_id.to_string();
+        // Settlement owns the popped item and dispatch guard. Cancelling a
+        // drain waiter must not strand cleanup or abandon the retry schedule.
+        tokio::spawn(async move {
+            crate::local::blocking::run(move || {
+                let session_id = session.as_str();
+                match send_result {
+                    Ok(TurnSubmission::NotStarted) => {
+                        let requeued = {
+                            let _mutation = host.queue_persistence.lock().unwrap();
+                            let cancelled = host
+                                .queue_dispatch_cancelled
+                                .lock()
+                                .unwrap()
+                                .contains(session_id);
+                            let deleting =
+                                host.deleting_sessions.lock().unwrap().contains(session_id);
+                            dispatch_cleanup.finish_locked(true);
+                            !cancelled
+                                && !deleting
+                                && host
+                                    .refresh_persisted_queue_with_open_locked(session_id, &mut open)
+                                    .is_ok()
+                        };
+                        if requeued {
+                            host.resume_persisted_queues();
+                        }
+                    }
+                    Ok(_) => {
+                        {
+                            let _mutation = host.queue_persistence.lock().unwrap();
+                            dispatch_cleanup.finish_locked(true);
+                            if let Ok(store) = open() {
+                                let _ = store.delete_queued_chat_message(&item.id);
+                            }
+                        }
+                        host.resume_persisted_queues();
+                    }
+                    Err(err) => {
+                        let _mutation = host.queue_persistence.lock().unwrap();
+                        let cancelled = host
                             .queue_dispatch_cancelled
                             .lock()
                             .unwrap()
                             .contains(session_id);
-                        let deleting = self.deleting_sessions.lock().unwrap().contains(session_id);
-                        dispatch_cleanup.finish_locked(true);
-                        !cancelled
-                            && !deleting
-                            && self.refresh_persisted_queue_locked(session_id).is_ok()
-                    };
-                    if requeued {
-                        self.resume_persisted_queues();
-                    }
-                }
-                Ok(_) => {
-                    {
-                        let _mutation = self.queue_persistence.lock().unwrap();
-                        dispatch_cleanup.finish_locked(true);
-                        if let Ok(store) = Store::open() {
-                            let _ = store.delete_queued_chat_message(&item.id);
+                        let deleting = host.deleting_sessions.lock().unwrap().contains(session_id);
+                        if cancelled || deleting {
+                            dispatch_cleanup.finish_locked(true);
+                            return;
                         }
-                    }
-                    self.resume_persisted_queues();
-                }
-                Err(err) => {
-                    let _mutation = self.queue_persistence.lock().unwrap();
-                    let cancelled = self
-                        .queue_dispatch_cancelled
-                        .lock()
-                        .unwrap()
-                        .contains(session_id);
-                    let deleting = self.deleting_sessions.lock().unwrap().contains(session_id);
-                    if cancelled || deleting {
-                        dispatch_cleanup.finish_locked(true);
-                        return;
-                    }
-                    let suppression = self.queue_dispatch_suppressed.lock().unwrap();
-                    let mut item = item;
-                    item.dispatch_attempts += 1;
-                    let mut dispatch_error = err.to_string();
-                    cap_tool_text(&mut dispatch_error);
-                    item.dispatch_error = Some(dispatch_error);
-                    let harness = Store::open()
-                        .ok()
-                        .and_then(|store| store.get_chat_session(session_id).ok().flatten())
-                        .map(|session| session.harness)
-                        .unwrap_or_else(|| "unknown".into());
-                    if item.dispatch_attempts == 1 {
-                        crate::telemetry::capture(
-                            "chat_retry_started",
-                            json!({
-                                "harness": &harness,
-                                "owner": "orx",
-                                "reason": "queue_dispatch",
-                                "attempt": item.dispatch_attempts,
-                            }),
-                        );
-                    }
-                    let retry_delay = crate::local::harness::orx_retry_delay(
-                        &item.client_turn_id,
-                        item.dispatch_attempts,
-                        None,
-                    );
-                    item.next_retry_at =
-                        retry_delay.map(|delay| now_ms() + delay.as_millis() as i64);
-                    if retry_delay.is_none() {
-                        crate::telemetry::capture(
-                            "chat_retry_exhausted",
-                            json!({
-                                "harness": &harness,
-                                "owner": "orx",
-                                "reason": "queue_dispatch",
-                                "attempt": item.dispatch_attempts,
-                            }),
-                        );
-                    }
-                    if let Ok(store) = Store::open() {
-                        if let Ok(payload) = serde_json::to_string(&item) {
-                            let _ = store.update_queued_chat_message(&item.id, &payload);
+                        // queue_persistence serializes mutations; keep the
+                        // suppression value, not its global mutex, across SQL.
+                        let mut item = item;
+                        item.dispatch_attempts += 1;
+                        let mut dispatch_error = err.to_string();
+                        cap_tool_text(&mut dispatch_error);
+                        item.dispatch_error = Some(dispatch_error);
+                        let harness = open()
+                            .ok()
+                            .and_then(|store| store.get_chat_session(session_id).ok().flatten())
+                            .map(|session| session.harness)
+                            .unwrap_or_else(|| "unknown".into());
+                        if item.dispatch_attempts == 1 {
+                            crate::telemetry::capture(
+                                "chat_retry_started",
+                                json!({
+                                    "harness": &harness,
+                                    "owner": "orx",
+                                    "reason": "queue_dispatch",
+                                    "attempt": item.dispatch_attempts,
+                                }),
+                            );
                         }
-                    }
-                    let retry_identity = (item.id.clone(), item.next_retry_at);
-                    let mut queued = self.queued.lock().unwrap();
-                    let queue = queued.entry(session_id.to_string()).or_default();
-                    queue.push_front(item);
-                    drop(queued);
-                    dispatch_cleanup.finish_locked(false);
-                    drop(suppression);
-                    self.emit_queued(session_id);
-                    eprintln!("orx up: queued-message dispatch blocked: {err}");
-                    if let Some(delay) = retry_delay {
-                        let host = self.clone();
-                        let session_id = session_id.to_string();
-                        tokio::spawn(async move {
-                            tokio::time::sleep(delay).await;
-                            let still_pending = host
-                                .queued
-                                .lock()
-                                .unwrap()
-                                .get(&session_id)
-                                .and_then(|queue| queue.front())
-                                .is_some_and(|item| {
-                                    (item.id.as_str(), item.next_retry_at)
-                                        == (retry_identity.0.as_str(), retry_identity.1)
-                                });
-                            if !still_pending {
-                                return;
+                        let retry_delay = crate::local::harness::orx_retry_delay(
+                            &item.client_turn_id,
+                            item.dispatch_attempts,
+                            None,
+                        );
+                        item.next_retry_at =
+                            retry_delay.map(|delay| now_ms() + delay.as_millis() as i64);
+                        if retry_delay.is_none() {
+                            crate::telemetry::capture(
+                                "chat_retry_exhausted",
+                                json!({
+                                    "harness": &harness,
+                                    "owner": "orx",
+                                    "reason": "queue_dispatch",
+                                    "attempt": item.dispatch_attempts,
+                                }),
+                            );
+                        }
+                        if let Ok(store) = open() {
+                            if let Ok(payload) = serde_json::to_string(&item) {
+                                let _ = store.update_queued_chat_message(&item.id, &payload);
                             }
-                            host.queue_dispatch_suppressed
-                                .lock()
-                                .unwrap()
-                                .remove(&session_id);
-                            let should_drain = {
-                                let turns = host.turns.clone().lock_owned().await;
-                                if host.deleting_sessions.lock().unwrap().contains(&session_id)
-                                    || turns.contains_key(&session_id)
-                                {
-                                    false
-                                } else if let Some((guard, mut turns)) =
-                                    TurnGuard::claim_locked_with_store(
-                                        &host,
-                                        &session_id,
-                                        turns,
-                                        Store::open,
-                                    )
-                                    .await
-                                {
-                                    turns.insert(session_id.clone(), TurnState::Draining);
-                                    guard.defuse();
-                                    true
-                                } else {
-                                    false
+                        }
+                        let retry_identity = (item.id.clone(), item.next_retry_at);
+                        let mut queued = host.queued.lock().unwrap();
+                        let queue = queued.entry(session_id.to_string()).or_default();
+                        queue.push_front(item);
+                        drop(queued);
+                        dispatch_cleanup.finish_locked(false);
+                        host.emit_queued(session_id);
+                        eprintln!("orx up: queued-message dispatch blocked: {err}");
+                        if let Some(delay) = retry_delay {
+                            let host = host.clone();
+                            let session_id = session_id.to_string();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(delay).await;
+                                let still_pending = host
+                                    .queued
+                                    .lock()
+                                    .unwrap()
+                                    .get(&session_id)
+                                    .and_then(|queue| queue.front())
+                                    .is_some_and(|item| {
+                                        (item.id.as_str(), item.next_retry_at)
+                                            == (retry_identity.0.as_str(), retry_identity.1)
+                                    });
+                                if !still_pending {
+                                    return;
                                 }
-                            };
-                            if should_drain {
-                                host.drain_queue(&session_id).await;
-                            }
-                        });
+                                host.queue_dispatch_suppressed
+                                    .lock()
+                                    .unwrap()
+                                    .remove(&session_id);
+                                let should_drain = {
+                                    let turns = host.turns.clone().lock_owned().await;
+                                    if host.deleting_sessions.lock().unwrap().contains(&session_id)
+                                        || turns.contains_key(&session_id)
+                                    {
+                                        false
+                                    } else if let Some((guard, mut turns)) =
+                                        TurnGuard::claim_locked_with_store(
+                                            &host,
+                                            &session_id,
+                                            turns,
+                                            Store::open,
+                                        )
+                                        .await
+                                    {
+                                        turns.insert(session_id.clone(), TurnState::Draining);
+                                        guard.defuse();
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                };
+                                if should_drain {
+                                    host.drain_queue(&session_id).await;
+                                }
+                            });
+                        }
                     }
                 }
-            }
+            })
+            .await
         })
+        .await
+        .map_err(|error| anyhow!("queue settlement task failed: {error}"))?
     }
 
     /// Deliver a message into the session's *running* turn. Falls back to
@@ -13348,7 +13397,7 @@ mod steering_tests {
 mod checkpoint_tests {
     use super::*;
 
-    fn seed_stop_queue(store: &Store, host: &ChatHost) {
+    pub(super) fn seed_stop_queue(store: &Store, host: &ChatHost) {
         let item = busy_metadata_message();
         store
             .insert_queued_chat_message(&StoredQueuedChatMessage {
@@ -15785,7 +15834,7 @@ mod checkpoint_tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    fn checkpoint_fixture() -> (PathBuf, Store, TurnCtx) {
+    pub(super) fn checkpoint_fixture() -> (PathBuf, Store, TurnCtx) {
         let dir = std::env::temp_dir().join(format!("orx-checkpoint-{}", uuid::Uuid::new_v4()));
         checkpoint_fixture_at(dir, "")
     }
@@ -17504,3 +17553,6 @@ mod checkpoint_tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[cfg(test)]
+mod queue_settlement_tests;

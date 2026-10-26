@@ -5512,7 +5512,8 @@ async fn move_data_dir(State(state): State<AppState>, Json(req): Json<DataDirReq
         .await
         .unwrap_or(0);
     let active_operations = state.project_lifecycle.operation_count();
-    if !busy.is_empty() || active_runs > 0 || active_operations > 0 {
+    let queue_storage_busy = state.chat.queue_storage_busy();
+    if !busy.is_empty() || active_runs > 0 || active_operations > 0 || queue_storage_busy {
         release_move_claim(&move_token);
         release(&state);
         return ApiError(
@@ -5520,8 +5521,13 @@ async fn move_data_dir(State(state): State<AppState>, Json(req): Json<DataDirReq
             format!(
                 "Can't move while work is in progress ({} active chat turn(s), \
                  {active_runs} active run(s), {active_operations} project operation(s)). \
-                 Finish or stop them, then retry.",
-                busy.len()
+                 {}Finish or stop them, then retry.",
+                busy.len(),
+                if queue_storage_busy {
+                    "Queued chat messages are still being saved. "
+                } else {
+                    ""
+                }
             ),
         )
         .into_response();
