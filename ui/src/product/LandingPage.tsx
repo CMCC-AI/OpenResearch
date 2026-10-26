@@ -77,7 +77,7 @@ function Media({ name, alt, priority = false, className = "" }: { name: string; 
       sizes="(max-width: 700px) 94vw, (max-width: 1100px) 85vw, 1100px"
       alt={alt}
       width="1800"
-      height="1125"
+      height={name === "start" ? 1125 : 1013}
       loading={priority ? "eager" : "lazy"}
       decoding="async"
       fetchPriority={priority ? "high" : "auto"}

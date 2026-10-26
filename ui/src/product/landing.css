@@ -589,7 +589,6 @@
 .product-landing .screen-button img {
   width: 100%;
   height: auto;
-  aspect-ratio: 1.6;
 }
 .product-landing .outcome {
   padding: 23px 4px 0;
@@ -1482,7 +1481,7 @@
 }
 .product-landing .carousel-window {
   overflow: hidden;
-  aspect-ratio: 1.6;
+  aspect-ratio: 16 / 9;
   background: var(--landing-palette-117);
 }
 .product-landing .carousel-track {
