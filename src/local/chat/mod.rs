@@ -4533,17 +4533,34 @@ impl ChatHost {
 
     /// Remove one parked message by id (the ✕ on a queued chip).
     pub fn cancel_queued(self: &Arc<Self>, session_id: &str, item_id: &str) -> Result<bool> {
+        self.cancel_queued_with_store(session_id, item_id, Store::open)
+    }
+
+    fn cancel_queued_with_store(
+        self: &Arc<Self>,
+        session_id: &str,
+        item_id: &str,
+        open: impl FnOnce() -> Result<Store>,
+    ) -> Result<bool> {
         let _mutation = self.queue_persistence.lock().unwrap();
-        let store = Store::open()?;
+        let store = open()?;
+        let exists = self
+            .queued
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .is_some_and(|queue| queue.iter().any(|message| message.id == item_id));
+        if !exists {
+            return Ok(false);
+        }
+        // queue_persistence keeps the snapshot stable; readers need not wait
+        // for SQLite before seeing the last committed in-memory queue.
+        store.delete_queued_chat_message(item_id)?;
         let (removed, exhausted_head) = {
             let mut map = self.queued.lock().unwrap();
-            let Some(q) = map.get_mut(session_id) else {
-                return Ok(false);
-            };
-            if !q.iter().any(|message| message.id == item_id) {
-                return Ok(false);
-            }
-            store.delete_queued_chat_message(item_id)?;
+            let q = map
+                .get_mut(session_id)
+                .expect("queue mutation is serialized");
             let before = q.len();
             q.retain(|m| m.id != item_id);
             let removed = q.len() != before;
@@ -4585,6 +4602,15 @@ impl ChatHost {
 
     /// Reset an exhausted queued delivery and resume the same persisted item.
     pub fn retry_queued(self: &Arc<Self>, session_id: &str, item_id: &str) -> Result<bool> {
+        self.retry_queued_with_store(session_id, item_id, Store::open)
+    }
+
+    fn retry_queued_with_store(
+        self: &Arc<Self>,
+        session_id: &str,
+        item_id: &str,
+        open: impl FnOnce() -> Result<Store>,
+    ) -> Result<bool> {
         let _mutation = self.queue_persistence.lock().unwrap();
         if self
             .queue_dispatch_in_flight
@@ -4599,32 +4625,34 @@ impl ChatHost {
         {
             return Ok(false);
         }
-        let store = Store::open()?;
+        let store = open()?;
         let harness = store
             .get_chat_session(session_id)
             .ok()
             .flatten()
             .map(|session| session.harness)
             .unwrap_or_else(|| "unknown".into());
-        let exhausted_attempts = {
-            let mut map = self.queued.lock().unwrap();
-            let Some(queue) = map.get_mut(session_id) else {
+        let (reset, exhausted_attempts) = {
+            let map = self.queued.lock().unwrap();
+            let Some(head) = map.get(session_id).and_then(|queue| queue.front()) else {
                 return Ok(false);
             };
-            let Some(index) = queue.iter().position(|message| message.id == item_id) else {
-                return Ok(false);
-            };
-            if index != 0 {
+            if head.id != item_id {
                 return Ok(false);
             }
-            let Some(reset) = reset_exhausted_queued_message(&queue[index]) else {
+            let Some(reset) = reset_exhausted_queued_message(head) else {
                 return Ok(false);
             };
-            let attempts = queue[index].dispatch_attempts;
-            store.update_queued_chat_message(item_id, &serde_json::to_string(&reset)?)?;
-            queue[index] = reset;
-            attempts
+            (reset, head.dispatch_attempts)
         };
+        store.update_queued_chat_message(item_id, &serde_json::to_string(&reset)?)?;
+        *self
+            .queued
+            .lock()
+            .unwrap()
+            .get_mut(session_id)
+            .and_then(|queue| queue.front_mut())
+            .expect("queue mutation is serialized") = reset;
         self.queue_dispatch_suppressed
             .lock()
             .unwrap()
@@ -6407,7 +6435,6 @@ impl ChatHost {
             let mutation = host.queue_persistence.lock().unwrap();
             let mut plans = host.plan_changes.lock().unwrap();
             let mut permissions = host.permission_changes.lock().unwrap();
-            let mut queued = host.queued.lock().unwrap();
             let message = persist_busy_queue_with_revisions(
                 &store,
                 &session_id,
@@ -6415,6 +6442,7 @@ impl ChatHost {
                 &mut plans,
                 &mut permissions,
             )?;
+            let mut queued = host.queued.lock().unwrap();
             queued
                 .entry(session_id.clone())
                 .or_default()
@@ -17556,3 +17584,6 @@ mod checkpoint_tests {
 
 #[cfg(test)]
 mod queue_settlement_tests;
+
+#[cfg(test)]
+mod queue_read_lock_tests;

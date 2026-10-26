@@ -2,6 +2,8 @@
 
 > 后续实施：[队列派发结果收尾隔离](queue-dispatch-settlement-2026-10-26.md)覆盖 NotStarted 恢复、成功删除和失败重试保存；全局 turn-map 锁范围、出队与其他同步队列入口仍未关闭。
 
+> 后续实施：[队列缓存锁范围治理](queue-cache-lock-scope-2026-10-26.md)去除忙入队、取消及手动重试中缓存 mutex 跨 SQL 的持有；全局 turn/revision 与 queue-persistence 锁仍未整体收口。
+
 基于本地 `de38f4c` 继续核查。产品为 `0.2.21-mobilesci.1`，真实上游祖先仍为 v0.2.19，官方回移保持 partial。本次未重新查询官方版本或漏洞公告。工作区存在首页、主题及图片/构建资源的既有未提交改动，本批不改写或提交这些文件。
 
 ## 优先级与尚未解决事项
