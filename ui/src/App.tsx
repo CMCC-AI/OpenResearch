@@ -174,7 +174,7 @@ function parseFilePath(
   const artifacts = artifactsDir?.replace(/\/+$/, "");
   if (path.startsWith("artifacts/")) {
     path = path.slice("artifacts/".length);
-    return path ? { path, source: "artifacts" } : null;
+    return path ? { path, source: "artifacts", sessionId: contextSessionId } : null;
   }
   // A home-anchored path (`~` or `~/…`) is disk, never a repo file — the backend
   // expands the `~`, so hand it over verbatim.

@@ -256,7 +256,7 @@ export function FileViewer({
   // writes, the editor, and raw bytes must target the path that answered.
   const filePath = editState && isDirtyFileBuffer(editState)
     ? editState.path
-    : loaded?.source === "checkout" ? loaded.file.path : path;
+    : loaded?.file.path ?? path;
   // This file's parent dir: the artifact report folder for image resolution,
   // and the anchor for a relative link inside an abs file.
   const parentFolder = filePath.split("/").slice(0, -1).join("/");
@@ -539,7 +539,7 @@ export function FileViewer({
     return () => window.clearInterval(timer);
   }, [error, gitRef, reload]);
 
-  // filePath is `path` in every store but the checkout, so this covers all four.
+  // Use the resolved path for checkout and study-relative artifact fallbacks.
   const rawUrl = `${rawFileUrl(filePath)}&v=${encodeURIComponent(diskVersion ?? artifactVersion ?? "")}&reload=${nonce}`;
 
   useEffect(() => {

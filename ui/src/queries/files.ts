@@ -107,17 +107,17 @@ export const resolvedFileQuery = (projectId: string, path: string, source: "repo
     };
     const isAbsolute = source === "abs";
     const isArtifacts = source === "artifacts";
-    const fromArtifacts = async (): Promise<ArtifactPreviewFile> => {
-      const metadata = await read(getArtifactFileMetadataQuery(projectId, path));
+    const readArtifact = async (artifactPath: string): Promise<ArtifactPreviewFile> => {
+      const metadata = await read(getArtifactFileMetadataQuery(projectId, artifactPath));
       const wantsBody = metadata?.presentation === "text" || metadata?.presentation === "unknown";
       const body = metadata && wantsBody
-        ? await read(getArtifactFileTextQuery(projectId, path))
+        ? await read(getArtifactFileTextQuery(projectId, artifactPath))
         : null;
       const notFound = metadata === null || (wantsBody && body === null);
       return {
         // A missing artifact resolves to null → notFound, so it shows
         // the friendly copy rather than a raw error.
-        path,
+        path: artifactPath,
         content: body?.content ?? "",
         truncated: body?.truncated ?? false,
         binary: body?.binary ?? metadata?.presentation === "download",
@@ -126,6 +126,19 @@ export const resolvedFileQuery = (projectId: string, path: string, source: "repo
           ? (body.binary ? "download" : "text")
           : (metadata?.presentation ?? "download"),
       };
+    };
+    const fromArtifacts = async (): Promise<ArtifactPreviewFile> => {
+      const file = await readArtifact(path);
+      if (!file.notFound || !sessionId || path.startsWith("research/")) return file;
+      // Research messages cite paths relative to their study package, while
+      // the artifacts API is rooted at the project. Resolve only in the
+      // session's study so equal filenames in other studies cannot answer.
+      const { study } = await read(queryOptions({
+        queryKey: workspaceKey("researchStudy", sessionId),
+        queryFn: ({ signal }) => api.getResearchStudy(sessionId, signal),
+        staleTime: 30_000,
+      }));
+      return study ? readArtifact(`research/${study.id}/${path}`) : file;
     };
     // A cited artifact path arrives stripped of its `artifacts/` prefix, which
     // the checkout copy usually keeps — try that first; a throwing probe
