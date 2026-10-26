@@ -79,7 +79,7 @@ def rehearse_sqlite(old, image):
 root=pathlib.Path('/home/node/research')/sys.argv[1]; root.mkdir()
 source=sqlite3.connect('file:/home/node/research/state/orx.db?mode=ro',uri=True)
 copy=sqlite3.connect(root/'orx.db'); source.backup(copy)
-counts={name:copy.execute('SELECT count(*) FROM "'+name.replace('"','""')+'"').fetchone()[0] for name, in copy.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name!='product_migrations'")}
+counts={name:copy.execute('SELECT count(*) FROM "'+name.replace('"','""')+'"').fetchone()[0] for name, in copy.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('product_migrations','product_schema_migrations')")}
 (root/'before.json').write_text(json.dumps(counts))
 """
     cmd('docker','exec','mobilesci-remote-workbench-1','python3','-c',script,relative)

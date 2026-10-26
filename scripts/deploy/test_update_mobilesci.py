@@ -14,6 +14,35 @@ spec.loader.exec_module(update)
 
 
 class UpdateBundleTests(unittest.TestCase):
+    def test_rehearsal_allows_migration_metadata_but_rejects_business_row_loss(self):
+        import ast
+        import sqlite3
+        import sys
+        source = Path(__file__).with_name('update-server.py').read_text()
+        function = next(node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name == 'rehearse_sqlite')
+        scripts = {node.targets[0].id: node.value.value for node in function.body
+                   if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+                   and node.targets[0].id in ('script', 'verify')}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'state').mkdir()
+            with sqlite3.connect(root / 'state/orx.db') as db:
+                for name in ('projects', 'product_migrations', 'product_schema_migrations'):
+                    db.execute(f'CREATE TABLE {name}(id INTEGER)')
+                    db.execute(f'INSERT INTO {name} VALUES(1)')
+            def execute(name):
+                with patch.object(sys, 'argv', ['rehearsal', 'state/rehearsal']):
+                    exec(scripts[name].replace('/home/node/research', directory), {})
+            execute('script')
+            self.assertEqual(json.loads((root / 'state/rehearsal/before.json').read_text()), {'projects': 1})
+            with sqlite3.connect(root / 'state/rehearsal/orx.db') as db:
+                db.execute('INSERT INTO product_schema_migrations VALUES(2)')
+            execute('verify')
+            with sqlite3.connect(root / 'state/rehearsal/orx.db') as db:
+                db.execute('DELETE FROM projects')
+            with self.assertRaisesRegex(AssertionError, 'projects'):
+                execute('verify')
+
     def bundle(self, extra=None, corrupt=False):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
