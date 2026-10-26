@@ -2487,7 +2487,8 @@ pub struct ChatHost {
     pending_client_turns: std::sync::Mutex<HashMap<(String, String), PendingClientTurn>>,
     queue_dispatch_suppressed: std::sync::Mutex<HashSet<String>>,
     queue_dispatch_cancelled: std::sync::Mutex<HashSet<String>>,
-    queue_cancellation_held: std::sync::Mutex<HashSet<String>>,
+    // Overlapping owned Stop tasks each retain cancellation until settled.
+    queue_cancellation_held: std::sync::Mutex<HashMap<String, usize>>,
     /// Sink for mid-turn steering text, present only while a capable harness is running.
     steering: std::sync::Mutex<HashMap<String, SteerSink>>,
     queue_dispatch_in_flight: std::sync::Mutex<HashMap<String, String>>,
@@ -2576,7 +2577,7 @@ impl QueueDispatchGuard {
                 .queue_cancellation_held
                 .lock()
                 .unwrap()
-                .contains(&self.session_id)
+                .contains_key(&self.session_id)
             {
                 self.host
                     .queue_dispatch_cancelled
@@ -3605,7 +3606,7 @@ impl ChatHost {
             pending_client_turns: std::sync::Mutex::new(HashMap::new()),
             queue_dispatch_suppressed: std::sync::Mutex::new(HashSet::new()),
             queue_dispatch_cancelled: std::sync::Mutex::new(HashSet::new()),
-            queue_cancellation_held: std::sync::Mutex::new(HashSet::new()),
+            queue_cancellation_held: std::sync::Mutex::new(HashMap::new()),
             steering: std::sync::Mutex::new(HashMap::new()),
             queue_dispatch_in_flight: std::sync::Mutex::new(HashMap::new()),
         }
@@ -4417,12 +4418,23 @@ impl ChatHost {
     }
 
     fn clear_queue_inner(&self, session_id: &str, hold_cancellation: bool) -> Result<()> {
+        self.clear_queue_inner_with_store(session_id, hold_cancellation, Store::open)
+    }
+
+    fn clear_queue_inner_with_store(
+        &self,
+        session_id: &str,
+        hold_cancellation: bool,
+        open: impl FnOnce() -> Result<Store>,
+    ) -> Result<()> {
         let _mutation = self.queue_persistence.lock().unwrap();
         if hold_cancellation {
-            self.queue_cancellation_held
+            *self
+                .queue_cancellation_held
                 .lock()
                 .unwrap()
-                .insert(session_id.to_string());
+                .entry(session_id.to_string())
+                .or_default() += 1;
         }
         self.queue_dispatch_cancelled
             .lock()
@@ -4432,10 +4444,15 @@ impl ChatHost {
             .lock()
             .unwrap()
             .remove(session_id);
-        if let Err(error) = Store::open()
-            .and_then(|store| store.delete_queued_chat_messages_for_session(session_id))
+        if let Err(error) =
+            open().and_then(|store| store.delete_queued_chat_messages_for_session(session_id))
         {
             if !hold_cancellation
+                && !self
+                    .queue_cancellation_held
+                    .lock()
+                    .unwrap()
+                    .contains_key(session_id)
                 && !self
                     .queue_dispatch_in_flight
                     .lock()
@@ -4460,6 +4477,11 @@ impl ChatHost {
         }
         if !hold_cancellation
             && !self
+                .queue_cancellation_held
+                .lock()
+                .unwrap()
+                .contains_key(session_id)
+            && !self
                 .queue_dispatch_in_flight
                 .lock()
                 .unwrap()
@@ -4475,10 +4497,15 @@ impl ChatHost {
 
     fn release_queue_cancellation_if_idle(&self, session_id: &str) {
         let _mutation = self.queue_persistence.lock().unwrap();
-        self.queue_cancellation_held
-            .lock()
-            .unwrap()
-            .remove(session_id);
+        let mut held = self.queue_cancellation_held.lock().unwrap();
+        if let Some(count) = held.get_mut(session_id) {
+            *count -= 1;
+            if *count > 0 {
+                return;
+            }
+            held.remove(session_id);
+        }
+        drop(held);
         if !self
             .queue_dispatch_in_flight
             .lock()
@@ -6755,21 +6782,58 @@ impl ChatHost {
     /// Internal interrupts (plan-approval resume, session/project delete) stay
     /// markerless on purpose.
     pub async fn interrupt_by_user(self: &Arc<Self>, session_id: &str) -> Result<()> {
-        // Stamped before the abort: a fast resend can claim the freed slot and
-        // persist its user message before this runs, and a later timestamp
-        // would sort the marker after that new bubble. (The live broadcast can
-        // still paint them in arrival order for a few ms; a reload converges
-        // on the stored order.)
+        self.interrupt_by_user_with_store(session_id, Store::open, Store::open)
+            .await
+    }
+
+    async fn interrupt_by_user_with_store(
+        self: &Arc<Self>,
+        session_id: &str,
+        clear_open: impl FnOnce() -> Result<Store> + Send + 'static,
+        marker_open: impl FnOnce() -> Result<Store> + Send + 'static,
+    ) -> Result<()> {
+        // Keep the request timestamp, including when the owned settlement task
+        // must wait for storage before a fast resend can start.
         let created_at = now_ms();
-        // Stop means stop everything: drop any messages parked behind this turn
-        // so they don't fire the moment it aborts.
-        let durable_clear = self.clear_queue_inner(session_id, true);
-        let interrupted = self.interrupt(session_id).await;
-        self.release_queue_cancellation_if_idle(session_id);
-        if !interrupted? {
-            return durable_clear;
-        }
-        let durable_error = durable_clear.err();
+        let host = self.clone();
+        let session_id = session_id.to_string();
+        // A disconnected HTTP waiter must not abandon Stop after queue
+        // cancellation was held, or skip the native interruption/cleanup.
+        tokio::spawn(async move {
+            let clear_host = host.clone();
+            let clear_session = session_id.clone();
+            let durable_clear = crate::local::blocking::run(move || {
+                clear_host.clear_queue_inner_with_store(&clear_session, true, clear_open)
+            })
+            .await?;
+            let interrupted = host.interrupt(&session_id).await;
+            let release_host = host.clone();
+            let release_session = session_id.clone();
+            crate::local::blocking::run(move || {
+                release_host.release_queue_cancellation_if_idle(&release_session);
+            })
+            .await?;
+            if !interrupted? {
+                return durable_clear;
+            }
+            // Marker failure stays best-effort; a failed queue clear must still
+            // be reported after interruption has completed.
+            let _ = crate::local::blocking::run(move || {
+                host.record_user_interruption_with_store(&session_id, created_at, marker_open)
+            })
+            .await;
+            durable_clear
+        })
+        .await
+        .map_err(|error| anyhow!("user interruption task failed: {error}"))?
+    }
+
+    fn record_user_interruption_with_store(
+        &self,
+        session_id: &str,
+        created_at: i64,
+        open: impl FnOnce() -> Result<Store>,
+    ) -> Result<()> {
         let mut msg = WireMessage {
             id: format!("msg_{}", uuid::Uuid::new_v4()),
             role: "assistant".into(),
@@ -6788,29 +6852,19 @@ impl ChatHost {
         // Broadcasting one that did not persist is not harmless though — with no
         // parent a live client reads it as a new branch root and blanks the
         // transcript down to the marker.
-        let persisted = match (Store::open(), serde_json::to_string(&msg.parts)) {
-            (Ok(store), Ok(json)) => store
-                .upsert_chat_message_on_branch(&StoredChatMessage {
-                    id: msg.id.clone(),
-                    session_id: session_id.to_string(),
-                    role: "assistant".into(),
-                    parts_json: json,
-                    created_at: msg.created_at,
-                    completed_at: msg.completed_at,
-                    parent_id: None,
-                    base_native_session_id: None,
-                    result_native_session_id: None,
-                })
-                .ok(),
-            _ => None,
-        };
-        if let Some(parent) = persisted {
-            msg.parent_id = parent;
-            self.emit("chat.message", message_json(&msg, session_id));
-        }
-        if let Some(error) = durable_error {
-            return Err(error);
-        }
+        let parts_json = serde_json::to_string(&msg.parts)?;
+        msg.parent_id = open()?.upsert_chat_message_on_branch(&StoredChatMessage {
+            id: msg.id.clone(),
+            session_id: session_id.to_string(),
+            role: "assistant".into(),
+            parts_json,
+            created_at: msg.created_at,
+            completed_at: msg.completed_at,
+            parent_id: None,
+            base_native_session_id: None,
+            result_native_session_id: None,
+        })?;
+        self.emit("chat.message", message_json(&msg, session_id));
         Ok(())
     }
 
@@ -13200,7 +13254,7 @@ mod steering_tests {
         host.queue_cancellation_held
             .lock()
             .unwrap()
-            .insert("owner".into());
+            .insert("owner".into(), 1);
         host.queue_dispatch_cancelled
             .lock()
             .unwrap()
@@ -13223,7 +13277,7 @@ mod steering_tests {
         host.queue_cancellation_held
             .lock()
             .unwrap()
-            .insert("owner".into());
+            .insert("owner".into(), 1);
         host.queue_dispatch_cancelled
             .lock()
             .unwrap()
@@ -13293,6 +13347,349 @@ mod steering_tests {
 #[cfg(test)]
 mod checkpoint_tests {
     use super::*;
+
+    fn seed_stop_queue(store: &Store, host: &ChatHost) {
+        let item = busy_metadata_message();
+        store
+            .insert_queued_chat_message(&StoredQueuedChatMessage {
+                id: item.id.clone(),
+                session_id: "session".into(),
+                client_turn_id: item.client_turn_id.clone(),
+                request_hash: item.request_hash.clone(),
+                payload_json: serde_json::to_string(&item).unwrap(),
+                created_at: 3,
+            })
+            .unwrap();
+        host.queued
+            .lock()
+            .unwrap()
+            .insert("session".into(), VecDeque::from([item]));
+    }
+
+    #[test]
+    fn user_stop_owned_settlement_handles_active_reservation_and_storage_failures() {
+        const CHILD: &str = "ORX_TEST_USER_STOP_SETTLEMENT";
+        const TEST: &str = "local::chat::checkpoint_tests::user_stop_owned_settlement_handles_active_reservation_and_storage_failures";
+        if let Ok(case) = std::env::var(CHILD) {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let store = Store::open().unwrap();
+                    let host = Arc::new(ChatHost::new(
+                        Arc::new(crate::local::opencode::AgentHost::new(None)),
+                        Arc::new(crate::local::codex::CodexHost::new()),
+                        Arc::new(crate::local::claude::ClaudeHost::new()),
+                    ));
+                    host.durable_turns
+                        .lock()
+                        .unwrap()
+                        .insert("session".into(), "stop-token".into());
+                    host.turns.lock().await.insert(
+                        "session".into(),
+                        TurnState::Reserved {
+                            turn_id: Some("turn".into()),
+                            reservation_id: "stop-reservation".into(),
+                        },
+                    );
+                    let (started, ready) = tokio::sync::oneshot::channel();
+                    let (release, wait) = std::sync::mpsc::channel();
+                    let mut clear_signal = None;
+                    let mut marker_signal = None;
+                    if case == "cancel-clear" {
+                        clear_signal = Some((started, wait));
+                    } else {
+                        marker_signal = Some((started, wait));
+                    }
+                    let clear_case = case.clone();
+                    let marker_case = case.clone();
+                    let worker_host = host.clone();
+                    let worker = tokio::spawn(async move {
+                        worker_host
+                            .interrupt_by_user_with_store(
+                                "session",
+                                move || {
+                                    if let Some((started, wait)) = clear_signal {
+                                        let _ = started.send(());
+                                        wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                                    }
+                                    if clear_case == "clear-error" {
+                                        return Err(anyhow!("injected clear failure"));
+                                    }
+                                    Store::open()
+                                },
+                                move || {
+                                    if marker_case == "cancel-marker" {
+                                        let (started, wait) = marker_signal.unwrap();
+                                        let _ = started.send(());
+                                        wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                                    }
+                                    if marker_case == "marker-error" {
+                                        return Err(anyhow!("injected marker failure"));
+                                    }
+                                    Store::open()
+                                },
+                            )
+                            .await
+                    });
+                    if case.starts_with("cancel-") {
+                        ready.await.unwrap();
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                        worker.abort();
+                        assert!(worker.await.unwrap_err().is_cancelled());
+                        release.send(()).unwrap();
+                        tokio::time::timeout(Duration::from_secs(3), async {
+                            loop {
+                                let session = store.get_chat_session("session").unwrap().unwrap();
+                                let marked = session
+                                    .active_leaf_id
+                                    .as_deref()
+                                    .and_then(|id| store.get_chat_message(id).unwrap())
+                                    .is_some_and(|row| row.parts_json.contains("interrupted"));
+                                if marked {
+                                    break;
+                                }
+                                tokio::time::sleep(Duration::from_millis(2)).await;
+                            }
+                        })
+                        .await
+                        .unwrap();
+                    } else {
+                        assert_eq!(worker.await.unwrap().is_err(), case == "clear-error");
+                    }
+                    assert!(!host.is_busy("session").await);
+                    assert!(!store.chat_turn_leased("session").unwrap());
+                    assert_eq!(
+                        store
+                            .get_chat_turn("session", "turn")
+                            .unwrap()
+                            .unwrap()
+                            .state,
+                        "interrupted"
+                    );
+                    assert!(host.queue_cancellation_held.lock().unwrap().is_empty());
+                    assert!(!host
+                        .queue_dispatch_cancelled
+                        .lock()
+                        .unwrap()
+                        .contains("session"));
+                    assert_eq!(
+                        store.list_queued_chat_messages().unwrap().len(),
+                        usize::from(case == "clear-error")
+                    );
+                    let rows = store.list_chat_messages("session").unwrap();
+                    assert_eq!(
+                        rows.iter()
+                            .filter(|row| row.parts_json.contains("interrupted"))
+                            .count(),
+                        usize::from(case != "marker-error")
+                    );
+                });
+            return;
+        }
+        for case in [
+            "cancel-clear",
+            "cancel-marker",
+            "clear-error",
+            "marker-error",
+        ] {
+            let (dir, store, ctx) = checkpoint_fixture();
+            seed_stop_queue(&store, &ctx.host);
+            assert!(store.claim_chat_turn("session", "stop-token").unwrap());
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD, case)
+                .env("ORX_DATA_DIR", &dir)
+                .output()
+                .unwrap();
+            drop(ctx);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+            assert!(
+                output.status.success(),
+                "{case}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn user_stop_clear_survives_cancelled_waiter_without_blocking_scheduler() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        seed_stop_queue(&store, &host);
+        let mut events = host.subscribe();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let root = dir.clone();
+        let worker_host = host.clone();
+        let worker = tokio::spawn(async move {
+            worker_host
+                .interrupt_by_user_with_store(
+                    "session",
+                    move || {
+                        let _ = started.send(());
+                        wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                        Store::open_at(root)
+                    },
+                    || panic!("idle Stop must not persist a marker"),
+                )
+                .await
+        });
+        ready.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        assert!(host.busy_sessions().await.is_empty());
+        assert_eq!(host.queue_cancellation_held.lock().unwrap()["session"], 1);
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if !host
+                    .queue_dispatch_cancelled
+                    .lock()
+                    .unwrap()
+                    .contains("session")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(host.queue_cancellation_held.lock().unwrap().is_empty());
+        assert!(host.queued_items("session").is_empty());
+        assert!(store.list_queued_chat_messages().unwrap().is_empty());
+        let (name, _) = events.try_recv().unwrap();
+        assert_eq!(name, "chat.queued");
+        assert!(events.try_recv().is_err());
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn user_stop_clear_failure_and_overlapping_holds_preserve_cancellation() {
+        for fail_open in [true, false] {
+            let (dir, store, ctx) = checkpoint_fixture();
+            let host = ctx.host.clone();
+            seed_stop_queue(&store, &host);
+            let mut events = host.subscribe();
+            let root = dir.clone();
+            assert!(host
+                .clear_queue_inner_with_store("session", true, move || {
+                    if fail_open {
+                        return Err(anyhow!("injected Stop open failure"));
+                    }
+                    let opened = Store::open_at(root)?;
+                    let tx = opened.begin()?;
+                    tx.execute_batch("CREATE TEMP TABLE chat_queued_messages(invalid INTEGER)")?;
+                    tx.commit()?;
+                    Ok(opened)
+                })
+                .is_err());
+            assert_eq!(host.queued_items("session").len(), 1);
+            assert_eq!(store.list_queued_chat_messages().unwrap().len(), 1);
+            assert!(events.try_recv().is_err());
+            host.clear_queue_inner_with_store("session", true, || Store::open_at(dir.clone()))
+                .unwrap();
+            assert_eq!(host.queue_cancellation_held.lock().unwrap()["session"], 2);
+            // A plain clear must not undo another Stop's cancellation hold.
+            host.clear_queue_inner_with_store("session", false, || Store::open_at(dir.clone()))
+                .unwrap();
+            host.release_queue_cancellation_if_idle("session");
+            assert_eq!(host.queue_cancellation_held.lock().unwrap()["session"], 1);
+            let mut dispatch =
+                QueueDispatchGuard::begin_locked(host.clone(), "session", "old-item");
+            dispatch.finish_locked(true);
+            assert!(host
+                .queue_dispatch_cancelled
+                .lock()
+                .unwrap()
+                .contains("session"));
+            host.release_queue_cancellation_if_idle("session");
+            assert!(!host
+                .queue_dispatch_cancelled
+                .lock()
+                .unwrap()
+                .contains("session"));
+            assert!(host.queue_cancellation_held.lock().unwrap().is_empty());
+            assert!(store.list_queued_chat_messages().unwrap().is_empty());
+            let (name, _) = events.try_recv().unwrap();
+            assert_eq!(name, "chat.queued");
+            assert!(events.try_recv().is_err());
+            drop(dispatch);
+            drop(host);
+            drop(ctx);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn user_stop_marker_survives_cancel_and_broadcasts_only_persisted_branch() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        let host = ctx.host.clone();
+        let parent = store
+            .get_chat_session("session")
+            .unwrap()
+            .unwrap()
+            .active_leaf_id;
+        let mut events = host.subscribe();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let root = dir.clone();
+        let marker_host = host.clone();
+        let worker = tokio::spawn(crate::local::blocking::run(move || {
+            marker_host.record_user_interruption_with_store("session", 7, move || {
+                let _ = started.send(());
+                wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                Store::open_at(root)
+            })
+        }));
+        ready.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        assert!(host.busy_sessions().await.is_empty());
+        assert!(events.try_recv().is_err());
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        release.send(()).unwrap();
+        let (name, payload) = tokio::time::timeout(Duration::from_secs(3), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(name, "chat.message");
+        let row = store
+            .get_chat_message(payload["message"]["id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.parent_id, parent);
+        assert_eq!(row.created_at, 7);
+        assert!(row.parts_json.contains("interrupted"));
+        for fail_open in [true, false] {
+            assert!(host
+                .record_user_interruption_with_store("session", 8, || {
+                    if fail_open {
+                        return Err(anyhow!("injected marker open failure"));
+                    }
+                    let opened = Store::open_at(dir.clone())?;
+                    let tx = opened.begin()?;
+                    tx.execute_batch("CREATE TEMP TABLE chat_messages(invalid INTEGER)")?;
+                    tx.commit()?;
+                    Ok(opened)
+                })
+                .is_err());
+            assert!(events.try_recv().is_err());
+        }
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn admission_claim_wait_keeps_scheduler_and_token_map_available() {
