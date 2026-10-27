@@ -7392,7 +7392,7 @@ impl ChatHost {
             .research_for_session(session_id)?
             .is_some_and(|study| study.status == "active")
         {
-            return Err(anyhow!("请先停止研究，再删除关联会话。"));
+            return Err(anyhow!("当前会话关联的研究仍处于活动状态，暂不能删除。"));
         }
         for side_chat in store.side_chats_of(session_id)? {
             Box::pin(self.delete_session(&side_chat)).await?;
@@ -9534,7 +9534,8 @@ async fn process_run_wakeups(
             .send_hidden_message(&wakeup.chat_session_id, text, guard)
             .await
         {
-            Ok(TurnSubmission::Started(_)) => {
+            Ok(TurnSubmission::Started(turn_id)) => {
+                let _ = store.reopen_chat_spawn(&wakeup.chat_session_id, Some(&turn_id));
                 if !store.mark_run_wakeup_delivered(
                     &wakeup.run.id,
                     &wakeup.chat_session_id,
@@ -9789,21 +9790,17 @@ fn spawn_start_failure_text(spawn: &crate::store::ChatSpawn) -> String {
 /// Both halves are claim-guarded in the store rather than in memory: the CLI
 /// that wrote the row is long gone, and a crash between claiming and delivering
 /// has to be recoverable by the next `orx up`.
-async fn process_chat_spawns(
+async fn start_pending_chat_spawns(
     chat: &Arc<ChatHost>,
     mut store: Store,
     data_dir_move_in_progress: Option<&std::sync::atomic::AtomicBool>,
-) -> Result<()> {
+) -> Result<Store> {
     let moving = || {
         data_dir_move_in_progress.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
     };
-    if moving() {
-        return Ok(());
-    }
-    store.prune_chat_spawns()?;
     for spawn in store.list_chat_spawns(ChatSpawnState::Pending)? {
         if moving() {
-            return Ok(());
+            return Ok(store);
         }
         // Out of retries: the helper will never run, and all that is left is
         // telling the parent so. Retried like any other wake-up rather than
@@ -9871,6 +9868,25 @@ async fn process_chat_spawns(
         };
         store.settle_chat_spawn(&spawn.session_id, &token, next)?;
     }
+    Ok(store)
+}
+
+async fn process_chat_spawns(
+    chat: &Arc<ChatHost>,
+    mut store: Store,
+    data_dir_move_in_progress: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<()> {
+    let moving = || {
+        data_dir_move_in_progress.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+    };
+    if moving() {
+        return Ok(());
+    }
+    store.prune_chat_spawns()?;
+    if let Err(err) = crate::commands::research_dispatch::reconcile_active_studies(&store) {
+        eprintln!("orx up: research reconcile: {err}");
+    }
+    store = start_pending_chat_spawns(chat, store, data_dir_move_in_progress).await?;
     for spawn in store.list_chat_spawns(ChatSpawnState::Running)? {
         if moving() {
             return Ok(());
@@ -9878,7 +9894,10 @@ async fn process_chat_spawns(
         // The durable lease, not just this process's turn map: a helper running
         // under another `orx up` (or under one that has since restarted) is
         // still working, and reporting it finished would abandon the task.
-        if chat.is_busy(&spawn.session_id).await || store.chat_turn_leased(&spawn.session_id)? {
+        if chat.is_busy(&spawn.session_id).await
+            || store.chat_turn_leased(&spawn.session_id)?
+            || store.research_session_has_active_runs(&spawn.session_id)?
+        {
             continue;
         }
         if !spawn.wake_parent || store.get_chat_session(&spawn.parent_session_id)?.is_none() {
@@ -9901,6 +9920,55 @@ async fn process_chat_spawns(
         let interrupted = store
             .get_chat_spawn(&spawn.session_id)?
             .is_some_and(|row| row.finished_at.is_none());
+        let (reply, failed) = match store
+            .get_chat_session(&spawn.session_id)?
+            .map(|child| spawn_outcome(&store, &child))
+            .transpose()?
+        {
+            Some(SpawnOutcome::Reply(text)) => (Some(text), false),
+            Some(SpawnOutcome::Failed(err)) => (Some(err), true),
+            Some(SpawnOutcome::Interrupted) => (None, true),
+            Some(SpawnOutcome::Silent) | None => (None, false),
+        };
+        if let Some(action) = crate::commands::research_dispatch::on_research_spawn_finished(
+            &store,
+            &spawn.session_id,
+            interrupted,
+            reply,
+            failed,
+        )? {
+            match action {
+                crate::commands::research_dispatch::ResearchWakeAction::RetireSilently => {
+                    let Some(token) = store.claim_chat_spawn(
+                        &spawn.session_id,
+                        ChatSpawnState::Running,
+                        ChatSpawnState::Waking,
+                    )?
+                    else {
+                        continue;
+                    };
+                    store.settle_chat_spawn(&spawn.session_id, &token, ChatSpawnState::Done)?;
+                    continue;
+                }
+                crate::commands::research_dispatch::ResearchWakeAction::NudgeHelper(text) => {
+                    if let Some(guard) = TurnGuard::claim_hidden(chat, &spawn.session_id).await {
+                        if let Ok(TurnSubmission::Started(turn_id)) = chat
+                            .send_hidden_message(&spawn.session_id, text, guard)
+                            .await
+                        {
+                            let _ = store
+                                .research_mark_nudge_delivered(&spawn.session_id, Some(&turn_id));
+                        }
+                    }
+                    continue;
+                }
+                crate::commands::research_dispatch::ResearchWakeAction::WakeLead(text) => {
+                    store =
+                        deliver_wake_up(chat, store, &spawn, ChatSpawnState::Running, text).await?;
+                    continue;
+                }
+            }
+        }
         let text = match spawn_report_text(&store, &spawn, interrupted) {
             Ok(text) => text,
             Err(err) => {
@@ -9919,6 +9987,7 @@ async fn process_chat_spawns(
         };
         store = deliver_wake_up(chat, store, &spawn, ChatSpawnState::Running, text).await?;
     }
+    let _ = start_pending_chat_spawns(chat, store, data_dir_move_in_progress).await?;
     Ok(())
 }
 

@@ -2225,7 +2225,8 @@ impl Store {
     ) -> Result<Vec<StoredChatSession>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {CHAT_SESSION_COLS} FROM chat_sessions
-             WHERE side_parent_session_id IS NULL AND (?1 IS NULL OR archived = ?1)
+             WHERE side_parent_session_id IS NULL AND parent_session_id IS NULL
+               AND (?1 IS NULL OR archived = ?1)
                AND (?2 IS NULL OR updated_at < ?2 OR (updated_at = ?2 AND id < ?3))
              ORDER BY updated_at DESC, id DESC LIMIT 51"
         ))?;
@@ -2345,7 +2346,7 @@ impl Store {
         let tx = self.begin_immediate()?;
         if let Some(study) = self.research_for_session(id)? {
             if study.status == "active" {
-                return Err(anyhow!("请先停止研究，再删除关联会话。"));
+                return Err(anyhow!("当前会话关联的研究仍处于活动状态，暂不能删除。"));
             }
         }
         let has_children: bool = tx.query_row(
@@ -2817,6 +2818,7 @@ impl Store {
                 turn.updated_at,
             ],
         )?;
+        self.research_bind_nudge_turn_in_tx(&turn.session_id, &turn.id)?;
         tx.commit()?;
         Ok(ChatTurnAdmission::Inserted)
     }
@@ -2962,7 +2964,8 @@ impl Store {
         attempt_count: i64,
         next_retry_at: Option<i64>,
     ) -> Result<()> {
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        let changed = tx.execute(
             "UPDATE chat_turns SET state = ?2, delivery_state = ?3, attempt_count = ?4,
                  next_retry_at = ?5, updated_at = ?6
              WHERE id = ?1 AND state IN ('preparing', 'retrying', 'running')",
@@ -2975,6 +2978,19 @@ impl Store {
                 now_ms()
             ],
         )?;
+        if changed > 0 && (state == "running" || attempt_count > 0) {
+            if let Some(session_id) = tx
+                .query_row(
+                    "SELECT session_id FROM chat_turns WHERE id = ?1",
+                    params![id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+            {
+                self.research_confirm_turn_started_in_tx(&session_id, id)?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -5209,6 +5225,15 @@ mod tests {
         side.side_parent_session_id = Some("chat_000".into());
         side.updated_at = 20;
         store.create_chat_session(&side).unwrap();
+        // Helpers stay available to the DAG but cannot crowd main chats out of a page.
+        for n in 0..70 {
+            let mut helper = chat_session_fixture(&format!("expert_{n:03}"));
+            helper.parent_session_id = Some("chat_000".into());
+            helper.updated_at = 30;
+            helper.archived = n % 2 == 0;
+            store.create_chat_session(&helper).unwrap();
+        }
+        assert!(store.get_chat_session("expert_000").unwrap().is_some());
         let first = store.list_sidebar_chat_sessions(Some(false), None).unwrap();
         assert_eq!(first.len(), 51);
         assert_eq!(first[0].id, "chat_059");

@@ -96,23 +96,32 @@ decision in terms of what the user is agreeing to, then register the native plan
    40 tasks per plan; parallel live helpers are bounded by the native limit.
 3. G1 is requested automatically. Explain the plan and end the turn while the
    user decides in the research panel. Never fabricate decisions or call the
-   browser approval API. A decision resumes the lead with a durable message.
+   browser approval API. When the user approves G1, the platform automatically
+   dispatches ready tasks in topological order and wakes the lead when a stage
+   requires `prepare-run`, intervention, or final summary.
 4. `orx research dispatch <task-id>` checks dependencies and gates, then queues
-   one fresh helper in its own worktree. Repeating dispatch returns the existing
-   session. Completion wakes the lead through native OpenResearch machinery.
+   one fresh helper in its own worktree. The platform also auto-dispatches ready
+   tasks as upstream dependencies complete. Repeating dispatch returns the existing
+   session. To retry a failed task in-place without resetting the plan, run
+   `orx research retry <task-id>`.
 5. Experiment code is developed and committed before launch approval. Use
    `orx create-experiment <project-id> --parent <id> --title <title>` and normal
    Git tools. Set the fixed project run command through `orx project edit`.
    The lead runs `orx research prepare-run <task-id> <experiment-id> --backend local`
    (or another configured backend with explicit resource options). This binds
    code revision, command and launch options and requests G2/G3. One prepared
-   execution task permits one run. For a retry, revise the plan explicitly.
-6. After G2/G3 approval dispatch the execution expert, who uses exactly the
-   approved `orx exp run <experiment-id> --backend <backend>` and options.
+   approval permits one run; if code or parameters change or a failed run needs
+   a retry, run `orx research prepare-run` again on the task to request fresh
+   G2/G3 without resetting the plan version.
+6. After G2/G3 approval the platform auto-dispatches (or the lead dispatches) the
+   execution expert, who uses exactly the approved
+   `orx exp run <experiment-id> --backend <backend>` and options.
    Never execute experimental workloads directly in a shell. Read `orx logs`
    and reconcile terminal states; an exit code of zero is not scientific support.
 7. Members use `orx research finish --file <path>` with JSON
    `{"summary":"...","success":true}` after writing ALL declared output files.
+   When a member turn finishes with all declared non-empty outputs present, the
+   platform also auto-reconciles completion and dispatches ready downstream tasks.
    On failure use `success:false` with an honest summary. The lead may finish
    a failed/incomplete child after checking its return, but cannot claim a task
    succeeded without its dispatched session and declared artifacts. Use
@@ -126,11 +135,15 @@ decision in terms of what the user is agreeing to, then register the native plan
 9. W1–W3, legacy full studies and independent reviews need separate `as-independent-reviewer`
    and `as-quality-citation-auditor` tasks. Reviewers receive artifacts and
    evidence, not a copied author conversation. They must report blocking issues
-   as task failure and require a revised plan; do not self-review.
+   as task failure and require a revised plan; do not self-review. When revising
+   a plan with `orx research plan`, completed upstream tasks with unchanged specs
+   and valid artifacts are automatically inherited unless `"forceRerun": true` is
+   set on a task. Never re-run completed upstream work unnecessarily.
 10. `orx research package` requests G4 (G3 for W4 plan delivery) after tasks and registered outputs pass
-    validation. Explain limitations and unresolved claims before approval.
-    The user can download a draft package or an approved package from the panel.
-    Approval authorizes this package version, not external publication.
+    validation (the platform also requests it automatically when all planned tasks complete). Explain limitations and unresolved claims before approval.
+    The user reviews the requested confirmation in the human-confirmation page.
+    Files are viewed and downloaded from the artifacts page; confirmation does not create a ZIP
+    or authorize external publication.
 
 For non-experimental work G2 and run-launch G3 are not triggered. W4 still
 requires G3 confirmation of its completed Experiment Plan. Only W2 (and legacy

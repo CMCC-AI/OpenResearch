@@ -85,7 +85,7 @@ src/
 │   ├── chat/mod.rs      会话与回合驱动（11563 行，全仓库最大）
 │   ├── experiments.rs   实验节点（slug/branch/row）
 │   ├── localrun.rs      本机执行 run
-│   ├── research.rs      专家角色材料 + 研究包导出
+│   ├── research.rs      专家角色材料 + 运行契约
 │   └── git.rs           仓库/分支/worktree
 ├── jobs/                9 个算力后端的提交细节（无 trait）
 ├── compute.rs           ★ 后端统一 trait + Run 提交门禁 + 去重
@@ -328,7 +328,7 @@ sqlite3 ~/.local/share/openresearch/orx.db "pragma user_version;"
 值得先看的几组路由：
 - 项目/实验/Run：`/api/projects*`、`/api/experiments/*`、`/api/runs*`
 - 会话：`/api/chat/sessions/{id}/message`（`up.rs:773`）、`/interrupt`、`/fork`、`/branch`
-- 研究编排：`/api/research/studies/{id}/package`、`/stop`（`up.rs:512-513`）
+- 研究编排：`/api/research/sessions/{id}`、`/api/research/studies/{id}/decisions/{decision}`
 - 文献代理：`/api/papers/*`、`/api/deep-literature/*`（浏览器跨域取不到，故由后端代理）
 - 设置与后端：`/api/settings/*`、`/api/compute/backends`、`/api/harnesses*`
 
@@ -557,7 +557,7 @@ pnpm build && cd ..                      # 记得提交重新生成的 ui/dist
 | 文件 | 职责 |
 |---|---|
 | `src/store/research.rs` | 研究数据模型、DAG、计划版本、授权、依赖、验收、证据规则 |
-| `src/local/research.rs` | 角色材料、每轮上下文、运行契约、研究包导出 |
+| `src/local/research.rs` | 角色材料、每轮上下文和运行契约 |
 | `src/commands/research.rs` | `status`/`roles`/`plan`/`dispatch`/`prepare-run`/`finish`/`claim`/`package` |
 | `src/commands/up/research.rs` | Study 查询、人工确认、停止与导出 API |
 | `src/commands/agent.rs` | 研究任务与原生 helper 会话的原子绑定 |
@@ -585,7 +585,7 @@ pnpm build && cd ..                      # 记得提交重新生成的 ui/dist
 6. 执行专家通过**原生运行入口**提交 Run，提交前与事务内双重校验
 7. 专家读结果，提交产物与证据
 8. 独立审稿 → 引用审计 → 归档
-9. 用户确认 G4 → 下载研究包
+9. 用户在人工确认页面处理 G4，文件在产物页面查看和下载
 
 **融合点在第 4–7 步**：研究层负责"谁做、什么顺序、何时可执行、证据如何验收"；
 原生平台负责"会话怎么跑、代码怎么隔离、实验怎么提交与追踪"。

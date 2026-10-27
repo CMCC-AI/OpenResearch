@@ -60,7 +60,7 @@ PDF 下载包含最大大小、PDF 签名、SHA-256 和临时文件原子落盘�
 
 /literature → OpenResearch /api/deep-literature/papers → Deep Literature /api/papers?paginated=1。服务端选取公开字段，忽略 viewerStates，不转发 Cookie。本地版打开论文时也先走 Deep Literature 的 OpenResearch 登录入口，再进入 /abs/{id}。创建研究项目仍走原来的 alphaXiv 解析链路：Deep Literature 在线不保证 alphaXiv 在线。
 
-当前已经统一登录。科研专家团已实现本地证据声明和可导出研究包，关联原生 Run、日志、产物和源码；仍没有项目多篇文献关联表、双向跳转状态或跨系统笔记同步，文献服务与 Study 证据未自动形成完整闭环。因此按钮使用准确的“从此论文创建项目”，避免误认为已收藏到现有项目。
+当前已经统一登录。科研专家团已实现本地证据声明和人工确认，关联原生 Run、日志、产物和源码，文件统一从产物页面查看和下载；仍没有项目多篇文献关联表、双向跳转状态或跨系统笔记同步，文献服务与 Study 证据未自动形成完整闭环。因此按钮使用准确的“从此论文创建项目”，避免误认为已收藏到现有项目。
 
 ## 下一阶段的数据契约（待建设）
 

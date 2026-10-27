@@ -21,7 +21,7 @@ export interface ResearchTask {
 }
 export interface ResearchDecision {
   id: string; gate: string; version: number; scope: string; scopeHash: string;
-  status: "pending" | "approved" | "rejected"; reason: string | null;
+  status: "pending" | "approved" | "rejected" | "superseded"; reason: string | null;
 }
 export interface ResearchStudy {
   id: string; sessionId: string; mode: ResearchMode; objective: string; status: string;
@@ -31,6 +31,7 @@ export interface ResearchStudy {
 }
 export interface ResearchMetrics {
   activeDurationMs: number | null;
+  activeDurationComplete?: boolean;
   tokenCount: number | null;
   tokenCountComplete: boolean;
   measuredAt: number;
@@ -42,7 +43,8 @@ export function researchDuration(metrics: ResearchMetrics | null | undefined, no
   const seconds = Math.max(0, Math.floor((metrics.activeDurationMs + (metrics.running ? Math.max(0, now - metrics.measuredAt) : 0)) / 1000));
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor(seconds % 3600 / 60);
-  return hours ? `${hours}小时${String(minutes).padStart(2, "0")}分` : `${minutes}分${String(seconds % 60).padStart(2, "0")}秒`;
+  const duration = hours ? `${hours}小时${String(minutes).padStart(2, "0")}分` : `${minutes}分${String(seconds % 60).padStart(2, "0")}秒`;
+  return `${metrics.activeDurationComplete === false ? "≥" : ""}${duration}`;
 }
 
 /** Category stays fixed; automatic routing is versioned with the plan. */
@@ -51,7 +53,7 @@ export function researchWorkflowMode(study: ResearchStudy): ResearchMode {
 }
 export function currentDecisions(study: ResearchStudy): ResearchDecision[] {
   const version = study.plans.at(-1)?.version;
-  return study.decisions.filter((decision) => decision.version === version);
+  return study.decisions.filter((decision) => decision.version === version && decision.status !== "superseded");
 }
 export function researchProgress(study: ResearchStudy) {
   const tasks = study.plans.at(-1)?.tasks ?? [];

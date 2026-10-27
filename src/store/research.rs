@@ -19,6 +19,8 @@ pub struct TaskSpec {
     #[serde(default)]
     pub depends_on: Vec<String>,
     pub outputs: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force_rerun: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -50,12 +52,42 @@ pub struct ResearchTask {
     pub spec: TaskSpec,
     pub state: String,
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previous_sessions: Vec<String>,
+    #[serde(default)]
+    pub attempts: u32,
+    #[serde(default)]
+    pub contract_batch: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_nudge: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_nudge_turn_id: Option<String>,
     pub summary: Option<String>,
     pub artifacts: Vec<Artifact>,
     pub run_contract: Option<RunContract>,
     pub run_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previous_run_ids: Vec<String>,
     #[serde(default)]
     pub evidence_digest: Option<String>,
+}
+impl ResearchTask {
+    pub fn run_gate_scope(&self) -> Result<String> {
+        let contract = self
+            .run_contract
+            .as_ref()
+            .ok_or_else(|| anyhow!("先用 prepare-run 绑定真实实验"))?;
+        let batch = self.contract_batch;
+        if batch == 0 {
+            Ok(serde_json::to_string(contract)?)
+        } else {
+            let mut scope = serde_json::to_value(contract)?;
+            if let Some(obj) = scope.as_object_mut() {
+                obj.insert("batch".into(), serde_json::json!(batch));
+            }
+            Ok(serde_json::to_string(&scope)?)
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -159,11 +191,25 @@ impl Study {
     pub fn request_gate(&mut self, gate: &str, scope: String) -> Result<()> {
         let version = self.plan()?.version;
         let hash = digest(scope.as_bytes());
-        if self
-            .decisions
-            .iter()
-            .any(|d| d.version == version && d.gate == gate && d.scope_hash == hash)
-        {
+        let is_plan_wide =
+            gate == "G1" || gate == crate::local::research::delivery_gate(self.workflow_mode());
+        if is_plan_wide {
+            for d in &mut self.decisions {
+                if d.version == version
+                    && d.gate == gate
+                    && d.scope_hash != hash
+                    && d.status != "superseded"
+                {
+                    d.status = "superseded".into();
+                }
+            }
+        }
+        if self.decisions.iter().any(|d| {
+            d.version == version
+                && d.gate == gate
+                && d.scope_hash == hash
+                && d.status != "superseded"
+        }) {
             return Ok(());
         }
         self.decisions.push(HumanDecision {
@@ -178,6 +224,15 @@ impl Study {
             requested_at: now_ms(),
             decided_at: None,
         });
+        Ok(())
+    }
+    pub fn supersede_gate(&mut self, gate: &str) -> Result<()> {
+        let version = self.plan()?.version;
+        for d in &mut self.decisions {
+            if d.version == version && d.gate == gate && d.status != "superseded" {
+                d.status = "superseded".into();
+            }
+        }
         Ok(())
     }
     /// Automatic team studies select a route per versioned plan; manual studies keep their explicit route.
@@ -210,11 +265,7 @@ impl Study {
             }
         }
         if task.spec.role == "as-experiment-operator" {
-            let contract = task
-                .run_contract
-                .as_ref()
-                .ok_or_else(|| anyhow!("先用 prepare-run 绑定真实实验"))?;
-            let scope = serde_json::to_string(contract)?;
+            let scope = task.run_gate_scope()?;
             self.require_gate("G2", &scope)?;
             self.require_gate("G3", &scope)?;
         }
@@ -457,16 +508,24 @@ impl Store {
         )?;
         Ok(())
     }
+    pub(crate) fn research_update_in_tx<T>(
+        &self,
+        id: &str,
+        update: impl FnOnce(&mut Study) -> Result<T>,
+    ) -> Result<T> {
+        let mut study = self.research_study(id)?;
+        let value = update(&mut study)?;
+        study.updated_at = now_ms();
+        self.research_save(&study)?;
+        Ok(value)
+    }
     pub fn research_update<T>(
         &self,
         id: &str,
         update: impl FnOnce(&mut Study) -> Result<T>,
     ) -> Result<T> {
         let tx = self.begin_immediate()?;
-        let mut study = self.research_study(id)?;
-        let value = update(&mut study)?;
-        study.updated_at = now_ms();
-        self.research_save(&study)?;
+        let value = self.research_update_in_tx(id, update)?;
         tx.commit()?;
         Ok(value)
     }
@@ -552,31 +611,122 @@ impl Store {
             }
             if study
                 .plans
-                .iter()
-                .flat_map(|p| &p.tasks)
-                .any(|t| t.state == "running")
+                .last()
+                .is_some_and(|p| p.tasks.iter().any(|t| t.state == "running"))
             {
                 return Err(anyhow!("请先结束或停止当前任务，再修订计划"));
             }
             let version = study.plans.last().map_or(1, |p| p.version + 1);
+            let root = self.research_root(study).ok();
+            let evidence_digest = digest(&serde_json::to_vec(&study.claims)?);
+            let prev_tasks: std::collections::HashMap<String, ResearchTask> = study
+                .plans
+                .last()
+                .map(|p| {
+                    p.tasks
+                        .iter()
+                        .cloned()
+                        .map(|t| (t.spec.id.clone(), t))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut inherited_ids = HashSet::new();
+            loop {
+                let before = inherited_ids.len();
+                for spec in &input.tasks {
+                    if inherited_ids.contains(&spec.id) || spec.force_rerun {
+                        continue;
+                    }
+                    let Some(prev) = prev_tasks.get(&spec.id) else {
+                        continue;
+                    };
+                    if prev.state != "completed"
+                        || prev.spec.role != spec.role
+                        || prev.spec.outputs != spec.outputs
+                        || prev.spec.depends_on != spec.depends_on
+                        || !spec.depends_on.iter().all(|d| inherited_ids.contains(d))
+                    {
+                        continue;
+                    }
+                    if matches!(
+                        spec.role.as_str(),
+                        "as-independent-reviewer" | "as-quality-citation-auditor"
+                    ) && prev.evidence_digest.as_deref() != Some(evidence_digest.as_str())
+                    {
+                        continue;
+                    }
+                    let artifacts_valid = root.as_ref().is_some_and(|root_dir| {
+                        !prev.artifacts.is_empty()
+                            && prev.artifacts.iter().all(|a| {
+                                read_artifact(root_dir, &a.path)
+                                    .is_ok_and(|bytes| digest(&bytes) == a.sha256)
+                            })
+                    });
+                    if artifacts_valid {
+                        inherited_ids.insert(spec.id.clone());
+                    }
+                }
+                if inherited_ids.len() == before {
+                    break;
+                }
+            }
+            let mut tasks = Vec::with_capacity(input.tasks.len());
+            for spec in input.tasks {
+                if inherited_ids.contains(&spec.id) {
+                    if let Some(prev) = prev_tasks.get(&spec.id) {
+                        if let Some(sid) = &prev.session_id {
+                            self.conn.execute(
+                                "UPDATE research_sessions SET version=?1 WHERE session_id=?2 AND study_id=?3",
+                                params![version, sid, study.id],
+                            )?;
+                        }
+                        if let Some(contract) = &prev.run_contract {
+                            self.conn.execute(
+                                "UPDATE research_experiments SET version=?1 WHERE experiment_id=?2 AND study_id=?3",
+                                params![version, contract.experiment_id, study.id],
+                            )?;
+                        }
+                        tasks.push(ResearchTask {
+                            spec,
+                            state: "completed".into(),
+                            session_id: prev.session_id.clone(),
+                            previous_sessions: prev.previous_sessions.clone(),
+                            attempts: prev.attempts,
+                            contract_batch: prev.contract_batch,
+                            pending_nudge: None,
+                            pending_nudge_turn_id: None,
+                            summary: prev.summary.clone(),
+                            artifacts: prev.artifacts.clone(),
+                            run_contract: prev.run_contract.clone(),
+                            run_ids: prev.run_ids.clone(),
+                            previous_run_ids: prev.previous_run_ids.clone(),
+                            evidence_digest: prev.evidence_digest.clone(),
+                        });
+                        continue;
+                    }
+                }
+                tasks.push(ResearchTask {
+                    spec,
+                    state: "pending".into(),
+                    session_id: None,
+                    previous_sessions: vec![],
+                    attempts: 0,
+                    contract_batch: 0,
+                    pending_nudge: None,
+                    pending_nudge_turn_id: None,
+                    summary: None,
+                    artifacts: vec![],
+                    run_contract: None,
+                    run_ids: vec![],
+                    previous_run_ids: vec![],
+                    evidence_digest: None,
+                });
+            }
             study.plans.push(ResearchPlan {
                 version,
                 workflow: input.workflow,
                 summary: input.summary,
-                tasks: input
-                    .tasks
-                    .into_iter()
-                    .map(|spec| ResearchTask {
-                        spec,
-                        state: "pending".into(),
-                        session_id: None,
-                        summary: None,
-                        artifacts: vec![],
-                        run_contract: None,
-                        run_ids: vec![],
-                        evidence_digest: None,
-                    })
-                    .collect(),
+                tasks,
             });
             study.request_gate("G1", study.plan_scope()?)
         })
@@ -610,24 +760,369 @@ impl Store {
         self.research_save(&study)
     }
     pub fn research_prepare(&self, id: &str, task_id: &str, contract: RunContract) -> Result<()> {
-        self.research_update(id,|study| {
+        self.research_update(id, |study| {
             study.ensure_active()?;
-            study.require_gate("G1",&study.plan_scope()?)?;
-            let task=study.task(task_id)?;
-            if task.spec.role!="as-experiment-operator" || task.state!="pending" { return Err(anyhow!("只能为尚未派发的实验执行任务准备运行")); }
-            let exp=self.get_local_experiment(&contract.experiment_id)?.ok_or_else(||anyhow!("实验不存在"))?;
-            if exp.project_id!=study.project_id {return Err(anyhow!("实验属于其他项目"));}
-            let existing:Option<(String,u32)>=self.conn.query_row("SELECT study_id,version FROM research_experiments WHERE experiment_id=?1",[&exp.id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-            if existing.as_ref().is_some_and(|(sid,v)|sid!=id || *v==study.plan().map_or(0,|p|p.version)) {
-                if task.run_contract.as_ref()==Some(&contract) {return Ok(());}
-                return Err(anyhow!("实验已绑定研究任务；变更请修订计划"));
+            study.require_gate("G1", &study.plan_scope()?)?;
+            let version = study.plan()?.version;
+            let task = study.task(task_id)?;
+            if task.spec.role != "as-experiment-operator"
+                || !matches!(task.state.as_str(), "pending" | "failed")
+            {
+                return Err(anyhow!("只能为待执行或失败待重试的实验执行任务准备运行"));
             }
-            let scope=serde_json::to_string(&contract)?;
-            self.conn.execute("INSERT INTO research_experiments VALUES(?1,?2,?3,?4) ON CONFLICT(experiment_id) DO UPDATE SET task_id=excluded.task_id,version=excluded.version",params![exp.id,id,task_id,study.plan()?.version])?;
-            study.task_mut(task_id)?.run_contract=Some(contract);
-            study.request_gate("G2",scope.clone())?;
-            study.request_gate("G3",scope)
+            for run_id in &task.run_ids {
+                if self
+                    .get_run(run_id)?
+                    .is_some_and(|r| !crate::local::is_terminal(&r.status))
+                {
+                    return Err(anyhow!("仍有运行中的实验，请先等待或取消"));
+                }
+            }
+            let exp = self
+                .get_local_experiment(&contract.experiment_id)?
+                .ok_or_else(|| anyhow!("实验不存在"))?;
+            if exp.project_id != study.project_id {
+                return Err(anyhow!("实验属于其他项目"));
+            }
+            let existing: Option<(String, String, u32)> = self
+                .conn
+                .query_row(
+                    "SELECT study_id,task_id,version FROM research_experiments WHERE experiment_id=?1",
+                    [&exp.id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            if existing
+                .as_ref()
+                .is_some_and(|(sid, tid, v)| sid != id || (*v == version && tid != task_id))
+            {
+                return Err(anyhow!("实验已绑定其他研究任务；变更请修订计划"));
+            }
+            let old_scope = task.run_gate_scope().ok();
+            let has_rejected_or_consumed = old_scope.as_ref().is_some_and(|s| {
+                let h = digest(s.as_bytes());
+                study.decisions.iter().any(|d| {
+                    d.version == version
+                        && matches!(d.gate.as_str(), "G2" | "G3")
+                        && d.scope_hash == h
+                        && d.status == "rejected"
+                })
+            }) || !task.run_ids.is_empty()
+                || task.session_id.is_some()
+                || task.state == "failed";
+            if task.state == "pending"
+                && task.run_contract.as_ref() == Some(&contract)
+                && !has_rejected_or_consumed
+            {
+                return Ok(());
+            }
+            let had_prior_attempt = task.run_contract.is_some()
+                || !task.run_ids.is_empty()
+                || !task.previous_run_ids.is_empty()
+                || task.session_id.is_some()
+                || !task.previous_sessions.is_empty()
+                || task.state == "failed"
+                || has_rejected_or_consumed;
+            if let Some(old_s) = old_scope {
+                let old_hash = digest(old_s.as_bytes());
+                for d in &mut study.decisions {
+                    if d.version == version
+                        && matches!(d.gate.as_str(), "G2" | "G3")
+                        && d.scope_hash == old_hash
+                        && d.status != "superseded"
+                    {
+                        d.status = "superseded".into();
+                    }
+                }
+            }
+            self.conn.execute(
+                "INSERT INTO research_experiments VALUES(?1,?2,?3,?4) ON CONFLICT(experiment_id) DO UPDATE SET task_id=excluded.task_id,version=excluded.version",
+                params![exp.id, id, task_id, version],
+            )?;
+            let task = study.task_mut(task_id)?;
+            if let Some(old_session) = task.session_id.take() {
+                task.previous_sessions.push(old_session);
+            }
+            if !task.run_ids.is_empty() {
+                task.previous_run_ids.append(&mut task.run_ids);
+            }
+            if had_prior_attempt {
+                task.contract_batch += 1;
+                task.attempts += 1;
+            }
+            task.pending_nudge = None;
+            task.pending_nudge_turn_id = None;
+            task.state = "pending".into();
+            task.summary = None;
+            task.run_contract = Some(contract);
+            let scope = task.run_gate_scope()?;
+            study.request_gate("G2", scope.clone())?;
+            study.request_gate("G3", scope)
         })
+    }
+    pub fn research_nudge_task(
+        &self,
+        id: &str,
+        task_id: &str,
+        session_id: &str,
+        prompt: String,
+    ) -> Result<()> {
+        self.research_update(id, |study| {
+            study.ensure_active()?;
+            let task = study.task_mut(task_id)?;
+            if task.state != "running" || task.session_id.as_deref() != Some(session_id) {
+                return Err(anyhow!("仅能提醒正在执行当前任务的专家会话"));
+            }
+            if task.pending_nudge.is_none() {
+                task.attempts += 1;
+            }
+            task.pending_nudge = Some(prompt);
+            task.pending_nudge_turn_id = None;
+            Ok(())
+        })
+    }
+    pub(crate) fn research_bind_nudge_turn_in_tx(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+    ) -> Result<()> {
+        let Some((task_id, version)) = self.research_session_task(session_id)? else {
+            return Ok(());
+        };
+        let Some(study) = self.research_for_session(session_id)? else {
+            return Ok(());
+        };
+        if study.plan().map_or(true, |p| p.version != version) {
+            return Ok(());
+        }
+        self.research_update_in_tx(&study.id, |s| {
+            let task = s.task_mut(&task_id)?;
+            if task.session_id.as_deref() == Some(session_id) && task.pending_nudge.is_some() {
+                task.pending_nudge_turn_id = Some(turn_id.to_string());
+            }
+            Ok(())
+        })
+    }
+    pub(crate) fn research_confirm_turn_started_in_tx(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+    ) -> Result<()> {
+        self.reopen_chat_spawn(session_id, Some(turn_id))?;
+        let Some((task_id, version)) = self.research_session_task(session_id)? else {
+            return Ok(());
+        };
+        let Some(study) = self.research_for_session(session_id)? else {
+            return Ok(());
+        };
+        if study.plan().map_or(true, |p| p.version != version) {
+            return Ok(());
+        }
+        self.research_update_in_tx(&study.id, |s| {
+            let task = s.task_mut(&task_id)?;
+            if task.session_id.as_deref() == Some(session_id) {
+                task.pending_nudge = None;
+                task.pending_nudge_turn_id = None;
+            }
+            Ok(())
+        })
+    }
+    pub fn research_mark_nudge_delivered(
+        &self,
+        session_id: &str,
+        turn_id: Option<&str>,
+    ) -> Result<()> {
+        let Some((task_id, version)) = self.research_session_task(session_id)? else {
+            return Ok(());
+        };
+        let Some(study) = self.research_for_session(session_id)? else {
+            return Ok(());
+        };
+        if study.plan().map_or(true, |p| p.version != version) {
+            return Ok(());
+        }
+        if let Some(tid) = turn_id {
+            let unstarted: bool = self.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM chat_turns WHERE id=?1 AND session_id=?2 AND state='preparing' AND attempt_count=0)",
+                params![tid, session_id],
+                |r| r.get(0),
+            )?;
+            if unstarted {
+                return self.research_update(&study.id, |s| {
+                    let task = s.task_mut(&task_id)?;
+                    if task.session_id.as_deref() == Some(session_id)
+                        && task.pending_nudge.is_some()
+                    {
+                        task.pending_nudge_turn_id = Some(tid.to_string());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        self.research_update(&study.id, |s| {
+            let task = s.task_mut(&task_id)?;
+            if task.session_id.as_deref() == Some(session_id) {
+                task.pending_nudge = None;
+                task.pending_nudge_turn_id = None;
+                self.reopen_chat_spawn(session_id, turn_id)?;
+            }
+            Ok(())
+        })
+    }
+    pub fn reopen_chat_spawn(&self, session_id: &str, turn_id: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE chat_spawns SET finished_at=NULL
+             WHERE session_id=?1
+               AND (?2 IS NULL OR NOT EXISTS(
+                   SELECT 1 FROM chat_turns
+                   WHERE id=?2 AND session_id=?1
+                     AND (state IN ('completed', 'failed', 'interrupted')
+                          OR (state = 'preparing' AND attempt_count = 0))
+               ))",
+            params![session_id, turn_id],
+        )?;
+        Ok(())
+    }
+    pub fn research_retry_task(&self, id: &str, task_id: &str) -> Result<()> {
+        self.research_update(id, |study| {
+            study.ensure_active()?;
+            let version = study.plan()?.version;
+            let task = study.task(task_id)?;
+            if task.state == "completed" {
+                return Err(anyhow!(
+                    "任务已通过验收，无需重试；如需重做请在计划中设置 forceRerun"
+                ));
+            }
+            if task.state == "pending" && task.session_id.is_none() {
+                return Ok(());
+            }
+            if task.state == "running" {
+                let finished = task.session_id.as_deref().is_some_and(|sid| {
+                    !self.chat_turn_leased(sid).unwrap_or(true)
+                        && self
+                            .conn
+                            .query_row(
+                                "SELECT EXISTS(SELECT 1 FROM chat_spawns WHERE session_id=?1 AND (state='done' OR finished_at IS NOT NULL))",
+                                [sid],
+                                |r| r.get::<_, bool>(0),
+                            )
+                            .unwrap_or(false)
+                });
+                if !finished {
+                    return Err(anyhow!("专家会话仍在执行中，请等待其结束后再重试"));
+                }
+            }
+            for run_id in &task.run_ids {
+                if self
+                    .get_run(run_id)?
+                    .is_some_and(|r| !crate::local::is_terminal(&r.status))
+                {
+                    return Err(anyhow!("仍有运行中的实验，请先等待或取消"));
+                }
+            }
+            let has_succeeded_run = task.spec.role == "as-experiment-operator"
+                && !task.run_ids.is_empty()
+                && task.run_ids.iter().all(|run_id| {
+                    self.get_run(run_id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|r| r.status == "done")
+                });
+            if !has_succeeded_run {
+                if let Ok(old_s) = task.run_gate_scope() {
+                    let old_hash = digest(old_s.as_bytes());
+                    for d in &mut study.decisions {
+                        if d.version == version
+                            && matches!(d.gate.as_str(), "G2" | "G3")
+                            && d.scope_hash == old_hash
+                            && d.status != "superseded"
+                        {
+                            d.status = "superseded".into();
+                        }
+                    }
+                }
+            }
+            let task = study.task_mut(task_id)?;
+            if let Some(old_session) = task.session_id.take() {
+                task.previous_sessions.push(old_session);
+            }
+            if !has_succeeded_run {
+                if !task.run_ids.is_empty() {
+                    task.previous_run_ids.append(&mut task.run_ids);
+                }
+                if task.spec.role == "as-experiment-operator" {
+                    task.run_contract = None;
+                }
+            }
+            task.attempts += 1;
+            task.pending_nudge = None;
+            task.pending_nudge_turn_id = None;
+            task.state = "pending".into();
+            task.summary = None;
+            Ok(())
+        })
+    }
+    pub fn research_session_has_active_runs(&self, session: &str) -> Result<bool> {
+        let Some((study_id, task_id, version)) = self
+            .conn
+            .query_row(
+                "SELECT study_id,task_id,version FROM research_sessions WHERE session_id=?1",
+                [session],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, u32>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+        else {
+            return Ok(false);
+        };
+        let Ok(study) = self.research_study(&study_id) else {
+            return Ok(false);
+        };
+        if study.status != "active" || study.plan().map_or(true, |p| p.version != version) {
+            return Ok(false);
+        }
+        let Ok(task) = study.task(&task_id) else {
+            return Ok(false);
+        };
+        if task.session_id.as_deref() != Some(session) {
+            return Ok(false);
+        }
+        for run_id in &task.run_ids {
+            if let Some(run) = self.get_run(run_id)? {
+                if !crate::local::is_terminal(&run.status) {
+                    return Ok(true);
+                }
+                if run.status != "cancelled"
+                    && self.get_chat_session(session)?.is_some()
+                    && self.conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM chat_run_wakeups WHERE run_id=?1 AND chat_session_id=?2 AND state!='delivered')",
+                        params![run_id, session],
+                        |r| r.get::<_, bool>(0),
+                    )?
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+    pub fn research_active_studies(&self) -> Result<Vec<Study>> {
+        let mut stmt = self.conn.prepare("SELECT document FROM research_studies")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut studies = Vec::new();
+        for row in rows {
+            if let Ok(study) = serde_json::from_str::<Study>(&row?) {
+                if study.status == "active" {
+                    studies.push(study);
+                }
+            }
+        }
+        Ok(studies)
     }
     pub fn research_requires_gate(&self, experiment: &str, session: Option<&str>) -> Result<bool> {
         let bound: bool = self.conn.query_row(
@@ -707,6 +1202,14 @@ impl Store {
         }
         if let Some(run_id) = reserve {
             task.run_ids.push(run_id.into());
+            if let Some(sid) = session {
+                if self
+                    .get_run(run_id)?
+                    .is_none_or(|r| !crate::local::is_terminal(&r.status))
+                {
+                    let _ = self.register_run_wakeup(run_id, sid);
+                }
+            }
             self.research_save(&study)?;
         }
         Ok(())
@@ -757,6 +1260,8 @@ impl Store {
                     })
                     .collect::<Result<Vec<_>>>()?;
             }
+            task.pending_nudge = None;
+            task.pending_nudge_turn_id = None;
             task.state = if success { "completed" } else { "failed" }.into();
             task.summary = Some(summary);
             Ok(())
@@ -911,7 +1416,7 @@ impl Store {
             .plans
             .iter()
             .flat_map(|p| &p.tasks)
-            .flat_map(|t| &t.run_ids)
+            .flat_map(|t| t.run_ids.iter().chain(t.previous_run_ids.iter()))
             .chain(study.claims.iter().filter_map(|c| c.input.run_id.as_ref()))
             .collect();
         ids.into_iter()
@@ -972,6 +1477,7 @@ mod tests {
             brief: format!("produce {id}"),
             depends_on: deps.iter().map(|d| (*d).into()).collect(),
             outputs: vec![format!("{id}.md")],
+            force_rerun: false,
         }
     }
     fn plan() -> PlanInput {
@@ -1161,7 +1667,7 @@ mod tests {
             .unwrap();
         approve(&store, &study, "G3");
         let study = store.research_study(&study.id).unwrap();
-        assert!(crate::local::research::export_package(&store, &study, true).is_ok());
+        assert!(study.require_gate("G3", &scope).is_ok());
         assert!(!study.decisions.iter().any(|d| d.gate == "G4"));
         let context = crate::local::research::turn_context(&store, "lead")
             .unwrap()
@@ -1175,7 +1681,7 @@ mod tests {
             "changed plan",
         )
         .unwrap();
-        assert!(crate::local::research::export_package(&store, &study, true).is_err());
+        assert!(store.research_package_scope(&study).is_err());
         assert!(store
             .research_decide(
                 &study.id,
@@ -1251,7 +1757,7 @@ mod tests {
             .is_err());
     }
     #[test]
-    fn artifacts_dependencies_and_package_are_verified() {
+    fn artifacts_dependencies_and_confirmation_are_verified() {
         let (_dir, store, study) = setup();
         store.research_set_plan(&study.id, plan()).unwrap();
         approve(&store, &study, "G1");
@@ -1272,22 +1778,19 @@ mod tests {
         finish(&store, &study, "audit");
         let study = store.research_study(&study.id).unwrap();
         let scope = store.research_package_scope(&study).unwrap();
-        assert!(crate::local::research::export_package(&store, &study, true).is_err());
+        assert!(study.require_gate("G4", &scope).is_err());
         store
-            .research_update(&study.id, |s| s.request_gate("G4", scope))
+            .research_update(&study.id, |s| s.request_gate("G4", scope.clone()))
             .unwrap();
         approve(&store, &study, "G4");
         let study = store.research_study(&study.id).unwrap();
-        let bytes = crate::local::research::export_package(&store, &study, true).unwrap();
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
-        assert!(zip.by_name("artifacts/review.md").is_ok());
-        assert!(zip.by_name("research-package-manifest.json").is_ok());
+        assert!(study.require_gate("G4", &scope).is_ok());
         std::fs::write(
             store.research_root(&study).unwrap().join("design.md"),
             "changed after review",
         )
         .unwrap();
-        assert!(crate::local::research::export_package(&store, &study, true).is_err());
+        assert!(store.research_package_scope(&study).is_err());
     }
     #[test]
     fn changing_evidence_after_review_requires_new_review() {
@@ -1493,6 +1996,7 @@ mod tests {
             .research_metrics(&study, &["lead".into()], 5000)
             .unwrap();
         assert_eq!(metrics.active_duration_ms, Some(3000));
+        assert!(metrics.active_duration_complete);
         assert_eq!(metrics.token_count, Some(330));
         assert!(metrics.token_count_complete);
         assert!(metrics.running);
@@ -1531,13 +2035,20 @@ mod tests {
                 [],
             )
             .unwrap();
-        assert_eq!(
-            store
-                .research_metrics(&study, &[], 9000)
-                .unwrap()
-                .active_duration_ms,
-            None
-        );
+        let partial = store.research_metrics(&study, &[], 9000).unwrap();
+        assert_eq!(partial.active_duration_ms, Some(1500));
+        assert!(!partial.active_duration_complete);
+        assert_eq!(partial.token_count, Some(330));
+        // Missing historical timing must not erase newer measurements or be
+        // fabricated from message timestamps (which include prompt holds).
+        store
+            .conn
+            .execute("DELETE FROM chat_activity_spans", [])
+            .unwrap();
+        let historical = store.research_metrics(&study, &[], 9000).unwrap();
+        assert_eq!(historical.active_duration_ms, None);
+        assert!(!historical.active_duration_complete);
+        assert_eq!(historical.token_count, Some(330));
     }
     #[test]
     fn research_metrics_include_background_experiments_without_agent_turns() {
@@ -1551,10 +2062,16 @@ mod tests {
                 spec: spec("execute", "as-experiment-operator", &[]),
                 state: "running".into(),
                 session_id: None,
+                previous_sessions: vec![],
+                attempts: 0,
+                contract_batch: 0,
+                pending_nudge: None,
+                pending_nudge_turn_id: None,
                 summary: None,
                 artifacts: vec![],
                 run_contract: None,
                 run_ids: vec!["run".into()],
+                previous_run_ids: vec![],
                 evidence_digest: None,
             }],
         });
@@ -1567,5 +2084,714 @@ mod tests {
         let stopped = store.research_metrics(&study, &[], 9000).unwrap();
         assert_eq!(stopped.active_duration_ms, Some(1500));
         assert!(!stopped.running);
+    }
+    #[test]
+    fn plan_revision_inherits_completed_tasks_unless_force_rerun() {
+        let (_dir, store, study) = setup();
+        store.research_set_plan(&study.id, plan()).unwrap();
+        approve(&store, &study, "G1");
+        bind(&store, &study, "design", "designer");
+        finish(&store, &study, "design");
+
+        let mut v2 = plan();
+        v2.summary = "revised review instructions without redoing design".into();
+        v2.tasks[1].brief = "updated review brief".into();
+        store.research_set_plan(&study.id, v2).unwrap();
+
+        let saved = store.research_study(&study.id).unwrap();
+        assert_eq!(saved.plan().unwrap().version, 2);
+        assert_eq!(saved.task("design").unwrap().state, "completed");
+        assert_eq!(
+            saved.task("design").unwrap().session_id.as_deref(),
+            Some("designer")
+        );
+        assert_eq!(saved.task("review").unwrap().state, "pending");
+
+        approve(&store, &study, "G1");
+        let saved = store.research_study(&study.id).unwrap();
+        // Because `design` was inherited as completed, `review` is immediately ready!
+        assert!(saved.ready("review").is_ok());
+
+        // When forceRerun is explicitly set on `design`, neither `design` nor its downstream can be inherited.
+        let mut v3 = plan();
+        v3.tasks[0].force_rerun = true;
+        store.research_set_plan(&study.id, v3).unwrap();
+        let saved = store.research_study(&study.id).unwrap();
+        assert_eq!(saved.task("design").unwrap().state, "pending");
+    }
+    #[test]
+    fn task_retry_and_in_place_prepare_run_preserve_plan_version() {
+        let (_dir, store, study) = setup();
+        let mut p = plan();
+        p.tasks
+            .insert(1, spec("execute", "as-experiment-operator", &["design"]));
+        p.tasks[2].depends_on.push("execute".into());
+        store.research_set_plan(&study.id, p).unwrap();
+        approve(&store, &study, "G1");
+        bind(&store, &study, "design", "designer-1");
+        store
+            .research_finish(&study.id, "design", false, "transient failure".into())
+            .unwrap();
+
+        store.research_retry_task(&study.id, "design").unwrap();
+        let saved = store.research_study(&study.id).unwrap();
+        assert_eq!(saved.plan().unwrap().version, 1);
+        assert_eq!(saved.task("design").unwrap().state, "pending");
+        assert_eq!(saved.task("design").unwrap().attempts, 1);
+        assert_eq!(
+            saved.task("design").unwrap().previous_sessions,
+            vec!["designer-1".to_string()]
+        );
+        assert!(saved.ready("design").is_ok());
+        bind(&store, &study, "design", "designer-2");
+        finish(&store, &study, "design");
+
+        store
+            .create_local_experiment(&LocalExperiment {
+                id: "exp".into(),
+                project_id: "project".into(),
+                parent_experiment_id: None,
+                slug: "exp".into(),
+                branch_name: "main".into(),
+                title: None,
+                description: None,
+                run_command: "python3 main.py".into(),
+                agent_status: "idle".into(),
+                created_at: 1,
+                updated_at: 1,
+                chat_session_id: Some("lead".into()),
+                archived: false,
+            })
+            .unwrap();
+        let contract1 = RunContract {
+            experiment_id: "exp".into(),
+            revision: "commit-1".into(),
+            command: "python3 main.py".into(),
+            options: serde_json::json!({"backend":"local"}),
+        };
+        store
+            .research_prepare(&study.id, "execute", contract1)
+            .unwrap();
+        let contract2 = RunContract {
+            experiment_id: "exp".into(),
+            revision: "commit-2".into(),
+            command: "python3 main.py".into(),
+            options: serde_json::json!({"backend":"local"}),
+        };
+        // Updating the revision before running does not require a new plan version.
+        store
+            .research_prepare(&study.id, "execute", contract2.clone())
+            .unwrap();
+        let saved = store.research_study(&study.id).unwrap();
+        assert_eq!(saved.plan().unwrap().version, 1);
+        assert_eq!(
+            saved.task("execute").unwrap().run_contract.as_ref(),
+            Some(&contract2)
+        );
+    }
+    #[test]
+    fn auto_dispatch_and_reconcile_advance_dag_waves_automatically() {
+        let (_dir, store, study) = setup();
+        store.research_set_plan(&study.id, plan()).unwrap();
+        approve(&store, &study, "G1");
+
+        // Wave 1: `design` is automatically dispatched upon G1 approval.
+        let wave1 =
+            crate::commands::research_dispatch::auto_dispatch_sync(&store, &study.id).unwrap();
+        assert_eq!(wave1.len(), 1);
+        assert_eq!(wave1[0].0, "design");
+        let design_session = &wave1[0].1;
+
+        // Write `design.md` without calling `orx research finish` manually;
+        // `on_research_spawn_finished` auto-finishes `design` and auto-dispatches `review`!
+        let root = store.research_root(&study).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("design.md"), "# design\nverified").unwrap();
+        let action = crate::commands::research_dispatch::on_research_spawn_finished(
+            &store,
+            design_session,
+            false,
+            Some("design completed".into()),
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            action,
+            Some(crate::commands::research_dispatch::ResearchWakeAction::RetireSilently)
+        ));
+        let saved = store.research_study(&study.id).unwrap();
+        assert_eq!(saved.task("design").unwrap().state, "completed");
+        assert_eq!(saved.task("review").unwrap().state, "running");
+        let review_session = saved.task("review").unwrap().session_id.clone().unwrap();
+
+        // Wave 2: `review` writes output and finishes -> auto-dispatches `audit`!
+        std::fs::write(root.join("review.md"), "# review\nverified").unwrap();
+        let action = crate::commands::research_dispatch::on_research_spawn_finished(
+            &store,
+            &review_session,
+            false,
+            Some("review completed".into()),
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            action,
+            Some(crate::commands::research_dispatch::ResearchWakeAction::RetireSilently)
+        ));
+        let saved = store.research_study(&study.id).unwrap();
+        assert_eq!(saved.task("review").unwrap().state, "completed");
+        assert_eq!(saved.task("audit").unwrap().state, "running");
+        let audit_session = saved.task("audit").unwrap().session_id.clone().unwrap();
+
+        // Wave 3: `audit` finishes -> all tasks completed -> G4 is requested automatically and lead is woken!
+        std::fs::write(root.join("audit.md"), "# audit\nverified").unwrap();
+        let action = crate::commands::research_dispatch::on_research_spawn_finished(
+            &store,
+            &audit_session,
+            false,
+            Some("audit completed".into()),
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            action,
+            Some(crate::commands::research_dispatch::ResearchWakeAction::WakeLead(text))
+                if text.contains("全部 3 个专家任务均已完成") && text.contains("G4")
+        ));
+        let saved = store.research_study(&study.id).unwrap();
+        assert!(saved
+            .decisions
+            .iter()
+            .any(|d| d.gate == "G4" && d.status == "pending"));
+    }
+    #[test]
+    fn experiment_retry_requires_fresh_approval_for_identical_contract_and_recovers_from_rejection()
+    {
+        let (_dir, store, study) = setup();
+        let mut p = plan();
+        p.tasks
+            .insert(1, spec("execute", "as-experiment-operator", &["design"]));
+        p.tasks[2].depends_on.push("execute".into());
+        store.research_set_plan(&study.id, p).unwrap();
+        approve(&store, &study, "G1");
+        bind(&store, &study, "design", "designer");
+        finish(&store, &study, "design");
+
+        store
+            .create_local_experiment(&LocalExperiment {
+                id: "exp".into(),
+                project_id: "project".into(),
+                parent_experiment_id: None,
+                slug: "exp".into(),
+                branch_name: "main".into(),
+                title: None,
+                description: None,
+                run_command: "python3 main.py".into(),
+                agent_status: "idle".into(),
+                created_at: 1,
+                updated_at: 1,
+                chat_session_id: Some("lead".into()),
+                archived: false,
+            })
+            .unwrap();
+        let contract = RunContract {
+            experiment_id: "exp".into(),
+            revision: "commit-same".into(),
+            command: "python3 main.py".into(),
+            options: serde_json::json!({"backend":"local"}),
+        };
+        store
+            .research_prepare(&study.id, "execute", contract.clone())
+            .unwrap();
+
+        // Reject G2 on first batch, then re-prepare with the exact same contract:
+        // must mark the rejected decision as "superseded" (preserving audit history) and create a new pending G2/G3!
+        let saved = store.research_study(&study.id).unwrap();
+        let g2 = saved
+            .decisions
+            .iter()
+            .find(|d| d.gate == "G2" && d.status == "pending")
+            .unwrap();
+        store
+            .research_decide(&study.id, &g2.id, &g2.scope_hash, false, "rejected".into())
+            .unwrap();
+        store
+            .research_prepare(&study.id, "execute", contract.clone())
+            .unwrap();
+        let saved = store.research_study(&study.id).unwrap();
+        assert!(saved
+            .decisions
+            .iter()
+            .any(|d| d.gate == "G2" && d.status == "pending"));
+        assert!(!saved.decisions.iter().any(|d| d.status == "rejected"));
+        assert!(saved.decisions.iter().any(|d| d.gate == "G2"
+            && d.status == "superseded"
+            && d.reason.as_deref() == Some("rejected")));
+
+        // Approve G2 and G3 for this batch, run the experiment, and fail the task.
+        approve(&store, &study, "G2");
+        approve(&store, &study, "G3");
+        bind(&store, &study, "execute", "op-1");
+        store.conn.execute("INSERT INTO runs(id,experiment_id,project_id,status,backend_json,created_at,updated_at) VALUES('run-1','exp','project','failed','{}',1,2)",[]).unwrap();
+        store
+            .research_check_run("exp", Some("op-1"), &contract, Some("run-1"))
+            .unwrap();
+        store
+            .research_finish(&study.id, "execute", false, "transient gpu failure".into())
+            .unwrap();
+
+        // Re-prepare with the EXACT SAME contract: must NOT reuse the old G2/G3 approval!
+        store
+            .research_prepare(&study.id, "execute", contract.clone())
+            .unwrap();
+        let saved = store.research_study(&study.id).unwrap();
+        assert!(saved.ready("execute").is_err());
+        assert!(saved
+            .decisions
+            .iter()
+            .any(|d| d.gate == "G2" && d.status == "pending"));
+        assert!(saved
+            .decisions
+            .iter()
+            .any(|d| d.gate == "G3" && d.status == "pending"));
+
+        // Only after approving the new batch's G2/G3 does `execute` become ready again.
+        approve(&store, &study, "G2");
+        approve(&store, &study, "G3");
+        let saved = store.research_study(&study.id).unwrap();
+        assert!(saved.ready("execute").is_ok());
+
+        // When a run succeeds (`status = 'done'`) and only the operator report is missing,
+        // `research_retry_task` preserves `run_contract`, `run_ids`, and the approved G2/G3!
+        bind(&store, &study, "execute", "op-2");
+        store.conn.execute("INSERT INTO runs(id,experiment_id,project_id,status,backend_json,created_at,updated_at) VALUES('run-2','exp','project','starting','{}',3,4)",[]).unwrap();
+        store
+            .research_check_run("exp", Some("op-2"), &contract, Some("run-2"))
+            .unwrap();
+        // Verify automatic `chat_run_wakeups` registration for live experiment run!
+        let has_wakeup: bool = store
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM chat_run_wakeups WHERE run_id='run-2' AND chat_session_id='op-2' AND state='pending')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has_wakeup);
+        store
+            .conn
+            .execute("UPDATE runs SET status='done' WHERE id='run-2'", [])
+            .unwrap();
+        store
+            .research_finish(&study.id, "execute", false, "crashed before report".into())
+            .unwrap();
+        store.research_retry_task(&study.id, "execute").unwrap();
+        let saved = store.research_study(&study.id).unwrap();
+        assert_eq!(saved.task("execute").unwrap().run_ids, vec!["run-2"]);
+        assert!(saved.task("execute").unwrap().run_contract.is_some());
+        assert!(saved.ready("execute").is_ok());
+
+        // Multi-experiment isolation: a plan with two experiment tasks (`execute` and `execute-b`)
+        // must NOT supersede `execute`'s G2/G3 when `execute-b` runs `prepare-run`!
+        let mut two_exp_plan = plan();
+        two_exp_plan
+            .tasks
+            .insert(1, spec("execute", "as-experiment-operator", &["design"]));
+        two_exp_plan
+            .tasks
+            .insert(2, spec("execute-b", "as-experiment-operator", &["design"]));
+        two_exp_plan.tasks[3].depends_on =
+            vec!["design".into(), "execute".into(), "execute-b".into()];
+        store.research_set_plan(&study.id, two_exp_plan).unwrap();
+        approve(&store, &study, "G1");
+        store
+            .create_local_experiment(&LocalExperiment {
+                id: "exp-b".into(),
+                project_id: "project".into(),
+                parent_experiment_id: None,
+                slug: "exp-b".into(),
+                branch_name: "main".into(),
+                title: None,
+                description: None,
+                run_command: "python3 eval.py".into(),
+                agent_status: "idle".into(),
+                created_at: 2,
+                updated_at: 2,
+                chat_session_id: Some("lead".into()),
+                archived: false,
+            })
+            .unwrap();
+        let contract_b = RunContract {
+            experiment_id: "exp-b".into(),
+            revision: "commit-b".into(),
+            command: "python3 eval.py".into(),
+            options: serde_json::json!({"backend":"local"}),
+        };
+        store
+            .research_prepare(&study.id, "execute", contract.clone())
+            .unwrap();
+        approve(&store, &study, "G2");
+        approve(&store, &study, "G3");
+        assert!(store
+            .research_study(&study.id)
+            .unwrap()
+            .ready("execute")
+            .is_ok());
+
+        // Preparing `execute-b` must leave `execute`'s approved G2/G3 intact!
+        store
+            .research_prepare(&study.id, "execute-b", contract_b.clone())
+            .unwrap();
+        let saved = store.research_study(&study.id).unwrap();
+        assert!(saved.ready("execute").is_ok());
+        assert!(saved.ready("execute-b").is_err());
+    }
+    #[test]
+    fn stale_session_cannot_finish_or_fail_rebound_task_and_active_session_blocks_retry() {
+        let (_dir, store, study) = setup();
+        store.research_set_plan(&study.id, plan()).unwrap();
+        approve(&store, &study, "G1");
+
+        let wave1 =
+            crate::commands::research_dispatch::auto_dispatch_sync(&store, &study.id).unwrap();
+        let first_session = wave1[0].1.clone();
+
+        // While `first_session` is still an active unfinished spawn, manual retry is rejected.
+        assert!(store
+            .research_retry_task(&study.id, "design")
+            .unwrap_err()
+            .to_string()
+            .contains("仍在执行中"));
+
+        // 1st normal completion without writing `design.md` -> triggers L1 In-Session Nudge (`NudgeHelper`),
+        // keeping `first_session` bound to the task and persisting `pending_nudge`.
+        let nudge_action = crate::commands::research_dispatch::on_research_spawn_finished(
+            &store,
+            &first_session,
+            false,
+            Some("forgot to write file".into()),
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            nudge_action,
+            Some(crate::commands::research_dispatch::ResearchWakeAction::NudgeHelper(ref text))
+                if text.contains("design.md")
+        ));
+        let saved = store.research_study(&study.id).unwrap();
+        assert_eq!(
+            saved.task("design").unwrap().session_id.as_deref(),
+            Some(first_session.as_str())
+        );
+        assert!(saved.task("design").unwrap().pending_nudge.is_some());
+        assert_eq!(saved.task("design").unwrap().attempts, 1);
+
+        // Simulate a process crash/restart AFTER persisting `pending_nudge` and BEFORE sending the message
+        // (even if `interrupted = true` is passed on restart): must resume delivering `NudgeHelper`
+        // without failing the task or incrementing `attempts`!
+        let restart_action = crate::commands::research_dispatch::on_research_spawn_finished(
+            &store,
+            &first_session,
+            true,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            restart_action,
+            Some(crate::commands::research_dispatch::ResearchWakeAction::NudgeHelper(ref text))
+                if text.contains("design.md")
+        ));
+        let saved = store.research_study(&study.id).unwrap();
+        assert_eq!(saved.task("design").unwrap().state, "running");
+        assert_eq!(saved.task("design").unwrap().attempts, 1);
+
+        // Deterministic crash window test ("准入后、后台任务真正启动前崩溃重启"):
+        // 1. Nudge turn `turn-nudge-1` is admitted (`state = 'preparing'`, `attempt_count = 0`),
+        //    binding `pending_nudge_turn_id = Some("turn-nudge-1")` in the same transaction,
+        //    while keeping `pending_nudge` intact and `finished_at` non-null until execution actually begins.
+        store
+            .admit_chat_turn(
+                None,
+                &crate::store::StoredChatTurn {
+                    id: "turn-nudge-1".into(),
+                    session_id: first_session.clone(),
+                    user_message_id: None,
+                    assistant_message_id: "msg-nudge-1".into(),
+                    client_turn_id: "ct-nudge-1".into(),
+                    request_hash: "hash-nudge-1".into(),
+                    prepared_input: "nudge".into(),
+                    settings_json: "{}".into(),
+                    state: "preparing".into(),
+                    delivery_state: "not_sent".into(),
+                    attempt_count: 0,
+                    next_retry_at: None,
+                    error_kind: None,
+                    error_message: None,
+                    recovery_action: None,
+                    recovered_by_turn_id: None,
+                    created_at: 10,
+                    updated_at: 10,
+                },
+            )
+            .unwrap();
+        // Even if `research_mark_nudge_delivered` runs while `turn-nudge-1` is still in `preparing` (`attempt_count = 0`),
+        // it must NOT clear `pending_nudge` or `finished_at` before the turn actually starts executing!
+        store
+            .research_mark_nudge_delivered(&first_session, Some("turn-nudge-1"))
+            .unwrap();
+        assert!(store
+            .get_chat_spawn(&first_session)
+            .unwrap()
+            .unwrap()
+            .finished_at
+            .is_some());
+        let saved = store.research_study(&study.id).unwrap();
+        assert!(saved.task("design").unwrap().pending_nudge.is_some());
+        assert_eq!(
+            saved
+                .task("design")
+                .unwrap()
+                .pending_nudge_turn_id
+                .as_deref(),
+            Some("turn-nudge-1")
+        );
+
+        // Simulate crash & startup reconciliation before `turn-nudge-1` ever started running:
+        store.reconcile_unfinished_chat_turns().unwrap();
+        let interrupted_after_admit_crash = store
+            .get_chat_spawn(&first_session)
+            .unwrap()
+            .is_some_and(|row| row.finished_at.is_none());
+        assert!(!interrupted_after_admit_crash);
+        let recover_action = crate::commands::research_dispatch::on_research_spawn_finished(
+            &store,
+            &first_session,
+            interrupted_after_admit_crash,
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(matches!(
+            recover_action,
+            Some(crate::commands::research_dispatch::ResearchWakeAction::NudgeHelper(ref text))
+                if text.contains("design.md")
+        ));
+        assert_eq!(
+            store
+                .research_study(&study.id)
+                .unwrap()
+                .task("design")
+                .unwrap()
+                .attempts,
+            1
+        );
+
+        // Deterministic race test ("轮次真正开始执行后确认投递 + 新轮次先结束、投递确认后执行"):
+        // 2. Re-admitted nudge turn `turn-nudge-2` actually starts executing (`update_chat_turn_progress`),
+        //    which atomically clears `pending_nudge` and sets `finished_at = NULL` in one transaction.
+        store
+            .admit_chat_turn(
+                None,
+                &crate::store::StoredChatTurn {
+                    id: "turn-nudge-2".into(),
+                    session_id: first_session.clone(),
+                    user_message_id: None,
+                    assistant_message_id: "msg-nudge-2".into(),
+                    client_turn_id: "ct-nudge-2".into(),
+                    request_hash: "hash-nudge-2".into(),
+                    prepared_input: "nudge".into(),
+                    settings_json: "{}".into(),
+                    state: "preparing".into(),
+                    delivery_state: "not_sent".into(),
+                    attempt_count: 0,
+                    next_retry_at: None,
+                    error_kind: None,
+                    error_message: None,
+                    recovery_action: None,
+                    recovered_by_turn_id: None,
+                    created_at: 20,
+                    updated_at: 20,
+                },
+            )
+            .unwrap();
+        store
+            .update_chat_turn_progress("turn-nudge-2", "running", "not_sent", 1, None)
+            .unwrap();
+        assert!(store
+            .get_chat_spawn(&first_session)
+            .unwrap()
+            .unwrap()
+            .finished_at
+            .is_none());
+        assert!(store
+            .research_study(&study.id)
+            .unwrap()
+            .task("design")
+            .unwrap()
+            .pending_nudge
+            .is_none());
+
+        // 3. `turn-nudge-2` finishes quickly (`state = 'completed'`) and stamps `finished_at`
+        //    BEFORE the caller's post-await `research_mark_nudge_delivered` / `reopen_chat_spawn` runs.
+        store.complete_chat_turn("turn-nudge-2").unwrap();
+        store.mark_chat_spawn_finished(&first_session).unwrap();
+        assert!(store
+            .get_chat_spawn(&first_session)
+            .unwrap()
+            .unwrap()
+            .finished_at
+            .is_some());
+
+        // 4. Late delivery confirmations arrive for `turn-nudge-2`: they must NOT wipe `finished_at`!
+        store
+            .research_mark_nudge_delivered(&first_session, Some("turn-nudge-2"))
+            .unwrap();
+        store
+            .reopen_chat_spawn(&first_session, Some("turn-nudge-2"))
+            .unwrap();
+        let interrupted_after_late_confirm = store
+            .get_chat_spawn(&first_session)
+            .unwrap()
+            .is_some_and(|row| row.finished_at.is_none());
+        assert!(!interrupted_after_late_confirm);
+
+        // 5. Next watcher check sees `interrupted == false` and escalates to L2 retry (`second_session`).
+        let action = crate::commands::research_dispatch::on_research_spawn_finished(
+            &store,
+            &first_session,
+            interrupted_after_late_confirm,
+            Some("still forgot to write file".into()),
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            action,
+            Some(crate::commands::research_dispatch::ResearchWakeAction::RetireSilently)
+        ));
+        let saved = store.research_study(&study.id).unwrap();
+        let second_session = saved.task("design").unwrap().session_id.clone().unwrap();
+        assert_ne!(first_session, second_session);
+        assert_eq!(saved.task("design").unwrap().state, "running");
+
+        // Now a late/duplicate callback for `first_session` arrives: it must retire silently
+        // without failing or finishing `second_session`'s running task!
+        let stale_action = crate::commands::research_dispatch::on_research_spawn_finished(
+            &store,
+            &first_session,
+            false,
+            Some("stale failure".into()),
+            true,
+        )
+        .unwrap();
+        assert!(matches!(
+            stale_action,
+            Some(crate::commands::research_dispatch::ResearchWakeAction::RetireSilently)
+        ));
+        let saved = store.research_study(&study.id).unwrap();
+        assert_eq!(saved.task("design").unwrap().state, "running");
+        assert_eq!(
+            saved.task("design").unwrap().session_id.as_deref(),
+            Some(second_session.as_str())
+        );
+    }
+    #[test]
+    fn delivery_package_validation_failure_reports_error_instead_of_claiming_gate_requested() {
+        let (_dir, store, study) = setup();
+        store.research_set_plan(&study.id, plan()).unwrap();
+        approve(&store, &study, "G1");
+        let root = store.research_root(&study).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+
+        let wave1 =
+            crate::commands::research_dispatch::auto_dispatch_sync(&store, &study.id).unwrap();
+        std::fs::write(root.join("design.md"), "# design\nv1").unwrap();
+        crate::commands::research_dispatch::on_research_spawn_finished(
+            &store,
+            &wave1[0].1,
+            false,
+            Some("done".into()),
+            false,
+        )
+        .unwrap();
+
+        let review_session = store
+            .research_study(&study.id)
+            .unwrap()
+            .task("review")
+            .unwrap()
+            .session_id
+            .clone()
+            .unwrap();
+        std::fs::write(root.join("review.md"), "# review\nv1").unwrap();
+        crate::commands::research_dispatch::on_research_spawn_finished(
+            &store,
+            &review_session,
+            false,
+            Some("done".into()),
+            false,
+        )
+        .unwrap();
+
+        let audit_session = store
+            .research_study(&study.id)
+            .unwrap()
+            .task("audit")
+            .unwrap()
+            .session_id
+            .clone()
+            .unwrap();
+        std::fs::write(root.join("audit.md"), "# audit\nv1").unwrap();
+
+        // First let `audit` finish cleanly so a valid pending G4 decision is created.
+        let clean_action = crate::commands::research_dispatch::on_research_spawn_finished(
+            &store,
+            &audit_session,
+            false,
+            Some("done".into()),
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            clean_action,
+            Some(crate::commands::research_dispatch::ResearchWakeAction::WakeLead(ref text))
+                if text.contains("系统已自动发起 G4 交付确认申请")
+        ));
+        assert!(store
+            .research_study(&study.id)
+            .unwrap()
+            .decisions
+            .iter()
+            .any(|d| d.gate == "G4" && d.status == "pending"));
+
+        // Now tamper with `design.md` AFTER the pending G4 decision already exists!
+        std::fs::write(root.join("design.md"), "# design\ntampered after G4").unwrap();
+
+        let action = crate::commands::research_dispatch::on_research_spawn_finished(
+            &store,
+            &audit_session,
+            false,
+            Some("done".into()),
+            false,
+        )
+        .unwrap();
+        match action {
+            Some(crate::commands::research_dispatch::ResearchWakeAction::WakeLead(text)) => {
+                assert!(text.contains("最终交付校验未通过"));
+                assert!(text.contains("产物变化，需要重新审查: design.md"));
+                assert!(text.contains("forceRerun"));
+                assert!(!text.contains("系统已自动发起 G4 交付确认申请"));
+            }
+            other => panic!("expected WakeLead with validation error, got {other:?}"),
+        }
+        let saved = store.research_study(&study.id).unwrap();
+        assert!(!saved
+            .decisions
+            .iter()
+            .any(|d| d.gate == "G4" && matches!(d.status.as_str(), "pending" | "approved")));
+        assert!(saved
+            .decisions
+            .iter()
+            .any(|d| d.gate == "G4" && d.status == "superseded"));
     }
 }

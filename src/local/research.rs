@@ -1,10 +1,9 @@
-//! Harness-independent expert roles and research package export.
+//! Harness-independent expert roles, research context, and run contracts.
 use crate::error::{anyhow, Result};
 use crate::store::{
-    research::{digest, read_artifact, RunContract, Study},
+    research::{digest, RunContract},
     Store,
 };
-use std::io::{Cursor, Write};
 use std::path::Path;
 
 /// Shared with the UI: original W1–W4 profiles, not separate display-only previews.
@@ -166,14 +165,63 @@ pub fn turn_context(store: &Store, session: &str) -> Result<Option<String>> {
     } else {
         "你是科研主理人。先理解需求，再按任务复杂度决定执行路径。普通问答、范围澄清和简单追问可以直接答复，不要求创建空计划或派发专家，也不得声称已经完成专家工作。材料可选；没有上传材料时使用已有项目上下文或获准检索，仅在缺少必要输入时澄清。上传文件夹或文件数量不触发模式切换、全面审计或固定流程。需要实质研究时，盘点相关材料并制定按需裁剪的任务 DAG，遵守选定预设的必需角色、依赖和审批。通过 orx research dispatch 调用真实专家；不得自己模拟成员或代写专业产物。不要调用原生 task/subagent，也不要调用 orx agent spawn 绕开任务登记。已有授权应写入计划并由用户一次确认范围，避免反复询问。".into()
     };
-    let workflow = if study.mode == "team" {
+    let workflow = if study.mode == "team" && study.plans.is_empty() {
         format!("你处于科研专家团自动判断模式。先识别主要/次要意图、当前研究阶段、已有材料和目标交付，再判断执行路径；不要求用户选择工作流。以下四个预设包含触发条件：\n{}\n用户明确指定优先；依据语义和材料判断，不能仅按关键词机械触发。匹配单一预设时在 orx research plan 的 JSON 中填写 workflow（literature/reproduction/analysis/proposal），并在 summary 中解释判断依据；匹配后按对应预设执行。综合任务可使用 workflow:null 按需组织任务 DAG；不要强行塞入四个预设或默认执行文献综述。用户提出单项问题时只选择必要专家。计划版本化，转向须重新登记并确认。", serde_json::to_string_pretty(workflows())?)
     } else if let Some(profile) = workflows().get(study.workflow_mode()) {
         format!("原版预设工作流（界面与计划校验共用此定义）：\n{}\n必须按预设骨架生成本课题任务 DAG，补充任务简报、实际输入与产物路径。必需角色和依赖不能省略；非必需专家按需选择。不得将任务重解释为其他会诊。", serde_json::to_string_pretty(profile)?)
+    } else if study.mode == "team" {
+        "综合研究任务模式（已建计划）：按当前已登记计划的真实 DAG 推进，无需再次路由选择预设。"
+            .into()
     } else {
         "历史研究模式：按已有计划继续，不自动改变研究模式。".into()
     };
-    let instruction = format!("{instruction}\n{workflow}");
+    let progress = if let Some(plan) = study.plans.last() {
+        let completed: Vec<&str> = plan
+            .tasks
+            .iter()
+            .filter(|t| t.state == "completed")
+            .map(|t| t.spec.id.as_str())
+            .collect();
+        let running: Vec<&str> = plan
+            .tasks
+            .iter()
+            .filter(|t| t.state == "running")
+            .map(|t| t.spec.id.as_str())
+            .collect();
+        let failed: Vec<&str> = plan
+            .tasks
+            .iter()
+            .filter(|t| t.state == "failed")
+            .map(|t| t.spec.id.as_str())
+            .collect();
+        let pending: Vec<&str> = plan
+            .tasks
+            .iter()
+            .filter(|t| t.state == "pending")
+            .map(|t| t.spec.id.as_str())
+            .collect();
+        let gates: Vec<String> = study
+            .decisions
+            .iter()
+            .filter(|d| d.version == plan.version && d.status != "superseded")
+            .map(|d| format!("{}:{}", d.gate, d.status))
+            .collect();
+        format!(
+            "\n<current-plan-progress>\n当前计划版本: v{} (workflow: {})\n当前闸门状态: [{}]\n已完成任务 ({}/{}): [{}]\n运行中任务: [{}]\n失败任务: [{}]\n待执行任务: [{}]\n【自动推进与防重置规则】\n1. 用户批准 G1（及实验 G2/G3）后、以及前置任务完成验收后，平台后台会自动按 DAG 依赖批量派发就绪专家任务，并在子会话结束且声明产物非空时自动完成 SHA-256 验收。\n2. 严禁无故重新调用 `orx research plan` 重置已有计划！若单个未完成/失败任务需原地重跑，请执行 `orx research retry <task-id>`；若实验任务需绑定或更新代码/运行契约，请直接执行 `orx research prepare-run <task-id> <experiment-id> --backend <backend>`（无需新建计划版本）。\n3. 若因审稿意见、交付校验失败或方向转向需要重做已完成（completed）的任务，请调用 `orx research plan` 提交新版本并对需重做的任务显式设置 `\"forceRerun\": true`（未设置 `\"forceRerun\": true` 且产物未变动的已完成任务会自动保留进度）。\n</current-plan-progress>",
+            plan.version,
+            study.workflow_mode(),
+            gates.join(", "),
+            completed.len(),
+            plan.tasks.len(),
+            completed.join(", "),
+            running.join(", "),
+            failed.join(", "),
+            pending.join(", ")
+        )
+    } else {
+        String::new()
+    };
+    let instruction = format!("{instruction}\n{workflow}{progress}");
     Ok(Some(format!("\n<research-study>\nStudy: {}\nMode: {}\nObjective: {}\nartifactRoot: {}\ncodeRoot: 当前会话独立 Git worktree\n{}\n{}\n当前计划与决策用 orx research status 查询。\n</research-study>",study.id,study.mode,study.objective,root.display(),instruction,GUIDE)))
 }
 pub fn run_contract(store: &Store, args: &crate::ExpRunArgs) -> Result<RunContract> {
@@ -242,78 +290,6 @@ fn run_options(args: &crate::ExpRunArgs, settings_hash: &str) -> serde_json::Val
         options["mem"] = serde_json::json!(mem);
     }
     options
-}
-
-pub fn export_package(store: &Store, study: &Study, published: bool) -> Result<Vec<u8>> {
-    if published {
-        let scope = store.research_package_scope(study)?;
-        study.require_gate(delivery_gate(study.workflow_mode()), &scope)?;
-    }
-    let root = store.research_root(study)?;
-    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    let mut total = 0usize;
-    let mut add = |path: &str, bytes: &[u8]| -> Result<()> {
-        total += bytes.len();
-        if total > 128 * 1024 * 1024 {
-            return Err(anyhow!(
-                "研究包超过 128 MiB，请通过产物文件单独交付大型数据"
-            ));
-        }
-        zip.start_file(path, options)?;
-        zip.write_all(bytes)?;
-        Ok(())
-    };
-    let runs = store.research_runs(study)?;
-    // Serialize public provenance only; backend descriptors may carry private paths.
-    let run_records:Vec<_>=runs.iter().map(|r|serde_json::json!({"id":r.id,"experimentId":r.experiment_id,"status":r.status,"command":r.command,"commitSha":r.commit_sha,"exitCode":r.exit_code,"createdAt":r.created_at,"endedAt":r.ended_at})).collect();
-    add(
-        "research-package-manifest.json",
-        &serde_json::to_vec_pretty(
-            &serde_json::json!({"schemaVersion":1,"publicationState":if published {"approved"}else{"draft"},"study":study,"runs":run_records}),
-        )?,
-    )?;
-    add("README.md",b"# Research Package\n\nSee research-package-manifest.json for approvals, evidence and provenance. A successful process does not establish scientific validity. Source commits are identified in the manifest; this archive includes registered artifacts and logs, including source snapshots and registered data; large external datasets remain referenced. External publication requires separate authorization.\n")?;
-    if let Some(plan) = study.plans.last() {
-        for task in &plan.tasks {
-            for artifact in &task.artifacts {
-                let bytes = read_artifact(&root, &artifact.path)?;
-                if digest(&bytes) != artifact.sha256 {
-                    return Err(anyhow!("产物已变化: {}", artifact.path));
-                }
-                add(&format!("artifacts/{}", artifact.path), &bytes)?;
-            }
-        }
-    }
-    let mut source_digests = std::collections::HashSet::new();
-    for run in &runs {
-        let descriptor = crate::jobs::BackendDescriptor::parse(&run.backend_json)?;
-        if descriptor.source_digest.is_some() {
-            let source = crate::compute::SourceSnapshot::from_run(run, &descriptor)?;
-            if source.size > 32 * 1024 * 1024 {
-                return Err(anyhow!("源码快照超过 32 MiB，请单独交付"));
-            }
-            if source_digests.insert(source.digest.clone()) {
-                add(
-                    &format!("sources/{}.tar", source.digest),
-                    &std::fs::read(source.path)?,
-                )?;
-            }
-        } else if published {
-            return Err(anyhow!("Run 缺少源码快照: {}", run.id));
-        }
-        let path = store.research_log_path(&run.id)?;
-        if path.exists() {
-            if path.metadata()?.len() > 32 * 1024 * 1024 {
-                return Err(anyhow!("运行日志超过 32 MiB，请单独交付"));
-            }
-            add(&format!("logs/{}.log", run.id), &std::fs::read(path)?)?;
-        } else if published {
-            return Err(anyhow!("运行日志缺失: {}", run.id));
-        }
-    }
-    Ok(zip.finish()?.into_inner())
 }
 
 #[cfg(test)]

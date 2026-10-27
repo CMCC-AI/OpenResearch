@@ -1,3 +1,4 @@
+import { mainSessionId } from "./researchSessions";
 import { lazy, Suspense } from "react";
 import { useReadOnlyWorkspace } from "./components/ReadOnlyWorkspace";
 import { readHarnesses } from "./queries/settings";
@@ -297,6 +298,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
       ? { ...tab, lineScrollRequest: lineVisit.current.value } : tab;
   }, [pane, consumedLine, location.href, lineJump]);
   const sessionsQuery = useQuery(listChatSessionsQuery(projectId));
+  const researchSessionId = mainSessionId(activeSessionId, sessionsQuery.data ?? []);
   const sessions = useMemo(() => sessionsQuery.data?.map((session) => session.id) ?? null, [sessionsQuery.data]);
   const restoredFilesRef = useRef(new Set<string>());
   const intentionalFilesRef = useRef(new Set<string>());
@@ -692,7 +694,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     }
   }, [setContentTabOrder, setPreviewTab]);
   const { ready: workspaceReady, loaded: workspaceLoaded, error: workspaceError, retry: retryWorkspace, capture: captureWorkspace, workspace: workspaceRef } = useProjectWorkspace({
-    projectId: uiState && sessions !== null && (destination?.kind !== "task" || !activeSessionId || sessions.includes(activeSessionId)) ? projectId : null, taskKey: activeSessionId ?? "new", location: location.href, pane,
+    projectId: uiState && sessions !== null && (destination?.kind !== "task" || !activeSessionId || sessions.includes(activeSessionId)) ? projectId : null, taskKey: (rightTab === "research" ? researchSessionId : activeSessionId) ?? "new", location: location.href, pane,
     isTask: destination?.kind === "task", firstDemoOpen: uiState?.tourCompleted === false, state: rightPaneState,
     apply: applyWorkspace, getScroll: getFileScroll,
     sourceModes: sourceModesRef.current, revision: metadataRevision,
@@ -706,7 +708,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     }
     previousTreeScope.current = { projectId, taskId: activeSessionId, scope: effectiveScope };
   }, [workspaceReady, experimentDataReady, destination?.kind, projectId, activeSessionId, effectiveScope]);
-  const onActiveSessionChange = useCallback((sessionId: string | null, options?: { replace?: boolean; projectId?: string }) => {
+  const onActiveSessionChange = useCallback((sessionId: string | null, options?: { replace?: boolean; projectId?: string; preservePane?: boolean }) => {
     // `/resume` reaches chats in other projects; everything below is per-project.
     const target = options?.projectId ?? projectId;
     if (!target) return;
@@ -719,7 +721,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     }
     const saved = getTaskWorkspace(getCachedProjectWorkspace(target), sessionId ?? "new");
     const remembered = saved ? saved.active : (isDemoProjectId(target) ? defaultTaskWorkspace(sessionId ?? undefined, tourCompletedRef.current === false)?.active : undefined);
-    const nextPane = sameProject && options?.replace && sessionId && activeSessionId === null ? navigationRef.current.pane : remembered;
+    const nextPane = sameProject && (options?.preservePane || (options?.replace && sessionId && activeSessionId === null)) ? navigationRef.current.pane : remembered;
     void router.navigate({ href: taskLocation(target, sessionId, nextPane), replace: sameProject && options?.replace });
   }, [router, projectId, activeSessionId, captureWorkspace]);
   useEffect(() => {
@@ -1912,7 +1914,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
               || (pane && "sessionId" in pane && pane.sessionId && !sessions?.includes(pane.sessionId)) ? (
               <TabBody><div className="p-6 text-subtext">{m.model_picker_unavailable()}</div></TabBody>
             ) : rightTab === "research" ? (
-              <TabBody><ResearchPanel key={activeSessionId ?? "preview"} placement="pane" sessionId={activeSessionId} disabled={false} onOpenSession={(id) => onActiveSessionChange(id)} /></TabBody>
+              <TabBody><ResearchPanel key={researchSessionId ?? "preview"} placement="pane" sessionId={researchSessionId} disabled={false} onOpenSession={(id) => onActiveSessionChange(id, { preservePane: true })} /></TabBody>
             ) : rightTab === "artifacts" ? (
               <TabBody>
                 {activeProject && (

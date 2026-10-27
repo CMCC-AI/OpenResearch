@@ -85,11 +85,7 @@ export async function captureNativeProject(projectId: string, progress: (message
     const messages=await read<{messages:{parts:{type:string;text?:string;name?:string}[]}[];queued:unknown[]}>(`/api/chat/sessions/${session.id}/messages`);
     if(messages.queued?.length)throw new Error("原项目还有排队消息，请处理后再同步。");
     workspace.responses[`/api/chat/sessions/${session.id}`]={session};
-    const research = await read<{study:{id:string;decisions:{gate:string;status:string}[]}|null}>(`/api/research/sessions/${session.id}`);
-    if(research.study){
-      await asset(`/api/research/studies/${research.study.id}/package?approved=false`,"research-draft.zip");
-      if(research.study.decisions.some((decision)=>["G3","G4"].includes(decision.gate)&&decision.status==="approved")) await asset(`/api/research/studies/${research.study.id}/package?approved=true`,"research-approved.zip");
-    }
+    await read(`/api/research/sessions/${session.id}`);
     const wt=await read<{exists:boolean}>(`/api/chat/sessions/${session.id}/worktree`);
     if(wt.exists)await tree(new URLSearchParams({sessionId:session.id}).toString());
     for(const message of messages.messages)for(const part of message.parts)if(part.type==="image"&&part.text&&!part.text.startsWith("data:"))await asset(`/api/chat/attachments/${encodeURIComponent(part.text)}`,part.name||part.text);

@@ -2,12 +2,13 @@ import { fmtTokens } from "../api";
 import { appHref } from "../appBasePath";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Background, Controls, Handle, MarkerType, Position, ReactFlow, useReactFlow, type Node, type NodeProps } from "@xyflow/react";
+import { Background, Controls, Handle, MarkerType, Position, ReactFlow, useNodesState, useReactFlow, type Edge, type Node, type NodeProps } from "@xyflow/react";
 import { CircleDot, X } from "lucide-react";
 import { currentDecisions, expertRoles, researchAttention, researchProgress, researchTeamGraph, researchDuration, type ResearchMetrics, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
 import { TaskDetails, workflowTone } from "./ResearchWorkflow";
 import { Button, IconButton } from "./ui";
 import { useDialogFocus } from "./useDialogFocus";
+import { reconcileFlowNodes } from "../flowNodes";
 import "./ResearchTeamDag.css";
 
 type ExpertNode = Node<{ role: string; state: WorkflowState; label: string; onSelect: (id: string) => void }, "expert">;
@@ -28,12 +29,19 @@ function LocateCurrent({ ids }: { ids: string[] }) {
   return <Button size="small" className="research-team-locate" disabled={!ids.length} onClick={() => void flow.fitView({ nodes: ids.map((id) => ({ id })), padding: 0.6, maxZoom: 1, duration: 300 })}><img src={appHref("/research-team/locate.svg")} alt="" width={16} height={16} />定位当前</Button>;
 }
 
-export function ResearchTeamDagDialog({ study, runs, metrics, actions, onClose, confirmationContent, onOpenSession, embedded = false }: {
+function ExpertGraph({ nodes: incoming, edges, currentIds, onSelect }: { nodes: ExpertNode[]; edges: Edge[]; currentIds: string[]; onSelect: (id: string) => void }) {
+  const [nodes, setNodes, onNodesChange] = useNodesState(incoming);
+  useEffect(() => {
+    setNodes((current) => reconcileFlowNodes(current, incoming));
+  }, [incoming, setNodes]);
+  return <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.08, minZoom: 0.25, maxZoom: 1 }} minZoom={0.25} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} onNodeClick={(_, node) => onSelect(node.id)} proOptions={{ hideAttribution: true }}><Background /><Controls showInteractive={false} /><div className="absolute right-3 top-3 z-10"><LocateCurrent ids={currentIds} /></div></ReactFlow>;
+}
+
+export function ResearchTeamDagDialog({ study, runs, metrics, onClose, confirmationContent, onOpenSession, embedded = false }: {
   embedded?: boolean;
   metrics?: ResearchMetrics | null;
   study: ResearchStudy | null;
   runs: { id: string; status: string; cancelRequested?: boolean }[];
-  actions: ReactNode;
   onClose: () => void;
   confirmationContent: ReactNode;
   onOpenSession?: (id: string) => void;
@@ -55,7 +63,7 @@ export function ResearchTeamDagDialog({ study, runs, metrics, actions, onClose, 
   }, [metrics?.running, metrics?.activeDurationMs, metrics?.measuredAt]);
   const graph = useMemo(() => researchTeamGraph(study, actual), [study, actual]);
   const expertCurrentIds = graph.nodes.filter((node) => node.state === "running" || node.state === "blocked").map((node) => node.id);
-  const expertNodes: ExpertNode[] = graph.nodes.map((node) => ({ id: node.id, type: "expert", position: { x: node.x, y: node.y }, selected: selected === node.id, ariaLabel: `${expertRoles[node.role]} · ${node.id} · ${node.label}`, data: { role: node.role, state: node.state, label: actual ? `${node.id} · ${node.label}` : node.label, onSelect: setSelected } }));
+  const expertNodes = useMemo<ExpertNode[]>(() => graph.nodes.map((node) => ({ id: node.id, type: "expert", position: { x: node.x, y: node.y }, selected: selected === node.id, ariaLabel: `${expertRoles[node.role]} · ${node.id} · ${node.label}`, data: { role: node.role, state: node.state, label: actual ? `${node.id} · ${node.label}` : node.label, onSelect: setSelected } })), [graph, selected, actual]);
   const expertEdges = graph.edges.map((edge) => {
     const source = graph.nodes.find((node) => node.id === edge.source);
     const target = graph.nodes.find((node) => node.id === edge.target);
@@ -71,11 +79,11 @@ export function ResearchTeamDagDialog({ study, runs, metrics, actions, onClose, 
       <header className="research-team-header flex shrink-0 flex-wrap items-center gap-x-6 gap-y-3 border-b border-border">
         <div className="min-w-0"><h2 id={titleId} className="flex items-center gap-2 text-base font-normal"><span className="research-team-icon flex shrink-0 items-center justify-center"><img src={appHref("/research-team/team.svg")} alt="" width={22} height={22} /></span>科研专家团 · {view === "confirmation" ? "人工确认" : "DAG 全景"}</h2><p role="status" className="research-team-attention text-xs">{study ? researchAttention(study) : "尚未开始研究"}</p></div>
         <dl className="research-team-stats grid min-w-0 flex-1 gap-2">{[
-          { label: "研究时长", value: researchDuration(metrics, (metrics?.measuredAt ?? 0) + Math.max(0, now - metricClock.current.receivedAt)), tone: "duration" },
-          { label: "Token消耗", value: metrics?.tokenCount == null ? "—" : `${metrics.tokenCountComplete ? "" : "≥"}${fmtTokens(metrics.tokenCount)}`, tone: "tokens" },
+          { label: "研究时长", value: !study ? "0分00秒" : !metrics ? "暂不可用" : metrics.activeDurationMs == null ? "未记录" : researchDuration(metrics, metrics.measuredAt + Math.max(0, now - metricClock.current.receivedAt)), description: !study ? "尚未开始研究" : !metrics ? "服务尚未返回统计数据，更新服务后重试。" : metrics.activeDurationMs == null ? "历史对话缺少计时记录；后续执行将记录有效研究时长。" : metrics.activeDurationComplete === false ? "仅包含已记录的有效执行时长，历史缺失部分未计入；并行执行不重复累计。" : "累计有效执行时长，排除等待确认的时间；并行执行不重复累计。", tone: "duration" },
+          { label: "Token消耗", value: !study ? "0" : !metrics ? "暂不可用" : metrics.tokenCount == null ? "未上报" : `${metrics.tokenCountComplete ? "" : "≥"}${fmtTokens(metrics.tokenCount)}`, description: !study ? "尚未开始研究" : !metrics ? "服务尚未返回统计数据，更新服务后重试。" : metrics.tokenCount == null ? "智能体尚未上报 Token 用量。" : metrics.tokenCountComplete ? "主对话及专家子对话累计上报的输入与输出 Token。" : "仅包含已上报用量，尚未上报的部分未计入。", tone: "tokens" },
           { label: "科研产物", value: `${artifacts} 个文件`, tone: "artifacts" },
           { label: "专家数量", value: `${new Set(tasks.map((task) => task.role)).size}/20`, tone: "experts" },
-        ].map((stat) => <div key={stat.label} data-tone={stat.tone} className="research-team-stat min-w-0 rounded-xl"><dt className="text-xs text-subtext">{stat.label}</dt><dd className="mt-1 truncate text-sm font-semibold tabular-nums">{stat.value}</dd></div>)}</dl>
+        ].map((stat) => <div key={stat.label} data-tone={stat.tone} title={stat.description} className="research-team-stat min-w-0 rounded-xl"><dt className="text-xs text-subtext">{stat.label}</dt><dd className="mt-1 truncate text-sm font-semibold tabular-nums">{stat.value}</dd></div>)}</dl>
         {!embedded && <IconButton data-initial-focus className="self-start" aria-label="关闭专家团 DAG" onClick={onClose}><X size={18} /></IconButton>}
       </header>
       <div className="research-team-toolbar flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border">
@@ -86,7 +94,7 @@ export function ResearchTeamDagDialog({ study, runs, metrics, actions, onClose, 
       </div>
       {view === "confirmation" ? <section aria-label="人工确认" className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto border-y border-border p-4">{confirmationContent}</section> : <>
       <div className="research-team-canvas relative min-h-32 flex-1 border-y border-border" aria-label="科研专家团纵向 DAG">
-        {actual && !tasks.length ? <p className="p-8 text-center text-sm text-subtext">暂无任务计划</p> : <ReactFlow key={`${study?.id ?? "preview"}-${study?.plans.at(-1)?.version ?? 0}-${actual}`} nodes={expertNodes} edges={expertEdges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.08, minZoom: 0.25, maxZoom: 1 }} minZoom={0.25} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} onNodeClick={(_, node) => setSelected(node.id)} proOptions={{ hideAttribution: true }}><Background /><Controls showInteractive={false} /><div className="absolute right-3 top-3 z-10"><LocateCurrent ids={expertCurrentIds} /></div></ReactFlow>}
+        {actual && !tasks.length ? <p className="p-8 text-center text-sm text-subtext">暂无任务计划</p> : <ExpertGraph key={`${study?.id ?? "preview"}-${study?.plans.at(-1)?.version ?? 0}-${actual}`} nodes={expertNodes} edges={expertEdges} currentIds={expertCurrentIds} onSelect={setSelected} />}
       </div>
       <div className="research-team-progress flex shrink-0 flex-wrap items-center gap-3">
         <div className="flex min-w-0 flex-1 items-center gap-2"><span className="shrink-0 text-sm text-text"><span className="text-primary">{progress.completed}</span>/{progress.total} 已验收</span><div className="research-team-progress-track h-2 min-w-12 flex-1 overflow-hidden rounded-full" role="progressbar" aria-label="专家任务验收进度" aria-valuemin={0} aria-valuemax={progress.total || 1} aria-valuenow={progress.completed}><div className="h-full rounded-full bg-primary" style={{ width: `${progress.total ? progress.completed / progress.total * 100 : 0}%` }} /></div></div>
@@ -96,7 +104,6 @@ export function ResearchTeamDagDialog({ study, runs, metrics, actions, onClose, 
         {!selection ? null : !selection.tasks.length ? <p className="text-sm text-subtext">{expertRoles[selection.role]} · {selection.label}</p> : selection.tasks.map((task: ResearchTask) => study && <TaskDetails key={task.id} study={study} task={task} runs={runs} onOpenSession={onOpenSession ? (id) => { onClose(); onOpenSession(id); } : undefined} />)}
       </section>
       </>}
-      <footer className="flex shrink-0 flex-wrap gap-2 border-t border-border p-3">{actions}</footer>
     </div>;
   return embedded ? content : createPortal(<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3 sm:p-5" onClick={onClose}>{content}</div>, document.body);
 }

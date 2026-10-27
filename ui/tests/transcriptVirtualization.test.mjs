@@ -103,6 +103,7 @@ test("mounting a different conversation resets both bottom-pin representations",
   });
   const mount = evaluate(`return ${effect.getText(file)}`, {
     virtualizer: { scrollToEnd: () => { scrolls++; } }, scrollToEndRef, onPinToBottom: pin,
+    scrollRef: { current: null }, rememberedScroll: undefined, scrollMemoryKey: null, stickToBottom,
   });
   const cleanup = mount();
   assert.equal(stickToBottom.current, true);
@@ -172,4 +173,27 @@ test("entry-less cached measurements do not adopt the width of an unmeasured res
   assert.equal(measuredWidths.current.get("answer"), 840);
   callback(element, {}, instance);
   assert.equal(measuredWidths.current.get("answer"), 420);
+});
+
+test("returning from an expert restores reading instead of forcing the main transcript to its tail", () => {
+  const effect = find(node => ts.isCallExpression(node) && node.expression.getText(file) === "useLayoutEffect" && node.getText(file).includes("onPinToBottom()")).arguments[0];
+  let listener, restored, pins = 0, remembered;
+  const element = { scrollTop: 1350, scrollHeight: 5000, clientHeight: 600, offsetWidth: 800,
+    addEventListener: (name, callback) => { listener = callback; }, removeEventListener: () => {} };
+  const stickToBottom = { current: true };
+  const mount = evaluate(`return ${effect.getText(file)}`, {
+    virtualizer: { scrollToEnd() {}, scrollToOffset: (offset) => { restored = offset; } },
+    scrollRef: { current: element }, scrollToEndRef: { current: null }, stickToBottom,
+    onPinToBottom: () => { pins++; },
+    rememberedScroll: { offset: 1350, atBottom: false, width: 800 }, scrollMemoryKey: "main",
+    rememberTranscriptScroll: (key, position) => { remembered = { key, ...position }; },
+  });
+  const cleanup = mount();
+  assert.equal(restored, 1350);
+  assert.equal(stickToBottom.current, false);
+  assert.equal(pins, 0);
+  element.scrollTop = 1600;
+  listener();
+  cleanup();
+  assert.deepEqual(remembered, { key: "main", offset: 1600, atBottom: false, width: 800 });
 });

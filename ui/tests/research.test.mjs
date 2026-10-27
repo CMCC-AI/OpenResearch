@@ -196,4 +196,7 @@ test("research duration advances only during measured active time and keeps unkn
   assert.equal(researchDuration({ ...metrics, activeDurationMs: null }, 103000), "—");
   assert.equal(researchDuration(undefined, 103000), "—");
   assert.equal(researchDuration({ ...metrics, activeDurationMs: 3660000, running: false }), "1小时01分");
+  assert.equal(researchDuration({ ...metrics, activeDurationComplete: false }, 103000), "≥1分05秒");
+  assert.equal(researchDuration({ ...metrics, activeDurationComplete: false, running: false }, 999999), "≥1分02秒");
+  assert.equal(researchDuration({ ...metrics, activeDurationComplete: true, running: false }, 999999), "1分02秒");
 });

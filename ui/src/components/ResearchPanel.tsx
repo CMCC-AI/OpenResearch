@@ -1,9 +1,9 @@
 import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { getResearchStudy, decideResearchGate, stopResearchStudy, downloadResearchPackage, sendChatMessage } from "../api";
+import { getResearchStudy, decideResearchGate } from "../api";
 import { workspaceKey } from "../queries/client";
-import { currentDecisions, researchProgress, researchModes, presetWorkflowModes, researchWorkflowMode, deliveryGate, researchAttention, researchWorkflow, gateNames, type ResearchDecision, type ResearchMode } from "../research";
+import { currentDecisions, researchProgress, researchModes, presetWorkflowModes, researchWorkflowMode, researchAttention, researchWorkflow, gateNames, type ResearchDecision, type ResearchMode } from "../research";
 import { Button } from "./ui/Button";
 import { IconButton, MenuItem } from "./ui";
 import { ResearchStateErrorDialog } from "./ResearchOverviewDialog";
@@ -34,17 +34,10 @@ export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSess
   const progress = study ? researchProgress(study) : null;
   const decisions = study ? currentDecisions(study) : [];
   const activeStages = study ? researchWorkflow(study).filter((stage) => ["running", "blocked"].includes(stage.state)) : [];
-  const approved = decisions.some((d) => d.gate === deliveryGate(researchWorkflowMode(study!)) && d.status === "approved");
-  const actions = study && <>
-    <Button size="small" disabled={Boolean(readOnly) || working || study.status === "stopped"} onClick={() => void act(() => sendChatMessage(study.sessionId, "请读取当前研究计划、人工决策和真实运行状态，继续推进已就绪任务。"))}>继续研究</Button>
-    <Button size="small" disabled={working} onClick={() => void act(() => downloadResearchPackage(study.id, false))}>下载草稿包</Button>
-    {approved && <Button size="small" disabled={working} onClick={() => void act(() => downloadResearchPackage(study.id, true))}>下载已确认交付</Button>}
-    <Button size="small" variant="danger" disabled={Boolean(readOnly) || working || study.status === "stopped"} onClick={() => void act(() => stopResearchStudy(study.id))}>停止研究</Button>
-  </>;
   const renderDecision = (decision: ResearchDecision) => <GateCard key={decision.id} decision={decision} readOnly={Boolean(readOnly)} disabled={working || study?.status === "stopped"} onDecide={(accepted, reason) => act(async () => {
     if (!study) return;
     const result = await decideResearchGate(study.id, decision.id, decision.scopeHash, accepted, reason);
-    if (result.resumeError) throw new Error(`决策已保存，但会话未恢复：${result.resumeError}。可点击“继续研究”。`);
+    if (result.resumeError) throw new Error(`决策已保存，但会话未恢复：${result.resumeError}。请在主对话中发送消息继续推进。`);
   })} />;
   const pendingDecisions = decisions.filter((decision) => decision.status === "pending");
   const decided = decisions.filter((decision) => decision.status !== "pending");
@@ -53,10 +46,10 @@ export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSess
     {decided.length > 0 && <details><summary className="cursor-pointer text-xs text-subtext">确认记录（{decided.length}）</summary><div className="mt-2 flex flex-col gap-2">{decided.map(renderDecision)}</div></details>}
     {error && <p role="alert" className="text-sm text-accent-red">{error}</p>}
   </>;
-  const dagDialog = dagOpen && (sessionId && (queryError || pending) ? <ResearchStateErrorDialog loading={pending} error={queryError?.message ?? ""} onRetry={() => void query.refetch()} onClose={() => setDagOpen(false)} /> : <ResearchTeamDagDialog metrics={data?.metrics} study={study ?? null} runs={data?.runs ?? []} actions={actions} onClose={() => setDagOpen(false)} confirmationContent={decisionCards} onOpenSession={onOpenSession} />);
+  const dagDialog = dagOpen && (sessionId && (queryError || pending) ? <ResearchStateErrorDialog loading={pending} error={queryError?.message ?? ""} onRetry={() => void query.refetch()} onClose={() => setDagOpen(false)} /> : <ResearchTeamDagDialog metrics={data?.metrics} study={study ?? null} runs={data?.runs ?? []} onClose={() => setDagOpen(false)} confirmationContent={decisionCards} onOpenSession={onOpenSession} />);
   const openResearch = () => onOpenResearch ? onOpenResearch() : setDagOpen(true);
   if (readOnly && !study && placement === "composer") return null;
-  if (placement === "pane") return <div className="flex h-full min-h-0 flex-col">{pending && sessionId ? <p className="p-4 text-sm text-subtext">正在读取专家团状态…</p> : queryError ? <div role="alert" className="p-4 text-sm text-accent-red">研究状态读取失败：{queryError.message}<Button onClick={() => void query.refetch()}>重试</Button></div> : <ResearchTeamDagDialog embedded metrics={data?.metrics} study={study ?? null} runs={data?.runs ?? []} actions={actions} onClose={() => {}} confirmationContent={decisionCards} onOpenSession={onOpenSession} />}</div>;
+  if (placement === "pane") return <div className="flex h-full min-h-0 flex-col">{pending && sessionId ? <p className="p-4 text-sm text-subtext">正在读取专家团状态…</p> : queryError ? <div role="alert" className="p-4 text-sm text-accent-red">研究状态读取失败：{queryError.message}<Button onClick={() => void query.refetch()}>重试</Button></div> : <ResearchTeamDagDialog embedded metrics={data?.metrics} study={study ?? null} runs={data?.runs ?? []} onClose={() => {}} confirmationContent={decisionCards} onOpenSession={onOpenSession} />}</div>;
   if (placement === "workspace") return <>
     {expanded ? <MenuItem className="min-h-7 py-1" aria-label="科研专家团流程" onClick={openResearch} disabled={Boolean(sessionId) && pending}><span className="flex min-w-0 flex-col gap-0.5"><span className="flex items-center gap-4"><Users size={15} className="shrink-0 text-primary" />科研专家团</span><span className="truncate ps-[31px] text-menu text-subtext">{study ? researchAttention(study) : queryError ? "状态读取失败 · 点击重试" : readOnly ? "已结束 · 未保存流程" : "预设流程与执行"}</span></span></MenuItem> : <IconButton aria-label="科研专家团流程" data-tip="科研专家团 · 流程与执行" aria-pressed={active} active={active} disabled={Boolean(sessionId) && pending} onClick={openResearch}><Users size={15} /></IconButton>}
     {dagDialog}

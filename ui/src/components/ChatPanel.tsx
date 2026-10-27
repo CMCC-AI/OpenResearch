@@ -9,10 +9,14 @@ import { SessionFilterMenu, SessionRow, TitleReveal, TITLE_REVEAL_CLEAR_MS, type
 import { ResearchNavigationMore } from "./ResearchNavigation";
 import { ProductSidebar, ProductWordmark } from "../product/ProductNav";
 import { isDemoProjectId } from "../api";
-import { ResearchPanel } from "./ResearchPanel";
 import { WorkModeSwitch, type WorkMode } from "./WorkModeSwitch";
 import { getResearchStudy } from "../api";
 import { researchModes, type ResearchMode } from "../research";
+import { researchConversationStatus } from "../researchConversationStatus";
+import { ResearchConversationStatus } from "./ResearchConversationStatus";
+import { expertSessionContext, isSidebarSession, mainSessionId } from "../researchSessions";
+import { ExpertConversationHeader } from "./ExpertConversationHeader";
+import { readTranscriptScroll, rememberTranscriptScroll } from "../transcriptScrollMemory";
 import { ComposerProjectPicker } from "./ComposerProjectPicker";
 import { ProjectInfoCard } from "./ProjectInfoCard";
 import { fitSidebarRows, sidebarRowHeight, sidebarClasses, type SidebarRow } from "../sidebarLayout";
@@ -78,6 +82,7 @@ import {
   FolderUp,
   Pencil,
   Search,
+  Square,
   SquareTerminal,
   ToggleRight,
   TriangleAlert,
@@ -3764,6 +3769,7 @@ const TRANSCRIPT_ROW_SIZES_LIMIT = 5_000;
 
 export const Transcript = memo(function Transcript({
   messages,
+  sessionKey,
   scrollRef,
   scrollToEndRef,
   stickToBottom,
@@ -3788,6 +3794,7 @@ export const Transcript = memo(function Transcript({
 }: {
   /** The branch on screen, oldest first. */
   messages: ChatMessage[];
+  sessionKey?: string;
   scrollRef: React.RefObject<HTMLDivElement | null>;
   scrollToEndRef: React.RefObject<(() => void) | null>;
   stickToBottom: React.RefObject<boolean>;
@@ -3830,6 +3837,8 @@ export const Transcript = memo(function Transcript({
   const latestMessages = useRef(visibleMessages);
   latestMessages.current = visibleMessages;
   const measurementScope = JSON.stringify([workspaceKey("transcript")[1], getLocale()]);
+  const scrollMemoryKey = sessionKey ? JSON.stringify([measurementScope, sessionKey]) : null;
+  const [rememberedScroll] = useState(() => scrollMemoryKey ? readTranscriptScroll(scrollMemoryKey) : undefined);
   const [fullHistory, setFullHistory] = useState(false);
   const getItemKey = useCallback((index: number) => visibleMessages[index].id, [visibleMessages]);
   const rangeExtractor = useCallback((range: VirtualRange) => {
@@ -3843,7 +3852,7 @@ export const Transcript = memo(function Transcript({
   // Real measurements also seed anchoring; estimates alone do not mark rows measured.
   const [initialMeasurementsCache] = useState(() => visibleMessages.flatMap((message, index) => {
     const remembered = transcriptRowSizes.get(message.id);
-    if (!remembered || remembered.scope !== measurementScope || remembered.width !== scrollRef.current?.offsetWidth
+    if (!remembered || remembered.scope !== measurementScope || remembered.width !== (scrollRef.current?.offsetWidth ?? rememberedScroll?.width)
       || remembered.completedAt !== message.completedAt || (message.role === "assistant" && message.completedAt == null)) return [];
     const { size } = remembered;
     return [{ key: message.id, index, start: 0, end: size, size, lane: 0 }];
@@ -3864,6 +3873,7 @@ export const Transcript = memo(function Transcript({
     overscan: 4,
     initialRect: { width: scrollRef.current?.clientWidth ?? 0, height: scrollRef.current?.clientHeight ?? 0 },
     initialOffset: () => {
+      if (rememberedScroll && !rememberedScroll.atBottom) return rememberedScroll.offset;
       const measured = initialMeasurementsCache.reduce((sum, item) => sum + item.size, 0);
       return Math.max(0, measured + (visibleMessages.length - initialMeasurementsCache.length) * 400 - (scrollRef.current?.clientHeight ?? 0));
     },
@@ -3875,9 +3885,22 @@ export const Transcript = memo(function Transcript({
   useLayoutEffect(() => {
     const scroll = () => virtualizer.scrollToEnd();
     scrollToEndRef.current = scroll;
-    onPinToBottom();
-    return () => { scrollToEndRef.current = null; };
-  }, [virtualizer, scrollToEndRef, onPinToBottom]);
+    const element = scrollRef.current;
+    let position = rememberedScroll ?? { offset: element?.scrollTop ?? 0, atBottom: true, width: element?.offsetWidth };
+    if (rememberedScroll && !rememberedScroll.atBottom) {
+      stickToBottom.current = false;
+      virtualizer.scrollToOffset(rememberedScroll.offset);
+    } else onPinToBottom();
+    const remember = () => {
+      if (element) position = { offset: element.scrollTop, atBottom: element.scrollHeight - element.scrollTop - element.clientHeight < 60, width: element.offsetWidth };
+    };
+    element?.addEventListener("scroll", remember);
+    return () => {
+      element?.removeEventListener("scroll", remember);
+      if (scrollMemoryKey) rememberTranscriptScroll(scrollMemoryKey, position);
+      scrollToEndRef.current = null;
+    };
+  }, [virtualizer, scrollToEndRef, onPinToBottom, scrollRef, stickToBottom, rememberedScroll, scrollMemoryKey]);
   useLayoutEffect(() => () => {
     const currentMessages = new Map(latestMessages.current.map(message => [message.id, message]));
     for (const [key, size] of virtualizer.itemSizeCache) {
@@ -4125,7 +4148,7 @@ export function ChatPanel({
   composerFocusNonce?: number;
   /** Demo run currently executing, for the monitor-it hint above the composer. */
   activeSessionId: string | null;
-  onActiveSessionChange: (sessionId: string | null, options?: { replace?: boolean; projectId?: string }) => void;
+  onActiveSessionChange: (sessionId: string | null, options?: { replace?: boolean; projectId?: string; preservePane?: boolean }) => void;
   /** Database-backed selection used to seed new chat sessions. */
   preferredAgent: ModelSelection | null;
   onPreferredAgentChange: (selection: ModelSelection) => Promise<void>;
@@ -4286,6 +4309,8 @@ export function ChatPanel({
   }, [stashKey, composerPrefill]);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const researchState = useQuery({ queryKey: workspaceKey("researchStudy", activeId), queryFn: ({ signal }) => getResearchStudy(activeId!, signal), enabled: Boolean(activeId) && !embedded, refetchInterval: (query) => query.state.data?.study?.status === "active" ? 2500 : false });
+  const expertContext = expertSessionContext(sessions.find((session) => session.id === activeId), researchState.data?.study);
+  const sidebarActiveId = mainSessionId(activeId, sessions);
   const currentWorkMode: WorkMode = activeId ? researchState.data?.study?.mode ?? "normal" : researchMode;
   const settingsMutationTail = useRef<Promise<void>>(Promise.resolve());
   const settingsMutationSeq = useRef(0);
@@ -5018,6 +5043,9 @@ export function ChatPanel({
   }, [projectId, state.busySessions, sessions, activeId, mainView]);
 
   const busy = activeId ? state.busySessions.has(activeId) : false;
+  const stopRequests = useRef(new Set<string>());
+  const [stoppingSessionIds, setStoppingSessionIds] = useState<ReadonlySet<string>>(() => new Set());
+  const stopping = Boolean(activeId && stoppingSessionIds.has(activeId));
   const canFork = !readOnly && !busy && !!activeHarness?.agentReady;
   const hasPendingTailTool = busy && streamTailTool(messages) != null;
   const hasStreamingText = busy && streamTailIsText(messages);
@@ -5147,6 +5175,11 @@ export function ChatPanel({
   }, [revising, pendingPlan, state.busySessions, activeId]);
 
   const pendingPermission = useMemo(() => firstPendingPermission(messages), [messages]);
+  const conversationStudy = !embedded && researchState.data?.study?.sessionId === activeId ? researchState.data.study : null;
+  const conversationStatus = conversationStudy ? researchConversationStatus(conversationStudy, {
+    busy, stopping, waitingForInput: Boolean(pendingQuestion || pendingPermission || pendingPlan),
+    busySessions: state.busySessions, runs: researchState.data?.runs ?? [], unavailable: Boolean(researchState.error),
+  }) : null;
   // Enter hands the message to the running turn. Attachments still park (only
   // a full turn builds their on-disk preamble), and a pending card owns typed
   // text — there the card is the affordance, not a steer.
@@ -5221,12 +5254,12 @@ export function ChatPanel({
   const historyError = !historyQuery.data ? historyQuery.error : null;
   const newChatVisible = isNewChatLayout({
     mainView, embedded, activeId, historyLoaded: Boolean(historyQuery.data),
-    hasMessages: messages.length > 0, busy, sideChat: Boolean(activeSession?.sideParentSessionId),
+    hasMessages: messages.length > 0, busy, sideChat: Boolean(activeSession?.sideParentSessionId || activeSession?.parentSessionId),
   });
   const layoutPending = isChatLayoutPending({
     mainView, embedded, hasMessages: messages.length > 0, busy, contentLoading, historyLoading,
   });
-  const starterVisible = mainView === "chat" && !embedded && !threadMounted && !contentLoading && !contentError && !historyLoading && !historyError;
+  const starterVisible = mainView === "chat" && !embedded && !expertContext && !threadMounted && !contentLoading && !contentError && !historyLoading && !historyError;
   const starterQuery = useQuery({
     ...getProjectStarterPromptsQuery(projectId, starterHarness ?? "claude-code", starterModel, getLocale()),
     enabled: starterVisible && starterHarness !== null,
@@ -5304,6 +5337,7 @@ export function ChatPanel({
 
   /** `queue` (the ⌘/Ctrl+Enter chord) parks the message even on a harness that steers. */
   async function send({ queue = false, starter }: { queue?: boolean; starter?: string } = {}) {
+    if (activeId && stopRequests.current.has(activeId)) return;
     // Slash tokens stay in the wire form: the server resolves every selected
     // skill and supplies this exact message as their shared request context.
     const originalText = (starter ?? draft).trim();
@@ -5652,6 +5686,7 @@ export function ChatPanel({
   /** Enter in bash mode: run the command where the agent works and show the
    * exchange on the branch. A new chat gets its session first, as send() does. */
   async function runShell() {
+    if (activeId && stopRequests.current.has(activeId)) return;
     const command = shellCommand;
     if (!command) return;
     setSettingsError(null);
@@ -5717,9 +5752,17 @@ export function ChatPanel({
   }
 
   function stop() {
-    if (!activeId) return;
-    void interruptChat(activeId).catch(() => {
-      setSettingsError(m.chat_stop_failed());
+    const sessionId = activeId;
+    if (!sessionId || stopRequests.current.has(sessionId)) return;
+    stopRequests.current.add(sessionId);
+    setStoppingSessionIds(new Set(stopRequests.current));
+    void interruptChat(sessionId).then(() => reseedSession(sessionId)).catch(() => {
+      if (composerScopeRef.current.projectId === projectId && composerScopeRef.current.activeId === sessionId) {
+        setSettingsError(m.chat_stop_failed());
+      }
+    }).finally(() => {
+      stopRequests.current.delete(sessionId);
+      setStoppingSessionIds(new Set(stopRequests.current));
     });
   }
 
@@ -5963,7 +6006,7 @@ export function ChatPanel({
         const session = await getChatSession(sessionId);
         if (projectVisitRef.current !== visit || composerScopeRef.current !== scope) return;
         setSessionFilter("all");
-        onActiveSessionChange(sessionId, { projectId: session.projectId });
+        onActiveSessionChange(sessionId, { projectId: session.projectId, preservePane: true });
       } catch (error) {
         if (projectVisitRef.current !== visit || composerScopeRef.current !== scope) return;
         showAlert(error instanceof Error ? error.message : String(error), "error");
@@ -5997,14 +6040,14 @@ export function ChatPanel({
     const query = projectSessionsQueries[index];
     const projectSessions = project.id === projectId ? sessions : query.data ?? EMPTY_SESSIONS;
     const matching = projectSessions
-      .filter((session) => !session.sideParentSessionId && (matchesFilter(sessionFilter, session.archived) || session.id === activeId))
+      .filter((session) => isSidebarSession(session) && (matchesFilter(sessionFilter, session.archived) || session.id === sidebarActiveId))
       .sort((a, b) => b.updatedAt - a.updatedAt);
     const chatLimit = chatLimits[project.id] ?? 6;
     let visible = matching.slice(0, chatLimit);
-    const selected = matching.find((session) => session.id === activeId);
-    if (selected && !visible.some((session) => session.id === activeId)) visible = [...visible.slice(0, chatLimit - 1), selected];
+    const selected = matching.find((session) => session.id === sidebarActiveId);
+    if (selected && !visible.some((session) => session.id === sidebarActiveId)) visible = [...visible.slice(0, chatLimit - 1), selected];
     const collapsed = collapsedProjects.includes(project.id);
-    sidebarRows.push({ kind: "project", project, collapsed, busy: collapsed && matching.some((session) => sessionBusy(project, session) && !waitingSessions.has(session.id)) });
+    sidebarRows.push({ kind: "project", project, collapsed, busy: collapsed && projectSessions.some((session) => sessionBusy(project, session) && !waitingSessions.has(session.id)) });
     if (collapsed) return;
     visible.forEach((session) => sidebarRows.push({ kind: "chat", project, session }));
     if (matching.length > chatLimit) sidebarRows.push({ kind: "more", project });
@@ -6012,9 +6055,9 @@ export function ChatPanel({
   });
   if (sidebarGrouping === "list") {
     const flat = flatSessions.data?.pages.flatMap((page) => page.sessions) ?? [];
-    const selected = sessions.find((session) => session.id === activeId);
+    const selected = sessions.find((session) => session.id === sidebarActiveId);
     if (selected && !flat.some((session) => session.id === selected.id)) flat.push(selected);
-    flat.filter((session) => !deletedSessionIds.has(session.id)).sort((a, b) => b.updatedAt - a.updatedAt).forEach((session) => {
+    flat.filter((session) => isSidebarSession(session) && !deletedSessionIds.has(session.id)).sort((a, b) => b.updatedAt - a.updatedAt).forEach((session) => {
       const project = sidebarProjects.find((project) => project.id === session.projectId);
       if (project) sidebarRows.push({ kind: "chat", project, session });
     });
@@ -6025,10 +6068,10 @@ export function ChatPanel({
     }
   }
   const sidebarScrollable = sidebarGrouping === "list" || sidebarExpanded;
-  const initialRows = fitSidebarRows(sidebarRows, railHeight, activeId);
+  const initialRows = fitSidebarRows(sidebarRows, railHeight, sidebarActiveId);
   const hasHiddenProjects = initialRows.length < sidebarRows.length || shownProjects.length < sortedProjects.length;
   const defaultRows = sidebarGrouping === "projects" && hasHiddenProjects
-    ? fitSidebarRows(sidebarRows, Math.max(0, railHeight - 38), activeId) : initialRows;
+    ? fitSidebarRows(sidebarRows, Math.max(0, railHeight - 38), sidebarActiveId) : initialRows;
   const showProjectMore = sidebarGrouping === "projects" && !sidebarExpanded && hasHiddenProjects;
   const defaultRowsHeight = defaultRows.reduce((height, row) => height + sidebarRowHeight(row), 0);
   const sidebarRowKey = (row: SidebarRow) => row.kind === "chat" ? row.session.id : `${row.kind}:${row.project.id}`;
@@ -6103,7 +6146,7 @@ export function ChatPanel({
                       onNewChat={readOnly ? undefined : () => { if (project.id === projectId) startNewTask(); else void navigate({ to: "/projects/$projectId/tasks/new", params: { projectId: project.id } }); }}
                       onOpen={() => readOnly ? onActiveSessionChange(activeId || readOnly.initialSessionId || null) : void navigate({ to: "/projects/$projectId", params: { projectId: project.id } })}
                       project={project}
-                      chatCount={projectActivity.find((activity) => activity.projectId === project.id)?.totalAgents}
+                      chatCount={project.id === projectId ? sessions.filter(isSidebarSession).length : projectSessionsQueries[shownProjects.findIndex((item) => item.id === project.id)]?.data?.filter(isSidebarSession).length}
                       collapsed={row.collapsed}
                       busy={row.busy}
                       onToggleCollapsed={() => {
@@ -6126,7 +6169,7 @@ export function ChatPanel({
                       readOnly={Boolean(readOnly)}
                       key={s.id}
                       session={s}
-                      active={s.id === activeId && mainView === "chat"}
+                      active={s.id === sidebarActiveId && mainView === "chat"}
                       unread={unreadSessionIds.has(s.id)}
                       busy={sessionBusy(project, s)}
                       waiting={waitingSessions.has(s.id)}
@@ -6203,7 +6246,7 @@ export function ChatPanel({
     </ProductSidebar>
   );
 
-  const headerClass = "chat-header flex items-center gap-2 py-0 px-4 bg-background shrink-0 h-12 relative z-4 w-full max-w-readable my-0 mx-auto [&::after]:content-[''] [&::after]:absolute [&::after]:top-full [&::after]:start-0 [&::after]:end-0 [&::after]:h-6 [&::after]:bg-[linear-gradient(to_bottom,_var(--base),_transparent)] [&::after]:pointer-events-none";
+  const headerClass = `chat-header flex items-center gap-2 py-0 px-4 bg-background shrink-0 ${expertContext ? "min-h-12" : "h-12"} relative z-4 w-full max-w-readable my-0 mx-auto [&::after]:content-[''] [&::after]:absolute [&::after]:top-full [&::after]:start-0 [&::after]:end-0 [&::after]:h-6 [&::after]:bg-[linear-gradient(to_bottom,_var(--base),_transparent)] [&::after]:pointer-events-none`;
   const railReopen = !railOpen && !embedded && (
     <IconButton
       title={m.chat_panel_show_sidebar()}
@@ -6241,11 +6284,11 @@ export function ChatPanel({
       <section data-side-chat={embedded || undefined} className={`chat-pane flex-1 min-w-0 flex flex-col bg-background min-h-0 ${newChatVisible ? "new-chat-shell" : embedded ? "" : "mt-5"}`}>
         {/* Header — session title on the left, end-pane view switchers on the
           right, fading into the chat below (sessions live in the rail). */}
-        {!newChatVisible && <div className={railOpen || embedded ? "contents" : "grid shrink-0 grid-cols-[2rem_minmax(0,1fr)_2rem] mac-titlebar:grid-cols-[6rem_minmax(0,1fr)_6rem] items-center"}>
+        {(!newChatVisible || expertContext) && <div className={railOpen || embedded ? "contents" : "grid shrink-0 grid-cols-[2rem_minmax(0,1fr)_2rem] mac-titlebar:grid-cols-[6rem_minmax(0,1fr)_6rem] items-center"}>
           {railReopen}
           <div className={headerClass}>
           <div className="flex min-w-0 flex-1 items-center gap-2">
-            {activeSession && <>
+            {expertContext ? <ExpertConversationHeader name={expertContext.name} task={expertContext.task} onReturn={() => onActiveSessionChange(expertContext.mainSessionId, { preservePane: true })} /> : activeSession && <>
               {activeSession.title?.trim() ? (
                 <PaperTitle variant="header" className="flex-initial" title={activeSession.title.trim()}>
                   <TitleReveal
@@ -6301,6 +6344,8 @@ export function ChatPanel({
               <div className="ms-auto h-16 w-1/2 shrink-0 rounded-lg bg-panel" />
             </div>
           </div>
+        ) : !threadMounted && expertContext ? (
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-subtext"><Users size={22} aria-hidden="true" /><p className="m-0">暂无执行记录，专家的处理过程会显示在这里。</p></div>
         ) : !threadMounted && (activeSession?.sideParentSessionId || sideParentSessionId) ? (
           <div className="chat-empty flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-subtext">
             <MessagesSquare size={22} />
@@ -6391,6 +6436,7 @@ export function ChatPanel({
               <ChatImageScope projectId={projectId} sessionId={activeId}>
                 <Transcript
                   key={activeId}
+                  sessionKey={activeId ?? undefined}
                   scrollRef={threadRef}
                   scrollToEndRef={scrollToEndRef}
                   stickToBottom={stickToBottom}
@@ -6579,13 +6625,6 @@ export function ChatPanel({
               </IconButton>
             </div>
           )}
-          {!embedded && !isDemoProjectId(projectId) && (activeId ? <ResearchPanel onOpenResearch={onOpenResearch} key={activeId} onOpenSession={openSpawnedSession} sessionId={activeId} disabled={!composerSelection || busy} onStartWorkflow={async (mode) => {
-            if (!composerSelection) return;
-            const objective = `${researchModes[mode]}：${draft.trim() || "请接管项目材料，明确研究目标与交付，并按需求判断执行路径；缺少材料时先澄清。"}`;
-            const images: ChatImageAttachment[] = await uploadSendMaterials(attachments);
-            const session = await openNewSession(composerSelection, false, objective, mode);
-            await sendChatMessage(session.id, objective, {}, images.length ? images : undefined);
-          }} /> : null)}
           <fieldset disabled={Boolean(readOnly)} className="contents">
           <div className={`composer-box relative flex flex-col border ${bashActive ? "border-accent-amber" : "border-border"} rounded-lg bg-background shadow-elevated`} data-onboarding="composer">
             {activeHarness && !activeHarness.agentReady && (
@@ -6690,7 +6729,9 @@ export function ChatPanel({
                 {settingsError}
               </div>
             )}
-            {!newChatVisible && !embedded && !isDemoProjectId(projectId) && (!activeId || researchState.data) && <div className="px-3 pt-3 pb-1"><WorkModeSwitch value={currentWorkMode} onChange={setResearchMode} readOnly={Boolean(activeId)} activeWorkflow={researchState.data?.study?.plans.at(-1)?.workflow} /></div>}
+            {(!newChatVisible || conversationStatus) && !embedded && !isDemoProjectId(projectId) && (!activeId || researchState.data) && <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 pt-3 pb-1"><WorkModeSwitch value={currentWorkMode} onChange={setResearchMode} readOnly={Boolean(activeId)} activeWorkflow={researchState.data?.study?.plans.at(-1)?.workflow} />
+              {conversationStatus ? <ResearchConversationStatus status={conversationStatus} onOpen={onOpenResearch} /> : stopping && <span role="status" className="text-xs text-subtext">{m.common_stopping()}</span>}
+            </div>}
             <div className={`composer-input relative flex overflow-hidden [&_textarea]:flex-1 ${bashActive ? "[&_textarea]:font-mono [&_textarea]:text-sm" : ""}`}>
               <textarea
                 dir="auto"
@@ -6704,19 +6745,14 @@ export function ChatPanel({
                   // While a steerable turn runs, Enter goes to that turn, so name
                   // the gesture and its queue chord — the send button is a Stop
                   // button for the whole busy stretch.
-                  // Otherwise follow `composerSelection` so the name tracks the
-                  // picker for a new session and the open session once one exists.
+                  // Ordinary input uses the same hint as the new-chat composer.
                   pendingQuestion
                     ? m.chat_type_custom_answer()
                     : steering && activeHarness
                       ? m.chat_steer_placeholder({ harness: ltr(HARNESS_LABELS[activeHarness.id]), shortcut: ltr(queueChord) })
-                      : !activeId && researchMode !== "normal"
-                        ? "描述你想研究的问题；也可补充已有材料、期望结果和时间或预算限制……"
-                      : composerSelection
-                        ? activeHarness?.agentReady
-                          ? m.chat_message_harness({ harness: ltr(HARNESS_LABELS[composerSelection.harness]) })
-                          : m.chat_harness_unavailable({ harness: ltr(HARNESS_LABELS[composerSelection.harness]) })
-                        : m.chat_ask_agent_placeholder()
+                      : composerSelection && !activeHarness?.agentReady
+                        ? m.chat_harness_unavailable({ harness: ltr(HARNESS_LABELS[composerSelection.harness]) })
+                        : conversationStatus?.placeholder ?? "请输入您的研究内容，输入/使用命令和技能"
                 }
                 rows={2}
                 onPaste={onComposerPaste}
@@ -6844,7 +6880,7 @@ export function ChatPanel({
                 textareaRef={composerRef}
               />
             </div>
-            {newChatVisible && !isDemoProjectId(projectId) && <div className="new-chat-work-mode"><WorkModeSwitch value={currentWorkMode} onChange={setResearchMode} activeWorkflow={researchState.data?.study?.plans.at(-1)?.workflow} /></div>}
+            {newChatVisible && !conversationStatus && !isDemoProjectId(projectId) && <div className="new-chat-work-mode"><WorkModeSwitch value={currentWorkMode} onChange={setResearchMode} activeWorkflow={researchState.data?.study?.plans.at(-1)?.workflow} /></div>}
             <div className="composer-actions flex min-w-0 justify-end items-center gap-2 pt-1.5 px-2 pb-2">
               <div className="option-picker relative inline-flex shrink-0" ref={dataSources.ref}>
                 <IconButton
@@ -6973,14 +7009,14 @@ export function ChatPanel({
                   />
                 </div>
               )}
-              {busy && !pendingQuestion ? (
+              {stopping || (busy && !pendingQuestion) ? (
                 // Stop whenever the turn is busy and typed text has nowhere to
                 // go — actively streaming, or held on a plan/permission card
                 // (their cards are the affordance; send() can't service them).
                 // Send stays only when it actually works: idle, or a held
                 // QUESTION card that owns typed text.
-                <IconButton className="send-btn" variant="stop" title={m.chat_panel_stop()} aria-label={m.chat_panel_stop()} onClick={stop}>
-                  <X size={16} />
+                <IconButton className="send-btn" variant="stop" title={stopping ? m.common_stopping() : m.chat_panel_stop()} aria-label={stopping ? m.common_stopping() : m.chat_panel_stop()} aria-busy={stopping} disabled={stopping} onClick={stop}>
+                  {stopping ? <Spinner aria-hidden="true" /> : <Square size={14} fill="currentColor" aria-hidden="true" />}
                 </IconButton>
               ) : (
                 <IconButton

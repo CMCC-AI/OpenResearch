@@ -16,7 +16,7 @@ test("the real project API receives the original structured records without flat
    const data=await (await projectRequest("/api/chat/sessions/original-session/messages")).json();
    assert.deepEqual(data,workspace.responses["/api/chat/sessions/original-session/messages"]);
    assert.equal((await projectRequest("/api/projects/other-project/file?path=private")).status,404);
-   for(const [url,method]of [["/api/chat/sessions/original-session/message","POST"],["/api/projects/original-project/file","PUT"],["/api/projects/original-project","DELETE"],["/api/research/studies/study/stop","POST"]])assert.equal((await projectRequest(url,{method,body:"{}"})).status,403);
+   for(const [url,method]of [["/api/chat/sessions/original-session/message","POST"],["/api/projects/original-project/file","PUT"],["/api/projects/original-project","DELETE"],["/api/research/studies/study/decisions/decision","POST"]])assert.equal((await projectRequest(url,{method,body:"{}"})).status,403);
    assert.equal(liveReads,0);
    assert.equal(projectAssetUrl("/api/projects/original-project/file/raw?sessionId=original-session&path=report.md"),"http://localhost:5300/api/platform/cases/case-1/assets?name=native-abc.md");
    assert.ok(projectAssetUrl("/api/files/abs/raw?path=/private/key").endsWith("name=missing"));

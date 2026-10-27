@@ -2335,13 +2335,3 @@ export const getResearchStudy = (sessionId: string, signal?: AbortSignal) =>
   get<{ study: import("./research").ResearchStudy | null; runs: Run[]; metrics?: import("./research").ResearchMetrics | null }>(`/api/research/sessions/${sessionId}`, signal);
 export const decideResearchGate = (studyId: string, decisionId: string, scopeHash: string, approved: boolean, reason: string) =>
   post<{ ok: boolean; resumeError?: string | null }>(`/api/research/studies/${studyId}/decisions/${decisionId}`, { scopeHash, approved, reason });
-export const stopResearchStudy = (studyId: string) => post<{ ok: boolean }>(`/api/research/studies/${studyId}/stop`, {});
-export async function downloadResearchPackage(studyId: string, approved: boolean) {
-  const response = await fetch(projectAssetUrl(`/api/research/studies/${studyId}/package?approved=${approved}`), { credentials: "include" });
-  if (!response.ok) await json(response);
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = `research-package-${approved ? "approved" : "draft"}.zip`; a.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-}

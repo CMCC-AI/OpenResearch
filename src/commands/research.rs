@@ -23,6 +23,9 @@ pub enum ResearchCommand {
     Dispatch {
         task: String,
     },
+    Retry {
+        task: String,
+    },
     PrepareRun {
         task: String,
         #[command(flatten)]
@@ -101,6 +104,17 @@ pub async fn run(args: ResearchArgs) -> Result<()> {
             )
             .await?;
         }
+        ResearchCommand::Retry { task } => {
+            require_lead(lead)?;
+            store.research_retry_task(&study.id, &task)?;
+            let dispatched =
+                crate::commands::research_dispatch::auto_dispatch_sync(&store, &study.id)?;
+            if let Some((_, sid)) = dispatched.iter().find(|(tid, _)| tid == &task) {
+                println!("任务 {task} 已重置并自动重新派发专家会话 {sid}。");
+            } else {
+                println!("任务 {task} 已重置为待执行（实验任务请先执行 prepare-run 绑定契约并确认 G2/G3）。");
+            }
+        }
         ResearchCommand::PrepareRun { task, mut args } => {
             require_lead(lead)?;
             crate::local::apply_compute_default(&mut args.backend, &mut args.flavor);
@@ -118,14 +132,23 @@ pub async fn run(args: ResearchArgs) -> Result<()> {
                 .or_else(|| own.as_ref().map(|(id, _)| id.clone()))
                 .ok_or_else(|| anyhow!("主理人验收需要 --task"))?;
             if !lead
-                && own.as_ref().is_none_or(|(task, version)| {
+                && (own.as_ref().is_none_or(|(task, version)| {
                     task != &id || study.plan().map_or(true, |p| p.version != *version)
-                })
+                }) || study
+                    .task(&id)
+                    .map_or(true, |t| t.session_id.as_deref() != Some(session.as_str())))
             {
                 return Err(anyhow!("不能完成其他专家的任务"));
             }
             let result = read::<Finish>(&file)?;
             store.research_finish(&study.id, &id, result.success, result.summary)?;
+            if result.success {
+                let _ = crate::commands::research_dispatch::auto_dispatch_ignoring_session(
+                    &store,
+                    &study.id,
+                    if lead { None } else { Some(&session) },
+                );
+            }
             println!("任务产物已验收登记。");
         }
         ResearchCommand::Claim { file } => {
@@ -143,7 +166,7 @@ pub async fn run(args: ResearchArgs) -> Result<()> {
                 )
             })?;
             println!(
-                "交付已申请 {} 确认；用户可在研究面板查看方案、下载草稿或确认后的归档。",
+                "已申请 {} 人工确认；用户可在人工确认页面查看内容，并在产物页面查看和下载文件。",
                 crate::local::research::delivery_gate(study.workflow_mode())
             );
         }

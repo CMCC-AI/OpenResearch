@@ -67,11 +67,17 @@ pub(super) async fn decide(
     if req.reason.len() > 8000 {
         return Err(bad_request("决策说明过长"));
     }
-    let (session, gate) = {
+    let (session, wakeup_prompt) = {
         let store = Store::open()?;
         store
             .research_decide(&id, &decision, &req.scope_hash, req.approved, req.reason)
             .map_err(bad_request)?;
+        let dispatched = if req.approved {
+            crate::commands::research_dispatch::auto_dispatch_sync(&store, &id)
+                .map_err(bad_request)?
+        } else {
+            Vec::new()
+        };
         let study = store.research_study(&id)?;
         let gate = study
             .decisions
@@ -80,86 +86,49 @@ pub(super) async fn decide(
             .ok_or_else(|| not_found("decision"))?
             .gate
             .clone();
-        (study.session_id, gate)
+        let version = study.plan().map_or(0, |p| p.version);
+        let delivery = crate::local::research::delivery_gate(study.workflow_mode());
+        let has_pending_gate = study
+            .decisions
+            .iter()
+            .any(|d| d.version == version && d.status == "pending");
+        let has_running_task = study
+            .plan()
+            .is_ok_and(|p| p.tasks.iter().any(|t| t.state == "running"));
+        let prompt = if !req.approved {
+            Some(format!(
+                "研究闸门 {gate} 已被用户拒绝。请读取当前状态与用户反馈意见，调整方案或仅重做受影响的任务（已完成且产物未变动的任务会自动保留进度，请勿无故重置全部任务）。"
+            ))
+        } else if gate == delivery || !dispatched.is_empty() || has_pending_gate || has_running_task
+        {
+            None
+        } else {
+            Some(format!(
+                "研究闸门 {gate} 已由用户批准。前置已完成任务已保留，请立即为下一环节实验任务执行 `orx research prepare-run` 绑定运行契约，或推进剩余未完成步骤；严禁重新调用 `orx research plan` 重置已有进度。"
+            ))
+        };
+        (study.session_id, prompt)
     };
-    let result=state.chat.send_message(&session,format!("研究闸门 {gate} 已由用户{}。请读取 orx research status，仅推进当前获批且依赖就绪的任务。",if req.approved {"批准"}else{"拒绝"}),local::chat::TurnOverrides::default(),vec![],vec![],Some(format!("research-decision-{decision}"))).await;
-    // The decision is durable even if the harness cannot resume. The UI exposes retry.
-    Ok(Json(
-        json!({"ok":true,"resumeError":result.err().map(|e|e.to_string())}),
-    ))
-}
-#[derive(Deserialize)]
-pub(super) struct ExportQuery {
-    #[serde(default)]
-    approved: bool,
-}
-pub(super) async fn export(
-    Path(id): Path<String>,
-    Query(query): Query<ExportQuery>,
-) -> std::result::Result<Response, ApiError> {
-    let bytes = tokio::task::spawn_blocking(move || {
-        let store = Store::open()?;
-        let study = store.research_study(&id)?;
-        local::research::export_package(&store, &study, query.approved)
-    })
-    .await
-    .map_err(|e| bad_request(e.to_string()))?
-    .map_err(bad_request)?;
-    Ok((
-        [
-            (header::CONTENT_TYPE, "application/zip"),
-            (
-                header::CONTENT_DISPOSITION,
-                if query.approved {
-                    "attachment; filename=research-package-approved.zip"
-                } else {
-                    "attachment; filename=research-package-draft.zip"
-                },
-            ),
-        ],
-        bytes,
-    )
-        .into_response())
-}
-pub(super) async fn stop(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-) -> ApiResult {
-    browser_decision(&headers)?;
-    reject_if_moving(&state)?;
-    let sessions = {
-        let store = Store::open()?;
-        store.research_update(&id, |study| {
-            study.status = "stopped".into();
-            let mut sessions = vec![study.session_id.clone()];
-            for plan in &mut study.plans {
-                for task in &mut plan.tasks {
-                    if let Some(session) = &task.session_id {
-                        sessions.push(session.clone());
-                    }
-                    if matches!(task.state.as_str(), "pending" | "running") {
-                        task.state = "cancelled".into();
-                    }
-                    for run in &task.run_ids {
-                        if store
-                            .get_run(run)?
-                            .is_some_and(|r| !local::is_terminal(&r.status))
-                        {
-                            store.request_cancel(run, "dashboard:research-stop")?;
-                        }
-                    }
-                }
-            }
-            Ok(sessions)
-        })?
+    let resume_error = if let Some(prompt) = wakeup_prompt {
+        state
+            .chat
+            .send_message(
+                &session,
+                prompt,
+                local::chat::TurnOverrides::default(),
+                vec![],
+                vec![],
+                Some(format!("research-decision-{decision}")),
+            )
+            .await
+            .err()
+            .map(|e| e.to_string())
+    } else {
+        None
     };
-    for session in sessions {
-        let _ = state.chat.interrupt_by_user(&session).await;
-    }
-    Ok(Json(json!({"ok":true})))
+    // The decision is durable even if the harness cannot resume. Report the error to the UI.
+    Ok(Json(json!({"ok":true,"resumeError":resume_error})))
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

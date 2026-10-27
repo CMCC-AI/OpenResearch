@@ -11,6 +11,7 @@ use crate::error::Result;
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ResearchMetrics {
     pub active_duration_ms: Option<i64>,
+    pub active_duration_complete: bool,
     pub token_count: Option<u64>,
     pub token_count_complete: bool,
     pub measured_at: i64,
@@ -215,7 +216,9 @@ impl Store {
             tokens = Some(0);
         }
         Ok(ResearchMetrics {
-            active_duration_ms: (complete && !missing).then(|| union_duration(intervals)),
+            active_duration_ms: (!intervals.is_empty() || !has_turns)
+                .then(|| union_duration(intervals)),
+            active_duration_complete: complete && !missing,
             token_count: tokens,
             token_count_complete: tokens_complete && (tokens.is_some() || !has_turns),
             measured_at: now,
