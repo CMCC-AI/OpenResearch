@@ -230,6 +230,19 @@ export function normalizeNativeWorkspace(value) {
     ),
   );
   const sessionIds = new Set(sessions.map((session) => session.id));
+  const materialRefs = new Set();
+  for (const session of sessions) {
+    const messages =
+      value.responses[`/api/chat/sessions/${session.id}/messages`]?.messages;
+    if (!Array.isArray(messages)) continue;
+    for (const message of messages) {
+      if (!Array.isArray(message?.parts)) continue;
+      for (const part of message.parts)
+        if (part?.type === "material" && typeof part.text === "string")
+          materialRefs.add(part.text);
+    }
+  }
+  const materials = new Map();
   const runs =
     value.responses[`/api/projects/${value.projectId}/runs`]?.runs ?? [];
   const experiments =
@@ -238,7 +251,7 @@ export function normalizeNativeWorkspace(value) {
   const runIds = new Set(runs.map((run) => run.id)),
     experimentIds = new Set(experiments.map((experiment) => experiment.id));
   const allowed =
-    /^\/api\/(?:projects(?:\/activity|\/[^/?]+(?:\/(?:ui-state|experiments|runs|files|code-tree|file))?)?|chat\/sessions(?:\/[^/?]+(?:\/(?:messages|worktree))?)?|research\/sessions\/[^/?]+|settings\/(?:ui-state|compute)|files\/abs|harnesses|skills|runs\/[^/?]+\/(?:diff|log)|experiments\/[^/?]+\/diff)(?:\?|$)/;
+    /^\/api\/(?:projects(?:\/activity|\/[^/?]+(?:\/(?:ui-state|experiments|runs|files|code-tree|file))?)?|chat\/sessions(?:\/[^/?]+(?:\/(?:messages|worktree))?)?|research\/sessions\/[^/?]+|materials\/[^/?]+|settings\/(?:ui-state|compute)|files\/abs|harnesses|skills|runs\/[^/?]+\/(?:diff|log)|experiments\/[^/?]+\/diff)(?:\?|$)/;
   for (const [path, response] of Object.entries(value.responses)) {
     check(allowed.test(path), 400, "项目副本含不支持的资源");
     const route = new URL(path, "http://snapshot.invalid").pathname;
@@ -252,13 +265,59 @@ export function normalizeNativeWorkspace(value) {
     const experiment = route.match(/^\/api\/experiments\/([^/]+)/);
     if (experiment) check(experimentIds.has(experiment[1]));
     check(response && typeof response === "object");
+    const material = route.match(/^\/api\/materials\/([^/]+)$/);
+    if (material) {
+      const materialId = material[1];
+      check(
+        path === route &&
+          uuid(materialId) &&
+          materialRefs.has(materialId) &&
+          response.id === materialId &&
+          response.projectId === value.projectId,
+        400,
+        "项目副本混入其他项目或未引用的材料",
+      );
+      check(Array.isArray(response.files), 400, "材料文件清单无效");
+      const fileIds = new Set();
+      for (const file of response.files) {
+        check(
+          file &&
+            typeof file.id === "string" &&
+            /^[a-z0-9_-]{1,100}$/i.test(file.id) &&
+            !fileIds.has(file.id),
+          400,
+          "材料文件标识无效或重复",
+        );
+        fileIds.add(file.id);
+        const assetName =
+          value.assets[`/api/materials/${materialId}/${file.id}/download`];
+        check(
+          typeof file.sha256 === "string" &&
+            /^[0-9a-f]{64}$/i.test(file.sha256) &&
+            typeof assetName === "string" &&
+            assetName.startsWith(`native-${file.sha256}.`),
+          400,
+          "材料原文件副本缺失或哈希不一致",
+        );
+      }
+      materials.set(materialId, fileIds);
+    }
   }
   for (const [path, name] of Object.entries(value.assets)) {
     check(
-      /^\/api\/(?:projects\/[^/?]+\/(?:file\/raw|files\/file)|chat\/attachments\/[^/?]+|files\/abs\/raw|research\/studies\/[^/?]+\/package)(?:\?|$)/.test(
+      /^\/api\/(?:projects\/[^/?]+\/(?:file\/raw|files\/file)|chat\/attachments\/[^/?]+|files\/abs\/raw|research\/studies\/[^/?]+\/package|materials\/[^/?]+\/[^/?]+\/download)(?:\?|$)/.test(
         path,
       ),
     );
+    const materialAsset = path.match(
+      /^\/api\/materials\/([^/?]+)\/([^/?]+)\/download$/,
+    );
+    if (path.startsWith("/api/materials/"))
+      check(
+        materialAsset && materials.get(materialAsset[1])?.has(materialAsset[2]),
+        400,
+        "材料下载资源不属于已复制的材料清单",
+      );
     check(
       typeof name === "string" &&
         /^native-[0-9a-f]{64}\.[a-z0-9]{1,10}$/i.test(name),

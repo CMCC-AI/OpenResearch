@@ -1,6 +1,87 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeCase } from "../src/featured-cases.mjs";
+import {
+  normalizeCase,
+  normalizeNativeWorkspace,
+} from "../src/featured-cases.mjs";
+
+function materialWorkspace() {
+  const id = "11111111-1111-4111-8111-111111111111";
+  const sha256 = "a".repeat(64);
+  return {
+    version: 1,
+    projectId: "project",
+    sessionId: "session",
+    responses: {
+      "/api/projects": { projects: [{ id: "project" }] },
+      "/api/chat/sessions?projectId=project": {
+        sessions: [{ id: "session", projectId: "project", busy: false }],
+      },
+      "/api/chat/sessions/session/messages": {
+        messages: [{ parts: [{ type: "material", text: id }] }],
+      },
+      [`/api/materials/${id}`]: {
+        id,
+        projectId: "project",
+        files: [
+          {
+            id: "SRC-0001",
+            path: "输入/原件.pdf",
+            sha256,
+            status: "on-demand",
+          },
+        ],
+      },
+    },
+    assets: {
+      [`/api/materials/${id}/SRC-0001/download`]: `native-${sha256}.pdf`,
+    },
+  };
+}
+
+test("native material manifests and original downloads preserve project scope and provenance", () => {
+  const workspace = materialWorkspace();
+  assert.deepEqual(normalizeNativeWorkspace(workspace), workspace);
+  assert.deepEqual(normalizeCase({ workspace }).workspace, workspace);
+});
+
+test("material copies reject foreign, unreferenced, missing and mismatched files", () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  for (const change of [
+    (v) => {
+      v.responses[`/api/materials/${id}`].projectId = "foreign";
+    },
+    (v) => {
+      v.responses[`/api/materials/${id}`].id = "foreign";
+    },
+    (v) => {
+      v.responses["/api/chat/sessions/session/messages"].messages = [];
+    },
+    (v) => {
+      delete v.assets[`/api/materials/${id}/SRC-0001/download`];
+    },
+    (v) => {
+      v.assets[`/api/materials/${id}/SRC-0001/download`] =
+        `native-${"b".repeat(64)}.pdf`;
+    },
+    (v) => {
+      v.assets[`/api/materials/${id}/SRC-9999/download`] =
+        `native-${"a".repeat(64)}.pdf`;
+    },
+    (v) => {
+      v.responses[`/api/materials/${id}`].files.push(
+        v.responses[`/api/materials/${id}`].files[0],
+      );
+    },
+    (v) => {
+      v.responses["/api/settings/secrets"] = {};
+    },
+  ]) {
+    const workspace = materialWorkspace();
+    change(workspace);
+    assert.throws(() => normalizeNativeWorkspace(workspace));
+  }
+});
 
 const snapshot = () => ({
   sessions: [

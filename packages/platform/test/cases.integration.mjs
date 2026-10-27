@@ -117,6 +117,7 @@ test(
         async () => {
           const content = Buffer.from("original project file\n");
           const name = `native-${createHash("sha256").update(content).digest("hex")}.txt`;
+          const materialId = randomUUID();
           const workspace = {
             version: 1,
             projectId: "private-project",
@@ -147,15 +148,33 @@ test(
                         type: "text",
                         text: "original structured reply",
                       },
+                      {
+                        id: "material-part",
+                        type: "material",
+                        text: materialId,
+                      },
                     ],
                   },
                 ],
                 queued: [],
                 activeLeafId: "original",
               },
+              [`/api/materials/${materialId}`]: {
+                id: materialId,
+                projectId: "private-project",
+                files: [
+                  {
+                    id: "SRC-0001",
+                    path: "输入/report.txt",
+                    sha256: createHash("sha256").update(content).digest("hex"),
+                    status: "ready",
+                  },
+                ],
+              },
             },
             assets: {
               "/api/projects/private-project/file/raw?path=report.txt": name,
+              [`/api/materials/${materialId}/SRC-0001/download`]: name,
             },
           };
           const created = await request("/api/platform/admin/cases", {
