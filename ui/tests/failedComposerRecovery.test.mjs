@@ -20,7 +20,7 @@ const code = ts.transpileModule(`${find("mergeFailedComposer")}\n${find("send")}
 
 class RejectedResponseError extends Error {}
 
-function setup({ side = false, sessionId = "s", busy = false, steering = false, history = async () => ({}), deferred = false } = {}) {
+function setup({ side = false, sessionId = "s", busy = false, steering = false, history = async () => ({}), submission = async () => ({ accepted: false }), deferred = false } = {}) {
   let rejectSend, resolveSend;
   let state = { draft: "original", attachments: [{ dataUrl: "data:,old", mediaType: "image/png", size: 1 }], annotations: [{ id: "a", text: "old selection" }], unconfirmedSend: null };
   const composerLiveRef = { current: state };
@@ -50,7 +50,7 @@ function setup({ side = false, sessionId = "s", busy = false, steering = false, 
     composerSelection: { harness: "codex" }, planModeOverrideRef: { current: null }, planMutationSeq: { current: 0 },
     RejectedResponseError, pendingClientTurn: { current: null }, pendingScope: { current: null }, crypto, busy, steering,
     queueSessionMutation: (fn) => fn(), setSessionOverride: () => {}, setRecoveryOverrides: () => {}, EMPTY_RECOVERY_OVERRIDES: {},
-    sendChatMessage: () => new Promise((resolve, reject) => { resolveSend = resolve; rejectSend = reject; }),
+    sendChatMessage: () => new Promise((resolve, reject) => { resolveSend = resolve; rejectSend = reject; }), getChatSubmission: submission,
     openNewSession: async () => ({ id: "created" }), getChatMessagesQuery: () => ({ queryKey: [] }),
     queryClient: { fetchQuery: history, getQueryState: () => undefined }, listChatSessionsQuery: () => ({}),
     dispatch: (action) => actions.push(action), pinTranscriptToBottom: () => {}, sessionFilter: "active",
@@ -360,6 +360,64 @@ for (const busy of [false, true]) {
     assert.match(s.actions.at(-1).text, /^failed:/);
   });
 }
+
+for (const busy of [false, true]) {
+  test(`an accepted ${busy ? "queued" : "normal"} send with a lost response stays cleared`, async () => {
+    let lookup;
+    const s = setup({ busy, submission: async (sid, id) => { lookup = [sid, id]; return { accepted: true }; } });
+    const task = s.send();
+    await flush();
+    s.reject(new TypeError("network"));
+    await task;
+    assert.equal(lookup[0], "s");
+    assert.match(lookup[1], /^ct_/);
+    assert.equal(s.state.draft, "");
+    assert.equal(s.state.unconfirmedSend, null);
+    assert.equal(s.bindings.pendingClientTurn.current, null);
+  });
+}
+
+test("an acceptance lookup cannot refresh a deleted session", async () => {
+  let finishLookup, refreshed = false;
+  const s = setup({ submission: () => new Promise((resolve) => { finishLookup = resolve; }) });
+  s.bindings.reseedSession = async () => { refreshed = true; };
+  const send = new Function(...Object.keys(s.bindings), code)(...Object.values(s.bindings));
+  const task = send();
+  await flush();
+  s.reject(new TypeError("network"));
+  await flush();
+  s.deleted.add("s");
+  finishLookup({ accepted: true });
+  await task;
+  assert.equal(refreshed, false);
+  assert.equal(s.stashes.has(s.key), false);
+});
+
+test("a confirmed send after unmount clears its saved retry", async () => {
+  const s = setup({ submission: async () => ({ accepted: true }) });
+  s.stashes.set(s.key, s.state);
+  const cleanup = mountComposer(s);
+  s.render();
+  const task = s.send();
+  await flush();
+  s.render();
+  cleanup();
+  s.unmount();
+  s.reject(new TypeError("network"));
+  await task;
+  assert.equal(s.stashes.get(s.key)?.draft ?? "", "");
+  assert.equal(s.stashes.get(s.key)?.pendingClientTurn ?? null, null);
+});
+
+test("a confirmed rejection does not query submission status", async () => {
+  let lookedUp = false;
+  const s = setup({ submission: async () => { lookedUp = true; return { accepted: true }; } });
+  const task = s.send();
+  await flush();
+  s.reject(new RejectedResponseError("rejected"));
+  await task;
+  assert.equal(lookedUp, false);
+});
 
 for (const busy of [false, true]) {
   test(`unconfirmed ${busy ? "steering or queued" : "normal"} sends retain content and warn`, async () => {
