@@ -89,7 +89,7 @@ export function ProjectsPage() {
   }
 
   return (
-    <PlatformFrame title="新建项目 · AI 原生科研工作台">
+    <PlatformFrame title="新对话 · AI 原生科研工作台">
     <div className="app flex flex-col flex-1 min-h-0">
       {runtime.kind === "local" && !isCloudWorkspace() && <><OfflineBanner /><UpdateBanner status={status} /></>}
       {error && (!projects || !state) ? <RouteFailure error={error} reset={retry} />
@@ -97,10 +97,8 @@ export function ProjectsPage() {
           : (
             <ProjectsHome
               preferredAgent={state.preferredAgent}
-              remote={runtime.kind === "ssh"}
               projects={projects}
-              initialDialogOpen={Boolean(start.new || start.paper)}
-              initialPaperId={start.paper}
+              initialDialogOpen={Boolean(start.new)}
               initialProjectId={start.project}
               onResume={(project, draft) => void beginResearch(project, draft)}
               onOpen={openProject}

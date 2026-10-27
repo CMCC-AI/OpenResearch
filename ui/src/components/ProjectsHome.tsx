@@ -21,16 +21,12 @@ import { ResearchStartPanel, ResearchCases } from "../product/ResearchStartPanel
 export function NewProjectDialog({
   onClose,
   onCreated,
-  remote = false,
   preferredAgent,
-  initialPaperId,
   initialName,
 }: {
   onClose: () => void;
   onCreated: (project: Project, githubPublicationError: string | null, draft?: ComposerStash) => void;
-  remote?: boolean;
   preferredAgent: AgentSelection | null;
-  initialPaperId?: string;
   initialName?: string;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -105,7 +101,7 @@ export function NewProjectDialog({
         tabIndex={-1}
       >
         <h2 id="new-project-dialog-title">{m.projects_home_new_project()}</h2>
-        <NewProjectForm onCancel={onClose} onCreated={onCreated} remote={remote} preferredAgent={preferredAgent} initialPaperId={initialPaperId} initialName={initialName} />
+        <NewProjectForm onCancel={onClose} onCreated={onCreated} preferredAgent={preferredAgent} initialName={initialName} />
       </div>
     </div>
   );
@@ -122,10 +118,8 @@ export function ProjectsHome({
   onOpen,
   onCreated,
   onDeleted,
-  remote = false,
   preferredAgent,
   initialDialogOpen = false,
-  initialPaperId,
   initialProjectId,
   onResume,
 }: {
@@ -133,10 +127,8 @@ export function ProjectsHome({
   onOpen: (id: string) => void;
   onCreated: (project: Project, githubPublicationError: string | null, draft?: ComposerStash) => void;
   onDeleted: (id: string) => void;
-  remote?: boolean;
   preferredAgent: AgentSelection | null;
   initialDialogOpen?: boolean;
-  initialPaperId?: string;
   initialProjectId?: string;
   onResume: (project: Project, draft: ComposerStash) => void;
 }) {
@@ -148,7 +140,7 @@ export function ProjectsHome({
   const [workMode, setWorkMode] = useState<NonNullable<ComposerStash["workMode"]>>(() => homeStashes.get("research-home")?.workMode ?? "normal");
   const [attachments, setAttachments] = useState<ComposerStash["attachments"]>(() => homeStashes.get("research-home")?.attachments ?? []);
   useEffect(() => { homeStashes.set("research-home", { draft, attachments, annotations: [], workMode }); }, [homeStashes, draft, attachments, workMode]);
-  useEffect(() => { if (initialDialogOpen) setModalOpen(true); }, [initialDialogOpen, initialPaperId]);
+  useEffect(() => { if (initialDialogOpen) setModalOpen(true); }, [initialDialogOpen]);
   const [projectPendingDelete, setProjectPendingDelete] = useState<Project | null>(null);
   useEffect(() => {
     if (!initialProjectId) return;
@@ -162,7 +154,7 @@ export function ProjectsHome({
     <div className="home research-home flex-1 min-h-0 overflow-y-auto [scrollbar-gutter:stable_both-edges] bg-canvas">
       <div className="home-inner research-home-inner max-w-294 my-0 mx-auto pt-10 px-7 pb-16 [@media((max-width:_960px))]:px-5 max-sm:px-4">
         {existingProject && <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-background p-3 text-sm"><span>继续研究：{existingProject.name}</span><Button size="small" onClick={() => void navigate({ to: "/projects", search: {} })}>切换为新建项目</Button></div>}
-        <ResearchStartPanel workMode={workMode} onWorkModeChange={setWorkMode} draft={draft} onDraftChange={setDraft} attachments={attachments} onAttachmentsChange={setAttachments} onStart={() => existingProject ? onResume(existingProject, { draft, attachments, annotations: [], workMode }) : setModalOpen(true)} onError={(message) => showAlert(message, "error")} />
+        <ResearchStartPanel preferredAgent={preferredAgent} projects={projects} activity={activity.data ?? []} project={existingProject} onSelectProject={(id) => void navigate({ to: "/projects", search: id ? { project: id } : {} })} workMode={workMode} onWorkModeChange={setWorkMode} draft={draft} onDraftChange={setDraft} attachments={attachments} onAttachmentsChange={setAttachments} onStart={() => existingProject ? onResume(existingProject, { draft, attachments, annotations: [], workMode }) : setModalOpen(true)} onError={(message) => showAlert(message, "error")} />
         <div className="research-home-sections grid grid-cols-[minmax(0,1.05fr)_minmax(0,1.8fr)] gap-8 [@media((max-width:_1200px))]:grid-cols-1">
           <section aria-labelledby="continue-research-title" className="min-w-0">
             <h2 id="continue-research-title" className="product-page-section-title mt-0 mb-5 flex items-center gap-2">继续研究<ChevronRight size={20} className="text-muted" /></h2>
@@ -183,8 +175,6 @@ export function ProjectsHome({
       {modalOpen && (
         <NewProjectDialog
           preferredAgent={preferredAgent}
-          remote={remote}
-          initialPaperId={initialPaperId}
           initialName={draft.trim().split(/[。\n]/)[0].slice(0, 24)}
           onClose={() => setModalOpen(false)}
           onCreated={(project, githubPublicationError) => {

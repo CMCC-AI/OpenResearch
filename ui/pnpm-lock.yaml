@@ -43,6 +43,9 @@ importers:
       '@xyflow/react':
         specifier: ^12.6.0
         version: 12.11.1(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      fflate:
+        specifier: 0.8.3
+        version: 0.8.3
       katex:
         specifier: ^0.16.22
         version: 0.16.47

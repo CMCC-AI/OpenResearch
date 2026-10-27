@@ -1,6 +1,5 @@
-import { useState, type FormEvent } from "react";
-import { Link } from "@tanstack/react-router";
-import { ArrowRight, BookOpen, Calendar, Database, ExternalLink, Quote, Search, Sparkles } from "lucide-react";
+import { useId, useState, type FormEvent } from "react";
+import { BookOpen, Calendar, ChevronDown, Database, ExternalLink, Quote, Search, Sparkles } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { discoverPapers, type LiteratureHit, type LiteratureSource } from "../api";
 import { LitSourceLogo, LIT_SOURCE_NAME } from "../components/LitSourceLogo";
@@ -33,15 +32,21 @@ function DatabaseIntroductions() {
 }
 
 function PaperCard({ paper }: { paper: LiteratureHit }) {
+  const [abstractExpanded, setAbstractExpanded] = useState(false);
+  const abstractId = useId();
   return <article className="rounded-xl border border-border-variant bg-background p-5 transition-shadow hover:shadow-card">
     <div className="mb-3 flex items-center justify-between gap-3"><span className="inline-flex items-center gap-2 text-xs font-medium text-subtext"><LitSourceLogo source={paper.source} decorative />{LIT_SOURCE_NAME[paper.source]}</span><span className="text-xs text-muted">{paper.id}</span></div>
     <h3 className="product-page-card-title m-0">{paper.title}</h3>
-    {paper.abstract && <p className="product-page-copy mt-3 mb-0 line-clamp-3 text-subtext">{paper.abstract}</p>}
+    {paper.abstract && <>
+      <p id={abstractId} className={`product-page-copy mt-3 mb-0 whitespace-pre-line break-words text-subtext${abstractExpanded ? "" : " line-clamp-3"}`}>{paper.abstract}</p>
+      <button type="button" aria-expanded={abstractExpanded} aria-controls={abstractId} onClick={() => setAbstractExpanded((expanded) => !expanded)} className="mt-2 inline-flex items-center gap-1 rounded-sm text-sm font-medium text-primary focus-visible:outline-2 focus-visible:outline-primary">
+        {abstractExpanded ? "收起摘要" : "展开完整摘要"}<ChevronDown size={14} className={abstractExpanded ? "rotate-180" : ""} aria-hidden="true" />
+      </button>
+    </>}
     <footer className="mt-5 flex flex-wrap items-center gap-4 border-t border-border-variant pt-4 text-xs text-muted">
       {paper.publicationDate && <span className="inline-flex items-center gap-1"><Calendar size={13} />{paper.publicationDate}</span>}
       {paper.citations !== undefined && <span className="inline-flex items-center gap-1"><Quote size={13} />{paper.citations} 次引用</span>}
       {paper.votes !== undefined && <span>{paper.votes} 社区评价</span>}
-      {paper.source === "alphaxiv" ? <Link to="/projects" search={{ paper: `arxiv:${paper.id}` }} className="ms-auto inline-flex items-center gap-1 font-medium text-primary no-underline">从此论文创建项目 <ArrowRight size={14} /></Link> : <Link to="/projects" search={{ new: true }} className="ms-auto inline-flex items-center gap-1 font-medium text-primary no-underline">进入工作台 <ArrowRight size={14} /></Link>}
     </footer>
   </article>;
 }

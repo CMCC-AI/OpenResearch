@@ -848,7 +848,7 @@
   "chat_session_not_created": "未能创建聊天会话",
   "new_project_location_required": "必须填写项目位置。",
   "new_project_destination_is_file": "请选择其他位置。此路径是文件，不是文件夹。",
-  "new_project_folder_exists": "此处已有文件夹。请选择其他名称或位置，或使用“现有文件夹”。",
+  "new_project_folder_exists": "此处已有文件夹。请选择其他名称或位置。",
   "new_project_paper_needs_empty_folder": "请选择其他位置。论文仓库需要一个新的或空的文件夹。",
   "new_project_blank_paper_needs_folder": "请选择其他位置。论文项目需要拥有独立的新文件夹或空文件夹。",
   "new_project_searching_alphaxiv": "正在搜索 alphaXiv…",

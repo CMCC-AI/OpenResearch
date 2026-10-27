@@ -54,3 +54,10 @@ test("research sidebar keeps administration inside the account menu", () => {
     }
   }
 });
+
+
+test("product navigation uses the consolidated new conversation entry", () => {
+  const html = researchSidebar({ id: "researcher" });
+  assert.equal((html.match(/aria-label="新对话"/g) ?? []).length, 1);
+  assert.ok(!html.includes('aria-label="新建项目"'));
+});

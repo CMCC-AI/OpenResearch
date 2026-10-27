@@ -1,3 +1,5 @@
+import { structuredPreviewKind } from "../filePreview";
+import { StructuredFilePreview } from "./StructuredFilePreview";
 import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { WorkspaceEmptyState } from "./WorkspaceEmptyState";
 import { useQuery } from "@tanstack/react-query";
@@ -207,9 +209,10 @@ export function ArtifactMarkdown({
   );
 }
 
-type PreviewKind = "markdown" | MediaPreviewKind | "text" | "download";
+type PreviewKind = "structured" | "markdown" | MediaPreviewKind | "text" | "download";
 
 function previewKind(entry: ArtifactEntry): PreviewKind {
+  if (structuredPreviewKind(entry.name)) return "structured";
   if (entry.presentation === "text" && isMarkdownFile(entry.name)) return "markdown";
   return mediaPreviewKind(entry.presentation) ??
     (entry.presentation === "text" || entry.presentation === "unknown" ? "text" : "download");
@@ -263,7 +266,9 @@ function PreviewPane({
   const rawUrl = `${artifactUrl(projectId, entry.path)}&v=${encodeURIComponent(version ?? `${entry.modifiedAt}:${entry.size}`)}`;
 
   let body: ReactNode;
-  if (kind === "image" || kind === "audio" || kind === "video" || kind === "pdf") {
+  if (kind === "structured") {
+    body = <StructuredFilePreview url={rawUrl} name={entry.name} />;
+  } else if (kind === "image" || kind === "audio" || kind === "video" || kind === "pdf") {
     body = (
       <MediaToolbarSlot.Provider value={mediaToolbarSlot}>
         <MediaPreview kind={kind} url={rawUrl} name={entry.name} />

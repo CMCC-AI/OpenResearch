@@ -9,6 +9,7 @@
 //! `~/.local/share/openresearch`.
 
 pub(crate) mod research;
+mod research_metrics;
 mod schema;
 mod telemetry;
 pub(crate) use telemetry::{InvocationIdentity, TokenUsage};
@@ -3067,6 +3068,7 @@ impl Store {
             params![id, started_at],
         )?;
         if changed > 0 {
+            transaction.execute("UPDATE chat_activity_spans SET ended_at=observed_at WHERE ended_at IS NULL AND message_id=(SELECT assistant_message_id FROM chat_turns WHERE id=?1)",[id])?;
             transaction.execute(
                 "UPDATE chat_messages SET completed_at = NULL, created_at = ?2 WHERE id =
                  (SELECT assistant_message_id FROM chat_turns WHERE id = ?1)",
@@ -3141,6 +3143,9 @@ impl Store {
         transaction.execute(
             "DELETE FROM chat_turn_leases WHERE heartbeat_at < ?1",
             params![now - CHAT_TURN_LEASE_TTL_MS],
+        )?;
+        transaction.execute(
+            "UPDATE chat_activity_spans SET ended_at=observed_at WHERE ended_at IS NULL AND NOT EXISTS(SELECT 1 FROM chat_turn_leases l WHERE l.chat_session_id=chat_activity_spans.session_id)", [],
         )?;
         let newly_reconciled = {
             let mut statement = transaction.prepare(
@@ -3542,6 +3547,12 @@ fn upsert_chat_message_on_branch_with(
 }
 
 fn upsert_chat_message_with(conn: &Connection, m: &StoredChatMessage) -> Result<()> {
+    let first_seen = m.role == "assistant"
+        && !conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM chat_messages WHERE id=?1)",
+            [&m.id],
+            |row| row.get::<_, bool>(0),
+        )?;
     conn.execute(
         // A streaming message is written many times; only its parts and a
         // late-arriving harness session id may change, never its place in
@@ -3567,6 +3578,9 @@ fn upsert_chat_message_with(conn: &Connection, m: &StoredChatMessage) -> Result<
             m.completed_at
         ],
     )?;
+    if let Err(error) = research_metrics::record_chat_activity(conn, m, first_seen) {
+        eprintln!("orx: could not record chat activity: {error}");
+    }
     Ok(())
 }
 

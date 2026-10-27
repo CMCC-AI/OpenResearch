@@ -611,7 +611,7 @@ export function LandingPage() {
   const { loading, user, login } = useAuthSession();
   const navigate = useNavigate();
   const startResearch = () => {
-    if (user) void navigate({ to: "/projects", search: { new: true } });
+    if (user) void navigate({ to: "/projects", search: {} });
     else login();
   };
   useScrollReveal();

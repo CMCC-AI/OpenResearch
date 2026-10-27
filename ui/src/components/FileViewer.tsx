@@ -1,3 +1,5 @@
+import { structuredPreviewKind } from "../filePreview";
+import { StructuredFilePreview } from "./StructuredFilePreview";
 import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import {
   setScopedQueryData,
@@ -229,7 +231,8 @@ export function FileViewer({
   const isLatex = isLatexFile(path);
   // .html likewise, and its scripts run — see HtmlPreview.
   const isHtml = isHtmlFile(path);
-  const rendersByDefault = isMarkdown || isHtml;
+  const structuredKind = structuredPreviewKind(path);
+  const rendersByDefault = isMarkdown || isHtml || structuredKind === "table" || structuredKind === "notebook";
   const [activated, setActivated] = useState(false);
   const autoRun = !restored || activated;
   const activate = () => {
@@ -905,6 +908,8 @@ export function FileViewer({
               name={path.split("/").pop() ?? path}
             />
           </MediaToolbarSlot.Provider>
+        ) : structuredKind && !showSource ? (
+          <StructuredFilePreview url={rawUrl} name={path.split("/").pop() ?? path} />
         ) : data.binary ? (
           <div className="file-view-note py-2.5 px-4 text-sm text-muted">
             {m.file_viewer_binary_file_no_inline_preview()} <a href={rawUrl} download={path.split("/").pop() ?? path}>{m.file_viewer_download()}</a>

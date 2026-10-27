@@ -1,5 +1,4 @@
 import { useState } from "react";
-import newChatIcon from "../assets/workbench/new-chat.svg";
 import { sidebarClasses } from "../sidebarLayout";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueries, useQuery } from "@tanstack/react-query";
@@ -13,10 +12,6 @@ import { SessionFilterMenu, SessionRow, type SessionFilter } from "./NativeSideb
 import { m } from "../paraglide/messages.js";
 import { useOptionalAuthSession } from "../product/AuthSession";
 import { IconButton, Button, showAlert } from "./ui";
-
-export function ResearchNavigationActions({ onNewChat, shortcut, disabled = false, active = false }: { onNewChat: () => void; shortcut?: string; disabled?: boolean; active?: boolean }) {
-  return <nav aria-label="研究导航" className="rail-nav flex shrink-0 flex-col gap-0.5 py-2"><button disabled={disabled} type="button" title={shortcut ?? m.chat_panel_new_chat()} aria-label={m.chat_panel_new_chat()} aria-current={active ? "page" : undefined} aria-keyshortcuts="Meta+Shift+Enter Control+Shift+Enter" data-onboarding="new-session" onClick={onNewChat} className={`rail-nav-item flex items-center gap-2.5 rounded-xl px-2.5 py-2 text-start text-sm text-text hover:bg-surface ${active ? "bg-background text-primary shadow-hairline" : ""}`}><img src={newChatIcon} width={18} height={18} alt="" className="shrink-0" /><span className="research-nav-label">{m.chat_panel_new_chat()}</span></button></nav>;
-}
 
 export function ResearchNavigationMore({ onClick, indented = true }: { onClick: () => void; indented?: boolean }) {
   return <div className={`flex h-8.5 items-start ${indented ? sidebarClasses.indent : ""}`}>
@@ -62,7 +57,6 @@ export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
     onSetArchived={(archived) => void act(() => setChatSessionArchived(session.id, archived), session)}
     onDelete={() => { if (window.confirm(m.chat_delete_session_confirm({ title: session.title || m.chat_untitled() }))) void act(() => deleteChatSession(session.id), session); }} />;
   return <>
-    <ResearchNavigationActions onNewChat={() => go("tasks/new")} />
     <div className="research-projects flex min-h-0 flex-1 flex-col">
       <div className={sidebarClasses.heading}><h2 className={sidebarClasses.label}>{grouping === "projects" ? m.projects_home_projects() : m.chat_all_sessions()}</h2><div className={sidebarClasses.actions}><IconButton size="small" aria-label={m.projects_home_new_project()} onClick={() => void navigate({ to: "/projects", search: { new: true } })}><FolderPlus size={15} /></IconButton><SessionFilterMenu value={filter} onChange={setFilter} grouping={grouping} onGroupingChange={(next) => { setGrouping(next); try { localStorage.setItem("sidebar-grouping", next); } catch { /* optional */ } }} /></div></div>
       <div className="rail-body min-h-0 flex-1 overflow-y-auto">

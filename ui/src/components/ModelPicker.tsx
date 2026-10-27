@@ -1,3 +1,5 @@
+import { createPortal } from "react-dom";
+import { floatingMenuPlacement } from "../floatingMenu";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getHarnessesQuery } from "../queries/settings";
 import { m } from "../paraglide/messages.js";
@@ -50,10 +52,10 @@ export const HARNESS_LABELS: Record<HarnessId, string> = {
   antigravity: "Google Antigravity",
 };
 
-/** First harness that can actually run — the fallback when nothing is picked.
- * Seeds mode/reasoning from that harness's advertised defaults. */
-export function defaultSelection(harnesses: Harness[]): ModelSelection | null {
-  const ready = harnesses.find((h) => h.agentReady);
+/** New conversations use the server's OpenCode agent; retain its saved model IDs. */
+export function defaultSelection(harnesses: Harness[], preferred?: ModelSelection | null): ModelSelection | null {
+  if (preferred?.harness === "opencode") return preferred;
+  const ready = harnesses.find((h) => h.id === "opencode" && h.agentReady);
   if (!ready) return null;
   // Seed the catalog's first model — the catalogs are CLI-discovered now, so
   // it's a real, current id. Custom providers advertise no models; they seed
@@ -139,12 +141,31 @@ export function ModelPicker({
   openRequest?: number;
   className?: string;
 }) {
-  const { data: harnesses = EMPTY_HARNESSES } = useQuery(getHarnessesQuery());
+  const { data: allHarnesses = EMPTY_HARNESSES } = useQuery(getHarnessesQuery());
+  const harnesses = useMemo(() => allHarnesses.filter((harness) => harness.id === "opencode"), [allHarnesses]);
   const queryClient = useQueryClient();
   const [addingLocalModel, setAddingLocalModel] = useState(false);
+  const [menuPosition, setMenuPosition] = useState<ReturnType<typeof floatingMenuPlacement> | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const submenuHeaderRef = useRef<HTMLButtonElement>(null);
   const { open, setOpen, ref: rootRef } = usePopover(triggerRef);
+  useLayoutEffect(() => {
+    if (!open) { setMenuPosition(null); return; }
+    const update = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const anchor = trigger.getBoundingClientRect();
+      const headerBottom = [...document.querySelectorAll(".product-header, .workspace-global-header")].reduce((bottom, element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.top >= 0 && rect.top < anchor.top ? Math.max(bottom, rect.bottom + 8) : bottom;
+      }, 8);
+      setMenuPosition(floatingMenuPlacement(anchor, { width: window.innerWidth, height: window.innerHeight }, headerBottom));
+    };
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => { window.removeEventListener("resize", update); window.removeEventListener("scroll", update, true); };
+  }, [open]);
   const [filter, setFilter] = useState("");
   const [page, setPage] = useState<"root" | "models" | "reasoning" | "speed" | "permissions" | "autonomy">("root");
 
@@ -330,7 +351,7 @@ export function ModelPicker({
     defaultId: string | null | undefined,
     choose: (id: string) => void,
   ) => (
-    <div className="model-menu-list overflow-y-auto p-1.5">
+    <div className="model-menu-list min-h-0 overflow-y-auto p-1.5">
       {choices.map((choice) => (
         <MenuItem key={choice.id} onClick={() => choose(choice.id)}>
           <span className="flex min-w-0 flex-col items-start gap-0.5">
@@ -353,7 +374,7 @@ export function ModelPicker({
   );
 
   return (
-    <div className="model-picker relative inline-flex min-w-0" data-onboarding="model-picker" ref={rootRef}>
+    <div className="model-picker relative inline-flex min-w-0" data-onboarding="model-picker">
       <button
         ref={triggerRef}
         type="button"
@@ -384,10 +405,10 @@ export function ModelPicker({
         </span>
         <ChevronDown size={14} className="shrink-0 text-muted" />
       </button>
-      {open && (
-        <div className="model-menu absolute bottom-[calc(100%_+_8px)] start-0 max-h-100 flex flex-col bg-background border border-border rounded-md shadow-dropdown z-50 overflow-hidden w-72 [&.align-right]:start-auto [&.align-right]:end-0 [&_input]:rounded-none [&_input]:border-0 [&_input]:border-b [&_input]:border-b-border-variant [&_input]:bg-none [&_input]:bg-transparent [&_input]:py-2 [&_input]:px-2.5 [&_input]:text-sm [&_input]:outline-none align-right">
+      {open && createPortal(
+        <div ref={rootRef} style={menuPosition ?? { visibility: "hidden" }} className="model-menu fixed flex flex-col bg-background border border-border rounded-md shadow-dropdown z-1000 overflow-hidden [&_input]:rounded-none [&_input]:border-0 [&_input]:border-b [&_input]:border-b-border-variant [&_input]:bg-none [&_input]:bg-transparent [&_input]:py-2 [&_input]:px-2.5 [&_input]:text-sm [&_input]:outline-none align-right">
           {page === "root" && (
-            <div className="model-root-menu p-1">
+            <div className="model-root-menu min-h-0 overflow-y-auto p-1">
               {menuRow(m.model_picker_model(), label, "models")}
               {reasoningChoices.length > 0 && menuRow(reasoningAxisLabel, reasoningLabel, "reasoning")}
               {speedChoices.length > 0 && menuRow(m.model_picker_speed(), speedLabel, "speed")}
@@ -405,7 +426,7 @@ export function ModelPicker({
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
               />
-              <div className="model-menu-list overflow-y-auto p-1.5">
+              <div className="model-menu-list min-h-0 overflow-y-auto p-1.5">
                 {groups.map(({ harness, models, hidden }) => (
                   <div key={harness.id} className="[&_.model-item]:ps-6">
                     <div className={MODEL_GROUP_CLASS_NAME}>
@@ -512,7 +533,7 @@ export function ModelPicker({
               {choiceList(speedChoices, effectiveServiceTier ?? undefined, "default", chooseSpeed)}
             </>
           )}
-        </div>
+        </div>, document.body,
       )}
       {addingLocalModel && (
           <LocalModelSetup dialogOnly installed={harnesses.find((harness) => harness.id === "opencode")?.installed ?? false}

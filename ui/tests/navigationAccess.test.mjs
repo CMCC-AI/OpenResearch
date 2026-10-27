@@ -27,11 +27,10 @@ function authGate(pathname, user, loading = false, canAccessResearch = true, pri
 }
 import * as jsx from "react/jsx-runtime";
 
-test("authenticated users cannot reopen the public product introduction", () => {
+test("authenticated users can reopen the public product introduction", () => {
   const result = authGate("/", { id: "user", name: "user", email: "user@example.test" });
-  assert.equal(result.type, "Navigate");
-  assert.equal(result.props.to, "/projects");
-  assert.equal(result.props.replace, true);
+  assert.notEqual(result.type, "Navigate");
+  assert.equal(result.props.children, "page");
 });
 
 test("anonymous users retain the introduction and protected-page sign-in gate", () => {
@@ -49,12 +48,12 @@ test("authentication loading does not flash the introduction for a signed-in ses
 
 test("subpath authentication uses the same protected-page gate", () => {
   assert.equal(authGate("/mobilesci/discover", null).type, "Navigate");
-  assert.equal(authGate("/mobilesci/", {id:"user"}).props.to, "/projects");
+  assert.equal(authGate("/mobilesci/", {id:"user"}).props.children, "page");
 });
 
 test("catalog-only users browse public cases without entering the private research workspace", () => {
   const reader={id:"reader"};
-  assert.equal(authGate("/",reader,false,false).props.to,"/cases");
+  assert.equal(authGate("/",reader,false,false).props.children,"page");
   assert.equal(authGate("/projects/private-project",reader,false,false).props.to,"/cases");
   assert.equal(authGate("/mobilesci/projects",reader,false,false).props.to,"/cases");
   assert.notEqual(authGate("/cases/case-id",reader,false,false).type,"Navigate");

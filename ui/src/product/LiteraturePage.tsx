@@ -1,7 +1,6 @@
 import { useState, type FormEvent } from "react";
-import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, BookOpenCheck, ExternalLink, Eye, FileText, Heart, MessageCircle, Search } from "lucide-react";
+import { BookOpenCheck, ExternalLink, Eye, FileText, Heart, MessageCircle, Search } from "lucide-react";
 import { getDeepLiteraturePapers, getDeepLiteratureStatus, type DeepLiteraturePaper } from "../api";
 import { PlatformFrame } from "./ProductNav";
 
@@ -31,7 +30,6 @@ function PaperCard({ paper, webUrl }: { paper: DeepLiteraturePaper; webUrl: stri
     </div>
     <footer className="mt-auto flex flex-wrap items-center gap-3 border-t border-border-variant pt-4">
       <a href={paperUrl(webUrl, paper.id)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-sm font-medium text-primary no-underline">进入 DeepXiv 精读 <ExternalLink size={14} /></a>
-      <Link to="/projects" search={{ paper: `arxiv:${paper.id}` }} className="ms-auto inline-flex items-center gap-1.5 text-sm font-medium text-text no-underline">从此论文创建项目 <ArrowRight size={14} /></Link>
     </footer>
   </article>;
 }
@@ -57,7 +55,7 @@ export function LiteraturePage() {
         </header>
 
         <section className="mt-8 grid grid-cols-3 gap-3 [@media((max-width:_760px))]:grid-cols-1">
-          {[['1', '发现与筛选', '浏览热门与最新论文，按主题快速检索'], ['2', '理解与沉淀', '阅读 PDF、查看深度解读、问答并记录笔记'], ['3', '研究与验证', '从论文创建项目，再选择 Agent 设计和运行实验']].map(([step, title, copy]) => <article key={step} className="rounded-xl border border-border-variant bg-background p-4"><span className="text-xs font-semibold text-primary">0{step}</span><h2 className="product-page-section-title mt-2 mb-1">{title}</h2><p className="product-page-copy m-0 text-subtext">{copy}</p></article>)}
+          {[['1', '发现与筛选', '浏览热门与最新论文，按主题快速检索'], ['2', '理解与沉淀', '阅读 PDF、查看深度解读、问答并记录笔记'], ['3', '研究与验证', '创建空白项目，选择 Agent 设计和运行实验']].map(([step, title, copy]) => <article key={step} className="rounded-xl border border-border-variant bg-background p-4"><span className="text-xs font-semibold text-primary">0{step}</span><h2 className="product-page-section-title mt-2 mb-1">{title}</h2><p className="product-page-copy m-0 text-subtext">{copy}</p></article>)}
         </section>
 
         {(status.error || (status.data && !status.data.connected)) && <section role="alert" className="mt-8 rounded-xl border border-accent-amber bg-accent-amber-subtle p-5"><h2 className="product-page-section-title m-0">文献服务暂不可用</h2><p className="mt-2 text-base text-subtext">请稍后重新连接，或继续通过论文发现寻找研究材料。</p><button disabled={status.isFetching} onClick={() => void status.refetch()} className="rounded-lg border border-border px-3 py-2 text-sm">重新连接</button></section>}

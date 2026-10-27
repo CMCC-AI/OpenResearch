@@ -7,7 +7,7 @@ export const researchPresets = presets;
 export type ResearchMode = PresetWorkflowMode | "team" | "design" | "diagnosis" | "review";
 export const researchModes: Record<ResearchMode, string> = {
   literature: presets.literature.title, reproduction: presets.reproduction.title, analysis: presets.analysis.title, proposal: presets.proposal.title,
-  team: "科研专家团模式", design: "方案设计会诊", diagnosis: "失败异常诊断", review: "独立审稿与引用核验",
+  team: "专家团模式", design: "方案设计会诊", diagnosis: "失败异常诊断", review: "独立审稿与引用核验",
 };
 export const researchStates: Record<string, string> = {
   pending: "待执行", running: "执行中 / 待验收", completed: "产物已验收", failed: "未通过", cancelled: "已取消",
@@ -29,6 +29,22 @@ export interface ResearchStudy {
   decisions: ResearchDecision[];
   claims: { id: string; text: string; support: string; source: string; location?: string; runId?: string; excerpt?: string }[];
 }
+export interface ResearchMetrics {
+  activeDurationMs: number | null;
+  tokenCount: number | null;
+  tokenCountComplete: boolean;
+  measuredAt: number;
+  running: boolean;
+}
+
+export function researchDuration(metrics: ResearchMetrics | null | undefined, now = Date.now()): string {
+  if (metrics?.activeDurationMs == null) return "—";
+  const seconds = Math.max(0, Math.floor((metrics.activeDurationMs + (metrics.running ? Math.max(0, now - metrics.measuredAt) : 0)) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor(seconds % 3600 / 60);
+  return hours ? `${hours}小时${String(minutes).padStart(2, "0")}分` : `${minutes}分${String(seconds % 60).padStart(2, "0")}秒`;
+}
+
 /** Category stays fixed; automatic routing is versioned with the plan. */
 export function researchWorkflowMode(study: ResearchStudy): ResearchMode {
   return study.mode === "team" ? study.plans.at(-1)?.workflow ?? "team" : study.mode;

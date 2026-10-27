@@ -128,7 +128,6 @@ export function AuthSessionProvider({
     return <main className="app flex h-full items-center justify-center bg-background"><Spinner /></main>;
   if (protectedRoute && !user) return <Navigate to="/" replace />;
   if (user && !canAccessResearch && protectedRoute && !pathname.startsWith("/cases") && !pathname.startsWith("/admin")) return <Navigate to="/cases" replace />;
-  if (pathname === "/" && user) return <Navigate to={canAccessResearch ? "/projects" : "/cases"} replace />;
   const needsRuntime = privateResearch && user && protectedRoute && !pathname.startsWith("/admin") && !pathname.startsWith("/cases") && !pathname.startsWith("/literature");
   return <AuthSessionContext value={value}>{needsRuntime ? <PersonalResearchGate key={user.id} accountUrl={accountUrl}>{children}</PersonalResearchGate> : children}</AuthSessionContext>;
 }

@@ -24,7 +24,6 @@ const statements = component.body.statements;
 const firstState = statements.findIndex((node) => node.getText(form).includes("useState<"));
 const selection = statements.slice(0, firstState).map((node) => node.getText(form)).join("\n");
 const submit = find(form, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "submit")[0];
-const prewarmEffect = statements.find((node) => ts.isExpressionStatement(node) && node.getText(form).includes("prewarmStarterPrompts("));
 const picker = source("components/ModelPicker.tsx");
 const fallback = find(picker, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "defaultSelection")[0];
 const defaultSelection = evaluate(`return ${fallback.getText(picker).replace("export ", "")}`, {
@@ -32,49 +31,27 @@ const defaultSelection = evaluate(`return ${fallback.getText(picker).replace("ex
   reasoningFor: () => ({ defaultId: null }),
 });
 
-test("project creation and debounced prewarm use the current selection, including custom and null OpenCode models", async () => {
-  const stale = { harness: "codex", model: "saved-model" };
-  let dependencies, cleanup;
-  const timers = new Map();
-  let timerId = 0;
-  const created = [], warmed = [];
-  const harnesses = [{ id: "codex", agentReady: true, models: [{ id: "catalog-default" }] }];
+test("blank project creation uses the current agent selection", async () => {
+  const created = [];
+  const harnesses = [{ id: "codex", agentReady: true, models: [{ id: "other-default" }] }, { id: "opencode", agentReady: true, models: [{ id: "catalog-default" }] }];
   const bindings = {
     useQuery: () => ({ data: harnesses }), getHarnessesQuery: () => ({}), defaultSelection,
-    useEffect: (effect, next) => {
-      if (dependencies && next.every((value, i) => Object.is(value, dependencies[i]))) return;
-      cleanup?.();
-      dependencies = next;
-      cleanup = effect();
-    },
-    window: {
-      setTimeout: (callback) => { timers.set(++timerId, callback); return timerId; },
-      clearTimeout: (id) => timers.delete(id),
-    },
-    prewarmReady: true, prewarmName: "Project", prewarmPaperId: null, prewarmPath: "/project",
-    prewarmStarterPrompts: async (request) => { warmed.push(request); },
-    queryClient: { fetchQuery: async () => ({ exists: true, directory: true }) },
+    queryClient: { fetchQuery: async () => ({ exists: false }) },
     getProjectPathStatusQuery: () => ({}), getLocale: () => "en",
     createMutation: { mutateAsync: async (request) => { created.push(request); return { project: {}, githubPublicationError: null }; } },
-    canCreate: true, projectPath: "/project", name: "Project", mode: "folder", paper: null,
-    githubSyncEnabled: false, existingGithubRepo: null,
+    canCreate: true, projectPath: "/project", name: "Project", githubSyncEnabled: false,
     setPending: () => {}, setError: (error) => { assert.equal(error, null); }, onCreated: () => {},
-    persistedPreferredAgent: { current: stale },
   };
-  const render = (preferredAgent) => evaluate(`${selection}\n${submit.getText(form)}\n${prewarmEffect.getText(form)}\nreturn submit;`, { ...bindings, preferredAgent });
-  const custom = { harness: "opencode", model: "my-provider/custom-model", permissionMode: null, reasoningLevel: null };
-  render(stale);
-  render(custom);
-  assert.equal(timers.size, 1, "changing selection replaces the pending prewarm");
-  render({ ...custom });
-  assert.equal(timerId, 2, "an equivalent selection does not restart the debounce");
-  for (const expected of [custom, { harness: "opencode", model: null }, { harness: "claude-code", model: null }, null]) {
-    const send = render(expected);
-    for (const [id, callback] of timers) { timers.delete(id); callback(); }
-    await send({ preventDefault() {} });
-    const agent = expected ? { harness: expected.harness, model: expected.model } : { harness: "codex", model: "catalog-default" };
+  const render = (preferredAgent) => evaluate(`${selection}\n${submit.getText(form)}\nreturn submit;`, { ...bindings, preferredAgent });
+  for (const expected of [{ harness: "opencode", model: "my-provider/custom-model" }, { harness: "opencode", model: null }, { harness: "claude-code", model: null }, null]) {
+    await render(expected)({ preventDefault() {} });
+    const agent = expected?.harness === "opencode" ? expected : { harness: "opencode", model: "catalog-default" };
     assert.deepEqual(created.at(-1).starterAgent, agent);
-    assert.deepEqual(warmed.at(-1).starterAgent, agent);
+    assert.equal(created.at(-1).creationMode, "blank");
+    assert.equal(created.at(-1).requireNewFolder, true);
+    assert.equal(created.at(-1).createFolder, true);
+    assert.equal(created.at(-1).paperId, undefined);
+    assert.equal(created.at(-1).cloneUrl, undefined);
   }
 });
 
@@ -97,3 +74,14 @@ test("project entry points pass their current preference through to the form", (
   }
 });
 
+
+
+test("default model selection only uses OpenCode and retains custom OpenCode model IDs", () => {
+  const other = { id: "codex", agentReady: true, models: [{ id: "other-model" }] };
+  const opencode = { id: "opencode", agentReady: true, models: [{ id: "provider/server-model" }] };
+  assert.equal(defaultSelection([other, opencode], { harness: "codex", model: "old-model" }).harness, "opencode");
+  assert.equal(defaultSelection([other, opencode]).model, "provider/server-model");
+  assert.equal(defaultSelection([other]), null);
+  const custom = { harness: "opencode", model: "provider/custom-model" };
+  assert.equal(defaultSelection([opencode], custom), custom);
+});

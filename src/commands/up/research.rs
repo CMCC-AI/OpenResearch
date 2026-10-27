@@ -8,7 +8,8 @@ pub(super) struct NewResearch {
     pub objective: String,
 }
 
-pub(super) async fn session(Path(id): Path<String>) -> ApiResult {
+pub(super) async fn session(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
+    let busy = state.chat.busy_sessions().await;
     blocking_api(move || {
         let store = Store::open()?;
         let study = store.research_for_session(&id)?;
@@ -18,7 +19,11 @@ pub(super) async fn session(Path(id): Path<String>) -> ApiResult {
             .transpose()?
             .unwrap_or_default();
         let runs: Vec<_> = runs.iter().map(ApiRun::from).collect();
-        Ok(Json(json!({"study":study,"runs":runs})))
+        let metrics = study
+            .as_ref()
+            .map(|study| store.research_metrics(study, &busy, crate::store::now_ms()))
+            .transpose()?;
+        Ok(Json(json!({"study":study,"runs":runs,"metrics":metrics})))
     })
     .await
 }

@@ -187,3 +187,13 @@ test("automatic routing reads the current versioned workflow without changing th
   value.plans.push({ version: 3, workflow: "literature", tasks: [] });
   assert.doesNotMatch(researchAttention(value), /方案已确认/);
 });
+
+test("research duration advances only during measured active time and keeps unknown history unknown", async () => {
+  const { researchDuration } = await import("../src/research.ts");
+  const metrics = { activeDurationMs: 62000, measuredAt: 100000, running: true };
+  assert.equal(researchDuration(metrics, 103000), "1分05秒");
+  assert.equal(researchDuration({ ...metrics, running: false }, 999999), "1分02秒");
+  assert.equal(researchDuration({ ...metrics, activeDurationMs: null }, 103000), "—");
+  assert.equal(researchDuration(undefined, 103000), "—");
+  assert.equal(researchDuration({ ...metrics, activeDurationMs: 3660000, running: false }), "1小时01分");
+});

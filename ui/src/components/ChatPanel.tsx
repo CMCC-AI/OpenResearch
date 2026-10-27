@@ -6,7 +6,7 @@ import { pendingMaterials, droppedMaterials, prepareMaterialAttachments, validat
 import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { createClientTurnId } from "../clientTurnId";
 import { SessionFilterMenu, SessionRow, TitleReveal, TITLE_REVEAL_CLEAR_MS, type SessionFilter } from "./NativeSidebarRows";
-import { ResearchNavigationActions, ResearchNavigationMore } from "./ResearchNavigation";
+import { ResearchNavigationMore } from "./ResearchNavigation";
 import { ProductSidebar, ProductWordmark } from "../product/ProductNav";
 import { isDemoProjectId } from "../api";
 import { ResearchPanel } from "./ResearchPanel";
@@ -4466,7 +4466,7 @@ export function ChatPanel({
   //  * with a session open — that session's stored settings, with any unsent
   //    picker tweaks layered on. The harness is the session's, not the global.
   //  * with no session — the sticky global preference (seeds a new session).
-  const savedSelection = selection ?? defaultSelection(harnesses);
+  const savedSelection = defaultSelection(harnesses, selection);
   const rawSelection: ModelSelection | null = openSession
     ? {
       harness: openSession.harness,
@@ -6057,7 +6057,6 @@ export function ChatPanel({
 
   const rail = (
     <ProductSidebar onCollapse={onCollapseRail} connectionInfo={<WorkspaceConnection runtime={runtime} />}>
-      <ResearchNavigationActions disabled={Boolean(readOnly)} active={newChatVisible} onNewChat={startNewTask} shortcut={isApple ? "⌘ ⇧ ↵" : "Ctrl + Shift + ↵"} />
       <div className={sidebarClasses.heading}>
         <div className={sidebarClasses.label}>
           {sidebarGrouping === "projects" ? m.projects_home_projects() : m.chat_all_sessions()}

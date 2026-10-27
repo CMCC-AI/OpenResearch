@@ -3,7 +3,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
 import { PanelLeft, Star } from "lucide-react";
 import brand from "../assets/workbench/brand.svg";
-import newProject from "../assets/workbench/new-project.svg";
+import newChat from "../assets/workbench/new-chat.svg";
 import discover from "../assets/workbench/discover.svg";
 import literature from "../assets/workbench/literature.svg";
 import capabilities from "../assets/workbench/capabilities.svg";
@@ -13,7 +13,7 @@ import { AccountMenu } from "../components/AccountMenu";
 import { useAuthSession } from "./AuthSession";
 
 const productLinks = [
-  { to: "/projects" as const, label: "新建项目", image: newProject },
+  { to: "/projects" as const, label: "新对话", image: newChat },
   { to: "/discover" as const, label: "论文发现", image: discover },
   { to: "/literature" as const, label: "论文精读", image: literature },
   { to: "/capabilities" as const, label: "能力中心", image: capabilities },

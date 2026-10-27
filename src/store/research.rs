@@ -413,6 +413,9 @@ pub(super) fn migrate(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch("CREATE TABLE IF NOT EXISTS research_studies (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, session_id TEXT NOT NULL UNIQUE, document TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS research_studies_project ON research_studies(project_id);
         CREATE TABLE IF NOT EXISTS research_sessions (session_id TEXT PRIMARY KEY, study_id TEXT NOT NULL, task_id TEXT NOT NULL, version INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS chat_activity_spans (id INTEGER PRIMARY KEY, message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE, session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE, started_at INTEGER NOT NULL, observed_at INTEGER NOT NULL, ended_at INTEGER, complete INTEGER NOT NULL);
+        CREATE UNIQUE INDEX IF NOT EXISTS chat_activity_spans_open ON chat_activity_spans(message_id) WHERE ended_at IS NULL;
+        CREATE INDEX IF NOT EXISTS chat_activity_spans_session ON chat_activity_spans(session_id);
         CREATE TABLE IF NOT EXISTS research_experiments (experiment_id TEXT PRIMARY KEY, study_id TEXT NOT NULL, task_id TEXT NOT NULL, version INTEGER NOT NULL);
         CREATE TRIGGER IF NOT EXISTS research_project_cleanup AFTER DELETE ON local_projects BEGIN
         DELETE FROM research_sessions WHERE study_id IN (SELECT id FROM research_studies WHERE project_id=OLD.id);
@@ -1457,5 +1460,112 @@ mod tests {
         }
         std::fs::write(dir.path().join("ok.md"), "ok").unwrap();
         assert_eq!(read_artifact(dir.path(), "ok.md").unwrap(), b"ok");
+    }
+    #[test]
+    fn research_metrics_union_activity_and_scope_real_token_usage() {
+        let (_dir, store, mut study) = setup();
+        study.created_at = 1000;
+        for session in ["expert", "unrelated"] {
+            store.conn.execute("INSERT INTO chat_sessions(id,project_id,harness,created_at,updated_at,parent_session_id) VALUES(?1,'project','opencode',1000,5000,?2)",params![session,if session=="expert" {Some("lead")} else {None}]).unwrap();
+        }
+        store.conn.execute("INSERT INTO research_sessions(session_id,study_id,task_id,version) VALUES('expert',?1,'task',1)",[&study.id]).unwrap();
+        for (session, input, output) in [
+            ("lead", 100, 10),
+            ("expert", 200, 20),
+            ("unrelated", 10000, 10000),
+        ] {
+            let message = format!("message-{session}");
+            let turn = format!("turn-{session}");
+            store.conn.execute("INSERT INTO chat_messages(id,session_id,role,parts_json,created_at,completed_at) VALUES(?1,?2,'assistant','[]',1000,5000)",params![message,session]).unwrap();
+            store.conn.execute("INSERT INTO chat_turns(id,session_id,assistant_message_id,client_turn_id,request_hash,prepared_input,settings_json,state,delivery_state,created_at,updated_at) VALUES(?1,?2,?3,?1,'hash','input','{}','completed','accepted',1000,5000)",params![turn,session,message]).unwrap();
+            store.conn.execute("INSERT INTO chat_usage_executions(execution_id,turn_id,harness,report_id,suppressed) VALUES(?1,?1,'opencode',?1,1)",[&turn]).unwrap();
+            store.conn.execute("INSERT INTO chat_usage_samples(execution_id,sample_id,harness,usage_json,complete) VALUES(?1,?1,'opencode',?2,1)",params![turn,serde_json::json!({"inputTokens":input,"outputTokens":output,"cacheReadTokens":50}).to_string()]).unwrap();
+        }
+        for (session, start, end, observed) in [
+            ("lead", 1000, Some(2000), 2000),
+            ("expert", 1500, Some(2500), 2500),
+            ("lead", 3500, None, 4000),
+            ("unrelated", 1000, Some(6000), 6000),
+        ] {
+            store.conn.execute("INSERT INTO chat_activity_spans(message_id,session_id,started_at,ended_at,observed_at,complete) VALUES(?1,?2,?3,?4,?5,1)",params![format!("message-{session}"),session,start,end,observed]).unwrap();
+        }
+        let metrics = store
+            .research_metrics(&study, &["lead".into()], 5000)
+            .unwrap();
+        assert_eq!(metrics.active_duration_ms, Some(3000));
+        assert_eq!(metrics.token_count, Some(330));
+        assert!(metrics.token_count_complete);
+        assert!(metrics.running);
+        // A disconnected host stops at the last checkpoint, not server restart time.
+        assert_eq!(
+            store
+                .research_metrics(&study, &[], 5000)
+                .unwrap()
+                .active_duration_ms,
+            Some(2000)
+        );
+        study.status = "stopped".into();
+        study.updated_at = 4200;
+        let stopped = store
+            .research_metrics(&study, &["lead".into()], 9000)
+            .unwrap();
+        assert_eq!(stopped.active_duration_ms, Some(2200));
+        assert!(!stopped.running);
+        store
+            .conn
+            .execute(
+                "UPDATE chat_usage_samples SET complete=0 WHERE execution_id='turn-expert'",
+                [],
+            )
+            .unwrap();
+        assert!(
+            !store
+                .research_metrics(&study, &[], 9000)
+                .unwrap()
+                .token_count_complete
+        );
+        store
+            .conn
+            .execute(
+                "DELETE FROM chat_activity_spans WHERE session_id='expert'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .research_metrics(&study, &[], 9000)
+                .unwrap()
+                .active_duration_ms,
+            None
+        );
+    }
+    #[test]
+    fn research_metrics_include_background_experiments_without_agent_turns() {
+        let (_dir, store, mut study) = setup();
+        study.created_at = 1000;
+        study.plans.push(ResearchPlan {
+            version: 1,
+            workflow: None,
+            summary: "test".into(),
+            tasks: vec![ResearchTask {
+                spec: spec("execute", "as-experiment-operator", &[]),
+                state: "running".into(),
+                session_id: None,
+                summary: None,
+                artifacts: vec![],
+                run_contract: None,
+                run_ids: vec!["run".into()],
+                evidence_digest: None,
+            }],
+        });
+        store.conn.execute("INSERT INTO runs(id,experiment_id,project_id,status,backend_json,created_at,updated_at) VALUES('run','exp','project','running','{}',2000,2500)",[]).unwrap();
+        let metrics = store.research_metrics(&study, &[], 3000).unwrap();
+        assert_eq!(metrics.active_duration_ms, Some(1000));
+        assert!(metrics.running);
+        study.status = "stopped".into();
+        study.updated_at = 3500;
+        let stopped = store.research_metrics(&study, &[], 9000).unwrap();
+        assert_eq!(stopped.active_duration_ms, Some(1500));
+        assert!(!stopped.running);
     }
 }

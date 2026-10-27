@@ -31,7 +31,9 @@ test("account settings open without reading a project or remembered location", (
   renderToStaticMarkup(React.createElement(AccountMenu));
   clicks[0]();
   clicks[1]();
+  clicks[2]();
   assert.deepEqual(navigations, [
+    { to: "/" },
     { to: "/settings/$tab", params: { tab: "compute" } },
     { to: "/settings/$tab", params: { tab: "settings" } },
   ]);

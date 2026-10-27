@@ -1,3 +1,5 @@
+import { inferFilePresentation } from "./filePreview";
+import { decodePreviewText, readPreviewResponse } from "./previewText";
 import { validateApiResponse } from "./apiValidation";
 export { DEMO_PROJECT_ID, isDemoProjectId, DEMO_MAIN_SESSION_ID, DEMO_FIGURE_SESSION_ID, DEMO_LITERATURE_SESSION_ID, DEMO_EXPERIMENT_LABELS, DEMO_OVERVIEW_ARTIFACT, DEMO_SEEDED_LEAF_IDS, DEMO_RUN_EXPERIMENT_PROMPT } from "./demo";
 import { projectRequest, projectAssetUrl } from "./readOnlyApi";
@@ -1388,19 +1390,6 @@ export interface FileTextBody {
 
 export const FILE_PREVIEW_BYTES = 512_000;
 
-/** Decode a raw response only when it is valid, NUL-free UTF-8. */
-const decodeFileText = (bytes: ArrayBuffer, truncated: boolean): FileTextBody => {
-  const view = new Uint8Array(bytes);
-  if (view.includes(0)) return { content: "", binary: true, truncated };
-  try {
-    const decoder = new TextDecoder("utf-8", { fatal: true });
-    const content = decoder.decode(view, { stream: truncated });
-    return { content, binary: false, truncated };
-  } catch {
-    return { content: "", binary: true, truncated };
-  }
-};
-
 /** Text-safe body of an artifact, or `null` when the file is missing. */
 export const getArtifactFileText = (
   projectId: string,
@@ -1417,7 +1406,7 @@ export const getArtifactFileText = (
     // Bare message — the viewer prefixes "Failed to load file:" itself.
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const total = Number(r.headers.get("content-range")?.split("/").pop());
-    return r.arrayBuffer().then((bytes) => decodeFileText(bytes, Number.isFinite(total) && total > bytes.byteLength));
+    return readPreviewResponse(r, FILE_PREVIEW_BYTES).then(({ bytes, truncated }) => decodePreviewText(bytes, truncated || (Number.isFinite(total) && total > bytes.byteLength)));
   });
 };
 
@@ -1442,7 +1431,7 @@ export const getArtifactFileMetadata = (
     const presentation = r.headers.get("x-openresearch-presentation");
     return {
       size: Number(r.headers.get("content-length")) || 0,
-      presentation: isFilePresentation(presentation) ? presentation : "download",
+      presentation: isFilePresentation(presentation) ? presentation : inferFilePresentation(path, r.headers.get("content-type") ?? ""),
     };
   });
 
@@ -2343,7 +2332,7 @@ export const removeLocalModel = (id: string) => writeResponse(`/api/local-models
 
 // Expert research uses native project sessions, runs and artifacts.
 export const getResearchStudy = (sessionId: string, signal?: AbortSignal) =>
-  get<{ study: import("./research").ResearchStudy | null; runs: Run[] }>(`/api/research/sessions/${sessionId}`, signal);
+  get<{ study: import("./research").ResearchStudy | null; runs: Run[]; metrics?: import("./research").ResearchMetrics | null }>(`/api/research/sessions/${sessionId}`, signal);
 export const decideResearchGate = (studyId: string, decisionId: string, scopeHash: string, approved: boolean, reason: string) =>
   post<{ ok: boolean; resumeError?: string | null }>(`/api/research/studies/${studyId}/decisions/${decisionId}`, { scopeHash, approved, reason });
 export const stopResearchStudy = (studyId: string) => post<{ ok: boolean }>(`/api/research/studies/${studyId}/stop`, {});

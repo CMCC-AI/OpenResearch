@@ -15,7 +15,6 @@ import {
   Lightbulb,
   Map,
   Microscope,
-  PackageCheck,
   SearchCheck,
   ShieldCheck,
   Sparkles,
@@ -83,7 +82,6 @@ export const capabilityStages: CapabilityStage[] = [
       { title: "论文写作", description: "组织论证、引用与稿件", icon: FileText, prompt: "基于已验证证据撰写论文稿件" },
       { title: "引用核验", description: "检查结论与来源一致性", icon: SearchCheck, prompt: "核验稿件中的引用和结论强度" },
       { title: "模拟审稿", description: "独立评估并生成修订清单", icon: ShieldCheck, prompt: "以独立审稿人视角评估稿件" },
-      { title: "研究包", description: "整理代码、数据和复现说明", icon: PackageCheck, prompt: "整理可交付的完整研究包" },
     ],
   },
 ];

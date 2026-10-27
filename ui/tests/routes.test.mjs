@@ -100,11 +100,11 @@ test("case browsing, existing-project publication, and case IDs use independent 
   assert.deepEqual(Route.options.validateSearch({project:"../../private"}),{project:undefined});
 });
 
-test("product start links preserve new-project and alphaXiv paper intent", async () => {
+test("product start links only support blank project creation", async () => {
   const blank = await match("/projects?new=true");
-  assert.deepEqual(blank.state.matches.at(-1).search, { new: true, paper: undefined });
+  assert.deepEqual(blank.state.matches.at(-1).search, { new: true });
   const { parseProjectsSearch } = loadModule("routes/projects.index.tsx");
-  assert.deepEqual(parseProjectsSearch({ paper: "arxiv:2401.00001" }), { new: undefined, paper: "2401.00001" });
+  assert.deepEqual(parseProjectsSearch({ paper: "arxiv:2401.00001" }), { new: undefined });
 });
 
 test("Deep Literature links reuse the synchronized session instead of restarting SSO", () => {

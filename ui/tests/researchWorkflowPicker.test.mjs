@@ -12,6 +12,7 @@ const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKi
 const exported = {};
 new Function("require", "exports", code)((name) => {
   if (name === "../research") return research;
+  if (name === "./ModelPicker") return { usePopover: () => ({ open: true, setOpen() {}, ref: { current: null } }) };
   if (name === "./ResearchModulePreview") return { ResearchModulePreview: "ProfilePreview" };
   return require(name);
 }, exported);
@@ -24,7 +25,7 @@ test("work modes retain their names and show exactly two top-level categories", 
   const tree = nodes(exported.WorkModeSwitch({ value: "normal", onChange: (value) => changes.push(value) }));
   const select = tree.find((node) => node.props["aria-label"] === "工作模式大类");
   const options = nodes(select).filter((node) => node.type === "option");
-  assert.deepEqual(options.map((node) => [node.props.value, node.props.children]), [["normal", "工作模式"], ["team", "科研专家团模式"]]);
+  assert.deepEqual(options.map((node) => [node.props.value, node.props.children]), [["normal", "工作模式"], ["team", "专家团模式"]]);
   assert.ok(!tree.some((node) => node.props["aria-label"] === "科研专家团预设子模式"));
   select.props.onChange({ target: { value: "team" } });
   assert.deepEqual(changes, ["team"]);
@@ -52,7 +53,7 @@ test("persisted studies display category and submode separately without allowing
     const tree = nodes(exported.WorkModeSwitch({ value, onChange() { throw new Error("unexpected mutation"); }, readOnly: true }));
     assert.ok(!tree.some((node) => node.type === "select"));
     const text = tree.filter((node) => node.type === "span").flatMap((node) => React.Children.toArray(node.props.children)).filter((child) => typeof child === "string");
-    assert.ok(text.includes(value === "normal" ? "工作模式" : "科研专家团模式"));
+    assert.ok(text.includes(value === "normal" ? "工作模式" : "专家团模式"));
     if (research.presetWorkflowModes.includes(value)) assert.ok(text.includes(`指定流程：${research.researchModes[value]}`));
   }
 });
@@ -68,4 +69,18 @@ test("team mode defaults to automatic routing and allows opting in and out of a 
   assert.deepEqual(changes, ["analysis", "team"]);
   const readonly = nodes(exported.WorkModeSwitch({ value: "team", activeWorkflow: "proposal", readOnly: true, onChange() {} }));
   assert.ok(readonly.some((node) => node.props.children === "自动判断 · 当前流程：Idea 到实验方案"));
+});
+
+test("compact mode menu switches modes and preset workflows directly without a nested selector", () => {
+  const changes = [];
+  for (const value of ["normal", "team", ...research.presetWorkflowModes]) {
+    const compact = exported.WorkModeSwitch({ value, onChange: (mode) => changes.push(mode), compact: true });
+    const tree = nodes(compact.type(compact.props));
+    assert.equal(tree.some((node) => node.type === "select"), false);
+    const items = tree.filter((node) => node.props.role === "menuitemradio");
+    assert.equal(items.length, 2 + research.presetWorkflowModes.length);
+    assert.equal(items.filter((node) => node.props["aria-checked"]).length, 1);
+    for (const item of items) item.props.onClick();
+    assert.deepEqual(changes.splice(0), ["normal", "team", ...research.presetWorkflowModes]);
+  }
 });
