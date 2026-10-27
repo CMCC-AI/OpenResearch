@@ -20,7 +20,7 @@ test('research image URLs respect the mounted app prefix', async () => {
     for (const [pathname, prefix] of [['/projects/p', ''], ['/mobilesci/projects/p', '/mobilesci']]) {
       globalThis.window = { location: { pathname } };
       const { appHref } = await import(`../src/appBasePath.ts?asset-prefix=${prefix}`);
-      for (const asset of ['/research-team/team.svg', '/research-team/locate.svg', '/research-experts/as-asset-auditor.png']) {
+      for (const asset of ['/favicon.svg', '/research-team/team.svg', '/research-team/locate.svg', '/research-experts/as-asset-auditor.png']) {
         assert.equal(appHref(asset), prefix + asset);
       }
     }

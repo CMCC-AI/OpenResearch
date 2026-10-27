@@ -1,4 +1,4 @@
-import { stripAppBase } from "./appBasePath";
+import { appHref, stripAppBase } from "./appBasePath";
 import { useQuery } from "@tanstack/react-query";
 
 import { getRuntimeQuery, reportLocaleQuery } from "./queries/settings";
@@ -68,7 +68,7 @@ export function useRuntime(): RuntimeInfo {
 
 function setFavicon(remote: boolean) {
   const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
-  if (link) link.href = remote ? REMOTE_FAVICON : "/favicon.svg";
+  if (link) link.href = remote ? REMOTE_FAVICON : appHref("/favicon.svg");
 }
 
 function hasStoredPreference(key: string) {
