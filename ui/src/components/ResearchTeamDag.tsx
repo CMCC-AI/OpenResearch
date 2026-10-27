@@ -1,11 +1,10 @@
 import { fmtTokens } from "../api";
-import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { appHref } from "../appBasePath";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { CircleDot, X } from "lucide-react";
-import { currentDecisions, expertRoles, gateNames, researchAttention, researchProgress, researchTeamGraph, researchDuration, type ResearchMetrics, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
+import { currentDecisions, expertRoles, researchAttention, researchProgress, researchTeamGraph, researchDuration, type ResearchMetrics, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
 import { TaskDetails, workflowTone } from "./ResearchWorkflow";
 import { Button, IconButton } from "./ui";
 import { useDialogFocus } from "./useDialogFocus";
@@ -29,21 +28,21 @@ function LocateCurrent({ ids }: { ids: string[] }) {
   return <Button size="small" className="research-team-locate" disabled={!ids.length} onClick={() => void flow.fitView({ nodes: ids.map((id) => ({ id })), padding: 0.6, maxZoom: 1, duration: 300 })}><img src={appHref("/research-team/locate.svg")} alt="" width={16} height={16} />定位当前</Button>;
 }
 
-export function ResearchTeamDagDialog({ study, runs, metrics, actions, onClose, onDetails, onOpenSession, embedded = false }: {
+export function ResearchTeamDagDialog({ study, runs, metrics, actions, onClose, confirmationContent, onOpenSession, embedded = false }: {
   embedded?: boolean;
   metrics?: ResearchMetrics | null;
   study: ResearchStudy | null;
   runs: { id: string; status: string; cancelRequested?: boolean }[];
   actions: ReactNode;
   onClose: () => void;
-  onDetails: () => void;
+  confirmationContent: ReactNode;
   onOpenSession?: (id: string) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
-  const readOnly = useReadOnlyWorkspace();
   useDialogFocus(ref, onClose);
-  const [actual, setActual] = useState(false);
+  const [view, setView] = useState<"overview" | "tasks" | "confirmation">("overview");
+  const actual = view === "tasks";
   const [selected, setSelected] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now);
   const metricClock = useRef({ value: metrics, receivedAt: Date.now() });
@@ -70,7 +69,7 @@ export function ResearchTeamDagDialog({ study, runs, metrics, actions, onClose, 
   const artifacts = new Set(tasks.flatMap((task) => task.artifacts.map((artifact) => artifact.path))).size;
   const content = <div ref={embedded ? undefined : ref} role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-labelledby={titleId} tabIndex={-1} className={`research-team flex h-full min-h-0 w-full flex-col overflow-x-hidden overflow-y-auto bg-background text-text ${embedded ? "" : "max-h-full max-w-6xl rounded-xl border border-border shadow-elevated"}`} onClick={(event) => event.stopPropagation()}>
       <header className="research-team-header flex shrink-0 flex-wrap items-center gap-x-6 gap-y-3 border-b border-border">
-        <div className="min-w-0"><h2 id={titleId} className="flex items-center gap-2 text-base font-normal"><span className="research-team-icon flex shrink-0 items-center justify-center"><img src={appHref("/research-team/team.svg")} alt="" width={22} height={22} /></span>科研专家团 · DAG 全景</h2><p role="status" className="research-team-attention text-xs">{study ? researchAttention(study) : "尚未开始研究"}</p></div>
+        <div className="min-w-0"><h2 id={titleId} className="flex items-center gap-2 text-base font-normal"><span className="research-team-icon flex shrink-0 items-center justify-center"><img src={appHref("/research-team/team.svg")} alt="" width={22} height={22} /></span>科研专家团 · {view === "confirmation" ? "人工确认" : "DAG 全景"}</h2><p role="status" className="research-team-attention text-xs">{study ? researchAttention(study) : "尚未开始研究"}</p></div>
         <dl className="research-team-stats grid min-w-0 flex-1 gap-2">{[
           { label: "研究时长", value: researchDuration(metrics, (metrics?.measuredAt ?? 0) + Math.max(0, now - metricClock.current.receivedAt)), tone: "duration" },
           { label: "Token消耗", value: metrics?.tokenCount == null ? "—" : `${metrics.tokenCountComplete ? "" : "≥"}${fmtTokens(metrics.tokenCount)}`, tone: "tokens" },
@@ -80,11 +79,12 @@ export function ResearchTeamDagDialog({ study, runs, metrics, actions, onClose, 
         {!embedded && <IconButton data-initial-focus className="self-start" aria-label="关闭专家团 DAG" onClick={onClose}><X size={18} /></IconButton>}
       </header>
       <div className="research-team-toolbar flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border">
-        <div className="flex flex-wrap gap-1" role="group" aria-label="DAG 展示范围">{[
-          { label: "专家团全景", active: !actual, select: () => setActual(false) },
-          { label: "本次任务依赖", active: actual, select: () => setActual(true) },
-        ].map((tab) => <Button key={tab.label} variant="ghost" size="small" className="research-team-tab" active={tab.active} aria-pressed={tab.active} onClick={() => { tab.select(); setSelected(null); }}>{tab.label}</Button>)}</div>
+        <div className="flex flex-wrap gap-1" role="group" aria-label="专家团页面">{[
+          { label: "专家团全景", active: view === "overview", select: () => setView("overview") },
+          { label: "本次任务依赖", active: actual, select: () => setView("tasks") },
+        ].map((tab) => <Button key={tab.label} variant="ghost" size="small" className="research-team-tab" active={tab.active} aria-pressed={tab.active} onClick={() => { tab.select(); setSelected(null); }}>{tab.label}</Button>)}<Button size="small" variant="ghost" className="research-team-tab" active={view === "confirmation"} aria-pressed={view === "confirmation"} onClick={() => { setView("confirmation"); setSelected(null); }}>人工确认{pending.length > 0 && <span className="ms-1 text-accent-amber">{pending.length}</span>}</Button></div>
       </div>
+      {view === "confirmation" ? <section aria-label="人工确认" className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto border-y border-border p-4">{confirmationContent}</section> : <>
       <div className="research-team-canvas relative min-h-32 flex-1 border-y border-border" aria-label="科研专家团纵向 DAG">
         {actual && !tasks.length ? <p className="p-8 text-center text-sm text-subtext">暂无任务计划</p> : <ReactFlow key={`${study?.id ?? "preview"}-${study?.plans.at(-1)?.version ?? 0}-${actual}`} nodes={expertNodes} edges={expertEdges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.08, minZoom: 0.25, maxZoom: 1 }} minZoom={0.25} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} onNodeClick={(_, node) => setSelected(node.id)} proOptions={{ hideAttribution: true }}><Background /><Controls showInteractive={false} /><div className="absolute right-3 top-3 z-10"><LocateCurrent ids={expertCurrentIds} /></div></ReactFlow>}
       </div>
@@ -92,11 +92,11 @@ export function ResearchTeamDagDialog({ study, runs, metrics, actions, onClose, 
         <div className="flex min-w-0 flex-1 items-center gap-2"><span className="shrink-0 text-sm text-text"><span className="text-primary">{progress.completed}</span>/{progress.total} 已验收</span><div className="research-team-progress-track h-2 min-w-12 flex-1 overflow-hidden rounded-full" role="progressbar" aria-label="专家任务验收进度" aria-valuemin={0} aria-valuemax={progress.total || 1} aria-valuenow={progress.completed}><div className="h-full rounded-full bg-primary" style={{ width: `${progress.total ? progress.completed / progress.total * 100 : 0}%` }} /></div></div>
         <div className="flex flex-wrap gap-3 text-xs text-subtext" aria-label="任务状态图例">{[{ label: "执行中", state: "running" }, { label: "已验收", state: "completed" }, { label: "待处理", state: "blocked" }, { label: "未安排", state: "waiting" }].map((item) => <span key={item.state} className="flex items-center gap-1.5"><span data-state={item.state} className="research-team-legend-dot size-2 shrink-0 rounded-full" />{item.label}</span>)}</div>
       </div>
-      {pending.length > 0 && <button type="button" onClick={onDetails} className="shrink-0 border-t border-border px-3 py-2 text-start text-xs text-accent-amber">{readOnly ? "发布时待确认：" : "等待你确认："}{pending.map((decision) => gateNames[decision.gate]).join("、")}</button>}
       <section hidden={!selected} className="max-h-60 shrink-0 overflow-y-auto border-t border-border p-3" aria-label="专家执行详情">
         {!selection ? null : !selection.tasks.length ? <p className="text-sm text-subtext">{expertRoles[selection.role]} · {selection.label}</p> : selection.tasks.map((task: ResearchTask) => study && <TaskDetails key={task.id} study={study} task={task} runs={runs} onOpenSession={onOpenSession ? (id) => { onClose(); onOpenSession(id); } : undefined} />)}
       </section>
-      <footer className="flex shrink-0 flex-wrap gap-2 border-t border-border p-3"><Button size="small" onClick={onDetails}>{readOnly ? "查看分工与确认记录" : "查看分工与人工确认"}</Button>{actions}</footer>
+      </>}
+      <footer className="flex shrink-0 flex-wrap gap-2 border-t border-border p-3">{actions}</footer>
     </div>;
   return embedded ? content : createPortal(<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3 sm:p-5" onClick={onClose}>{content}</div>, document.body);
 }

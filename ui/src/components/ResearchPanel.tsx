@@ -7,12 +7,9 @@ import { currentDecisions, researchProgress, researchModes, presetWorkflowModes,
 import { Button } from "./ui/Button";
 import { IconButton, MenuItem } from "./ui";
 import { ResearchStateErrorDialog } from "./ResearchOverviewDialog";
-import { ResearchOverviewDialog } from "./ResearchOverviewDialog";
 import { Users, ArrowRight } from "lucide-react";
-import { ResearchJourneyIntro } from "./ResearchJourneyIntro";
 import { ResearchModulePreview } from "./ResearchModulePreview";
 import { ResearchTeamDagDialog } from "./ResearchTeamDag";
-import { ResearchWorkflowDialog } from "./ResearchWorkflow";
 
 export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSession, placement = "composer", expanded = false, onOpenResearch, active = false }: {
   sessionId: string | null; onStartWorkflow?: (mode: ResearchMode) => Promise<void>; disabled: boolean; onOpenSession?: (sessionId: string) => void; placement?: "composer" | "workspace" | "pane"; expanded?: boolean; onOpenResearch?: () => void; active?: boolean;
@@ -25,7 +22,6 @@ export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSess
   const [error, setError] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
   const [dagOpen, setDagOpen] = useState(false);
-  const [workflowOpen, setWorkflowOpen] = useState(false);
   const study = data?.study;
   async function act(action: () => Promise<unknown>) {
     setWorking(true); setError(null);
@@ -50,20 +46,20 @@ export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSess
     const result = await decideResearchGate(study.id, decision.id, decision.scopeHash, accepted, reason);
     if (result.resumeError) throw new Error(`决策已保存，但会话未恢复：${result.resumeError}。可点击“继续研究”。`);
   })} />;
-  const decisionCards = study && decisions.length > 0 && <section aria-label="人工确认节点" className="flex flex-col gap-2">
-    <h3 className="text-sm font-medium">人工确认节点</h3>
-    {decisions.filter((decision) => decision.status !== "approved").map(renderDecision)}
-    {decisions.some((decision) => decision.status === "approved") && <details><summary className="cursor-pointer text-xs text-subtext">已确认记录（{decisions.filter((decision) => decision.status === "approved").length}）</summary><div className="mt-2 flex flex-col gap-2">{decisions.filter((decision) => decision.status === "approved").map(renderDecision)}</div></details>}
-  </section>;
-  const dialog = workflowOpen && (sessionId && (queryError || pending) ? <ResearchStateErrorDialog loading={pending} error={queryError?.message ?? ""} onRetry={() => void query.refetch()} onClose={() => setWorkflowOpen(false)} /> : study ? <ResearchWorkflowDialog embedded={placement === "pane"} study={study} runs={data?.runs ?? []} decisionCards={<>{decisionCards}{error && <p role="alert" className="text-sm text-accent-red">{error}</p>}</>} actions={actions} onClose={() => setWorkflowOpen(false)} onOpenSession={onOpenSession} /> : <ResearchOverviewDialog onClose={() => setWorkflowOpen(false)} />);
-  const dagDialog = dagOpen && (sessionId && (queryError || pending) ? <ResearchStateErrorDialog loading={pending} error={queryError?.message ?? ""} onRetry={() => void query.refetch()} onClose={() => setDagOpen(false)} /> : <ResearchTeamDagDialog metrics={data?.metrics} study={study ?? null} runs={data?.runs ?? []} actions={actions} onClose={() => setDagOpen(false)} onDetails={() => { setDagOpen(false); setWorkflowOpen(true); }} onOpenSession={onOpenSession} />);
+  const pendingDecisions = decisions.filter((decision) => decision.status === "pending");
+  const decided = decisions.filter((decision) => decision.status !== "pending");
+  const decisionCards = <>
+    {pendingDecisions.length > 0 ? pendingDecisions.map(renderDecision) : <p className="text-sm text-subtext">暂无待确认事项</p>}
+    {decided.length > 0 && <details><summary className="cursor-pointer text-xs text-subtext">确认记录（{decided.length}）</summary><div className="mt-2 flex flex-col gap-2">{decided.map(renderDecision)}</div></details>}
+    {error && <p role="alert" className="text-sm text-accent-red">{error}</p>}
+  </>;
+  const dagDialog = dagOpen && (sessionId && (queryError || pending) ? <ResearchStateErrorDialog loading={pending} error={queryError?.message ?? ""} onRetry={() => void query.refetch()} onClose={() => setDagOpen(false)} /> : <ResearchTeamDagDialog metrics={data?.metrics} study={study ?? null} runs={data?.runs ?? []} actions={actions} onClose={() => setDagOpen(false)} confirmationContent={decisionCards} onOpenSession={onOpenSession} />);
   const openResearch = () => onOpenResearch ? onOpenResearch() : setDagOpen(true);
   if (readOnly && !study && placement === "composer") return null;
-  if (placement === "pane") return <div className="flex h-full min-h-0 flex-col">{pending && sessionId ? <p className="p-4 text-sm text-subtext">正在读取专家团状态…</p> : queryError ? <div role="alert" className="p-4 text-sm text-accent-red">研究状态读取失败：{queryError.message}<Button onClick={() => void query.refetch()}>重试</Button></div> : workflowOpen ? study ? dialog : <div className="h-full overflow-y-auto p-4"><Button size="small" className="mb-3" onClick={() => setWorkflowOpen(false)}>返回专家团流程图</Button><ResearchJourneyIntro /></div> : <ResearchTeamDagDialog embedded metrics={data?.metrics} study={study ?? null} runs={data?.runs ?? []} actions={actions} onClose={() => {}} onDetails={() => setWorkflowOpen(true)} onOpenSession={onOpenSession} />}</div>;
+  if (placement === "pane") return <div className="flex h-full min-h-0 flex-col">{pending && sessionId ? <p className="p-4 text-sm text-subtext">正在读取专家团状态…</p> : queryError ? <div role="alert" className="p-4 text-sm text-accent-red">研究状态读取失败：{queryError.message}<Button onClick={() => void query.refetch()}>重试</Button></div> : <ResearchTeamDagDialog embedded metrics={data?.metrics} study={study ?? null} runs={data?.runs ?? []} actions={actions} onClose={() => {}} confirmationContent={decisionCards} onOpenSession={onOpenSession} />}</div>;
   if (placement === "workspace") return <>
     {expanded ? <MenuItem className="min-h-7 py-1" aria-label="科研专家团流程" onClick={openResearch} disabled={Boolean(sessionId) && pending}><span className="flex min-w-0 flex-col gap-0.5"><span className="flex items-center gap-4"><Users size={15} className="shrink-0 text-primary" />科研专家团</span><span className="truncate ps-[31px] text-menu text-subtext">{study ? researchAttention(study) : queryError ? "状态读取失败 · 点击重试" : readOnly ? "已结束 · 未保存流程" : "预设流程与执行"}</span></span></MenuItem> : <IconButton aria-label="科研专家团流程" data-tip="科研专家团 · 流程与执行" aria-pressed={active} active={active} disabled={Boolean(sessionId) && pending} onClick={openResearch}><Users size={15} /></IconButton>}
     {dagDialog}
-    {dialog}
   </>;
   return <section className={`mb-2 rounded-lg border text-sm ${study ? "border-primary bg-primary-subtle" : "border-border bg-background"}`} aria-label="当前研究流程">
     {!study ? readOnly ? null : <div className="p-3">
@@ -78,10 +74,10 @@ export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSess
       <p role="status" className="mt-2 text-sm font-medium text-primary">{researchAttention(study)}</p>
       {activeStages.length > 0 && <p className="mt-1 text-xs text-subtext">当前环节：{activeStages.map((stage) => stage.title).join(" · ")}</p>}
       <div className="mt-2 flex items-center gap-3"><div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-surface" role="progressbar" aria-label="已验收专家任务" aria-valuemin={0} aria-valuemax={progress?.total || 1} aria-valuenow={progress?.completed ?? 0}><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progress?.total ? progress.completed / progress.total * 100 : 0}%` }} /></div><span className="shrink-0 text-xs text-subtext">{progress?.completed}/{progress?.total} 任务{plan ? ` · v${plan.version}` : " · 规划中"}</span></div>
-      {!readOnly && decisions.some((decision) => decision.status === "pending") && <button type="button" onClick={openResearch} className="mt-2 text-xs font-medium text-accent-amber underline underline-offset-2">待确认事项</button>}
+
     </div>}
     {error && <p role="alert" className="px-3 pb-3 text-accent-red">{error}</p>}
-    {dialog}
+    {dagDialog}
   </section>;
 }
 
