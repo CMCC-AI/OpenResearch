@@ -37,6 +37,10 @@
 
 ## 部署与维护流程
 
+私人执行器的 `MANAGED_EXECUTOR_MEMORY` 与 `MANAGED_EXECUTOR_MEMORY_SWAP` 均为字节数，后者表示内存与 swap 的合计上限。hosted Compose 默认使用 2.5 GiB 内存、4.5 GiB 合计上限和 `MANAGED_CAPACITY=2`；按宿主总内存、平台服务预留量与实际并发负载调整。显式配置的配额由 provisioner 同步到已有执行器，后续新建执行器使用相同值；旧 connector 保留独立的小额限制。未显式配置时，provisioner 不覆盖运维热调整的已有容器配额。
+
+OpenCode、Claude 和 Codex 共用闲置策略。有效内存不超过 8 GiB 时，OpenCode 每 30 秒检查一次，闲置两分钟释放进程，超过一个的闲置进程在至少闲置 30 秒后按最近使用顺序释放。运行中的对话、等待权限或问题回复、上下文压缩受使用租约保护；回收同时清理进程组，下次消息从持久化原生会话恢复。Linux 按宿主物理内存与 cgroup v1/v2 配额的较小值选择策略，并重新读取配额以适应在线调整。此策略只限制闲置进程，多个同时活跃的会话仍需合理的内存和并发规划。
+
 1. 先确定运行形态，使用对应指南。普通发布使用[现有更新入口](deploy-mobilesci.md)，需要迁移旧配置源时使用 `--unified-opencode` 流程；保留空闲检查、备份、迁移演练、健康验证与回滚。
 2. 新镜像、现有 executor/connector 和 provisioner 的未来镜像引用必须一起核查；更新前端或平台并不会自动更新所有存量 runner。
 3. `enable-personal-spaces.py`、`enable-opencode-admin.py` 和 `migrate-deployment.py` 是明确目标的一次性迁移工具；两个 `fix-*` 工具用于存量上传和静态资源修复，不能替代完整发布。使用范围及验收见[材料约定](../ai-for-science/material-inputs.md)和[兼容审计](compatibility-audit-2026-10-21.md)。

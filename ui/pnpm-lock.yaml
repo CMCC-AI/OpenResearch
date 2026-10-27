@@ -22,6 +22,9 @@ importers:
       '@inlang/paraglide-js':
         specifier: ^2.25.0
         version: 2.25.0(typescript@5.9.3)(vite@6.4.4(jiti@2.7.0)(lightningcss@1.32.0))
+      '@noble/hashes':
+        specifier: 2.0.1
+        version: 2.0.1
       '@tanstack/react-query':
         specifier: ^5.102.8
         version: 5.102.8(react@19.2.7)
@@ -505,6 +508,10 @@ packages:
   '@napi-rs/canvas@1.0.9':
     resolution: {integrity: sha512-QviPdJImDi/jMAvBfqaw+19BndMd/sizXVW3NnpMd3VJGz++QXkOHcP9kWR/smHG0hNjHeyuHFyrx/5lD0oNcQ==}
     engines: {node: '>= 10'}
+
+  '@noble/hashes@2.0.1':
+    resolution: {integrity: sha512-XlOlEbQcE9fmuXxrVTXCTlG2nlRXa9Rj3rr5Ue/+tX+nmkgbX720YHh0VR3hBF9xDvwnb8D2shVGOwNx+ulArw==}
+    engines: {node: '>= 20.19.0'}
 
   '@rolldown/pluginutils@1.0.0-beta.27':
     resolution: {integrity: sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA==}
@@ -2196,6 +2203,8 @@ snapshots:
       '@napi-rs/canvas-win32-arm64-msvc': 1.0.9
       '@napi-rs/canvas-win32-x64-msvc': 1.0.9
     optional: true
+
+  '@noble/hashes@2.0.1': {}
 
   '@rolldown/pluginutils@1.0.0-beta.27': {}
 

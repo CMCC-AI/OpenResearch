@@ -163,6 +163,8 @@ def main(package, capacity):
         'MANAGED_CONNECT_URL': 'http://host.docker.internal:20281',
         'MANAGED_LEGACY_CONNECT_URL': 'http://127.0.0.1:5300',
         'MANAGED_EXECUTOR_IMAGE': executor_image,
+        'MANAGED_EXECUTOR_MEMORY': existing.get('MANAGED_EXECUTOR_MEMORY', '2684354560'),
+        'MANAGED_EXECUTOR_MEMORY_SWAP': existing.get('MANAGED_EXECUTOR_MEMORY_SWAP', '4831838208'),
         'MANAGED_CONNECTOR_IMAGE': old['Config']['Image'],
         'MANAGED_LEGACY_WORKSPACE': workspace,
         'MANAGED_OPENCODE_LIVE_CONFIG_DIR': '/opt/mobilesci/state/opencode',
@@ -269,7 +271,7 @@ def main(package, capacity):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--package', required=True, type=Path)
-    parser.add_argument('--capacity', type=int, default=6)
+    parser.add_argument('--capacity', type=int, default=2)
     args = parser.parse_args()
     if args.capacity < 1:
         parser.error('Capacity must be positive')

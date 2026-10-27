@@ -4,6 +4,7 @@ import {
   credentialArchive,
   reconcile,
   runtimeConfig,
+  runtimeResources,
 } from "../src/provisioner.mjs";
 
 const workspace = "11111111-1111-4111-8111-111111111111";
@@ -11,6 +12,72 @@ const env = {
   MANAGED_EXECUTOR_IMAGE: "executor:test",
   PLATFORM_ORIGIN: "http://localhost:5300",
 };
+test("executor quotas validate RAM and total swap and preserve legacy limits", () => {
+  const configured = {
+    ...env,
+    MANAGED_EXECUTOR_MEMORY: "2684354560",
+    MANAGED_EXECUTOR_MEMORY_SWAP: "4831838208",
+  };
+  assert.deepEqual(runtimeResources(workspace, configured), {
+    Memory: 2684354560,
+    MemorySwap: 4831838208,
+  });
+  assert.deepEqual(
+    runtimeResources(workspace, {
+      ...configured,
+      MANAGED_LEGACY_WORKSPACE: workspace,
+    }),
+    { Memory: 134217728, MemorySwap: 268435456 },
+  );
+  for (const value of ["0", "-1", "garbage", "1.5", "Infinity"])
+    assert.throws(() =>
+      runtimeResources(workspace, { ...env, MANAGED_EXECUTOR_MEMORY: value }),
+    );
+  assert.throws(() =>
+    runtimeResources(workspace, {
+      ...configured,
+      MANAGED_EXECUTOR_MEMORY_SWAP: "100",
+    }),
+  );
+});
+
+test("configured quotas update existing executors without stopping live research", async () => {
+  const calls = [];
+  const call = async (method, path, body) => {
+    calls.push({ method, path, body });
+    if (method === "GET")
+      return {
+        Config: {
+          Labels: {
+            "openresearch.managed": "true",
+            "openresearch.workspace": workspace,
+          },
+        },
+        State: { Running: true, Health: { Status: "healthy" } },
+        HostConfig: { Memory: 1073741824, MemorySwap: 2147483648 },
+      };
+  };
+  await reconcile(
+    { query: async () => {} },
+    { workspace_id: workspace, desired: "running", status: "ready" },
+    {
+      ...env,
+      MANAGED_EXECUTOR_MEMORY: "2684354560",
+      MANAGED_EXECUTOR_MEMORY_SWAP: "4831838208",
+    },
+    call,
+  );
+  assert.deepEqual(
+    calls.filter((c) => c.method !== "GET"),
+    [
+      {
+        method: "POST",
+        path: `/containers/orx-managed-${workspace}/update`,
+        body: { Memory: 2684354560, MemorySwap: 4831838208 },
+      },
+    ],
+  );
+});
 test("managed configuration isolates storage, limits resources and keeps credentials out of environment", () => {
   const first = runtimeConfig(workspace, env);
   const second = runtimeConfig("22222222-2222-4222-8222-222222222222", env);

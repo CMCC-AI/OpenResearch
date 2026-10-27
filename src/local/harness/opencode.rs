@@ -392,6 +392,7 @@ impl Harness for OpenCode {
     }
 
     async fn run_turn(&self, ctx: &mut TurnCtx) -> TurnResult {
+        let _usage = ctx.host.opencode.use_session(&ctx.session_id);
         run_turn(ctx)
             .await
             .map(|()| TurnOutcome::Completed)

@@ -79,6 +79,21 @@ export function credentialArchive(secret) {
   return Buffer.concat([header, content, Buffer.alloc(1024)]);
 }
 
+// Byte counts, matching Docker's Memory and MemorySwap (RAM + swap) fields.
+export function runtimeResources(workspace, env) {
+  if (workspace === env.MANAGED_LEGACY_WORKSPACE)
+    return { Memory: 128 * 1024 * 1024, MemorySwap: 256 * 1024 * 1024 };
+  const memory = Number(env.MANAGED_EXECUTOR_MEMORY || 1024 * 1024 * 1024);
+  const swap = Number(env.MANAGED_EXECUTOR_MEMORY_SWAP || memory * 2);
+  if (!Number.isSafeInteger(memory) || memory < 128 * 1024 * 1024)
+    throw new Error("MANAGED_EXECUTOR_MEMORY must be at least 134217728 bytes");
+  if (!Number.isSafeInteger(swap) || swap < memory)
+    throw new Error(
+      "MANAGED_EXECUTOR_MEMORY_SWAP must be at least the memory limit",
+    );
+  return { Memory: memory, MemorySwap: swap };
+}
+
 export function runtimeConfig(workspace, env) {
   if (!/^[0-9a-f-]{36}$/.test(workspace)) throw new Error("Invalid workspace");
   if (!env.MANAGED_EXECUTOR_IMAGE)
@@ -156,7 +171,7 @@ export function runtimeConfig(workspace, env) {
       RestartPolicy: { Name: "unless-stopped" },
       CapDrop: ["ALL"],
       SecurityOpt: ["no-new-privileges:true"],
-      Memory: legacy ? 128 * 1024 * 1024 : 1024 * 1024 * 1024,
+      ...runtimeResources(workspace, env),
       NanoCpus: 1000000000,
       PidsLimit: 256,
       Init: true,
@@ -210,6 +225,17 @@ export async function reconcile(db, job, env = process.env, call = docker) {
       runtimeConfig(workspace, env),
     );
     container = { State: { Running: false } };
+  }
+  // Apply explicitly configured quotas to existing containers without restarting
+  // research. Do not reset an operator's emergency quota when env is absent.
+  if (env.MANAGED_EXECUTOR_MEMORY || env.MANAGED_EXECUTOR_MEMORY_SWAP) {
+    const resources = runtimeResources(workspace, env);
+    if (
+      Object.entries(resources).some(
+        ([key, value]) => container.HostConfig?.[key] !== value,
+      )
+    )
+      await call("POST", `/containers/${name}/update`, resources);
   }
   if (container.State.Running && job.status === "queued") {
     await call("POST", `/containers/${name}/stop?t=5`);

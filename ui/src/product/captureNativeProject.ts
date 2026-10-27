@@ -1,6 +1,7 @@
 import type { ChatSession, Project, ProjectArtifacts, CodeTree, Run, Experiment, ProjectFile } from "../api";
 import { canonicalRequest } from "../readOnlyApi";
 import type { NativeProjectSnapshot } from "./nativeProjectSnapshot";
+import { sha256Hex } from "./sha256";
 
 export interface NativeCapture { workspace: NativeProjectSnapshot; assets: { name: string; content: string }[] }
 const encode = (bytes: Uint8Array) => { let value = ""; for (let at = 0; at < bytes.length; at += 32768) value += String.fromCharCode(...bytes.subarray(at, at + 32768)); return btoa(value); };
@@ -29,7 +30,7 @@ export async function captureNativeProject(projectId: string, progress: (message
     const chunks: Uint8Array[] = []; let size = 0;
     if (reader) for (;;) { const {done,value}=await reader.read(); if(done)break; size+=value.byteLength; if(size>128*1024*1024){await reader.cancel();throw new Error(`文件超过 128 MB，不能省略发布：${filename}`);}chunks.push(value); }
     const bytes = new Uint8Array(size); let offset = 0; for (const chunk of chunks) {bytes.set(chunk,offset);offset+=chunk.byteLength;}
-    const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))].map((byte)=>byte.toString(16).padStart(2,"0")).join("");
+    const digest = await sha256Hex(bytes);
     const extension = filename.match(/\.[a-z0-9]{1,10}$/i)?.[0] || ".bin";
     const name = `native-${digest}${extension}`;
     if (!assets.some((file)=>file.name===name)) { total+=size; if(total>512*1024*1024 || assets.length>=2000)throw new Error("完整项目文件超过发布上限，不能省略文件发布。"); assets.push({name,content:encode(bytes)}); }

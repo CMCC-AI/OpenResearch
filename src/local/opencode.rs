@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -18,6 +18,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
 use crate::error::{anyhow, Result};
+use crate::local::agent_lifecycle::{IdlePolicy, REAPER_INTERVAL};
 use crate::local::git;
 use crate::local::model::LocalProject;
 use crate::local::native_store::{self, NativeStore};
@@ -621,6 +622,29 @@ pub struct AgentHost {
     up_port: std::sync::OnceLock<u16>,
     starting: std::sync::Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>,
     stopping: std::sync::atomic::AtomicBool,
+    activity: std::sync::Arc<std::sync::Mutex<HashMap<String, AgentActivity>>>,
+}
+
+struct AgentActivity {
+    users: usize,
+    last_used: Instant,
+}
+
+/// Covers the whole turn, including native permissions/questions and compaction.
+/// Cancellation drops the lease as well, starting the idle clock on completion.
+pub(crate) struct AgentUse {
+    activity: std::sync::Arc<std::sync::Mutex<HashMap<String, AgentActivity>>>,
+    session: String,
+}
+
+impl Drop for AgentUse {
+    fn drop(&mut self) {
+        let mut activity = self.activity.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(state) = activity.get_mut(&self.session) {
+            state.users -= 1;
+            state.last_used = Instant::now();
+        }
+    }
 }
 
 struct StartupRegistration<'a> {
@@ -652,6 +676,85 @@ impl AgentHost {
             up_port: std::sync::OnceLock::new(),
             starting: std::sync::Mutex::new(HashMap::new()),
             stopping: std::sync::atomic::AtomicBool::new(false),
+            activity: Default::default(),
+        }
+    }
+
+    pub(crate) fn use_session(&self, session: &str) -> AgentUse {
+        let mut activity = self.activity.lock().unwrap_or_else(|e| e.into_inner());
+        let state = activity
+            .entry(session.to_string())
+            .or_insert_with(|| AgentActivity {
+                users: 0,
+                last_used: Instant::now(),
+            });
+        state.users += 1;
+        AgentUse {
+            activity: self.activity.clone(),
+            session: session.to_string(),
+        }
+    }
+
+    pub fn start_reaper(self: &std::sync::Arc<Self>) {
+        let host = std::sync::Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(REAPER_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let Some(host) = host.upgrade() else { break };
+                host.reap_idle_at(Instant::now(), IdlePolicy::current())
+                    .await;
+            }
+        });
+    }
+
+    async fn reap_idle_at(&self, now: Instant, policy: IdlePolicy) {
+        // Same ordering as ensure; hold the spawn lock until retired process
+        // groups are gone, so a new turn cannot reuse an endpoint being killed.
+        let _spawning = self.spawn_lock.lock().await;
+        let retired = {
+            let mut inner = self.inner.lock().await;
+            let mut activity = self.activity.lock().unwrap_or_else(|e| e.into_inner());
+            let idle: Vec<_> = inner
+                .keys()
+                .filter_map(|session| {
+                    let state = activity.get(session)?;
+                    (state.users == 0).then(|| {
+                        (
+                            session.clone(),
+                            now.saturating_duration_since(state.last_used),
+                        )
+                    })
+                })
+                .collect();
+            let over_limit =
+                policy.over_limit(&idle.iter().map(|(_, elapsed)| *elapsed).collect::<Vec<_>>());
+            let mut retired = Vec::new();
+            for (index, (session, elapsed)) in idle.iter().enumerate() {
+                let exited = inner
+                    .get_mut(session)
+                    .is_some_and(|agent| !matches!(agent.child.try_wait(), Ok(None)));
+                if exited || *elapsed >= policy.idle_timeout || over_limit.contains(&index) {
+                    if let Some(agent) = inner.remove(session) {
+                        retired.push(agent);
+                    }
+                    activity.remove(session);
+                }
+            }
+            // Failed startup/one-shot usages must not accumulate bookkeeping.
+            activity.retain(|session, state| state.users > 0 || inner.contains_key(session));
+            retired
+        };
+        for mut agent in retired {
+            #[cfg(unix)]
+            if let Some(pid) = agent.child.id() {
+                // SAFETY: start_server creates an owned process group with this PID.
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGKILL);
+                }
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(5), agent.child.kill()).await;
         }
     }
 
@@ -717,6 +820,7 @@ impl AgentHost {
         native_id: &str,
         model: Option<&str>,
     ) -> Result<()> {
+        let _usage = self.use_session(session_id);
         let operation = async {
             match self.summarize(session_id, native_id, model).await? {
                 SummarizeOutcome::Compacted => return Ok(()),
@@ -784,6 +888,7 @@ impl AgentHost {
         native_id: &str,
         model: Option<&str>,
     ) -> Result<SummarizeOutcome> {
+        let _usage = self.use_session(session_id);
         let Some(endpoint) = self.endpoint_for(session_id).await else {
             return Ok(SummarizeOutcome::NoServer);
         };
@@ -827,6 +932,7 @@ impl AgentHost {
         runtime: ResolvedRuntime,
         progress: tokio::sync::watch::Sender<String>,
     ) -> Result<AgentStatus> {
+        let _usage = self.use_session(session_id);
         let _spawning = self.spawn_lock.lock().await;
         if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(anyhow!("OpenCode is shutting down"));
@@ -970,6 +1076,70 @@ impl AgentHost {
 mod tests {
     use super::*;
     use crate::local::agent_skills::{self, SkillSet};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lifecycle_protects_turns_and_reaps_idle_process_groups() {
+        use std::os::unix::fs::PermissionsExt;
+        use tokio::io::AsyncReadExt;
+        let fixture =
+            crate::local::git::TemporaryDirectory::new("orx-agent-lifecycle-test").unwrap();
+        let path = fixture.path().join("opencode");
+        std::fs::write(&path, "#!/bin/sh\necho 1.19.0\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let binary = resolve_binary_at(path).await.unwrap();
+        let host = AgentHost::new(None);
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "sleep 300 & wait"])
+            .stdout(std::process::Stdio::piped())
+            .process_group(0)
+            .kill_on_drop(true);
+        let mut child = command.spawn().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let pipe = tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            stdout.read_to_end(&mut bytes).await.unwrap();
+        });
+        host.inner.lock().await.insert(
+            "busy".into(),
+            AgentChild {
+                child,
+                port: 0,
+                project_id: "project".into(),
+                session_id: "busy".into(),
+                model: None,
+                native_store: NativeStore::Isolated,
+                binary,
+                endpoint: AgentEndpoint {
+                    base_url: "http://127.0.0.1:1".into(),
+                    client: crate::net::loopback_client().build().unwrap(),
+                    protocol: Protocol::V1,
+                    legacy_v2_api: false,
+                },
+                database: native_store::opencode_database::DatabaseLease::acquire(
+                    &fixture.path().join("session.db"),
+                    1,
+                )
+                .unwrap(),
+            },
+        );
+        let usage = host.use_session("busy");
+        let future = Instant::now() + Duration::from_secs(3600);
+        host.reap_idle_at(future, IdlePolicy::LOW_MEMORY).await;
+        assert!(host.inner.lock().await.contains_key("busy"));
+        drop(usage);
+        host.reap_idle_at(Instant::now(), IdlePolicy::LOW_MEMORY)
+            .await;
+        assert!(host.inner.lock().await.contains_key("busy"));
+        host.reap_idle_at(future, IdlePolicy::LOW_MEMORY).await;
+        assert!(host.inner.lock().await.is_empty());
+        tokio::time::timeout(Duration::from_secs(5), pipe)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(host.activity.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn chat_config_leaves_native_questions_available_without_changing_other_rules() {
