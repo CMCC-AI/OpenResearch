@@ -1,3 +1,4 @@
+import { MaterialNavigationContext } from "./materialNavigation";
 import { mainSessionId } from "./researchSessions";
 import { lazy, Suspense } from "react";
 import { useReadOnlyWorkspace } from "./components/ReadOnlyWorkspace";
@@ -108,6 +109,8 @@ import {
   type UiState,
 } from "./api";
 import { ResearchPanel } from "./components/ResearchPanel";
+const MaterialWorkspace = lazy(() => import("./components/MaterialWorkspace"));
+
 import { WorkspaceTools } from "./components/WorkspaceTools";
 const ProjectTerminal = lazy(() => import("./components/ProjectTerminal").then(module => ({ default: module.ProjectTerminal })));
 import { SettingsCommandTerminal } from "./components/SshConnectTerminal";
@@ -430,6 +433,8 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   const [filesTabOpen, setFilesTabOpen] = useState(false);
   const [artifactsTabOpen, setArtifactsTabOpen] = useState(false);
   const [researchTabOpen, setResearchTabOpen] = useState(false);
+  const [materialsTabOpen, setMaterialsTabOpen] = useState(false);
+  const [materialTarget, setMaterialTarget] = useState<{ session: string | null; id?: string; nonce: number } | null>(null);
   const [terminalTabOpen, setTerminalTabOpen] = useState(false);
   // Which checkout has a live shell; a restored-but-unselected tab spawns nothing until selected.
   const [terminalStartedFor, setTerminalStartedFor] = useState<string | null>(null);
@@ -637,6 +642,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     artifactsTabOpen,
     terminalTabOpen,
     researchTabOpen,
+    materialsTabOpen,
     expTabs,
     fileTabs,
     planTabs,
@@ -652,7 +658,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     panelOpen,
     panelMax,
     treeViewport,
-  }), [rightTab, tabHistory, experimentsTabOpen, filesTabOpen, artifactsTabOpen, terminalTabOpen, researchTabOpen, expTabs, fileTabs, planTabs, subagentTabs, sideTabs, codeTabs, contentTabOrder, previewTab, filesView, filesToggled, selectedRunId, scope, panelOpen, panelMax, treeViewport]);
+  }), [rightTab, tabHistory, experimentsTabOpen, filesTabOpen, artifactsTabOpen, terminalTabOpen, researchTabOpen, materialsTabOpen, expTabs, fileTabs, planTabs, subagentTabs, sideTabs, codeTabs, contentTabOrder, previewTab, filesView, filesToggled, selectedRunId, scope, panelOpen, panelMax, treeViewport]);
   currentRightPaneStateRef.current = rightPaneState;
   const getFileScroll = useCallback(() => Object.fromEntries(fileScrollPositionsRef.current), []);
   const scrollSaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -669,6 +675,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     setArtifactsTabOpen(state.artifactsTabOpen);
     setTerminalTabOpen(state.terminalTabOpen);
     setResearchTabOpen(state.researchTabOpen ?? false);
+    setMaterialsTabOpen(state.materialsTabOpen ?? false);
     setExpTabs(state.expTabs);
     setFileTabs(state.fileTabs);
     setPlanTabs((current) => current === state.planTabs ? current : state.planTabs.map((tab) => ({ ...tab, plan: current.find((item) => item.sessionId === tab.sessionId && item.promptId === tab.promptId)?.plan ?? "" })));
@@ -950,6 +957,12 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     loadRunsBaseline(projectId);
     return () => { runsVisitRef.current++; };
   }, [loadRunsBaseline, projectId]);
+
+  const openMaterialsTab = useCallback((id?: string) => {
+    setMaterialTarget(previous => ({ session: activeSessionId, id, nonce: (previous?.nonce ?? 0) + 1 }));
+    setMaterialsTabOpen(true);
+    selectRightTab("materials");
+  }, [activeSessionId, selectRightTab]);
 
   const openResearchTab = useCallback(() => {
     setResearchTabOpen(true);
@@ -1470,8 +1483,9 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   }, [selectRightTab]);
 
   const closeHomeTab = useCallback(
-    (tab: "experiments" | "files" | "artifacts" | "terminal" | "research") => {
-      if (tab === "research") setResearchTabOpen(false);
+    (tab: "experiments" | "files" | "artifacts" | "terminal" | "research" | "materials") => {
+      if (tab === "materials") setMaterialsTabOpen(false);
+      else if (tab === "research") setResearchTabOpen(false);
       else if (tab === "experiments") setExperimentsTabOpen(false);
       else if (tab === "files") setFilesTabOpen(false);
       else if (tab === "terminal") {
@@ -1757,8 +1771,9 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     runs={runs}
     onOpenExperiment={(id, runId) => openExperimentTab(id, "overview", "preview", runId)}
     rightOffset={panelOpen ? panelWidth + 28 : undefined}
-    activeView={panelOpen && (rightTab === "files" || rightTab === "artifacts" || rightTab === "experiments" || rightTab === "terminal" || rightTab === "research") ? rightTab : null}
+    activeView={panelOpen && (rightTab === "files" || rightTab === "artifacts" || rightTab === "experiments" || rightTab === "terminal" || rightTab === "research" || rightTab === "materials") ? rightTab : null}
     projectId={activeProject.id}
+    onMaterials={() => openMaterialsTab()}
     onResearch={openResearchTab}
     onCompute={() => selectMainView("compute")}
     onOpenSession={(id) => onActiveSessionChange(id)}
@@ -1776,7 +1791,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   ) : null;
 
   return (
-    <div className="app flex flex-col h-full">
+    <MaterialNavigationContext value={openMaterialsTab}><div className="app flex flex-col h-full">
       {runtime.kind === "local" && <OfflineBanner />}
       {runtime.kind === "local" && <UpdateBanner status={updateStatus} />}
       {workspaceError && <div role="alert" className="flex items-center gap-2 px-4 mac-titlebar:ps-20 win-titlebar:pe-36 py-2 text-subtext"><span>{workspaceError}</span><Button onClick={retryWorkspace}>{m.app_retry()}</Button></div>}
@@ -1846,6 +1861,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             />
             <div className="tabs flex items-end gap-0 pt-1 pe-1.5 pb-0 ps-2 h-10 border-b border-b-border bg-background shrink-0">
               <TabStrip activeKey={rightTabKey(rightTab)}>
+                {materialsTabOpen && <ClosableTab active={rightTab === "materials"} label="研究材料" icon={<FolderOpen size={12} />} onSelect={() => selectRightTab("materials")} onClose={() => closeHomeTab("materials")} />}
                 {researchTabOpen && <ClosableTab active={rightTab === "research"} label="科研专家团" onSelect={() => selectRightTab("research")} onClose={() => closeHomeTab("research")} />}
                 {leadingFileTabs.map(renderFileTab)}
                 {filesTabOpen && (
@@ -1913,6 +1929,8 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
               || (requestedCodeTab && !codeExperiment)
               || (pane && "sessionId" in pane && pane.sessionId && !sessions?.includes(pane.sessionId)) ? (
               <TabBody><div className="p-6 text-subtext">{m.model_picker_unavailable()}</div></TabBody>
+            ) : rightTab === "materials" ? (
+              <TabBody><Suspense fallback={<p role="status" className="p-4 text-sm text-subtext">正在打开材料…</p>}><MaterialWorkspace key={`${activeProject.id}:${activeSessionId}:${materialTarget?.nonce ?? 0}`} sessionId={activeSessionId} requestedId={materialTarget?.session === activeSessionId ? materialTarget.id : undefined} /></Suspense></TabBody>
             ) : rightTab === "research" ? (
               <TabBody><ResearchPanel key={researchSessionId ?? "preview"} placement="pane" sessionId={researchSessionId} disabled={false} onOpenSession={(id) => onActiveSessionChange(id, { preservePane: true })} /></TabBody>
             ) : rightTab === "artifacts" ? (
@@ -2377,6 +2395,6 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
           onCreateProject={createProjectFromDemoWelcome}
         />
       )}
-    </div>
+    </div></MaterialNavigationContext>
   );
 }

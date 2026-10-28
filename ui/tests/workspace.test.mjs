@@ -351,6 +351,18 @@ test("research pane restores with file tabs and survives workspace serialization
   assert.deepEqual(tabs.rememberWorkspace(restored, {}, {}).tabs, [research, { kind: "home", view: "files" }]);
 });
 
+test("materials pane persists separately from worktree files and restores as active", () => {
+  const pane = { kind: "home", view: "materials" };
+  assert.deepEqual(workspace.parsePane(pane), pane);
+  const state = tabs.applyPane(tabs.restoreWorkspace(undefined, { kind: "home", view: "files" }), pane);
+  const saved = tabs.rememberWorkspace(state, {}, {});
+  const restored = tabs.restoreWorkspace(saved, pane);
+  assert.equal(restored.materialsTabOpen, true);
+  assert.equal(restored.filesTabOpen, true);
+  assert.equal(restored.rightTab, "materials");
+  assert.deepEqual(tabs.rememberWorkspace(restored, {}, {}).tabs, [pane, { kind: "home", view: "files" }]);
+});
+
 test("a newly running experiment opens its logs only on the first output", () => {
   const source = ts.createSourceFile("App.tsx", readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let handlers;

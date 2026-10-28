@@ -11,7 +11,7 @@ import { Md } from "./Md";
 import { Button, IconButton, IconButtonLink, Input, Spinner } from "./ui";
 import { useDialogFocus } from "./useDialogFocus";
 
-export default function MaterialReader({ id, onClose }: { id: string; onClose: () => void }) {
+export default function MaterialReader({ id, onClose, embedded = false }: { id: string; onClose: () => void; embedded?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const [material, setMaterial] = useState<MaterialPackage | null>(null);
@@ -32,17 +32,16 @@ export default function MaterialReader({ id, onClose }: { id: string; onClose: (
     })().catch(cause => { if (!disposed) setError(cause instanceof Error ? cause.message : String(cause)); });
     return () => { disposed = true; controller.abort(); };
   }, [id, attempt]);
-  return createPortal(<div className="fixed inset-0 z-50 flex justify-end bg-black/30" onClick={onClose}>
-    <div ref={ref} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} className="flex h-full w-full max-w-6xl flex-col border-l border-border bg-background text-text shadow-elevated" onClick={event => event.stopPropagation()}>
+  const reader = <div ref={embedded ? undefined : ref} role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-labelledby={titleId} tabIndex={embedded ? undefined : -1} className={`@container flex h-full min-h-0 w-full flex-col bg-background text-text ${embedded ? "" : "max-w-6xl border-l border-border shadow-elevated"}`} onClick={event => event.stopPropagation()}>
       <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-3">
         <div className="min-w-0"><h2 id={titleId} className="m-0 flex items-center gap-2 font-semibold"><FolderOpen size={19} className="text-primary" />研究材料{material ? <span className="text-sm font-normal text-subtext">{material.files.length} 个文件</span> : null}</h2><p className="mb-0 mt-1 text-xs text-subtext">浏览原件不代表 AI 已阅读；引用以本次导入版本为准。</p></div>
-        <IconButton aria-label="关闭材料阅读器" onClick={onClose}><X size={18} /></IconButton>
+        {!embedded && <IconButton aria-label="关闭材料阅读器" onClick={onClose}><X size={18} /></IconButton>}
       </header>
       {material ? <ReaderContent key={material.id} material={material} /> : <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-5">
         {error ? <><p role="alert" className="text-sm text-accent-red">{error}</p><Button data-initial-focus onClick={() => setAttempt(value => value + 1)}>重新加载</Button></> : <><Spinner /><p role="status" className="text-sm text-subtext">正在加载材料目录…</p></>}
       </div>}
-    </div>
-  </div>, document.body);
+    </div>;
+  return embedded ? reader : createPortal(<div className="fixed inset-0 z-50 flex justify-end bg-black/30" onClick={onClose}>{reader}</div>, document.body);
 }
 
 function ReaderContent({ material }: { material: MaterialPackage }) {
@@ -67,12 +66,12 @@ function ReaderContent({ material }: { material: MaterialPackage }) {
   const download = selected ? projectAssetUrl(materialUrl(material.id, selected.id, "download")) : null;
   return <div className="flex min-h-0 flex-1 flex-col">
     <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-xs text-subtext">
-      <Button size="small" className="sm:hidden" onClick={() => setDirectory(value => !value)}><PanelLeft size={14} />{directory ? "查看正文" : "目录"}</Button>
+      <Button size="small" className="@2xl:hidden" onClick={() => setDirectory(value => !value)}><PanelLeft size={14} />{directory ? "查看正文" : "目录"}</Button>
       <span>导入时间：{material.createdAt ? new Date(material.createdAt).toLocaleString("zh-CN") : "未记录"}</span>
       <span className="truncate">版本 {material.id.slice(0, 8)}</span>
     </div>
     <div className="flex min-h-0 flex-1">
-      <aside aria-label="材料目录" className={`${directory ? "flex" : "hidden"} w-full shrink-0 flex-col border-r border-border sm:flex sm:w-64`}>
+      <aside aria-label="材料目录" className={`${directory ? "flex" : "hidden"} w-full shrink-0 flex-col border-r border-border @2xl:flex @2xl:w-64`}>
         <div className="flex flex-col gap-2 border-b border-border p-3">
           <label className="relative"><Search size={15} className="pointer-events-none absolute left-2 top-2.5 text-subtext" /><Input data-initial-focus type="search" aria-label="搜索材料文件" placeholder="搜索文件名或路径" className="w-full pl-7" value={query} onChange={event => setQuery(event.target.value)} /></label>
           <select aria-label="筛选材料类型" className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm" value={filter} onChange={event => setFilter(event.target.value)}>
@@ -84,7 +83,7 @@ function ReaderContent({ material }: { material: MaterialPackage }) {
         </nav>
         <p className="border-t border-border px-3 py-2 text-xs text-subtext">{filtered.length} / {material.files.length} 个文件</p>
       </aside>
-      <section aria-label="材料预览" className={`${directory ? "hidden" : "flex"} min-h-0 min-w-0 flex-1 flex-col sm:flex`}>
+      <section aria-label="材料预览" className={`${directory ? "hidden" : "flex"} min-h-0 min-w-0 flex-1 flex-col @2xl:flex`}>
         {selected ? <>
           <div className="flex shrink-0 items-start justify-between gap-2 border-b border-border px-4 py-3">
             <div className="min-w-0"><h3 className="m-0 break-words text-sm font-medium">{selected.path}</h3><p className="mb-0 mt-1 text-xs text-subtext">{materialStatus(selected)} · {fmtBytes(selected.size)}</p></div>
@@ -160,4 +159,8 @@ function MaterialPreview({ material, file, onOpen }: { material: MaterialPackage
       }} /> : <div className="space-y-0.5 font-mono text-sm">{lines.slice(first, first + 200).map((line, index) => <div key={first + index} className="flex gap-3"><span aria-hidden="true" className="w-10 shrink-0 select-none text-right text-subtext">{first + index + 1}</span><code className="min-w-0 whitespace-pre-wrap break-words">{line || " "}</code></div>)}{!lines.length && <p className="text-subtext">此文本文件为空。</p>}</div>}
     </div>
   </div>;
+}
+
+export function MaterialReaderPane({ id }: { id: string }) {
+  return <MaterialReader id={id} embedded onClose={() => {}} />;
 }

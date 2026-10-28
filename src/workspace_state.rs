@@ -110,6 +110,7 @@ pub enum HomeView {
     Artifacts,
     Terminal,
     Research,
+    Materials,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -327,6 +328,13 @@ mod tests {
     #[test]
     fn research_home_pane_round_trips() {
         let value = json!({"kind":"home","view":"research"});
+        let pane: Pane = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(pane).unwrap(), value);
+    }
+
+    #[test]
+    fn materials_home_pane_round_trips() {
+        let value = json!({"kind":"home","view":"materials"});
         let pane: Pane = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(pane).unwrap(), value);
     }

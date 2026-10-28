@@ -16,17 +16,18 @@ import { ResearchPanel } from "./ResearchPanel";
 import { usePopover } from "./ModelPicker";
 import { SideChatMenu } from "./SideChatMenu";
 
-export function WorkspaceTools({ placement = "floating", expanded, experiments, runs, onOpenExperiment, rightOffset, activeView, projectId, onCompute, sessionId, busy, onChanges, onFiles, onTerminal, onArtifacts, onExperiments, onSideChat, onOpenSession, onResearch, sessions, onSelectSideChat }: {
+export function WorkspaceTools({ placement = "floating", expanded, experiments, runs, onOpenExperiment, rightOffset, activeView, projectId, onCompute, sessionId, busy, onChanges, onFiles, onTerminal, onArtifacts, onExperiments, onSideChat, onOpenSession, onResearch, onMaterials, sessions, onSelectSideChat }: {
   placement?: "floating" | "header";
   expanded: boolean;
   experiments: Experiment[];
   runs: Run[];
   onOpenExperiment: (id: string, runId: string) => void;
   rightOffset?: number;
-  activeView: "files" | "artifacts" | "experiments" | "terminal" | "research" | null;
+  activeView: "files" | "artifacts" | "experiments" | "terminal" | "research" | "materials" | null;
   projectId: string;
   onCompute: () => void;
   onResearch: () => void;
+  onMaterials: () => void;
   sessionId: string | null;
   busy: boolean;
   onChanges: () => void;
@@ -48,6 +49,7 @@ export function WorkspaceTools({ placement = "floating", expanded, experiments, 
   const defaultBackend = compute.data?.configuredDefaultBackend ?? compute.data?.defaultBackend;
   const computeLabel = defaultBackend ? TARGET_LABELS[defaultBackend]() : compute.isPending ? "…" : compute.isError ? m.model_picker_unavailable() : m.settings_not_set();
   const items = [
+    { id: "materials", label: "研究材料", Icon: FolderOpen, onClick: onMaterials },
     { id: "files", label: m.app_files(), Icon: FolderOpen, onClick: onFiles },
     { id: "artifacts", label: m.app_artifacts(), Icon: Package, onClick: onArtifacts },
     { id: "experiments", label: m.app_experiments(), Icon: FlaskConical, onClick: onExperiments },
