@@ -1,0 +1,86 @@
+name: MobileSci source release
+
+on:
+  push:
+    branches: ['codex/release-mobilesci-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobilesci-source-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify frozen version and release branch
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          node scripts/check-upstream-base.mjs
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import assert from 'node:assert/strict';
+          const { productVersion } = JSON.parse(readFileSync('product-upstream.json', 'utf8'));
+          assert.equal(process.env.BRANCH, `codex/release-mobilesci-${productVersion}`);
+          assert.ok(readFileSync(`release-notes/v${productVersion}.md`, 'utf8').trim());
+          NODE
+
+  ci:
+    needs: candidate
+    uses: ./.github/workflows/ci.yml
+    with:
+      plan: source-release
+
+  publish:
+    needs: [candidate, ci]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build immutable source archives
+        run: node scripts/source-release.mjs .mobilesci-run/source-release "$GITHUB_SHA"
+      - name: Publish verified version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./product-upstream.json").productVersion')
+          tag="v${version}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            test "$(git rev-list -n 1 "$tag")" = "$GITHUB_SHA"
+          else
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git tag -a "$tag" "$GITHUB_SHA" -m "MobileSci ${version}"
+            git push origin "refs/tags/${tag}"
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            test "$(gh release view "$tag" --json isDraft --jq '.isDraft')" = false
+            gh release download "$tag" --dir .mobilesci-run/existing-release
+            (cd .mobilesci-run/existing-release && sha256sum -c SHA256SUMS)
+            echo "Release ${tag} already exists at the verified revision."
+            exit 0
+          fi
+          gh release create "$tag" --verify-tag --latest \
+            --title "MobileSci ${version}" \
+            --notes-file "release-notes/${tag}.md" \
+            .mobilesci-run/source-release/*.tar.gz \
+            .mobilesci-run/source-release/*.zip \
+            .mobilesci-run/source-release/source-release.json \
+            .mobilesci-run/source-release/SHA256SUMS

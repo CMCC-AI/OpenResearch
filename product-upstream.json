@@ -3,10 +3,10 @@
   "tag": "v0.2.19",
   "commit": "1d8a285468aed5d5a1f1ea86ecf6e2f63fcaa8bd",
   "version": "0.2.19",
-  "productVersion": "0.2.21-mobilesci.1",
+  "productVersion": "0.2.22-mobilesci.1",
   "backportTarget": {
-    "tag": "v0.2.21",
-    "commit": "5af82bb531a731698afc6e8e46f3e5157e20210b",
+    "tag": "v0.2.22",
+    "commit": "15f2b59bda0208dbaba536adb253cb8dc1ff7d62",
     "status": "partial"
   },
   "updateChannel": "product-disabled"

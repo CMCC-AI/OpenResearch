@@ -84,7 +84,7 @@ jobs:
       - name: Product upstream base
         run: |
           node scripts/check-upstream-base.mjs
-          node --test scripts/product-version.test.mjs
+          node --test scripts/product-version.test.mjs scripts/source-release.test.mjs
 
       - name: Localization catalogs
         run: node ui/scripts/check-i18n.mjs
