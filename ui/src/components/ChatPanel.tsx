@@ -1,3 +1,4 @@
+import { reconcileSubmission } from "../chatSubmission";
 import { MaterialChip } from "./MaterialChip";
 import { resolveStarterPrompts } from "../starterPrompts";
 import { isNewChatLayout, isChatLayoutPending } from "../chatLayout";
@@ -139,6 +140,8 @@ import {
   runShellCommand,
   fmtDuration,
   sendChatMessage,
+  getChatSubmission,
+  HttpResponseError,
   setChatSessionArchived,
   setChatSessionAutonomy,
   setChatSessionPermissionMode,
@@ -4343,7 +4346,7 @@ export function ChatPanel({
   const activeLeafRef = useRef<string | null>(null);
   const [retryingQueuedId, setRetryingQueuedId] = useState<string | null>(null);
   const preparingSend = useRef(false);
-  const pendingClientTurn = useRef<{ signature: string; id: string } | null>(null);
+  const pendingClientTurn = useRef<{ signature: string; id: string; sessionId: string | null; mode?: "steer" } | null>(null);
   // Sessions whose title was just replaced by a harness-generated one, mapped
   // to a nonce that bumps per reveal so a second retitle remounts the spans and
   // replays the animation instead of sitting on a finished one.
@@ -4983,7 +4986,7 @@ export function ChatPanel({
   // Load message history when a session becomes active.
   useEffect(() => {
     setRecoveryOverrides(EMPTY_RECOVERY_OVERRIDES);
-    pendingClientTurn.current = null;
+    if (pendingClientTurn.current?.sessionId !== activeId) pendingClientTurn.current = null;
   }, [activeId]);
 
   useEffect(() => {
@@ -5450,7 +5453,8 @@ export function ChatPanel({
       });
       return;
     }
-    const turnSignature = JSON.stringify({
+    const signatureFor = (sessionId: string | null) => JSON.stringify({
+      sessionId, workspace: sessionsOptions.queryKey,
       text,
       images: pending.map((attachment) => ({
         mediaType: attachment.mediaType,
@@ -5470,10 +5474,28 @@ export function ChatPanel({
         }
         : null,
     });
+    const turnSignature = signatureFor(sourceSessionId);
+    const retryingSubmission = pendingClientTurn.current?.signature === turnSignature ? pendingClientTurn.current : null;
+    const submissionMode = retryingSubmission ? retryingSubmission.mode : busy && steering && !queue && !planRequested ? "steer" : undefined;
     const clientTurnId = pendingClientTurn.current?.signature === turnSignature
       ? pendingClientTurn.current.id
       : createClientTurnId();
-    pendingClientTurn.current = { signature: turnSignature, id: clientTurnId };
+    pendingClientTurn.current = { signature: turnSignature, id: clientTurnId, sessionId: sourceSessionId, mode: submissionMode };
+    let deliveryAttempted = false;
+    const resolveSubmissionFailure = async (error: unknown, sessionId: string) => {
+      if (!inSourceScope() || deletedSessionIds.has(sessionId)) return "retired";
+      if (!deliveryAttempted) return "rejected";
+      return reconcileSubmission({
+        sessionId, clientTurnId,
+        isCurrent: () => inSourceScope() && !deletedSessionIds.has(sessionId),
+        lookup: (signal) => submissionMode === "steer"
+          ? Promise.reject(new Error("Steering receipts are not available"))
+          : getChatSubmission(sessionId, clientTurnId, signal),
+        // The send API also maps internal/admission failures to 400, so that
+        // status alone cannot establish that nothing was persisted.
+        rejected: error instanceof HttpResponseError && [401, 403, 404, 409, 413, 415, 422, 429].includes(error.status),
+      });
+    };
     if (busy) {
       // A turn is already running. Steering hands the message to it now, and
       // the delivered text comes back inline on the assistant message. Parking
@@ -5512,23 +5534,31 @@ export function ChatPanel({
       if (inSourceScope()) setSessionOverride({});
       try {
         const images: ChatImageAttachment[] = await uploadSendMaterials(pending);
-        const sendBusy = () =>
-          sendChatMessage(
+        const sendBusy = () => {
+          deliveryAttempted = true;
+          return sendChatMessage(
             sid,
             text,
             turnOpts,
             images.length ? images : undefined,
             wireAnnotations,
             clientTurnId,
-            steering && !queue && !planRequested ? "steer" : undefined,
+            submissionMode,
           );
+        };
         const response = await queueSessionMutation(sendBusy);
         if (response.turn?.existing) await reseedSession(sid);
         if (inSourceScope()) setRecoveryOverrides(EMPTY_RECOVERY_OVERRIDES);
         if (pendingClientTurn.current?.id === clientTurnId) pendingClientTurn.current = null;
       } catch (error) {
-        setAttachError(error instanceof Error ? error.message : String(error));
-        // Never reached the turn — restore the composer so a retry is one keypress.
+        const resolution = await resolveSubmissionFailure(error, sid);
+        if (resolution === "retired" || !inSourceScope() || deletedSessionIds.has(sid)) return;
+        if (resolution === "accepted") {
+          if (pendingClientTurn.current?.id === clientTurnId) pendingClientTurn.current = null;
+          await reseedSession(sid);
+          return;
+        }
+        setAttachError(resolution === "unknown" ? "发送结果尚未确认，请先检查对话与排队消息，避免重复提交。" : error instanceof Error ? error.message : String(error));
         clearFailedPlanCommand();
         restoreComposer();
       }
@@ -5560,6 +5590,10 @@ export function ChatPanel({
           const session = await openNewSession(effective, independentPlanMode, text);
           sid = session.id;
           sourceSessionId = session.id;
+          if (pendingClientTurn.current?.id === clientTurnId) {
+            pendingClientTurn.current.signature = signatureFor(session.id);
+            pendingClientTurn.current.sessionId = session.id;
+          }
         }
         if (!isCurrentScope(sessionsOptions.queryKey)) return;
         const historySid = sid;
@@ -5615,48 +5649,46 @@ export function ChatPanel({
       const images: ChatImageAttachment[] = await uploadSendMaterials(pending);
       const targetSessionId = sid;
       if (!targetSessionId) throw new Error(m.chat_session_not_created());
-      const sendTurn = () =>
-        sendChatMessage(
+      const sendTurn = () => {
+        deliveryAttempted = true;
+        return sendChatMessage(
           targetSessionId,
           text,
           turnOpts,
           images.length ? images : undefined,
           wireAnnotations,
           clientTurnId,
+          submissionMode,
         );
+      };
       const response = await queueSessionMutation(sendTurn);
       if (response.turn?.existing) await reseedSession(targetSessionId);
       if (inSourceScope()) setRecoveryOverrides(EMPTY_RECOVERY_OVERRIDES);
       if (pendingClientTurn.current?.id === clientTurnId) pendingClientTurn.current = null;
     } catch (err) {
       if (!isCurrentScope(sessionsOptions.queryKey)) return;
-      // The message never reached a turn — put it back in the composer so a
-      // retry is one keypress, whichever branch below applies.
+      const resolution = sid ? await resolveSubmissionFailure(err, sid) : "rejected";
+      if (resolution === "retired" || !inSourceScope() || (sid && deletedSessionIds.has(sid))) return;
+      if (resolution === "accepted") {
+        if (pendingClientTurn.current?.id === clientTurnId) pendingClientTurn.current = null;
+        await reseedSession(sid!);
+        return;
+      }
       restoreComposer();
       clearFailedPlanCommand();
-      if (!sid) return; // session creation failed; no transcript to annotate
-      const msg = err instanceof Error ? err.message : String(err);
-      // A *network* failure does not prove no turn started — the backend
-      // claims the turn (and emits busy) before its response, so a lost
-      // response can reject on a live, streaming turn; ask the server before
-      // declaring failure. An explicit busy rejection is different: the slot
-      // belongs to someone else's turn (run watcher, second tab) and ours was
-      // never accepted — always surface that.
-      if (!/session is busy/i.test(msg)) {
-        const busyNow = await queryClient.fetchQuery({ ...listChatSessionsQuery(projectId), staleTime: 0 })
-          .then((list) => !!list.find((s) => s.id === sid)?.busy)
-          .catch(() => false);
-        if (busyNow) {
-          // The turn is real and streaming — undo the restore, nothing failed.
-          if (inSourceScope()) {
-            setDraft((cur) => (cur === text ? "" : cur));
-            setAttachments((cur) => (cur === pending ? [] : cur));
-            setAnnotations((cur) => (cur === pendingAnnotations ? [] : cur));
-          }
-          return;
-        }
+      if (!sid) return;
+      if (resolution === "unknown") {
+        // Keep the request identity and the restored draft; busy belongs to a session,
+        // not necessarily this submission. Reconciliation may also refresh that state.
+        if (inSourceScope()) setAttachError("发送结果尚未确认，请检查对话与排队消息后再重试。");
+        await reseedSession(sid);
+        return;
       }
-      dispatch({ type: "busy", sessionId: sid, busy: false });
+      const msg = err instanceof Error ? err.message : String(err);
+      // An explicit rejection may belong to a session running somebody else's turn.
+      // Refresh its actual state rather than clearing busy on behalf of this request.
+      await reseedSession(sid);
+      if (!inSourceScope() || deletedSessionIds.has(sid)) return;
       dispatch({ type: "localError", sessionId: sid, text: m.chat_message_not_sent({ error: ltr(msg) }) });
     }
   }
@@ -5684,6 +5716,7 @@ export function ChatPanel({
       if (!queryClient.getQueryData(sessionsOptions.queryKey)) void syncSessionList(true);
     }
     if (isCurrentScope(sessionsOptions.queryKey) && projectVisitRef.current === visit && composerScopeRef.current === scope) {
+      if (preparingSend.current && pendingClientTurn.current?.sessionId === null) pendingClientTurn.current.sessionId = session.id;
       onActiveSessionChangeRef.current(session.id, { replace: true });
       composerScopeRef.current = { ...scope, activeId: session.id };
     }

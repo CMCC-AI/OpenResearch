@@ -83,6 +83,7 @@ test("first send applies draft autonomy to the newly created side chat", async (
     setSessions: (update) => { cached = update([]); },
     queryClient: { getQueryData: () => [] },
     onActiveSessionChangeRef: { current: () => {} },
+    preparingSend: { current: false }, pendingClientTurn: { current: null },
   });
   const session = await openNewSession({}, undefined);
   assert.deepEqual(changes, [["child", "copilot"]]);

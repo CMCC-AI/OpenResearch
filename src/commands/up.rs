@@ -55,6 +55,8 @@ mod harness_setup;
 mod materials;
 mod message_delta;
 #[cfg(test)]
+mod submission_tests;
+#[cfg(test)]
 use event_stream::forward_chat_events;
 use event_stream::{events, log_size, read_log_from, UPDATE_SAMPLE_INTERVAL};
 mod research;
@@ -776,6 +778,10 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
         .route("/api/chat/sessions/{id}/messages", get(chat_messages))
         .route("/api/chat/sessions/{id}/worktree", get(session_worktree))
         .route("/api/chat/sessions/{id}/message", post(send_chat_message))
+        .route(
+            "/api/chat/sessions/{id}/submissions/{clientId}",
+            get(chat_submission),
+        )
         .route("/api/chat/sessions/{id}/shell", post(run_shell_command))
         .route(
             "/api/chat/sessions/{id}/compact",
@@ -8412,6 +8418,28 @@ async fn compact_chat_session(State(state): State<AppState>, Path(id): Path<Stri
         .await
         .map_err(ApiError::from)?;
     Ok(Json(json!({ "message": message })))
+}
+
+async fn chat_submission(Path((id, client_id)): Path<(String, String)>) -> ApiResult {
+    blocking_api(move || {
+        if client_id.is_empty() || client_id.len() > 256 {
+            return Err(bad_request("invalid client turn id"));
+        }
+        let store = Store::open()?;
+        let session = store
+            .get_chat_session(&id)?
+            .ok_or_else(|| not_found("chat session"))?;
+        store
+            .get_local_project(&session.project_id)?
+            .ok_or_else(|| not_found("project"))?;
+        let submission = store
+            .chat_submission_by_client_id(&id, &client_id)?
+            .map(|(kind, receipt_id)| json!({"kind": kind, "id": receipt_id}));
+        Ok(Json(
+            json!({"sessionId": id, "clientTurnId": client_id, "submission": submission}),
+        ))
+    })
+    .await
 }
 
 async fn send_chat_message(

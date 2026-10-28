@@ -111,6 +111,13 @@ export function experimentMonitoringError(runs: Pick<Run, "status" | "backend" |
 
 const writeScopes = new WeakMap<Response, ReturnType<typeof workspaceScope>>();
 
+export class HttpResponseError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = "HttpResponseError";
+  }
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -137,7 +144,7 @@ async function json<T>(res: Response): Promise<T> {
       if (error instanceof FileChangedError) throw error;
       // Keep proxy HTML out of the user-facing error message.
     }
-    throw new Error(message || `HTTP ${res.status}`);
+    throw new HttpResponseError(message || `HTTP ${res.status}`, res.status);
   }
   const data: T = await res.json();
   const scope = writeScopes.get(res);
@@ -2170,6 +2177,12 @@ export const chatAttachmentUrl = (name: string) =>
   projectAssetUrl(`/api/chat/attachments/${encodeURIComponent(name)}`);
 
 /** Returns immediately; the turn streams over /api/events (chat.* events). */
+export const getChatSubmission = (sessionId: string, clientTurnId: string, signal?: AbortSignal) =>
+  projectRequest(`/api/chat/sessions/${encodeURIComponent(sessionId)}/submissions/${encodeURIComponent(clientTurnId)}`, { signal, cache: "no-store" }).then(response => json<{
+    sessionId: string; clientTurnId: string;
+    submission: { kind: "turn" | "queued"; id: string } | null;
+  }>(response));
+
 export const sendChatMessage = (
   sessionId: string,
   text: string,

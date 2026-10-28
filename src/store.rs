@@ -2854,6 +2854,22 @@ impl Store {
             .optional()?)
     }
 
+    /// One indexed snapshot across queue promotion; absence is not a rejection.
+    pub fn chat_submission_by_client_id(
+        &self,
+        session_id: &str,
+        client_turn_id: &str,
+    ) -> Result<Option<(String, String)>> {
+        Ok(self.conn.query_row(
+            "SELECT 'turn', id FROM chat_turns WHERE session_id = ?1 AND client_turn_id = ?2
+             UNION ALL
+             SELECT 'queued', id FROM chat_queued_messages WHERE session_id = ?1 AND client_turn_id = ?2
+             LIMIT 1",
+            params![session_id, client_turn_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional()?)
+    }
+
     pub fn chat_native_thread_has_named_model(
         &self,
         session_id: &str,
@@ -4287,6 +4303,75 @@ mod tests {
             created_at: 2,
             updated_at: 2,
         }
+    }
+
+    #[test]
+    fn submission_receipts_follow_queue_promotion_and_remain_session_scoped() {
+        let dir = std::env::temp_dir().join(format!("orx-submission-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_at(dir.clone()).unwrap();
+        for session in ["chat_1", "chat_2"] {
+            store
+                .create_chat_session(&chat_session_fixture(session))
+                .unwrap();
+        }
+        assert!(store
+            .chat_submission_by_client_id("chat_1", "client")
+            .unwrap()
+            .is_none());
+        for (id, session) in [("queue-1", "chat_1"), ("queue-2", "chat_2")] {
+            store
+                .insert_queued_chat_message(&StoredQueuedChatMessage {
+                    id: id.into(),
+                    session_id: session.into(),
+                    client_turn_id: "client".into(),
+                    request_hash: "hash".into(),
+                    payload_json: "not parsed by receipt lookup".into(),
+                    created_at: 1,
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            store
+                .chat_submission_by_client_id("chat_1", "client")
+                .unwrap(),
+            Some(("queued".into(), "queue-1".into()))
+        );
+        assert_eq!(
+            store
+                .chat_submission_by_client_id("chat_2", "client")
+                .unwrap(),
+            Some(("queued".into(), "queue-2".into()))
+        );
+        assert!(store
+            .chat_submission_by_client_id("chat_1", "other-client")
+            .unwrap()
+            .is_none());
+        store
+            .admit_chat_turn(None, &chat_turn_fixture("turn", "client"))
+            .unwrap();
+        assert_eq!(
+            store
+                .chat_submission_by_client_id("chat_1", "client")
+                .unwrap(),
+            Some(("turn".into(), "turn".into()))
+        );
+        store.delete_queued_chat_message("queue-1").unwrap();
+        drop(store);
+        let store = Store::open_at(dir.clone()).unwrap();
+        assert_eq!(
+            store
+                .chat_submission_by_client_id("chat_1", "client")
+                .unwrap(),
+            Some(("turn".into(), "turn".into()))
+        );
+        assert_eq!(
+            store
+                .chat_submission_by_client_id("chat_2", "client")
+                .unwrap(),
+            Some(("queued".into(), "queue-2".into()))
+        );
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

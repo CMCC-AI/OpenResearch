@@ -407,3 +407,135 @@ test("local send failures retain the preceding model response and render as thei
   assert.match(html, /role="alert"/);
   assert.match(html, /消息未发送：&lt;offline&gt;/);
 });
+
+function sendFunction() {
+  const file = source("ChatPanel.tsx");
+  let send;
+  function visit(node) { if (ts.isFunctionDeclaration(node) && node.name?.text === "send") send = node; ts.forEachChild(node, visit); }
+  visit(file);
+  return { file, send };
+}
+
+test("lost send responses use request receipts rather than another turn's busy state", async () => {
+  const { file, send } = sendFunction();
+  const block = send.body.statements.find(node => ts.isTryStatement(node) && node.tryBlock.getText(file).includes('type: "optimisticUser"'));
+  const code = block.catchClause.block.statements.map(node => node.getText(file)).join("\n");
+  for (const resolution of ["accepted", "unknown", "rejected", "retired", "late-retired"]) {
+    let restored = 0, reseeded = 0;
+    const actions = [], warnings = [];
+    const pending = { current: { id: "request", signature: "payload" } };
+    await evaluate(`return (async () => { ${code} })()`, {
+      sid: "s", err: new Error("offline"), sessionsOptions: { queryKey: [] }, isCurrentScope: () => true,
+      resolveSubmissionFailure: async () => resolution === "late-retired" ? "accepted" : resolution, pendingClientTurn: pending, clientTurnId: "request",
+      restoreComposer: () => { restored++; }, clearFailedPlanCommand: () => {},
+      reseedSession: async () => { reseeded++; }, inSourceScope: () => resolution !== "late-retired",
+      setAttachError: warning => warnings.push(warning), dispatch: action => actions.push(action),
+      m: { chat_message_not_sent: ({error}) => error }, ltr: value => value,
+      queryClient: { fetchQuery: () => assert.fail("busy is not a request receipt") },
+    });
+    if (resolution === "accepted") {
+      assert.equal(restored, 0); assert.equal(reseeded, 1); assert.equal(pending.current, null); assert.deepEqual(actions, []);
+    } else if (resolution === "unknown") {
+      assert.equal(restored, 1); assert.equal(pending.current.id, "request"); assert.equal(reseeded, 1); assert.deepEqual(actions, []); assert.match(warnings[0], /尚未确认/);
+    } else if (resolution === "retired" || resolution === "late-retired") {
+      assert.equal(restored, 0); assert.equal(reseeded, 0); assert.deepEqual(actions, []);
+    } else {
+      assert.equal(restored, 1); assert.equal(reseeded, 1); assert.equal(actions.length, 1); assert.equal(actions[0].type, "localError");
+    }
+  }
+});
+
+test("unchanged retries preserve their ID and admission mode across busy transitions", () => {
+  const { file, send } = sendFunction();
+  const statements = send.body.statements;
+  const first = statements.findIndex(node => node.getText(file).startsWith("const signatureFor"));
+  const last = statements.findIndex((node, index) => index > first && node.getText(file).startsWith("pendingClientTurn.current ="));
+  const code = statements.slice(first, last + 1).map(node => node.getText(file)).join("\n");
+  const pending = { current: null };
+  let sequence = 0;
+  const bindings = { sourceSessionId: "s", sessionsOptions: { queryKey: ["workspace", 1, "project"] },
+    pendingClientTurn: pending, createClientTurnId: () => `request-${++sequence}`, text: "same", pending: [], wireAnnotations: [], effective: null,
+    independentPlanMode: false, busy: false, steering: true, queue: false, planRequested: false };
+  const run = () => evaluate(`${code}; return { id: clientTurnId, mode: submissionMode, signatureFor };`, bindings);
+  const original = run();
+  bindings.busy = true;
+  const retry = run();
+  assert.equal(retry.id, original.id);
+  assert.equal(retry.mode, undefined, "an ordinary retry must not become steering");
+  bindings.sourceSessionId = "other";
+  assert.notEqual(run().id, original.id);
+  const other = pending.current.id;
+  bindings.sessionsOptions.queryKey = ["workspace", 2, "project"];
+  assert.notEqual(run().id, other);
+  bindings.sourceSessionId = null; bindings.busy = false;
+  const fresh = run();
+  // The new-session preparation updates the signature to its assigned target.
+  pending.current.signature = fresh.signatureFor("created");
+  bindings.sourceSessionId = "created";
+  assert.equal(run().id, fresh.id);
+});
+
+test("assigning a new session preserves its pending identity before navigation effects run", async () => {
+  const { file } = sendFunction();
+  let create;
+  function visit(node) { if (ts.isFunctionDeclaration(node) && node.name?.text === "openNewSession") create = node; ts.forEachChild(node, visit); }
+  visit(file);
+  const pending = { current: { id: "request", signature: "new-draft", sessionId: null } };
+  const visitToken = { projectId: "p" }, scope = { projectId: "p", activeId: null, mainView: "chat" };
+  let navigated = false;
+  await evaluate(`return (${create.getText(file)})({ harness: "opencode" }, false, "question", "normal")`, {
+    composerScopeRef: { current: scope }, projectVisitRef: { current: visitToken }, projectId: "p", sideParentSessionId: null,
+    createChatSessionMutation: { mutateAsync: async () => ({ id: "created" }) }, preferredAutonomy: null,
+    isCurrentScope: () => true, sessionsOptions: { queryKey: [] }, setSessions: () => {}, queryClient: { getQueryData: () => true },
+    preparingSend: { current: true }, pendingClientTurn: pending,
+    onActiveSessionChangeRef: { current: id => { assert.equal(id, "created"); assert.equal(pending.current.sessionId, id); navigated = true; } },
+  });
+  assert.equal(navigated, true);
+  assert.equal(pending.current.id, "request");
+  let effect;
+  function find(node) { if (ts.isCallExpression(node) && node.expression.getText(file) === "useEffect" && node.arguments[1]?.getText(file) === "[activeId]" && node.arguments[0].getText(file).includes("pendingClientTurn")) effect = node.arguments[0]; ts.forEachChild(node, find); }
+  find(file);
+  const run = activeId => evaluate(`return (${effect.getText(file)})();`, { activeId, pendingClientTurn: pending, setRecoveryOverrides: () => {}, EMPTY_RECOVERY_OVERRIDES: {} });
+  run("created");
+  assert.equal(pending.current.id, "request");
+  run("another-session");
+  assert.equal(pending.current, null);
+});
+
+test("receipt recovery keeps HTTP rejections distinct from ambiguous responses and steering", async () => {
+  const { reconcileSubmission } = await import("../src/chatSubmission.ts");
+  const file = source("ChatPanel.tsx");
+  const api = ts.createSourceFile("api.ts", readFileSync(new URL("../src/api.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
+  const type = api.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "HttpResponseError");
+  const HttpResponseError = evaluate(`return (${type.getText(api).replace(/^export /, "")});`, {});
+  const error = new HttpResponseError("rejected", 409);
+  assert.equal(error.name, "HttpResponseError");
+  assert.equal(error.status, 409);
+  for (const [cause, mode, expected, reads] of [
+    [error, undefined, "rejected", 0], [new HttpResponseError("timeout", 408), undefined, "unknown", 1],
+    [new HttpResponseError("admission failure", 400), undefined, "unknown", 1],
+    [new HttpResponseError("upstream", 500), undefined, "unknown", 1], [new Error("offline"), "steer", "unknown", 0],
+  ]) {
+    let queried = 0;
+    const recover = evaluate(`return ${declaration(file, "resolveSubmissionFailure")}`, {
+      inSourceScope: () => true, deletedSessionIds: new Set(), deliveryAttempted: true,
+      reconcileSubmission, HttpResponseError, submissionMode: mode, clientTurnId: "client",
+      getChatSubmission: async (session, client) => { queried++; assert.equal(session, "s"); assert.equal(client, "client"); return { sessionId: session, clientTurnId: client, submission: null }; },
+    });
+    assert.equal(await recover(cause, "s"), expected);
+    assert.equal(queried, reads);
+  }
+});
+
+test("retry transport retains the captured mode and request ID on both sending branches", async () => {
+  const file = source("ChatPanel.tsx");
+  for (const callback of ["sendTurn", "sendBusy"]) for (const mode of [undefined, "steer"]) {
+    let sent;
+    const send = evaluate(`return ${declaration(file, callback)}`, {
+      deliveryAttempted: false, sendChatMessage: async (...args) => { sent = args; },
+      targetSessionId: "s", sid: "s", text: "payload", turnOpts: {}, images: [], wireAnnotations: [], clientTurnId: "original", submissionMode: mode,
+    });
+    await send();
+    assert.equal(sent[0], "s"); assert.equal(sent[5], "original"); assert.equal(sent[6], mode);
+  }
+});
