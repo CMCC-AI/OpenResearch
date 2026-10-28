@@ -11,9 +11,19 @@ export async function loadMaterialPreview(id: string, file: MaterialFile, signal
   const limit = text ? MATERIAL_TEXT_LIMIT : MATERIAL_FILE_LIMIT;
   if (file.size > limit) throw new Error(text ? "文本超过 1 MiB，请下载原件阅读；分段预览将在后续支持。" : "文件超过预览容量限制，请下载原件。");
   // Published cases read their immutable originals, never the viewer's private executor.
-  const response = getReadOnlyApi()
+  const readOnly = getReadOnlyApi();
+  let response = readOnly
     ? await fetch(projectAssetUrl(materialUrl(id, file.id, "download")), { signal })
     : await projectRequest(materialUrl(id, file.id, "preview"), { signal });
+  // Vite can update before the Rust process restarts. Only a missing route
+  // may use the older download API; resource/auth/version failures stay errors.
+  if (!readOnly && response.status === 404) {
+    const detail = await response.clone().json().catch(() => null);
+    if (detail?.error === "route not found") {
+      signal.throwIfAborted();
+      response = await projectRequest(materialUrl(id, file.id, "download"), { signal });
+    }
+  }
   if (!response.ok) {
     const detail = await response.json().catch(() => null);
     throw new Error(typeof detail?.error === "string" ? detail.error : `预览读取失败（HTTP ${response.status}）`);

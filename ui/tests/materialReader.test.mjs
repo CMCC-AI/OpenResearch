@@ -68,6 +68,30 @@ test("oversized and unsupported files make no preview request", async () => {
   await assert.rejects(loadMaterialPreview("pack", file("book", "book.xlsx", "binary"), new AbortController().signal), /暂不支持/);
 });
 
+test("a missing preview route falls back to verified originals on older backends", async () => {
+  const input = file("source", "说明.md");
+  const calls = [];
+  const signal = new AbortController().signal;
+  globalThis.materialPreviewTransport = { readOnly: null, read: async (url, init) => {
+    calls.push(url);
+    assert.equal(init.signal, signal);
+    return url.endsWith("/preview") ? Response.json({ error: "route not found" }, { status: 404 }) : new Response("内容");
+  } };
+  assert.equal((await loadMaterialPreview("pack", input, signal)).content, "内容");
+  assert.deepEqual(calls, ["/api/materials/pack/source/preview", "/api/materials/pack/source/download"]);
+  globalThis.materialPreviewTransport.read = async url => url.endsWith("/preview") ? Response.json({ error: "route not found" }, { status: 404 }) : new Response("损坏");
+  await assert.rejects(loadMaterialPreview("pack", input, signal), /版本不一致/);
+});
+
+test("preview resource, authorization and version failures never trigger compatibility fallback", async () => {
+  for (const [status, error] of [[404, "material not found"], [401, "unauthorized"], [403, "forbidden"], [400, "原件已变化"], [500, "route not found"]]) {
+    const calls = [];
+    globalThis.materialPreviewTransport = { readOnly: null, read: async url => { calls.push(url); return Response.json({ error }, { status }); } };
+    await assert.rejects(loadMaterialPreview("pack", file("source", "说明.md"), new AbortController().signal), message => message.message === error);
+    assert.deepEqual(calls, ["/api/materials/pack/source/preview"]);
+  }
+});
+
 test("published cases load original snapshot assets without private API fallback", async () => {
   const input = file("source", "说明.md");
   const originalFetch = globalThis.fetch;

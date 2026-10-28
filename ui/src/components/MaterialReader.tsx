@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, ChevronRight, Download, FileText, Folder, FolderOpen, PanelLeft, Search, X } from "lucide-react";
-import { projectAssetUrl, projectRequest, getReadOnlyApi } from "../readOnlyApi";
+import { projectAssetUrl, projectRequest } from "../readOnlyApi";
 import { materialKind, materialLines, materialLink, materialMime, materialStatus, materialTree, materialUrl, type MaterialFile, type MaterialNode, type MaterialPackage } from "../materialReader";
 import { loadMaterialPreview } from "../materialPreview";
 import { fmtBytes } from "../api";
@@ -155,7 +155,7 @@ function MaterialPreview({ material, file, onOpen }: { material: MaterialPackage
       {renderedMarkdown && !source ? <Md text={content} resolveFilePath={path => materialLink(material.files, file, path)?.path ?? null} onOpenFile={path => { const target = material.files.find(entry => entry.path === path); if (target) onOpen(target); }} resolveImageSrc={src => {
         const image = materialLink(material.files, file, src);
         if (!image || materialKind(image) !== "image") return [];
-        return [{ url: projectAssetUrl(materialUrl(material.id, image.id, getReadOnlyApi() ? "download" : "preview")), resolveAsset: () => null }];
+        return [{ url: projectAssetUrl(materialUrl(material.id, image.id, "download")), resolveAsset: () => null }];
       }} /> : <div className="space-y-0.5 font-mono text-sm">{lines.slice(first, first + 200).map((line, index) => <div key={first + index} className="flex gap-3"><span aria-hidden="true" className="w-10 shrink-0 select-none text-right text-subtext">{first + index + 1}</span><code className="min-w-0 whitespace-pre-wrap break-words">{line || " "}</code></div>)}{!lines.length && <p className="text-subtext">此文本文件为空。</p>}</div>}
     </div>
   </div>;
