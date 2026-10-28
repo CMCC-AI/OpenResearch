@@ -7,8 +7,9 @@ import { Button, IconButton, Input, MenuItem, Tooltip, showAlert } from "./ui";
 import { DeleteProjectDialog } from "./DeleteProjectDialog";
 import { useDialogFocus } from "./useDialogFocus";
 
-export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleCollapsed, onRemoved, onNewChat, onOpen, onFeature, pinned, onPin, readOnly = false }: {
+export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleCollapsed, onRemoved, onNewChat, onOpen, onFeature, pinned, onPin, readOnly = false, personal = false }: {
   readOnly?: boolean;
+  personal?: boolean;
   project: Project;
   chatCount: number | undefined;
   collapsed: boolean;
@@ -97,18 +98,18 @@ export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleC
       {onFeature && <MenuItem role="menuitem" disabled={busy} onClick={() => { menuRef.current?.hidePopover(); onFeature(); }}><span className="flex items-center gap-2"><Star size={16} />添加到精选案例</span></MenuItem>}
       <MenuItem role="menuitem" onClick={() => {
         menuRef.current?.hidePopover();
-        void revealFileInManager(project.id, ".").catch((err: unknown) => showAlert(err instanceof Error ? err.message : String(err), "error"));
+        void revealFileInManager(project.id, ".", {}, personal).catch((err: unknown) => showAlert(err instanceof Error ? err.message : String(err), "error"));
       }}><span className="flex items-center gap-2"><FolderOpen size={16} />{m.sidebar_reveal_project()}</span></MenuItem>
       <div className="my-1 border-t border-border" />
       <MenuItem role="menuitem" danger onClick={remove}><span className="flex items-center gap-2"><Trash2 size={16} />{m.projects_home_delete_project_action()}</span></MenuItem>
     </div>
-    {confirmDelete && createPortal(<DeleteProjectDialog project={project} onClose={() => setConfirmDelete(false)} onRemoved={() => { setConfirmDelete(false); onRemoved(); }} />, document.body)}
-    {editing && createPortal(<EditProjectDialog project={project} onClose={() => setEditing(false)} onDelete={() => { setEditing(false); setConfirmDelete(true); }} />, document.body)}
+    {confirmDelete && createPortal(<DeleteProjectDialog personal={personal} project={project} onClose={() => setConfirmDelete(false)} onRemoved={() => { setConfirmDelete(false); onRemoved(); }} />, document.body)}
+    {editing && createPortal(<EditProjectDialog personal={personal} project={project} onClose={() => setEditing(false)} onDelete={() => { setEditing(false); setConfirmDelete(true); }} />, document.body)}
     </>}
   </>;
 }
 
-function EditProjectDialog({ project, onClose, onDelete }: { project: Project; onClose: () => void; onDelete: () => void }) {
+function EditProjectDialog({ project, onClose, onDelete, personal = false }: { personal?: boolean; project: Project; onClose: () => void; onDelete: () => void }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const nameId = useId();
@@ -122,7 +123,7 @@ function EditProjectDialog({ project, onClose, onDelete }: { project: Project; o
     if (pending || !name.trim()) return;
     setPending(true);
     setError("");
-    try { await updateProject(project.id, { name: name.trim() }); onClose(); }
+    try { await updateProject(project.id, { name: name.trim() }, personal); onClose(); }
     catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setPending(false); }
   }

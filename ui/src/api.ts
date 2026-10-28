@@ -145,32 +145,32 @@ async function json<T>(res: Response): Promise<T> {
   return data;
 }
 
-const get = <T>(url: string, signal?: AbortSignal) => projectRequest(url, { signal }).then(async (r) => {
+const get = <T>(url: string, signal?: AbortSignal, personal = false) => (personal ? fetch(url, { signal }) : projectRequest(url, { signal })).then(async (r) => {
   const data = await json<T>(r);
   validateApiResponse(url, data);
   return data;
 });
-async function writeResponse(url: string, init: RequestInit): Promise<Response> {
-  const scope = workspaceScope();
-  const response = await projectRequest(url, init);
+async function writeResponse(url: string, init: RequestInit, personal = false): Promise<Response> {
+  const scope = workspaceScope(personal);
+  const response = await (personal ? fetch(url, init) : projectRequest(url, init));
   if (!isCurrentScope(scope)) throw new DOMException("Workspace changed", "AbortError");
   writeScopes.set(response, scope);
   if (response.ok) invalidateWrite(url, scope);
   return response;
 }
-const post = <T>(url: string, body?: unknown, keepalive = false) =>
+const post = <T>(url: string, body?: unknown, keepalive = false, personal = false) =>
   writeResponse(url, {
     method: "POST",
     keepalive,
     headers: body === undefined ? {} : { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
-  }).then((r) => json<T>(r));
-const patch = <T>(url: string, body: unknown) =>
+  }, personal).then((r) => json<T>(r));
+const patch = <T>(url: string, body: unknown, personal = false) =>
   writeResponse(url, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
-  }).then((r) => json<T>(r));
+  }, personal).then((r) => json<T>(r));
 const put = <T>(url: string, body: unknown) =>
   writeResponse(url, {
     method: "PUT",
@@ -178,8 +178,8 @@ const put = <T>(url: string, body: unknown) =>
     body: JSON.stringify(body),
   }).then((r) => json<T>(r));
 
-export const listProjects = (signal?: AbortSignal) =>
-  get<{ projects: Project[] }>("/api/projects", signal).then((r) => r.projects);
+export const listProjects = (signal?: AbortSignal, personal = false) =>
+  get<{ projects: Project[] }>("/api/projects", signal, personal).then((r) => r.projects);
 
 export interface ProjectActivity {
   projectId: string;
@@ -192,8 +192,8 @@ export interface ProjectActivity {
   lastActivityAt: number;
 }
 
-export const listProjectActivity = (signal?: AbortSignal) =>
-  get<{ activity: ProjectActivity[] }>("/api/projects/activity", signal).then((r) => r.activity);
+export const listProjectActivity = (signal?: AbortSignal, personal = false) =>
+  get<{ activity: ProjectActivity[] }>("/api/projects/activity", signal, personal).then((r) => r.activity);
 
 export interface OnboardingSelection {
   harness: HarnessId;
@@ -217,7 +217,7 @@ export interface UiState {
 export type Autonomy = "copilot" | "agentic";
 export const DEFAULT_AUTONOMY: Autonomy = "agentic";
 
-export const getUiState = (signal?: AbortSignal) => get<UiState>("/api/settings/ui-state", signal);
+export const getUiState = (signal?: AbortSignal, personal = false) => get<UiState>("/api/settings/ui-state", signal, personal);
 
 export const getProjectUiState = (projectId: string, signal?: AbortSignal) =>
   get<ProjectWorkspace | null>(`/api/projects/${encodeURIComponent(projectId)}/ui-state`, signal);
@@ -408,8 +408,8 @@ export const resolvePaper = (id: string, signal?: AbortSignal) =>
     (r) => r.paper,
   );
 
-export const updateProject = (projectId: string, body: { runCommand?: string; name?: string }) =>
-  patch<{ project: Project }>(`/api/projects/${projectId}`, body).then((r) => r.project);
+export const updateProject = (projectId: string, body: { runCommand?: string; name?: string }, personal = false) =>
+  patch<{ project: Project }>(`/api/projects/${projectId}`, body, personal).then((r) => r.project);
 
 /** One suggested opening message for the empty chat: written by a model that
  *  read the project, or pre-written when the project is blank. */
@@ -450,16 +450,19 @@ export const getProjectStarterPrompts = (
     signal,
   );
 
-export const deleteProject = (projectId: string, deleteFolder = false) =>
-  writeResponse(`/api/projects/${projectId}${deleteFolder ? "?deleteFolder=true" : ""}`, { method: "DELETE" }).then(async (r) => {
+export const deleteProject = (projectId: string, deleteFolder = false, personal = false) => {
+  const scope = workspaceScope(personal);
+  return writeResponse(`/api/projects/${projectId}${deleteFolder ? "?deleteFolder=true" : ""}`, { method: "DELETE" }, personal).then(async (r) => {
     if (!r.ok) {
       const body = await r.json().catch(() => null);
       throw new Error(body?.error ?? `delete failed (${r.status})`);
     }
     const result = await r.json() as { ok: boolean; recoveryPath?: string | null };
-    removeProject(projectId);
+    if (!isCurrentScope(scope)) throw new DOMException("Workspace changed", "AbortError");
+    removeProject(projectId, scope);
     return result;
   });
+};
 
 export const listExperiments = (projectId: string, signal?: AbortSignal) =>
   get<{ experiments: Experiment[] }>(`/api/projects/${projectId}/experiments`, signal).then(
@@ -619,11 +622,12 @@ export const revealFileInManager = (
   projectId: string,
   path: string,
   opts: { sessionId?: string } = {},
+  personal = false,
 ) =>
   post<{ ok: boolean }>(`/api/projects/${projectId}/file/reveal`, {
     path,
     sessionId: opts.sessionId,
-  });
+  }, false, personal);
 
 export interface LatexEngine {
   /** The engine that will run, or null when the machine has none. */
@@ -2008,10 +2012,10 @@ export interface ChatSession {
   contextUsage?: ContextUsage;
 }
 
-export const listChatSessions = (projectId: string, signal?: AbortSignal) =>
+export const listChatSessions = (projectId: string, signal?: AbortSignal, personal = false) =>
   get<{ sessions: ChatSession[] }>(
     `/api/chat/sessions?projectId=${encodeURIComponent(projectId)}`,
-    signal,
+    signal, personal,
   ).then((r) => r.sessions);
 
 /** A chat the user had in an agent's own CLI, which orx has no session for. */
@@ -2069,20 +2073,22 @@ export const createChatSession = (
 export const getChatSession = (sessionId: string) =>
   get<{ session: ChatSession }>(`/api/chat/sessions/${sessionId}`).then((r) => r.session);
 
-export const deleteChatSession = (sessionId: string) =>
-  writeResponse(`/api/chat/sessions/${sessionId}`, { method: "DELETE" }).then((r) =>
-    json<{ ok: boolean }>(r).then((result) => { removeSession(sessionId); return result; }),
+export const deleteChatSession = (sessionId: string, personal = false) => {
+  const scope = workspaceScope(personal);
+  return writeResponse(`/api/chat/sessions/${sessionId}`, { method: "DELETE" }, personal).then((r) =>
+    json<{ ok: boolean }>(r).then((result) => { removeSession(sessionId, scope); return result; }),
   );
+};
 
 /** Archive/unarchive a session (archived chats stay resumable). */
-export const setChatSessionArchived = (sessionId: string, archived: boolean) =>
-  patch<{ session: ChatSession }>(`/api/chat/sessions/${sessionId}`, { archived }).then(
+export const setChatSessionArchived = (sessionId: string, archived: boolean, personal = false) =>
+  patch<{ session: ChatSession }>(`/api/chat/sessions/${sessionId}`, { archived }, personal).then(
     (r) => r.session,
   );
 
 /** Rename a session. The title is trimmed server-side; empty titles are rejected. */
-export const renameChatSession = (sessionId: string, title: string) =>
-  patch<{ session: ChatSession }>(`/api/chat/sessions/${sessionId}`, { title }).then(
+export const renameChatSession = (sessionId: string, title: string, personal = false) =>
+  patch<{ session: ChatSession }>(`/api/chat/sessions/${sessionId}`, { title }, personal).then(
     (r) => r.session,
   );
 

@@ -2,14 +2,14 @@ import { onChatEvent } from "../events";
 import { readLiveSnapshot, mergeLiveList } from "./live";
 import { queryOptions } from "@tanstack/react-query";
 import * as api from "../api";
-import { workspaceKey, deletedSessionIds } from "./client";
+import { workspaceKey, workspaceKeyFor, deletedSessionIds } from "./client";
 
-export const listChatSessionsQuery = (projectId: string) => queryOptions({
-  queryKey: workspaceKey("listChatSessions", projectId),
+export const listChatSessionsQuery = (projectId: string, personal = false) => queryOptions({
+  queryKey: workspaceKeyFor(personal, "listChatSessions", projectId),
   queryFn: ({ signal, client, queryKey }) => readLiveSnapshot(client, queryKey, async (): Promise<api.ChatSession[]> => {
-    const rows = await api.listChatSessions(projectId, signal);
+    const rows = await api.listChatSessions(projectId, signal, personal);
     const previous = client.getQueryData<api.ChatSession[]>(queryKey);
-    return rows.filter((row) => !deletedSessionIds.has(row.id)).map((row) => ({
+    return rows.filter((row) => typeof queryKey[1] !== "number" || !deletedSessionIds.has(row.id)).map((row) => ({
       ...row, contextUsage: row.contextUsage ?? previous?.find((old) => old.id === row.id)?.contextUsage,
     }));
   }, mergeLiveList),

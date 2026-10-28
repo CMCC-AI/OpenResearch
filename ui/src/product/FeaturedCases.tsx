@@ -62,7 +62,7 @@ export function CaseTranscript({ detail, admin = false, fullPage = false }: { de
       window.location.reload();
     } catch (cause) {setError(cause instanceof Error?cause.message:String(cause));} finally {setBusy(false);}
   }
-  if (detail.snapshot.workspace) return <div className={admin && !fullPage ? "h-192 overflow-hidden rounded-xl border border-border" : "h-full min-h-0"}><ReadOnlyProject id={detail.id} base={base} admin={admin} workspace={detail.snapshot.workspace} /></div>;
+  if (detail.snapshot.workspace) return <div className={admin && !fullPage ? "h-192 overflow-hidden rounded-xl border border-border" : "h-full min-h-0"}><ReadOnlyProject key={detail.id} id={detail.id} base={base} admin={admin} workspace={detail.snapshot.workspace} /></div>;
   return <main className="flex h-full flex-col items-start justify-center gap-4 p-8"><h1 className="m-0 text-xl font-semibold">{detail.title}</h1><p className="text-sm text-subtext">这个案例保存的是旧版文本记录，尚未复制原项目的完整工作区。</p>{user?.isAdmin && <Button disabled={busy} onClick={() => void restore()}>从原项目同步完整历史与文件</Button>}{progress && <p role="status" className="text-sm text-subtext">{progress}</p>}{error && <p role="alert" className="text-sm text-accent-red">{error}</p>}</main>;
 }
 

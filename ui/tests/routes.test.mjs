@@ -211,7 +211,7 @@ for (const projectId of [undefined, "p"]) {
       api[name] = (...args) => {
         if (!first) return read(...args);
         first = false;
-        signal = args.at(-1);
+        signal = args.find((value) => value instanceof AbortSignal);
         return new Promise(() => {});
       };
       const locations = loadModule("routeResume.ts", api);

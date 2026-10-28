@@ -4,7 +4,6 @@ import { useQuery } from "@tanstack/react-query";
 import { getRuntimeQuery, reportLocaleQuery } from "./queries/settings";
 import {
   activateWorkspace,
-  workspaceScope,
   getWorkspaceGeneration,
   subscribeWorkspace,
 } from "./queries/client";
@@ -530,7 +529,7 @@ export function RuntimeRoot() {
       </main>
     );
   }
-  if (runtime.kind === "local") return <RuntimeContext key={workspaceScope()[1]} value={runtime}><AuthSessionProvider runtime={runtime}><LocalResearchEffects /><Outlet /></AuthSessionProvider></RuntimeContext>;
+  if (runtime.kind === "local") return <RuntimeContext key={getWorkspaceGeneration()} value={runtime}><AuthSessionProvider runtime={runtime}><LocalResearchEffects /><Outlet /></AuthSessionProvider></RuntimeContext>;
   const keepWorkspace = workspaceMounted.current &&
     (runtime.session.status !== "disconnected" || runtime.session.error !== null);
   if (!keepWorkspace && runtime.session.status !== "connected") {
@@ -546,7 +545,7 @@ export function RuntimeRoot() {
   return (
     <div className="relative h-full">
       <div className="h-full" inert={showOverlay}>
-        <RuntimeContext key={workspaceScope()[1]} value={runtime}><QueryEvents /><Outlet /></RuntimeContext>
+        <RuntimeContext key={getWorkspaceGeneration()} value={runtime}><QueryEvents /><Outlet /></RuntimeContext>
       </div>
       {showOverlay && (
         <RemoteOverlay>

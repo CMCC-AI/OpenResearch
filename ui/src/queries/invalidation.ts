@@ -43,18 +43,16 @@ export function invalidateProjectFiles(projectId: string, scope = workspaceScope
   }, cancelReads);
 }
 
-export function removeSession(sessionId: string) {
-  const scope = workspaceScope();
+export function removeSession(sessionId: string, scope = workspaceScope()) {
   deletedSessionIds.add(sessionId);
   markLiveUpdate(queryClient, [...scope, "listChatSessions"], sessionId);
   queryClient.setQueriesData<ChatSession[]>({ queryKey: [...scope, "listChatSessions"] }, (rows) => rows?.filter((row) => row.id !== sessionId));
   for (const family of ["getChatMessages", "getSessionWorktree"]) void cancelAndRemove({ queryKey: [...scope, family, sessionId] });
 }
 
-export function removeProject(projectId: string) {
-  const scope = workspaceScope();
+export function removeProject(projectId: string, scope = workspaceScope()) {
   const sessions = queryClient.getQueryData<ChatSession[]>([...scope, "listChatSessions", projectId]);
-  for (const session of sessions ?? []) removeSession(session.id);
+  for (const session of sessions ?? []) removeSession(session.id, scope);
   void cancelAndRemove({ queryKey: scope, predicate: (query) => query.queryKey.slice(3).includes(projectId) });
 }
 

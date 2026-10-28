@@ -5,6 +5,7 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { FolderPlus } from "lucide-react";
 import { listProjectsQuery, getUiStateQuery, listProjectActivityQuery } from "../queries/projects";
 import { listChatSessionsQuery } from "../queries/chat";
+import { useLocale } from "../locale";
 import { parseDestination } from "../workspaceState";
 import { deleteChatSession, renameChatSession, setChatSessionArchived, type ChatSession } from "../api";
 import { ProjectInfoCard } from "./ProjectInfoCard";
@@ -26,17 +27,18 @@ function storedIds(key: string): string[] {
 
 export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
   const navigate = useNavigate();
+  useLocale();
   const canPublish = useOptionalAuthSession()?.user?.isAdmin === true;
-  const projects = useQuery({ ...listProjectsQuery(), enabled });
-  const state = useQuery({ ...getUiStateQuery(), enabled });
-  const activity = useQuery({ ...listProjectActivityQuery(), enabled });
+  const projects = useQuery({ ...listProjectsQuery(true), enabled });
+  const state = useQuery({ ...getUiStateQuery(true), enabled });
+  const activity = useQuery({ ...listProjectActivityQuery(true), enabled });
   const [filter, setFilter] = useState<SessionFilter>("active");
   const [grouping, setGrouping] = useState<"projects" | "list">(() => { try { return localStorage.getItem("sidebar-grouping") === "list" ? "list" : "projects"; } catch { return "projects"; } });
   const [pinned, setPinned] = useState(() => storedIds("sidebar-pinned-projects"));
   const [collapsed, setCollapsed] = useState(() => storedIds("sidebar-collapsed-projects"));
   const [limits, setLimits] = useState<Record<string, number>>({});
   const sorted = [...(projects.data ?? [])].sort((a, b) => Number(pinned.includes(b.id)) - Number(pinned.includes(a.id)) || (activity.data?.find((row) => row.projectId === b.id)?.lastActivityAt ?? b.updatedAt) - (activity.data?.find((row) => row.projectId === a.id)?.lastActivityAt ?? a.updatedAt));
-  const sessions = useQueries({ queries: sorted.map((project) => ({ ...listChatSessionsQuery(project.id), enabled: enabled && (grouping === "list" || !collapsed.includes(project.id)), refetchInterval: 5000 })) });
+  const sessions = useQueries({ queries: sorted.map((project) => ({ ...listChatSessionsQuery(project.id, true), enabled: enabled && (grouping === "list" || !collapsed.includes(project.id)), refetchInterval: 5000 })) });
   const remembered = parseDestination((state.data?.workspace?.lastLocation ?? "").split("?")[0]);
   const projectId = sorted.find((project) => project.id === remembered?.projectId)?.id ?? sorted[0]?.id;
   const go = (suffix: string, id = projectId) => {
@@ -54,9 +56,9 @@ export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
   const matching = (rows: ChatSession[]) => rows.filter((session) => isSidebarSession(session) && (filter === "all" || (filter === "archived" ? session.archived : !session.archived))).sort((a, b) => b.updatedAt - a.updatedAt);
   const renderSession = (session: ChatSession) => <SessionRow key={session.id} session={session} active={false} unread={false} busy={session.busy} waiting={false} revealTitle={undefined}
     onOpen={() => go(`tasks/${encodeURIComponent(session.id)}`, session.projectId)}
-    onRename={(title) => void act(() => renameChatSession(session.id, title), session)}
-    onSetArchived={(archived) => void act(() => setChatSessionArchived(session.id, archived), session)}
-    onDelete={() => { if (window.confirm(m.chat_delete_session_confirm({ title: session.title || m.chat_untitled() }))) void act(() => deleteChatSession(session.id), session); }} />;
+    onRename={(title) => void act(() => renameChatSession(session.id, title, true), session)}
+    onSetArchived={(archived) => void act(() => setChatSessionArchived(session.id, archived, true), session)}
+    onDelete={() => { if (window.confirm(m.chat_delete_session_confirm({ title: session.title || m.chat_untitled() }))) void act(() => deleteChatSession(session.id, true), session); }} />;
   return <>
     <div className="research-projects flex min-h-0 flex-1 flex-col">
       <div className={sidebarClasses.heading}><h2 className={sidebarClasses.label}>{grouping === "projects" ? m.projects_home_projects() : m.chat_all_sessions()}</h2><div className={sidebarClasses.actions}><IconButton size="small" aria-label={m.projects_home_new_project()} onClick={() => void navigate({ to: "/projects", search: { new: true } })}><FolderPlus size={15} /></IconButton><SessionFilterMenu value={filter} onChange={setFilter} grouping={grouping} onGroupingChange={(next) => { setGrouping(next); try { localStorage.setItem("sidebar-grouping", next); } catch { /* optional */ } }} /></div></div>
@@ -66,7 +68,7 @@ export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
           const rows = matching(query.data ?? []);
           const limit = limits[project.id] ?? 6;
           return <section key={project.id} aria-label={`项目 ${project.name}`}>
-            <div className={sidebarClasses.project}><ProjectInfoCard onNewChat={() => void navigate({ to: "/projects", search: { project: project.id } })} onOpen={() => void navigate({ to: "/projects/$projectId", params: { projectId: project.id } })} onFeature={canPublish ? () => void navigate({ to: "/admin/cases", search: { project: project.id } }) : undefined} project={project} chatCount={query.data?.filter(isSidebarSession).length} collapsed={collapsed.includes(project.id)} busy={rows.some((session) => session.busy)} onToggleCollapsed={() => toggleId(project.id, collapsed, setCollapsed, "sidebar-collapsed-projects")} pinned={pinned.includes(project.id)} onPin={() => toggleId(project.id, pinned, setPinned, "sidebar-pinned-projects")} onRemoved={() => void projects.refetch()} /></div>
+            <div className={sidebarClasses.project}><ProjectInfoCard personal onNewChat={() => void navigate({ to: "/projects", search: { project: project.id } })} onOpen={() => void navigate({ to: "/projects/$projectId", params: { projectId: project.id } })} onFeature={canPublish ? () => void navigate({ to: "/admin/cases", search: { project: project.id } }) : undefined} project={project} chatCount={query.data?.filter(isSidebarSession).length} collapsed={collapsed.includes(project.id)} busy={rows.some((session) => session.busy)} onToggleCollapsed={() => toggleId(project.id, collapsed, setCollapsed, "sidebar-collapsed-projects")} pinned={pinned.includes(project.id)} onPin={() => toggleId(project.id, pinned, setPinned, "sidebar-pinned-projects")} onRemoved={() => void projects.refetch()} /></div>
             {!collapsed.includes(project.id) && <div className={sidebarClasses.indent}>{query.isPending ? <p className={`m-0 ${sidebarClasses.status}`}>正在读取会话…</p> : query.error ? <Button size="small" onClick={() => void query.refetch()}>重试会话列表</Button> : !rows.length ? <p className={`m-0 ${sidebarClasses.status}`}>{filter === "archived" ? m.chat_no_archived_sessions() : m.chat_no_sessions_yet()}</p> : rows.slice(0, limit).map(renderSession)}{rows.length > limit && <ResearchNavigationMore indented={false} onClick={() => setLimits((current) => ({ ...current, [project.id]: limit + 6 }))} />}</div>}
           </section>;
         })}

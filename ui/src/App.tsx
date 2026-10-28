@@ -821,11 +821,11 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     persistedPreferredAgent.current = uiState.preferredAgent;
     const prefs = getRememberedGlobalWorkspace() ?? uiState.workspace;
     if (prefs) {
-      setRailOpen(prefs.railOpen);
+      if (!readOnly) setRailOpen(prefs.railOpen);
       setPanelWidth(Math.min(prefs.panelWidth, panelMaxWidth()));
       setView(prefs.experimentsView);
     }
-  }, [uiState]);
+  }, [uiState, readOnly]);
   useEffect(() => {
     if (sessions && rememberedSessionRef.current && !sessions.includes(rememberedSessionRef.current)) rememberedSessionRef.current = null;
   }, [sessions]);
@@ -1795,8 +1795,8 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
       {runtime.kind === "local" && <OfflineBanner />}
       {runtime.kind === "local" && <UpdateBanner status={updateStatus} />}
       {workspaceError && <div role="alert" className="flex items-center gap-2 px-4 mac-titlebar:ps-20 win-titlebar:pe-36 py-2 text-subtext"><span>{workspaceError}</span><Button onClick={retryWorkspace}>{m.app_retry()}</Button></div>}
-      <div className={`app-body workspace-body relative grid flex-1 min-h-0 grid-rows-[4rem_minmax(0,1fr)] [&>.product-sidebar]:row-span-2 [&>.product-sidebar]:row-start-1 [&>.chat-pane]:row-start-2 [&>.right-pane]:row-start-2 ${railOpen ? "grid-cols-[17.5rem_minmax(0,1fr)_auto]" : "grid-cols-[minmax(0,1fr)_auto]"} ${workspaceCardVisible ? "workspace-card-visible" : ""}`}>
-        <div className="workspace-global-header min-w-0" style={{ gridColumn: railOpen ? "2 / -1" : "1 / -1", gridRow: 1 }}><ProductHeader actions={!workspaceCardVisible ? workspaceTools : undefined} title={<nav aria-label="当前位置" className="flex min-w-0 items-center gap-2"><Link to="/projects" className="shrink-0 text-subtext no-underline hover:text-primary">科研首页</Link><span aria-hidden="true">/</span><Link to="/projects/$projectId" params={{ projectId }} className="truncate text-subtext no-underline hover:text-primary">{activeProject.name}</Link><span aria-hidden="true">/</span><span className="shrink-0 text-text">{mainView === "chat" ? "研究工作区" : mainView === "skills" ? "自定义能力" : "项目设置"}</span></nav>} /></div>
+      <div className={`app-body workspace-body relative grid flex-1 min-h-0 grid-rows-[4rem_minmax(0,1fr)] [&>.product-sidebar]:row-span-2 [&>.product-sidebar]:row-start-1 [&>.chat-pane]:row-start-2 [&>.right-pane]:row-start-2 ${railOpen ? readOnly ? "grid-cols-[auto_minmax(0,1fr)_auto]" : "grid-cols-[17.5rem_minmax(0,1fr)_auto]" : "grid-cols-[minmax(0,1fr)_auto]"} ${workspaceCardVisible ? "workspace-card-visible" : ""}`}>
+        <div className="workspace-global-header min-w-0" style={{ gridColumn: railOpen ? "2 / -1" : "1 / -1", gridRow: 1 }}><ProductHeader actions={!workspaceCardVisible ? workspaceTools : undefined} title={<nav aria-label="当前位置" className="flex min-w-0 items-center gap-2"><Link to="/projects" className="shrink-0 text-subtext no-underline hover:text-primary">科研首页</Link><span aria-hidden="true">/</span>{readOnly ? <Link to="/cases" className="truncate text-subtext no-underline hover:text-primary">精选案例 · {activeProject.name}</Link> : <Link to="/projects/$projectId" params={{ projectId }} className="truncate text-subtext no-underline hover:text-primary">{activeProject.name}</Link>}<span aria-hidden="true">/</span><span className="shrink-0 text-text">{mainView === "chat" ? "研究工作区" : mainView === "skills" ? "自定义能力" : "项目设置"}</span></nav>} /></div>
         {projectId && (
           <ChatPanel
             projectId={projectId}

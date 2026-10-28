@@ -8,7 +8,7 @@ export function queryModules(api, { nativeClient = false, onChatEvent = () => ()
   const deletedSessionIds = new Set();
   let client = new query.QueryClient({ defaultOptions: { queries: { staleTime: 30_000, gcTime: Infinity, retry: false } } });
   function load(name) {
-    if (name === "client" && !nativeClient) return { queryClient: client, workspaceScope: () => ["workspace", 0], workspaceKey: (family, ...args) => ["workspace", 0, family, ...args], isCurrentScope: () => true, deletedSessionIds };
+    if (name === "client" && !nativeClient) return { queryClient: client, workspaceScope: () => ["workspace", 0], workspaceKey: (family, ...args) => ["workspace", 0, family, ...args], workspaceKeyFor: (_personal, family, ...args) => ["workspace", 0, family, ...args], isCurrentScope: () => true, deletedSessionIds };
     if (modules.has(name)) return modules.get(name);
     const source = readFileSync(new URL(`../src/queries/${name}.ts`, import.meta.url), "utf8");
     const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;

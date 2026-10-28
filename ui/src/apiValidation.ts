@@ -11,6 +11,7 @@ export function validateApiResponse(url: string, data: unknown): void {
   let predicate: ((value: unknown) => boolean) | undefined;
   let many = false;
   if (path === "/api/projects") { key = "projects"; predicate = project; many = true; }
+  else if (path === "/api/projects/activity") { key = "activity"; predicate = (value) => record(value) && typeof value.projectId === "string"; many = true; }
   else if (/^\/api\/projects\/[^/]+$/.test(path)) { key = "project"; predicate = project; }
   else if (/^\/api\/projects\/[^/]+\/runs$/.test(path)) { key = "runs"; predicate = run; many = true; }
   else if (/^\/api\/runs\/[^/]+$/.test(path)) { key = "run"; predicate = run; }

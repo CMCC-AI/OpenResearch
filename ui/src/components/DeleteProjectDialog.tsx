@@ -4,7 +4,8 @@ import { m } from "../paraglide/messages.js";
 import { Button, showAlert } from "./ui";
 import { useDialogFocus } from "./useDialogFocus";
 
-export function DeleteProjectDialog({ project, onClose, onRemoved }: {
+export function DeleteProjectDialog({ project, onClose, onRemoved, personal = false }: {
+  personal?: boolean;
   project: Project;
   onClose: () => void;
   onRemoved: () => void;
@@ -23,7 +24,7 @@ export function DeleteProjectDialog({ project, onClose, onRemoved }: {
     setPending(true);
     setError(null);
     try {
-      const result = await deleteProject(project.id, deleteFolder);
+      const result = await deleteProject(project.id, deleteFolder, personal);
       if (result.recoveryPath) showAlert(m.projects_delete_recovery_path({ path: result.recoveryPath }), "success", { duration: Infinity });
       onRemoved();
     } catch (err) {

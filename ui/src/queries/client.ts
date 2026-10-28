@@ -19,9 +19,12 @@ export const subscribeWorkspace = (listener: () => void) => {
   return () => { listeners.delete(listener); };
 };
 export const replaceWorkspace = () => { if (identity !== null) activateWorkspace(identity, true); };
-export const workspaceScope = () => ["workspace", getReadOnlyApi()?.id ?? generation] as const;
+export const workspaceScope = (personal = false) => ["workspace", personal ? generation : getReadOnlyApi()?.id ?? generation] as const;
 export const workspaceKey = (family: string, ...args: readonly unknown[]) =>
   [...workspaceScope(), family, ...args] as const;
+
+export const workspaceKeyFor = (personal: boolean, family: string, ...args: readonly unknown[]) =>
+  [...workspaceScope(personal), family, ...args] as const;
 
 export function activateWorkspace(next: string, replace = false) {
   if (identity === next && !replace) return false;
@@ -34,7 +37,7 @@ export function activateWorkspace(next: string, replace = false) {
   return true;
 }
 
-export const isCurrentScope = (scope: readonly unknown[]) => scope[1] === workspaceScope()[1];
+export const isCurrentScope = (scope: readonly unknown[]) => scope[1] === generation || (typeof scope[1] === "string" && scope[1] === getReadOnlyApi()?.id);
 
 export async function cancelAndRemove(filters: QueryFilters) {
   await queryClient.cancelQueries(filters, { revert: false });

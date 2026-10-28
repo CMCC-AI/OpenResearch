@@ -4173,7 +4173,7 @@ export function ChatPanel({
   const createChatSessionMutation = useMutation({ mutationFn: (args: Parameters<typeof createChatSession>) => createChatSession(...args) });
   const setChatSessionArchivedMutation = useMutation({ mutationFn: (args: Parameters<typeof setChatSessionArchived>) => setChatSessionArchived(...args) });
   const renameChatSessionMutation = useMutation({ mutationFn: (args: Parameters<typeof renameChatSession>) => renameChatSession(...args) });
-  const deleteChatSessionMutation = useMutation({ mutationFn: deleteChatSession });
+  const deleteChatSessionMutation = useMutation({ mutationFn: (id: string) => deleteChatSession(id) });
 
   const navigate = useNavigate();
   const { data: sidebarProjects = [] } = useQuery({ ...listProjectsQuery(), enabled: !embedded });
@@ -6098,7 +6098,7 @@ export function ChatPanel({
     }
   }, [sidebarGrouping, railOpen, embedded, lastVisibleIndex, sidebarRows.length, flatSessions.hasNextPage, flatSessions.isFetching, flatSessions.isError, flatSessions.fetchNextPage]);
 
-  const rail = (
+  const rail = readOnly ? <ProductSidebar onCollapse={onCollapseRail} /> : (
     <ProductSidebar onCollapse={onCollapseRail} connectionInfo={<WorkspaceConnection runtime={runtime} />}>
       <div className={sidebarClasses.heading}>
         <div className={sidebarClasses.label}>
@@ -6144,7 +6144,7 @@ export function ChatPanel({
                     <ProjectInfoCard
                       readOnly={Boolean(readOnly)}
                       onNewChat={readOnly ? undefined : () => void navigate({ to: "/projects", search: { project: project.id } })}
-                      onOpen={() => readOnly ? onActiveSessionChange(activeId || readOnly.initialSessionId || null) : void navigate({ to: "/projects/$projectId", params: { projectId: project.id } })}
+                      onOpen={() => readOnly ? onActiveSessionChange(activeId || null) : void navigate({ to: "/projects/$projectId", params: { projectId: project.id } })}
                       project={project}
                       chatCount={project.id === projectId ? sessions.filter(isSidebarSession).length : projectSessionsQueries[shownProjects.findIndex((item) => item.id === project.id)]?.data?.filter(isSidebarSession).length}
                       collapsed={row.collapsed}
@@ -6303,6 +6303,9 @@ export function ChatPanel({
               </span>
             </>}
           </div>
+          {readOnly && !embedded && <select aria-label="案例对话" value={activeId ?? ""} onChange={(event) => onActiveSessionChange(event.target.value)} className="min-w-0 max-w-60 rounded-md border border-border bg-background px-2 py-1 text-sm text-text">
+            {sessions.filter(isSidebarSession).map((session) => <option key={session.id} value={session.id}>{session.title || m.chat_untitled()}</option>)}
+          </select>}
           {!embedded && onOpenDemoWelcome && (
             <IconButton data-tip={m.chat_panel_about_this_demo()} aria-label={m.chat_panel_about_this_demo()} onClick={onOpenDemoWelcome}>
               <HelpCircle size={15} />

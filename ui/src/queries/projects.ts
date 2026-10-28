@@ -1,23 +1,23 @@
 import { readLiveSnapshot, mergeLiveList } from "./live";
 import { queryOptions } from "@tanstack/react-query";
 import * as api from "../api";
-import { workspaceKey } from "./client";
+import { workspaceKey, workspaceKeyFor } from "./client";
 
-export const listProjectsQuery = () => queryOptions({
-  queryKey: workspaceKey("listProjects"),
-  queryFn: ({ signal, client, queryKey }) => readLiveSnapshot(client, queryKey, () => api.listProjects(signal), mergeLiveList),
+export const listProjectsQuery = (personal = false) => queryOptions({
+  queryKey: workspaceKeyFor(personal, "listProjects"),
+  queryFn: ({ signal, client, queryKey }) => readLiveSnapshot(client, queryKey, () => api.listProjects(signal, personal), mergeLiveList),
   staleTime: 30_000,
 });
 
-export const listProjectActivityQuery = () => queryOptions({
-  queryKey: workspaceKey("listProjectActivity"),
-  queryFn: ({ signal }) => api.listProjectActivity(signal),
+export const listProjectActivityQuery = (personal = false) => queryOptions({
+  queryKey: workspaceKeyFor(personal, "listProjectActivity"),
+  queryFn: ({ signal }) => api.listProjectActivity(signal, personal),
   staleTime: 30_000,
 });
 
-export const getUiStateQuery = () => queryOptions({
-  queryKey: workspaceKey("getUiState"),
-  queryFn: ({ signal }) => api.getUiState(signal),
+export const getUiStateQuery = (personal = false) => queryOptions({
+  queryKey: workspaceKeyFor(personal, "getUiState"),
+  queryFn: ({ signal }) => api.getUiState(signal, personal),
   staleTime: 300_000,
 });
 
