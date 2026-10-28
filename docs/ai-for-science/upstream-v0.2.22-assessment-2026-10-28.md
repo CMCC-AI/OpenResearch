@@ -1,5 +1,7 @@
 # OpenResearch v0.2.22 与 MobileSci 差异评估
 
+后续实施进度见 [分批实施记录](upstream-backport-plan-2026-10-28.md)。下文保留评估时的源码快照与待办依据，不将后续落地反写成当时已经实现。
+
 核查日期：2026-10-28（Asia/Shanghai）。官方正式版为 `15f2b59bda0208dbaba536adb253cb8dc1ff7d62`，发布于本日 09:32:54；相对 v0.2.21 有 22 个提交。[发布页](https://github.com/alphaXiv/OpenResearch/releases/tag/v0.2.22)、[固定版本比较](https://github.com/alphaXiv/OpenResearch/compare/v0.2.21...v0.2.22)。此前本日 00:57 的核查仍以 v0.2.21 为最新正式版，是历史快照，不能沿用其中的 open PR 状态。
 
 本地核查基点 `bf9f218`，包含 `e03386f` 的继承/续租/Stop 修复、`9ad8e4f` 的证据读取修复，以及后续项目主页/草稿隔离。`product-upstream.json` 仍为真实 v0.2.19 祖先、v0.2.21 partial 回移，产品版本 `0.2.21-mobilesci.1`；官方更新关闭，基线脚本本轮通过。工作区另有未提交的部署/执行器候选，不视作已经上线或验收完成。

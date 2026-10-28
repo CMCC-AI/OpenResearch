@@ -34,6 +34,51 @@ function sendPreparation() {
   return prefix;
 }
 
+function settingsRenderer(name, returns, bindings) {
+  const file = source("SettingsPage.tsx");
+  const component = file.statements.find((node) => ts.isFunctionDeclaration(node) && node.name.text === name);
+  const statements = component.body.statements;
+  const prefix = statements.slice(0, statements.findIndex(ts.isReturnStatement)).map((node) => node.getText(file)).join("\n");
+  const state = [];
+  let cursor, effects, changed;
+  const hook = (init) => { const index = cursor++; if (!(index in state)) state[index] = init(); return index; };
+  const hooks = {
+    useState: (initial) => { const i = hook(() => initial); return [state[i], (next) => { const value = typeof next === "function" ? next(state[i]) : next; changed ||= !Object.is(value, state[i]); state[i] = value; }]; },
+    useRef: (initial) => state[hook(() => ({ current: initial }))],
+    useEffect: (effect, deps) => { const i = hook(() => undefined); if (!state[i] || deps.some((value, index) => !Object.is(value, state[i][index]))) { state[i] = deps; effects.push(effect); } },
+  };
+  return () => {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      cursor = 0; effects = []; changed = false;
+      const result = evaluate(`${prefix}\nreturn ${returns};`, { ...hooks, ...bindings });
+      effects.forEach((effect) => effect());
+      if (!changed) return result;
+    }
+    assert.fail(`${name} effects did not settle`);
+  };
+}
+
+test("harness settings keep the settled selection when readiness changes", () => {
+  let snapshot = [];
+  const render = settingsRenderer("HarnessesTab", "{ h, setActive }", {
+    useOptionalAuthSession: () => null, appBasePath: "", isCloudWorkspace: () => false,
+    useQuery: (options) => ({ data: options.harnesses ? snapshot : [] }),
+    getHarnessesQuery: () => ({ harnesses: true }),
+    getHarnessSetupCommandsQuery: () => ({}),
+    useCommandRun: () => ({}), workspaceKey: () => [], listAcpHarnesses: () => {},
+  });
+  assert.equal(render().h, undefined);
+  snapshot = [{ id: "claude-code", catalogPending: true }, { id: "opencode", catalogPending: true }];
+  assert.equal(render().h.id, "claude-code");
+  snapshot = [{ id: "claude-code", agentReady: false }, { id: "opencode", agentReady: true }];
+  assert.equal(render().h.id, "opencode");
+  snapshot = [{ id: "claude-code", agentReady: true }, { id: "opencode", agentReady: false }];
+  assert.equal(render().h.id, "opencode");
+  render().setActive("claude-code");
+  snapshot = [{ id: "opencode", agentReady: true }, { id: "claude-code", catalogPending: true }];
+  assert.equal(render().h.id, "claude-code");
+});
+
 for (const [name, fields] of [["K8s", ["context", "namespace"]], ["Slurm", ["host", "partition", "account", "timeLimit"]], ["Ray", ["address"]]]) {
   test(`${name} settings refresh clean fields while preserving edits`, () => {
     const file = source("SettingsPage.tsx");
