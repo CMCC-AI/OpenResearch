@@ -15,6 +15,7 @@ use std::{
 pub const MAX_FILE: usize = 32 * 1024 * 1024;
 pub const MAX_TOTAL: u64 = 512 * 1024 * 1024;
 pub const MAX_FILES: usize = 2000;
+pub const MAX_PREVIEW_TEXT: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -506,16 +507,65 @@ pub fn original(id: &str, project: &str, source: &str) -> Result<PathBuf> {
 }
 
 fn verified_original(dir: &Path, entry: &Entry) -> Result<PathBuf> {
+    Ok(verified_original_bytes(dir, entry)?.0)
+}
+
+fn verified_original_bytes(dir: &Path, entry: &Entry) -> Result<(PathBuf, Vec<u8>)> {
+    if entry.size > MAX_FILE as u64 {
+        return Err(anyhow!("材料大小超出单文件限制"));
+    }
     let base = crate::paths::canonicalize(dir.join("originals"))?;
     let file = crate::paths::canonicalize(base.join(&entry.path))?;
     if !file.starts_with(base) {
         return Err(anyhow!("material path escapes snapshot"));
     }
-    let bytes = fs::read(&file)?;
-    if format!("{:x}", Sha256::digest(bytes)) != entry.sha256 {
+    let mut bytes = Vec::new();
+    fs::File::open(&file)?
+        .take(entry.size + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != entry.size || format!("{:x}", Sha256::digest(&bytes)) != entry.sha256 {
         return Err(anyhow!("原件已变化，必须重新导入；不能继续使用旧版本引用"));
     }
-    Ok(file)
+    Ok((file, bytes))
+}
+
+#[derive(Debug)]
+pub struct Preview {
+    pub bytes: Vec<u8>,
+    pub content_type: &'static str,
+}
+
+fn preview_at(root: &Path, id: &str, project: &str, source: &str) -> Result<Preview> {
+    let package = read_at(root, id, project)?;
+    if !package.ready {
+        return Err(anyhow!("材料尚未完成导入"));
+    }
+    let entry = package
+        .files
+        .iter()
+        .find(|file| file.id == source)
+        .ok_or_else(|| anyhow!("材料来源不存在"))?;
+    let content_type = match entry.format.as_str() {
+        "pdf" => "application/pdf",
+        "image" => crate::local::files::content_type_for_path(&entry.path),
+        "text" if entry.size <= MAX_PREVIEW_TEXT as u64 => "text/plain; charset=utf-8",
+        "text" => {
+            return Err(anyhow!(
+                "文本超过 1 MiB，请下载原件阅读；分段预览将在后续支持"
+            ))
+        }
+        _ => return Err(anyhow!("此格式暂不支持预览，请下载原件")),
+    };
+    // Return the exact bytes checked here, never reopen the path after hashing.
+    let (_, bytes) = verified_original_bytes(&dir_at(root, id)?, entry)?;
+    Ok(Preview {
+        bytes,
+        content_type,
+    })
+}
+
+pub fn preview(id: &str, project: &str, source: &str) -> Result<Preview> {
+    preview_at(&root(), id, project, source)
 }
 
 pub async fn read(
@@ -667,6 +717,115 @@ pub fn collect_abandoned(project: &str, days: u32, apply: bool) -> Result<storag
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn material_preview_preserves_paths_versions_and_safe_content_types() {
+        let root = temp();
+        let package = create_at(&root, "project").unwrap();
+        for (path, bytes) in [
+            ("文献/paper.pdf", b"%PDF-fixture".as_slice()),
+            ("方案/说明.md", "# 研究方案\n正文".as_bytes()),
+            ("代码/script.html", b"<script>alert(1)</script>".as_slice()),
+            ("图片/figure.png", b"\x89PNG\0fixture".as_slice()),
+            ("数据/archive.bin", b"\0\xff".as_slice()),
+        ] {
+            upload_at(&root, &package.id, "project", path, bytes).unwrap();
+        }
+        assert!(preview_at(&root, &package.id, "project", "SRC-0001").is_err());
+        let sealed = finalize_at(&root, &package.id, "project").unwrap();
+        for (path, content_type) in [
+            ("文献/paper.pdf", "application/pdf"),
+            ("方案/说明.md", "text/plain; charset=utf-8"),
+            ("代码/script.html", "text/plain; charset=utf-8"),
+            ("图片/figure.png", "image/png"),
+        ] {
+            let file = sealed.files.iter().find(|file| file.path == path).unwrap();
+            let preview = preview_at(&root, &package.id, "project", &file.id).unwrap();
+            assert_eq!(preview.content_type, content_type);
+            assert_eq!(format!("{:x}", Sha256::digest(&preview.bytes)), file.sha256);
+            assert!(preview_at(&root, &package.id, "other-project", &file.id).is_err());
+        }
+        let binary = sealed
+            .files
+            .iter()
+            .find(|file| file.format == "binary")
+            .unwrap();
+        assert!(preview_at(&root, &package.id, "project", &binary.id).is_err());
+        assert!(preview_at(&root, &package.id, "project", "SRC-9999").is_err());
+        assert_eq!(
+            serde_json::to_value(read_at(&root, &package.id, "project").unwrap()).unwrap(),
+            serde_json::to_value(&sealed).unwrap()
+        );
+        let file = &sealed.files[0];
+        fs::write(
+            dir_at(&root, &package.id)
+                .unwrap()
+                .join("originals")
+                .join(&file.path),
+            b"tampered",
+        )
+        .unwrap();
+        assert!(preview_at(&root, &package.id, "project", &file.id)
+            .unwrap_err()
+            .to_string()
+            .contains("原件已变化"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn material_preview_enforces_text_limit_and_rejects_growing_originals() {
+        let root = temp();
+        let package = create_at(&root, "project").unwrap();
+        upload_at(
+            &root,
+            &package.id,
+            "project",
+            "limit.txt",
+            &vec![b'x'; MAX_PREVIEW_TEXT],
+        )
+        .unwrap();
+        upload_at(
+            &root,
+            &package.id,
+            "project",
+            "large.txt",
+            &vec![b'x'; MAX_PREVIEW_TEXT + 1],
+        )
+        .unwrap();
+        let sealed = finalize_at(&root, &package.id, "project").unwrap();
+        let boundary = sealed
+            .files
+            .iter()
+            .find(|file| file.path == "limit.txt")
+            .unwrap();
+        assert_eq!(
+            preview_at(&root, &package.id, "project", &boundary.id)
+                .unwrap()
+                .bytes
+                .len(),
+            MAX_PREVIEW_TEXT
+        );
+        let large = sealed
+            .files
+            .iter()
+            .find(|file| file.path == "large.txt")
+            .unwrap();
+        assert!(preview_at(&root, &package.id, "project", &large.id)
+            .unwrap_err()
+            .to_string()
+            .contains("1 MiB"));
+        let path = dir_at(&root, &package.id)
+            .unwrap()
+            .join("originals")
+            .join(&boundary.path);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_len(128 * 1024 * 1024)
+            .unwrap();
+        assert!(preview_at(&root, &package.id, "project", &boundary.id).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
     fn temp() -> PathBuf {
         let p = std::env::temp_dir().join(format!("orx-material-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&p).unwrap();

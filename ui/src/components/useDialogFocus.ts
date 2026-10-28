@@ -3,6 +3,9 @@ import { useEffect, useRef, type RefObject } from "react";
 // `tabindex="-1"` opts an element out of Tab, so the trap must skip it too —
 // otherwise its last "focusable" is one Tab never reaches and focus escapes.
 const FOCUSABLE = [
+  "a[href]",
+  "summary",
+  "select:not([disabled])",
   "button:not([disabled])",
   "input:not([disabled])",
   "textarea:not([disabled])",
