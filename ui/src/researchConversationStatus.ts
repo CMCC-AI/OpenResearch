@@ -47,7 +47,7 @@ export function researchConversationStatus(study: ResearchStudy, {
   if (tasks.length && tasks.every((task) => task.state === "completed")) {
     return decisions.some((decision) => decision.gate === deliveryGate(researchWorkflowMode(study)) && decision.status === "approved")
       ? { kind: "complete", label: "本轮研究已完成" }
-      : { kind: "confirmation", label: "本轮任务已验收 · 等待结果确认" };
+      : { kind: "attention", label: study.deliveryError ? `交付确认受阻 · ${study.deliveryError}` : "本轮任务已验收 · 交付确认尚未生成" };
   }
   return { kind: "idle", label: tasks.length ? "专家团流程未完成 · 等待下一步处理" : "专家团已就绪 · 等待明确研究计划" };
 }

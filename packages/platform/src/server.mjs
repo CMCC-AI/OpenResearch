@@ -7,6 +7,7 @@ import { accountRoutes } from "./accounts.mjs";
 import { resetMailer } from "./mail.mjs";
 import { featuredCaseRoutes } from "./featured-cases.mjs";
 import { storageAccess, storageSettings } from "./storage.mjs";
+import { researchLimit } from "./research-limits.mjs";
 import http from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
@@ -586,7 +587,12 @@ export async function createPlatform(
         }
         if (path.startsWith("/api/")) {
           await access(req, workspace);
-          await limit(`api:${workspace}:${s.user_id}`, 600, 60);
+          const policy = researchLimit(req.method, path);
+          await limit(
+            `api-${policy.bucket}:${workspace}:${s.user_id}`,
+            policy.maximum,
+            60,
+          );
           const tunnel = tunnels.get(workspace);
           check(tunnel, 503, "执行器离线，请联系工作空间管理员");
           if (!["GET", "HEAD"].includes(req.method))
@@ -615,7 +621,12 @@ export async function createPlatform(
         const { s, workspace } = await personalAccess(req);
         const tunnel = tunnels.get(workspace);
         check(tunnel, 503, "正在准备你的研究环境，请稍候再试");
-        await limit(`api:${workspace}:${s.user_id}`, 600, 60);
+        const policy = researchLimit(req.method, path);
+        await limit(
+          `api-${policy.bucket}:${workspace}:${s.user_id}`,
+          policy.maximum,
+          60,
+        );
         if (!["GET", "HEAD"].includes(req.method))
           await audit(
             pool,

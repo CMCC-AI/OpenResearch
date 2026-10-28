@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getResearchStudy, decideResearchGate } from "../api";
 import { workspaceKey } from "../queries/client";
-import { currentDecisions, researchProgress, researchModes, presetWorkflowModes, researchWorkflowMode, researchAttention, researchWorkflow, gateNames, type ResearchDecision, type ResearchMode } from "../research";
+import { currentDecisions, deliveryGate, researchProgress, researchModes, presetWorkflowModes, researchWorkflowMode, researchAttention, researchWorkflow, gateNames, type ResearchDecision, type ResearchMode } from "../research";
 import { Button } from "./ui/Button";
 import { IconButton, MenuItem } from "./ui";
 import { ResearchStateErrorDialog } from "./ResearchOverviewDialog";
@@ -42,7 +42,8 @@ export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSess
   const pendingDecisions = decisions.filter((decision) => decision.status === "pending");
   const decided = decisions.filter((decision) => decision.status !== "pending");
   const decisionCards = <>
-    {pendingDecisions.length > 0 ? pendingDecisions.map(renderDecision) : <p className="text-sm text-subtext">暂无待确认事项</p>}
+    {study?.deliveryError && <p role="alert" className="text-sm text-accent-red">交付确认受阻：{study.deliveryError}</p>}
+    {pendingDecisions.length > 0 ? pendingDecisions.map(renderDecision) : <p className="text-sm text-subtext">{study && plan?.tasks.length && plan.tasks.every((task) => task.state === "completed") && !decisions.some((decision) => decision.status === "approved" && decision.gate === deliveryGate(researchWorkflowMode(study))) ? "交付确认尚未生成，请先处理交付校验问题；无需重复修订全部任务。" : "暂无待确认事项"}</p>}
     {decided.length > 0 && <details><summary className="cursor-pointer text-xs text-subtext">确认记录（{decided.length}）</summary><div className="mt-2 flex flex-col gap-2">{decided.map(renderDecision)}</div></details>}
     {error && <p role="alert" className="text-sm text-accent-red">{error}</p>}
   </>;

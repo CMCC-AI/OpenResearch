@@ -35,7 +35,11 @@ test("pending confirmation stays visible even while another expert is working", 
 
 test("completion requires accepted tasks and the current plan's result confirmation", () => {
   const value = study([task("completed")]);
-  assert.equal(status(value).kind, "confirmation");
+  assert.equal(status(value).kind, "attention");
+  assert.match(status(value).label, /交付确认尚未生成/);
+  value.deliveryError = "证据日志已变化，需要重新审查";
+  assert.match(status(value).label, /交付确认受阻.*证据日志已变化/);
+  value.deliveryError = null;
   value.decisions = [decision("approved", 0)];
   assert.notEqual(status(value).kind, "complete");
   value.decisions.push(decision("approved"));

@@ -27,6 +27,7 @@ export interface ResearchStudy {
   id: string; sessionId: string; mode: ResearchMode; objective: string; status: string;
   plans: { version: number; workflow?: PresetWorkflowMode | null; summary: string; tasks: ResearchTask[] }[];
   decisions: ResearchDecision[];
+  deliveryError?: string | null;
   claims: { id: string; text: string; support: string; source: string; location?: string; runId?: string; excerpt?: string }[];
 }
 export interface ResearchMetrics {
@@ -136,7 +137,7 @@ export function researchAttention(study: ResearchStudy) {
   if (active.length) return `${active.length} 位专家执行中 / 待验收`;
   if (decisions.some((decision) => decision.gate === deliveryGate(researchWorkflowMode(study)) && decision.status === "approved")) return researchWorkflowMode(study) === "proposal" ? "实验方案已确认 · 未授权运行实验" : "当前研究包已批准";
   if (!tasks.length) return "主理人正在梳理目标与材料";
-  if (tasks.every((task) => task.state === "completed")) return "任务已验收 · 等待研究包确认";
+  if (tasks.every((task) => task.state === "completed")) return study.deliveryError ? `交付确认受阻 · ${study.deliveryError}` : "任务已验收 · 交付确认尚未生成";
   return "计划已登记 · 等待推进就绪任务";
 }
 

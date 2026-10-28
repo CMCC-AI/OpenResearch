@@ -152,6 +152,8 @@ pub struct Study {
     pub plans: Vec<ResearchPlan>,
     pub decisions: Vec<HumanDecision>,
     pub claims: Vec<EvidenceClaim>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -561,6 +563,7 @@ impl Store {
             plans: vec![],
             decisions: vec![],
             claims: vec![],
+            delivery_error: None,
             created_at: now_ms(),
             updated_at: now_ms(),
         };
@@ -738,6 +741,7 @@ impl Store {
                     evidence_digest: None,
                 });
             }
+            study.delivery_error = None;
             study.plans.push(ResearchPlan {
                 version,
                 workflow: input.workflow,
@@ -1364,7 +1368,8 @@ impl Store {
             }
             let log_hash = format!("{:x}", hasher.finalize());
             for claim in &study.claims {
-                if claim.input.run_id.as_deref() == Some(&run.id)
+                if claim.input.support == "experiment"
+                    && claim.input.run_id.as_deref() == Some(&run.id)
                     && claim.log_sha256.as_ref() != Some(&log_hash)
                 {
                     return Err(anyhow!("证据日志已变化，需要重新审查"));

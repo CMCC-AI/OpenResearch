@@ -878,6 +878,42 @@ test(
       }
       const ar = await runner(alice, a, upstreamA);
       await runner(bob, b, upstreamB);
+      await t.test(
+        "activity throttling leaves navigation and decisions available",
+        async () => {
+          // Exhaust only the summary bucket, without issuing hundreds of reads.
+          await pool.query(
+            "INSERT INTO auth_limits(key,attempts,expires_at) VALUES($1,120,now()+interval '1 minute') ON CONFLICT(key) DO UPDATE SET attempts=120,expires_at=excluded.expires_at",
+            [`api-activity:${a}:${users.alice}`],
+          );
+          try {
+            const auth = { host: aHost, cookie: aSession.cookie };
+            assert.equal(
+              (await request("/api/projects/activity", auth)).status,
+              429,
+            );
+            assert.equal(
+              (await request("/api/chat/sessions", auth)).status,
+              200,
+            );
+            assert.equal(
+              (
+                await request("/api/research/studies/study/decisions/gate", {
+                  ...auth,
+                  method: "POST",
+                  origin: `http://${aHost}`,
+                  data: {},
+                })
+              ).status,
+              200,
+            );
+          } finally {
+            await pool.query("DELETE FROM auth_limits WHERE key=$1", [
+              `api-activity:${a}:${users.alice}`,
+            ]);
+          }
+        },
+      );
       const connectedRunner = await request(
         `/api/platform/workspaces/${a}/runner`,
         { cookie: alice },

@@ -270,10 +270,16 @@ pub(crate) fn reconcile_active_studies_with_checks(
             let gate = crate::local::research::delivery_gate(updated.workflow_mode()).to_string();
             match store.research_package_scope(&updated) {
                 Ok(scope) => {
-                    store.research_update(&updated.id, |s| s.request_gate(&gate, scope))?;
+                    store.research_update(&updated.id, |s| {
+                        s.delivery_error = None;
+                        s.request_gate(&gate, scope)
+                    })?;
                 }
-                Err(_) => {
-                    store.research_update(&updated.id, |s| s.supersede_gate(&gate))?;
+                Err(error) => {
+                    store.research_update(&updated.id, |s| {
+                        s.delivery_error = Some(error.to_string());
+                        s.supersede_gate(&gate)
+                    })?;
                 }
             }
             checks.insert(updated.id.clone(), (version, std::time::Instant::now()));
