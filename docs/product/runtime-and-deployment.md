@@ -37,6 +37,22 @@
 
 ## 部署与维护流程
 
+### 执行器工具与文件权限
+
+`packages/platform/Dockerfile.executor` 统一预装 Python 3、`python` 别名、pip、venv、固定版本 uv/uvx、C/C++ 编译工具，以及 Git/SSH、curl/wget、rg、jq、SQLite、ZIP、进程查看和 PDF 文本提取工具。系统 Python 包含 NumPy、pandas、SciPy、Matplotlib、openpyxl、Requests、BeautifulSoup/lxml、Pillow、python-docx、PyPDF2、pyshp 和 Shapely；它们随 Debian 12 软件包维护，不替代项目自己的依赖锁文件。uv 安装在 `/usr/local/bin`，不受已有 HOME 数据卷遮挡；用户安装的命令从 `/home/node/.local/bin` 查找。
+
+临时目录 `/tmp/opencode` 曾被构建时的 root 进程创建为 `0755`，使 UID 1000 的 Agent 无法写入。镜像在 root 安装完成后执行 `orx-prepare-executor`，将该目录及已有构建缓存归属设为 `1000:1000`，目录权限设为 `0700`；运行进程仍为非 root。其他临时脚本优先放在 worktree 或 `mktemp -d` 创建的目录。
+
+每次镜像构建以 UID 1000 执行 `orx-check-executor-tools`，检查预装库导入、临时脚本写入、Python venv/pip 和 uv 离线建环境。部署后也可运行：
+
+```bash
+docker exec --user 1000:1000 <执行器容器名> orx-check-executor-tools
+```
+
+项目依赖安装进独立 `.venv`，不要用 pip 改写系统 Python；需要复用预装库时可用 `uv venv --system-site-packages .venv`。新依赖下载仍要求执行容器能够访问对应包源，缺少工具不代表网络不可用。
+
+新部署重新构建执行镜像即可。MobileSci 增量更新在本地构建 `executor-packages` 阶段，把 `.deb`、uv 和安装/验证脚本一起装入更新包；服务器构建阶段无需访问 apt、PyPI 或 GitHub。已有私人空间须用包含这些文件的新包执行 `--unified-opencode` 更新，替换存量执行器并同步 provisioner 与持久化 Compose 的 `MANAGED_EXECUTOR_IMAGE`；仅更新 platform/workbench 或重启旧执行器不会补齐工具。旧包不包含此能力，必须重新准备。通用 hosted 部署也必须在空闲维护窗口替换存量执行器、保留 HOME 卷，并同步未来镜像引用。
+
 私人执行器的 `MANAGED_EXECUTOR_MEMORY` 与 `MANAGED_EXECUTOR_MEMORY_SWAP` 均为字节数，后者表示内存与 swap 的合计上限。hosted Compose 默认使用 2.5 GiB 内存、4.5 GiB 合计上限和 `MANAGED_CAPACITY=2`；按宿主总内存、平台服务预留量与实际并发负载调整。显式配置的配额由 provisioner 同步到已有执行器，后续新建执行器使用相同值；旧 connector 保留独立的小额限制。未显式配置时，provisioner 不覆盖运维热调整的已有容器配额。
 
 OpenCode、Claude 和 Codex 共用闲置策略。有效内存不超过 8 GiB 时，OpenCode 每 30 秒检查一次，闲置两分钟释放进程，超过一个的闲置进程在至少闲置 30 秒后按最近使用顺序释放。运行中的对话、等待权限或问题回复、上下文压缩受使用租约保护；回收同时清理进程组，下次消息从持久化原生会话恢复。Linux 按宿主物理内存与 cgroup v1/v2 配额的较小值选择策略，并重新读取配额以适应在线调整。此策略只限制闲置进程，多个同时活跃的会话仍需合理的内存和并发规划。

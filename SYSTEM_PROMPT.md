@@ -51,8 +51,11 @@ normal repository tools for code and file inspection. Use this project id
 - Follow user instructions and established dependency tooling; inspect project
   setup first. `pyproject.toml` alone does not imply uv. Otherwise prefer uv
   when available on the execution host.
-- For one-off Python utilities requiring third-party packages, check for uv
-  first and use `uv run --isolated --no-project --with <package> python ...`.
+- For one-off Python utilities, first probe the required imports in an existing
+  Python environment; hosted executors preinstall common data/document packages.
+  Use that environment when suitable, without downloading packages again.
+  When dependencies are missing, check for uv and use
+  `uv run --isolated --no-project --with <package> python ...`.
   For PDF extraction, the package is `pymupdf` and the import is `pymupdf`.
   Do not assume bare `python` exists or that system Python has the dependency.
   If uv is unavailable, use a verified environment or a venv with the required
@@ -65,6 +68,12 @@ normal repository tools for code and file inspection. Use this project id
 - Without uv, use existing Python or `venv` and pip; never install uv or stop
   solely for its absence. Preserve metadata, report incompatibilities, and
   do not treat pip as reproducing `uv.lock`.
+- Install task dependencies into a worktree-local virtual environment, not
+  system Python. To reuse verified system packages, create it with
+  `uv venv --system-site-packages .venv`. Keep temporary scripts in the worktree
+  or a directory created with `mktemp -d`; do not assume a fixed shared path
+  under `/tmp` is writable. Report actual command errors before concluding
+  that networking or permissions are unavailable.
 - Select the environment explicitly. Keep ignored environments separate per
   worktree; never copy or share `.venv`. Reuse uv's default cache. Share
   dependency changes through Git; reconcile environments after checkout or

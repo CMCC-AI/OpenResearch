@@ -27,6 +27,19 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  executor-tools:
+    name: executor tools and permissions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tools without compiling the application
+        run: docker build --target executor-runtime -f packages/platform/Dockerfile.executor -t executor-tools:ci .
+      - name: Verify offline execution as the isolated user
+        run: |
+          docker run --rm --network none --user 1000:1000 --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /home/node:uid=1000,gid=1000,mode=0700 --env HOME=/home/node \
+            executor-tools:ci orx-check-executor-tools
   platform:
     name: multi-user platform
     runs-on: ubuntu-latest

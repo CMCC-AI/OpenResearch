@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import shutil
 from pathlib import Path
 import tarfile
 import tempfile
@@ -177,7 +178,14 @@ class UpdateBundleTests(unittest.TestCase):
             def fake_run(args, **kwargs):
                 if args[:2] == ['docker', 'cp']:
                     destination = Path(args[-1])
-                    if destination.name == 'node_modules':
+                    if destination.name == 'executor-tools':
+                        shutil.copytree(Path(__file__).resolve().parents[2] / 'packages/platform/executor-tools', destination)
+                        (destination / 'debs').mkdir()
+                        (destination / 'debs/tools_amd64.deb').write_bytes(b'fixture')
+                        (destination / 'bin').mkdir()
+                        for name in ('uv', 'uvx'):
+                            (destination / 'bin' / name).write_bytes(b'fixture')
+                    elif destination.name == 'node_modules':
                         destination.mkdir()
                         (destination / 'package.json').write_text('{}')
                     else:
@@ -191,12 +199,17 @@ class UpdateBundleTests(unittest.TestCase):
             with patch.object(update, 'ROOT', root), patch.object(update, 'OUTPUT', root / 'output'), patch.object(update, 'fingerprint', return_value='test-source'), patch.object(update, 'run', side_effect=fake_run), patch.object(update.subprocess, 'check_output', side_effect=output):
                 bundle = update.prepare('test-image')
                 manifest = update.verify_bundle(bundle)
-                for name in ['platform/package.json', 'platform/package-lock.json', 'platform/migrations/004.sql']:
+                for name in ['platform/package.json', 'platform/package-lock.json', 'platform/migrations/004.sql',
+                             'workbench/executor-tools/bin/uv', 'workbench/executor-tools/debs/tools_amd64.deb']:
                     self.assertIn(name, manifest['files'])
                 self.assertTrue(all('\\' not in name for name in manifest['files']))
                 with tarfile.open(bundle) as archive:
                     self.assertEqual(archive.getmember('workbench/orx').mode, 0o755)
-                    self.assertIn('COPY --chmod=755 orx', archive.extractfile('workbench/Dockerfile').read().decode())
+                    workbench = archive.extractfile('workbench/Dockerfile').read().decode()
+                    self.assertIn('COPY --chmod=755 orx', workbench)
+                    self.assertIn('sh /tmp/executor-tools/install.sh', workbench)
+                    self.assertNotIn('apt-get', workbench)
+                    self.assertIn('USER node\nRUN orx-check-executor-tools', workbench)
                     dockerfile = archive.extractfile('platform/Dockerfile').read().decode()
                     self.assertIn('COPY node_modules ./node_modules', dockerfile)
                     self.assertNotIn('RUN npm', dockerfile)

@@ -45,6 +45,14 @@ class UnifiedOpenCodeTests(unittest.TestCase):
         self.assertTrue(admin['read_only'])
         self.assertNotIn('opencode-admin', original['services'])
 
+    def test_replaced_executor_retains_user_tool_path_without_duplicates(self):
+        old = {'Config': {'Env': ['PATH=/usr/local/bin:/usr/bin', 'KEEP=value']}, 'HostConfig': {'Binds': []}}
+        config, host = module.desired_executor(old, 'tools-image')
+        self.assertIn('PATH=/home/node/.local/bin:/usr/local/bin:/usr/bin', config['Env'])
+        repeated, _ = module.desired_executor({'Config': config, 'HostConfig': host}, 'tools-image')
+        self.assertEqual(repeated['Env'], config['Env'])
+        self.assertEqual(old['Config']['Env'][0], 'PATH=/usr/local/bin:/usr/bin')
+
     def test_recommended_configuration_removes_only_superseded_sources(self):
         original = {'OPENCODE_ADMIN_CONFIG_FILE': '/old/config.json', 'DATABASE_URL': 'keep'}
         platform = module.official_platform_environment(original)

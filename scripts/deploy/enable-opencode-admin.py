@@ -96,6 +96,12 @@ def desired_executor(old, image):
     host = copy.deepcopy(old['HostConfig'])
     config['Image'] = image
     config['Env'] = [entry for entry in config['Env'] if not entry.startswith('MANAGED_CONFIG_SEED_DIR=')]
+    # Docker replacement reuses Config.Env, which overrides the new image PATH.
+    config['Env'] = [
+        'PATH=/home/node/.local/bin:' + entry[5:]
+        if entry.startswith('PATH=') and '/home/node/.local/bin' not in entry[5:].split(':')
+        else entry for entry in config['Env']
+    ]
     destinations = {TARGET, TARGET + '/opencode.json', '/run/orx-seed/opencode'}
     host['Binds'] = [bind for bind in host.get('Binds', []) if bind.split(':')[1] not in destinations]
     host['Binds'].append(SHARED + ':' + TARGET + ':ro')
@@ -201,19 +207,25 @@ def main(package, apply=False):
         parsed = json.loads(run('docker', 'compose', '--env-file', '/dev/null', '--project-directory', '/opt/mobilesci/current', '-f', str(candidate), 'config', '--no-interpolate', '--format', 'json', capture=True))
     # A dedicated build keeps the installed OpenCode version and runtime dependencies.
     executor_image = 'mobilesci-unified-executor:' + stamp.lower()
-    if private:
+    if private or (package / 'workbench/executor-tools').is_dir():
         context = backup / 'executor-build'
         context.mkdir()
         import shutil
         shutil.copy2(package / 'workbench/orx', context / 'orx')
         shutil.copytree(package / 'platform/src', context / 'src')
         base = 'mobilesci-opencode-executor-base:' + stamp.lower()
-        run('docker', 'tag', private[0]['Image'], base)
+        source_image = private[0]['Image'] if private else values(provisioner['Config'])['MANAGED_EXECUTOR_IMAGE']
+        run('docker', 'tag', source_image, base)
         parser_setup = 'RUN if ! command -v pdftotext >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends poppler-utils && rm -rf /var/lib/apt/lists/*; fi\nRUN pdftotext -v\n'
         if (package / 'workbench/pdf-debs').is_dir():
             shutil.copytree(package / 'workbench/pdf-debs', context / 'pdf-debs')
             parser_setup = 'COPY pdf-debs /tmp/pdf-debs\nRUN dpkg -i /tmp/pdf-debs/*.deb && pdftotext -v && rm -rf /tmp/pdf-debs\n'
-        (context / 'Dockerfile').write_text('FROM ' + base + '\nUSER root\n' + parser_setup + 'COPY --chmod=755 orx /usr/local/bin/orx\nCOPY src /app/platform/src\nUSER node\n')
+        verification = ''
+        if (package / 'workbench/executor-tools').is_dir():
+            shutil.copytree(package / 'workbench/executor-tools', context / 'executor-tools')
+            parser_setup = (context / 'executor-tools/runtime.Dockerfile').read_text() + '\n'
+            verification = 'RUN orx-prepare-executor\nUSER node\nRUN orx-check-executor-tools\n'
+        (context / 'Dockerfile').write_text('FROM ' + base + '\nUSER root\n' + parser_setup + 'COPY --chmod=755 orx /usr/local/bin/orx\nCOPY src /app/platform/src\n' + (verification or 'USER node\n'))
         run('docker', 'build', '--pull=false', '-t', executor_image, str(context))
     else:
         executor_image = values(provisioner['Config'])['MANAGED_EXECUTOR_IMAGE']

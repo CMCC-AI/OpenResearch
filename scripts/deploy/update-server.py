@@ -167,6 +167,8 @@ try:
         cmd('docker','stop','-t','120',name)
         cmd('docker','rename',name,rollback)
         config=dict(old['Config']);config['Image']=oldtag
+        if service=='workbench':
+            config['Env']=['PATH=/home/node/.local/bin:'+entry[5:] if entry.startswith('PATH=') and '/home/node/.local/bin' not in entry[5:].split(':') else entry for entry in config.get('Env',[])]
         config['Labels']=dict(config.get('Labels') or {})
         config['Labels']['sh.mobilesci.source-commit']=manifest.get('commit','unknown')
         config['Labels']['sh.mobilesci.source-fingerprint']=manifest.get('fingerprint','unknown')

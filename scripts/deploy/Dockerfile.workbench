@@ -4,6 +4,8 @@ ARG CODEGRAPH_VERSION=1.6.0
 RUN npm install --global @colbymchenry/codegraph@${CODEGRAPH_VERSION}
 COPY opencode-package/package.json opencode-package/package-lock.json /opt/opencode-deps/
 RUN cd /opt/opencode-deps && npm ci --ignore-scripts --omit=dev
+RUN orx-prepare-executor
 USER node
+RUN orx-check-executor-tools
 ENV ORX_ACCOUNT_URL=http://localhost:5300 ORX_DEEP_LITERATURE_URL=http://127.0.0.1:3000 ORX_DEEP_LITERATURE_WEB_URL=http://localhost:3000
 CMD ["sh", "-ec", "ln -sfn /opt/opencode-deps/node_modules /home/node/.config/opencode/node_modules; exec orx --no-telemetry up --no-browser"]

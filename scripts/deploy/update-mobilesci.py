@@ -33,7 +33,7 @@ def digest(path):
 
 def fingerprint():
     value = hashlib.sha256()
-    for name in ['Cargo.toml', 'Cargo.lock', 'build.rs', 'SYSTEM_PROMPT.md', 'SKILL.md', 'src', 'ui/src', 'ui/dist', 'linux', 'agent-skills', 'demo', 'packages/platform/Dockerfile.executor', 'packages/platform/package.json', 'packages/platform/package-lock.json', 'packages/platform/migrations', 'packages/platform/public', 'packages/platform/src', 'scripts/deploy/update-server.py', 'scripts/deploy/update-mobilesci.py', 'scripts/deploy/enable-personal-spaces.py', 'scripts/deploy/enable-opencode-admin.py']:
+    for name in ['Cargo.toml', 'Cargo.lock', 'build.rs', 'SYSTEM_PROMPT.md', 'SKILL.md', 'src', 'ui/src', 'ui/dist', 'linux', 'agent-skills', 'demo', 'packages/platform/Dockerfile.executor', 'packages/platform/executor-tools', 'packages/platform/package.json', 'packages/platform/package-lock.json', 'packages/platform/migrations', 'packages/platform/public', 'packages/platform/src', 'scripts/deploy/update-server.py', 'scripts/deploy/update-mobilesci.py', 'scripts/deploy/enable-personal-spaces.py', 'scripts/deploy/enable-opencode-admin.py']:
         path = ROOT / name
         for file in sorted(path.rglob('*') if path.is_dir() else [path]):
             if file.is_file():
@@ -144,6 +144,16 @@ def prepare(image=None, pdf_debs=None):
             run(['docker', 'cp', container + ':/node_modules', package / 'platform/node_modules'])
         finally:
             run(['docker', 'rm', container])
+        # Export Debian packages, uv, and runtime checks locally. Replacing an
+        # old executor must not depend on apt/PyPI/GitHub access on the server.
+        tools_image = 'mobilesci-update-executor-tools:' + source[:12]
+        run(['docker', 'build', '--platform', 'linux/amd64', '--target', 'executor-packages',
+             '-f', ROOT / 'packages/platform/Dockerfile.executor', '-t', tools_image, ROOT])
+        container = subprocess.check_output(['docker', 'create', '--platform', 'linux/amd64', tools_image], text=True).strip()
+        try:
+            run(['docker', 'cp', container + ':/opt/executor-tools', package / 'workbench/executor-tools'])
+        finally:
+            run(['docker', 'rm', container])
         if pdf_debs is not None:
             files = sorted(pdf_debs.glob('*.deb'))
             if not files or any(file.is_symlink() for file in files):
@@ -153,9 +163,12 @@ def prepare(image=None, pdf_debs=None):
             for file in files:
                 shutil.copy2(file, destination / file.name)
         for service in ['workbench', 'platform']:
-            copy = 'USER root\nRUN if ! command -v pdftotext >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends poppler-utils && rm -rf /var/lib/apt/lists/*; fi\nRUN pdftotext -v\nCOPY --chmod=755 orx /usr/local/bin/orx\nUSER node' if service == 'workbench' else 'WORKDIR /app/platform\nCOPY package.json package-lock.json ./\nCOPY node_modules ./node_modules\nCOPY migrations ./migrations\nCOPY dist /app/ui/dist\nCOPY public ./public\nCOPY src ./src'
-            if service == 'workbench' and pdf_debs is not None:
-                copy = 'USER root\nCOPY pdf-debs /tmp/pdf-debs\nRUN dpkg -i /tmp/pdf-debs/*.deb && pdftotext -v && rm -rf /tmp/pdf-debs\nCOPY --chmod=755 orx /usr/local/bin/orx\nUSER node'
+            copy = 'WORKDIR /app/platform\nCOPY package.json package-lock.json ./\nCOPY node_modules ./node_modules\nCOPY migrations ./migrations\nCOPY dist /app/ui/dist\nCOPY public ./public\nCOPY src ./src'
+            if service == 'workbench':
+                copy = (package / 'workbench/executor-tools/runtime.Dockerfile').read_text()
+                if pdf_debs is not None:
+                    copy = 'USER root\nCOPY pdf-debs /tmp/pdf-debs\nRUN dpkg -i /tmp/pdf-debs/*.deb && rm -rf /tmp/pdf-debs\n' + copy
+                copy += '\nCOPY --chmod=755 orx /usr/local/bin/orx\nRUN orx-prepare-executor\nUSER node\nRUN orx-check-executor-tools'
             (package / service / 'Dockerfile').write_text('ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n' + copy + '\n')
         shutil.copy2(ROOT / 'scripts/deploy/update-server.py', package / 'update-server.py')
         shutil.copy2(ROOT / 'scripts/deploy/enable-personal-spaces.py', package / 'enable-personal-spaces.py')
