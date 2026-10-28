@@ -6,6 +6,7 @@ use crate::store::{
 };
 use clap::{Args, Subcommand};
 use serde::Deserialize;
+use std::io::Read;
 
 #[derive(Args, Debug)]
 pub struct ResearchArgs {
@@ -50,7 +51,11 @@ struct Finish {
     summary: String,
 }
 fn read<T: serde::de::DeserializeOwned>(file: &str) -> Result<T> {
-    let bytes = std::fs::read(file)?;
+    read_request(std::fs::File::open(file)?)
+}
+fn read_request<T: serde::de::DeserializeOwned>(reader: impl Read) -> Result<T> {
+    let mut bytes = Vec::new();
+    reader.take(256 * 1024 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > 256 * 1024 {
         return Err(anyhow!("研究请求超过 256 KiB"));
     }
@@ -178,4 +183,32 @@ fn require_lead(lead: bool) -> Result<()> {
         return Err(anyhow!("此操作仅允许研究主理人执行"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn research_request_reader_stops_at_size_limit_and_accepts_boundary() {
+        struct Counted(usize);
+        impl Read for Counted {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.0 += buffer.len();
+                buffer.fill(b' ');
+                Ok(buffer.len())
+            }
+        }
+        let mut huge = Counted(0);
+        let error = read_request::<serde_json::Value>(&mut huge).unwrap_err();
+        assert!(error.to_string().contains("256 KiB"));
+        assert_eq!(huge.0, 256 * 1024 + 1);
+        let boundary =
+            std::io::Cursor::new(b"null").chain(std::io::repeat(b' ').take(256 * 1024 - 4));
+        assert_eq!(
+            read_request::<serde_json::Value>(boundary).unwrap(),
+            serde_json::Value::Null
+        );
+        assert!(read_request::<serde_json::Value>(&b"invalid"[..]).is_err());
+    }
 }

@@ -129,8 +129,10 @@ decision in terms of what the user is agreeing to, then register the native plan
 8. Register claims with `orx research claim --file <path>`:
    `{"text":"...","support":"paper|experiment|inference","source":"...",
    "location":"page/section","runId":null,"lineStart":null,"lineEnd":null}`.
-   Experiment claims require a same-project real run, inclusive log line range
-   and nonempty source explanation; the platform records commit and log hash.
+   Experiment claims require a same-project real run, an inclusive log line
+   range (at most 201 lines and 64 KiB of raw/decoded excerpt), and nonempty
+   source explanation; the platform records commit and log hash. Claim string
+   fields together must fit within 64 KiB; research JSON request files within 256 KiB.
    Review negative and inconclusive results without inventing support.
 9. W1–W3, legacy full studies and independent reviews need separate `as-independent-reviewer`
    and `as-quality-citation-auditor` tasks. Reviewers receive artifacts and

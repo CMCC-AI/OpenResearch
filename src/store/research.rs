@@ -10,6 +10,8 @@ use sha2::{Digest, Sha256};
 use super::{now_ms, Store, StoredRun};
 use crate::error::{anyhow, Result};
 
+mod evidence;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskSpec {
@@ -1321,60 +1323,6 @@ impl Store {
             task.pending_nudge_turn_id = None;
             task.state = if success { "completed" } else { "failed" }.into();
             task.summary = Some(summary);
-            Ok(())
-        })
-    }
-    pub fn research_add_claim(&self, id: &str, input: ClaimInput) -> Result<()> {
-        self.research_update(id, |study| {
-            study.ensure_active()?;
-            if input.text.trim().is_empty()
-                || input.source.trim().is_empty()
-                || !["paper", "experiment", "inference"].contains(&input.support.as_str())
-            {
-                return Err(anyhow!("结论需要文本、来源及明确的证据类型"));
-            }
-            let mut claim = EvidenceClaim {
-                id: uuid::Uuid::new_v4().to_string(),
-                input,
-                commit_sha: None,
-                log_sha256: None,
-                excerpt: None,
-                created_at: now_ms(),
-            };
-            if claim.input.support == "experiment" {
-                let run = self
-                    .get_run(
-                        claim
-                            .input
-                            .run_id
-                            .as_deref()
-                            .ok_or_else(|| anyhow!("实验结论需要 runId"))?,
-                    )?
-                    .ok_or_else(|| anyhow!("Run 不存在"))?;
-                if run.project_id != study.project_id || !crate::local::is_terminal(&run.status) {
-                    return Err(anyhow!("结论必须关联本项目已结束的 Run"));
-                }
-                let bytes = std::fs::read(self.research_log_path(&run.id)?)?;
-                let text = String::from_utf8_lossy(&bytes);
-                let lines: Vec<_> = text.lines().collect();
-                let start = claim.input.line_start.unwrap_or(0);
-                let end = claim.input.line_end.unwrap_or(0);
-                if start == 0 || end < start || end > lines.len() || end - start > 200 {
-                    return Err(anyhow!("需要有效日志行范围（最多 201 行）"));
-                }
-                claim.excerpt = Some(lines[start - 1..end].join("\n"));
-                claim.log_sha256 = Some(digest(&bytes));
-                claim.commit_sha = run.commit_sha;
-            } else if claim.input.support == "paper"
-                && claim
-                    .input
-                    .location
-                    .as_ref()
-                    .is_none_or(|v| v.trim().is_empty())
-            {
-                return Err(anyhow!("论文声明需要页码或章节位置"));
-            }
-            study.claims.push(claim);
             Ok(())
         })
     }
@@ -2863,4 +2811,5 @@ mod tests {
     }
 
     include!("research_debt_tests.rs");
+    include!("research_evidence_tests.rs");
 }
