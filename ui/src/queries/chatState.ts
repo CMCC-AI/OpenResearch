@@ -81,7 +81,7 @@ export function reducer(state: ChatState, action: Exclude<Action, { type: "busy"
         id: `${LOCAL_PREFIX}senderr-${Date.now()}`,
         role: "assistant",
         parts: [
-          { id: "p0", type: "tool", tool: "error", state: { status: "error", error: action.text } },
+          { id: "p0", type: "tool", tool: "local_error", state: { status: "error", error: action.text } },
         ],
         createdAt: Date.now(),
         // Sit on the branch that is showing, not at the root of a new one.

@@ -32,7 +32,7 @@ import {
   getWorkspaceGeneration,
 } from "../queries/client";
 import { LOCAL_PREFIX, SHELL_TOOL } from "../queries/chatState";
-import { useInfiniteQuery, useMutation, useQueries, useQuery } from "@tanstack/react-query";
+import { CancelledError, useInfiniteQuery, useMutation, useQueries, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatState } from "../queries/chatStore";
 
@@ -2406,6 +2406,9 @@ function ToolRow({
   const hasDetail = failed && Boolean(errorMessage);
   const [detailOpen, setDetailOpen] = useState(false);
   const detailId = `tool-error-${part.id.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+  if (part.tool === "local_error") {
+    return <div role="alert" className="flex items-start gap-2 px-1 py-1 text-sm text-accent-red"><TriangleAlert size={18} className="shrink-0" aria-hidden="true" /><span className="min-w-0 whitespace-pre-wrap wrap-anywhere">{errorMessage}</span></div>;
+  }
   if (part.tool === "error") {
     return <TurnStatusRow part={part} busy={false} recovering={false} usageLimited={isUsageLimitPart(part)} />;
   }
@@ -5559,16 +5562,30 @@ export function ChatPanel({
           sourceSessionId = session.id;
         }
         if (!isCurrentScope(sessionsOptions.queryKey)) return;
-        const history = getChatMessagesQuery(sid);
-        // Join pending repair even when it has published an intermediate snapshot.
-        await queryClient.fetchQuery({
-          ...history,
-          ...(queryClient.getQueryState(history.queryKey)?.fetchStatus === "fetching" ? { staleTime: 0 } : {}),
-        });
+        const historySid = sid;
+        const history = getChatMessagesQuery(historySid);
+        let cancelledHistory = false;
+        for (;;) {
+          if (!isCurrentScope(sessionsOptions.queryKey) || deletedSessionIds.has(historySid)) return;
+          try {
+            // Join pending repair; a cancelled repair's cached baseline is not final.
+            await queryClient.fetchQuery({
+              ...history,
+              ...(cancelledHistory || queryClient.getQueryState(history.queryKey)?.fetchStatus === "fetching" ? { staleTime: 0 } : {}),
+            });
+            break;
+          } catch (cause) {
+            if (!(cause instanceof CancelledError)) throw cause;
+            if (!isCurrentScope(sessionsOptions.queryKey) || deletedSessionIds.has(historySid)) return;
+            cancelledHistory = true;
+            // Yield so repeated reconnect cancellation cannot starve scope retirement.
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          }
+        }
       } finally {
         preparingSend.current = false;
       }
-      if (!isCurrentScope(sessionsOptions.queryKey)) return;
+      if (!isCurrentScope(sessionsOptions.queryKey) || deletedSessionIds.has(sid)) return;
       dispatch({
         type: "optimisticUser",
         sessionId: sid,

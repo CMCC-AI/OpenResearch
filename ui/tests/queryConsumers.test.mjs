@@ -2,9 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
+import { CancelledError } from "@tanstack/react-query";
 
 const source = (file) => ts.createSourceFile(file, readFileSync(new URL(`../src/components/${file}`, import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 function evaluate(code, bindings) {
+  bindings = { CancelledError, deletedSessionIds: new Set(), ...bindings };
   const js = ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   return new Function(...Object.keys(bindings), js)(...Object.values(bindings));
 }
@@ -232,18 +234,19 @@ test("history preparation clears the composer up front but never sends early", a
   const observer = new QueryObserver(client, load("chat").getChatMessagesQuery("s"));
   const off = observer.subscribe(() => {});
   const preparingSend = { current: false };
+  let currentScope = true;
   const cleared = new Set();
   const sending = evaluate(`return (async () => { let sid = "s"; ${sendPreparation()} })()`, {
-    sessionsOptions: { queryKey: [] }, isCurrentScope: () => true, preparingSend,
+    sessionsOptions: { queryKey: [] }, isCurrentScope: () => currentScope, preparingSend,
     queryClient: client, getChatMessagesQuery: load("chat").getChatMessagesQuery,
     inSourceScope: () => true, draft: "unsent", pending: [], pendingAnnotations: [],
     setDraft: () => cleared.add("draft"), setAttachments: () => cleared.add("attachments"),
     setAnnotations: () => cleared.add("annotations"), setAttachError: () => cleared.add("attachError"), setImageRefusedFor: () => cleared.add("imageRefused"),
     dispatch: () => assert.fail("must not send before history"),
   });
-  const rejected = assert.rejects(sending);
+  currentScope = false;
   off();
-  await rejected;
+  await sending;
   // The composer clears before the first await so a scope change mid-send can
   // never stash sent text; the caller's catch restores it via restoreComposer().
   assert.deepEqual([...cleared].sort(), ["annotations", "attachError", "attachments", "draft", "imageRefused"]);
@@ -297,4 +300,110 @@ test("the pre-await draft clear keeps an edit queued since render", async () => 
   await sending;
   assert.equal(updater("rendered"), "");
   assert.equal(updater("typed since render"), "typed since render");
+});
+
+function historyPreparationBindings(client, overrides = {}) {
+  return {
+    sessionsOptions: { queryKey: [] }, isCurrentScope: () => true,
+    preparingSend: { current: false }, inSourceScope: () => false,
+    queryClient: client, getChatMessagesQuery: () => ({ queryKey: ["history"] }),
+    dispatch: () => {}, text: "new", draft: "new", pending: [], pendingAnnotations: [],
+    setDraft: () => {}, setAttachments: () => {}, setAnnotations: () => {}, setAttachError: () => {}, setImageRefusedFor: () => {},
+    ...overrides,
+  };
+}
+async function until(predicate) {
+  const deadline = Date.now() + 2000;
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, "preparation did not reach the expected state");
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+}
+
+for (const cached of [false, true]) test(`cancelled history rejoins a fresh read before sending (cached baseline: ${cached})`, async t => {
+  const { queryModules } = await import("./queryModules.mjs");
+  let calls = 0, complete;
+  const repaired = new Promise(resolve => { complete = resolve; });
+  const { client, load } = queryModules({ getChatMessages: () => ++calls === 1 ? new Promise(() => {}) : repaired }, { nativeClient: true });
+  t.after(() => client.clear());
+  const history = load("chat").getChatMessagesQuery("s");
+  const snapshot = { messages: [], queued: [], activeLeafId: null };
+  if (cached) client.setQueryData(history.queryKey, snapshot);
+  const first = client.fetchQuery({ ...history, staleTime: 0 }).catch(() => {});
+  const actions = [];
+  const bindings = historyPreparationBindings(client, { getChatMessagesQuery: load("chat").getChatMessagesQuery, dispatch: action => actions.push(action) });
+  const sending = evaluate(`return (async () => { let sid = "s"; ${sendPreparation()} })()`, bindings);
+  await client.cancelQueries({ queryKey: history.queryKey }, { revert: false });
+  await first;
+  await until(() => calls === 2);
+  assert.equal(bindings.preparingSend.current, true);
+  assert.deepEqual(actions, []);
+  complete(snapshot);
+  await sending;
+  assert.equal(bindings.preparingSend.current, false);
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].sessionId, "s");
+});
+
+test("history cancellation stops on scope retirement or deletion and never retries real errors", async () => {
+  for (const kind of ["workspace", "deleted", "success-then-deleted", "network", "permission", "data"]) {
+    const deletedSessionIds = new Set();
+    let current = true, reads = 0, sent = 0;
+    const failure = new Error(kind);
+    const client = { getQueryState: () => undefined, fetchQuery: async () => {
+      reads++;
+      if (kind === "workspace") current = false;
+      if (kind.includes("deleted")) deletedSessionIds.add("s");
+      if (kind === "success-then-deleted") return {};
+      throw ["workspace", "deleted"].includes(kind) ? new CancelledError() : failure;
+    } };
+    const bindings = historyPreparationBindings(client, { deletedSessionIds, isCurrentScope: () => current, dispatch: () => { sent++; } });
+    const sending = evaluate(`return (async () => { let sid = "s"; ${sendPreparation()} })()`, bindings);
+    if (["network", "permission", "data"].includes(kind)) await assert.rejects(sending, error => error === failure);
+    else await sending;
+    assert.equal(reads, 1);
+    assert.equal(sent, 0);
+    assert.equal(bindings.preparingSend.current, false);
+  }
+});
+
+test("repeated history cancellations yield until the captured workspace retires", async () => {
+  let current = true, reads = 0;
+  const client = { getQueryState: () => undefined, fetchQuery: async () => { reads++; throw new CancelledError(); } };
+  const bindings = historyPreparationBindings(client, { isCurrentScope: () => current, dispatch: () => assert.fail("must not send") });
+  const sending = evaluate(`return (async () => { let sid = "s"; ${sendPreparation()} })()`, bindings);
+  await until(() => reads >= 2);
+  current = false;
+  await sending;
+  assert.equal(bindings.preparingSend.current, false);
+});
+
+test("local send failures retain the preceding model response and render as their own alert", async () => {
+  const { queryModules } = await import("./queryModules.mjs");
+  const { isUsageLimitPart, isTurnStatusPart } = await import("../src/chatRendering.ts");
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { load } = queryModules({});
+  const answer = { id: "answer", role: "assistant", createdAt: 1, parts: [{ id: "answer-text", type: "text", text: "previous answer" }] };
+  const state = { messagesBySession: { s: [answer] }, activeLeafBySession: { s: "answer" }, queuedBySession: {}, busySessions: new Set() };
+  const next = load("chatState").reducer(state, { type: "localError", sessionId: "s", text: "消息未发送：<offline>" });
+  const [previous, local] = next.messagesBySession.s;
+  assert.equal(previous, answer);
+  assert.equal(local.parentId, answer.id);
+  assert.match(local.id, /^local-senderr-/);
+  const part = local.parts[0];
+  assert.equal(part.tool, "local_error");
+  assert.equal(isUsageLimitPart(part), false);
+  assert.equal(isTurnStatusPart(part), false);
+  const file = source("ChatPanel.tsx");
+  const component = file.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "ToolRow");
+  const statements = component.body.statements;
+  const end = statements.findIndex(node => ts.isIfStatement(node) && node.expression.getText(file) === 'part.tool === "local_error"');
+  assert.ok(end >= 0);
+  const prefix = statements.slice(0, end + 1).map(node => node.getText(file)).join("\n");
+  const js = ts.transpileModule(`${prefix}\nreturn null;`, { fileName: "local-error.tsx", compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 } }).outputText;
+  const alert = new Function("part", "cleanToolError", "useState", "React", "TriangleAlert", js)(part, value => value, () => [false, () => {}], { createElement }, () => createElement("svg"));
+  const html = renderToStaticMarkup(alert);
+  assert.match(html, /role="alert"/);
+  assert.match(html, /消息未发送：&lt;offline&gt;/);
 });
