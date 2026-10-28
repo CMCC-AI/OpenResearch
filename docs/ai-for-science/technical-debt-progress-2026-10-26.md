@@ -1,5 +1,7 @@
 # 技术债清单与 Stop 治理进展（2026-10-26）
 
+> 最新续查：[2026-10-28 技术债复核](technical-debt-review-2026-10-28.md)更新全局锁与同步入口现状，并复现强制重做的旧产物验收、交付后重复巡检写入和派发错误不可见问题。下文保留为本批历史实施记录。
+
 > 后续实施：[队列派发结果收尾隔离](queue-dispatch-settlement-2026-10-26.md)覆盖 NotStarted 恢复、成功删除和失败重试保存；全局 turn-map 锁范围、出队与其他同步队列入口仍未关闭。
 
 > 后续实施：[队列缓存锁范围治理](queue-cache-lock-scope-2026-10-26.md)去除忙入队、取消及手动重试中缓存 mutex 跨 SQL 的持有；全局 turn/revision 与 queue-persistence 锁仍未整体收口。

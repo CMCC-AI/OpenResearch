@@ -64,6 +64,10 @@ pub struct ResearchTask {
     pub pending_nudge_turn_id: Option<String>,
     pub summary: Option<String>,
     pub artifacts: Vec<Artifact>,
+    /// Files present when this attempt was bound. Unchanged files require an
+    /// explicit `research finish` acknowledgement; absence means legacy data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_baseline: Option<Vec<Artifact>>,
     pub run_contract: Option<RunContract>,
     pub run_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -514,9 +518,12 @@ impl Store {
         update: impl FnOnce(&mut Study) -> Result<T>,
     ) -> Result<T> {
         let mut study = self.research_study(id)?;
+        let before = serde_json::to_vec(&study)?;
         let value = update(&mut study)?;
-        study.updated_at = now_ms();
-        self.research_save(&study)?;
+        if serde_json::to_vec(&study)? != before {
+            study.updated_at = now_ms();
+            self.research_save(&study)?;
+        }
         Ok(value)
     }
     pub fn research_update<T>(
@@ -617,6 +624,10 @@ impl Store {
                 return Err(anyhow!("请先结束或停止当前任务，再修订计划"));
             }
             let version = study.plans.last().map_or(1, |p| p.version + 1);
+            // Compare effective routes: legacy manual plans may omit workflow,
+            // while a team plan may select a different research contract.
+            let same_workflow =
+                input.workflow.as_deref().unwrap_or(&study.mode) == study.workflow_mode();
             let root = self.research_root(study).ok();
             let evidence_digest = digest(&serde_json::to_vec(&study.claims)?);
             let prev_tasks: std::collections::HashMap<String, ResearchTask> = study
@@ -634,7 +645,7 @@ impl Store {
             loop {
                 let before = inherited_ids.len();
                 for spec in &input.tasks {
-                    if inherited_ids.contains(&spec.id) || spec.force_rerun {
+                    if !same_workflow || inherited_ids.contains(&spec.id) || spec.force_rerun {
                         continue;
                     }
                     let Some(prev) = prev_tasks.get(&spec.id) else {
@@ -642,6 +653,7 @@ impl Store {
                     };
                     if prev.state != "completed"
                         || prev.spec.role != spec.role
+                        || prev.spec.brief != spec.brief
                         || prev.spec.outputs != spec.outputs
                         || prev.spec.depends_on != spec.depends_on
                         || !spec.depends_on.iter().all(|d| inherited_ids.contains(d))
@@ -697,6 +709,7 @@ impl Store {
                             pending_nudge_turn_id: None,
                             summary: prev.summary.clone(),
                             artifacts: prev.artifacts.clone(),
+                            output_baseline: prev.output_baseline.clone(),
                             run_contract: prev.run_contract.clone(),
                             run_ids: prev.run_ids.clone(),
                             previous_run_ids: prev.previous_run_ids.clone(),
@@ -716,6 +729,7 @@ impl Store {
                     pending_nudge_turn_id: None,
                     summary: None,
                     artifacts: vec![],
+                    output_baseline: None,
                     run_contract: None,
                     run_ids: vec![],
                     previous_run_ids: vec![],
@@ -748,8 +762,25 @@ impl Store {
         if task.state != "pending" {
             return Err(anyhow!("任务已派发；请读取已有会话"));
         }
+        let mut baseline = Vec::new();
+        for path in &study.task(task_id)?.spec.outputs {
+            match read_artifact(&root, path) {
+                Ok(bytes) => baseline.push(Artifact {
+                    path: path.clone(),
+                    sha256: digest(&bytes),
+                    bytes: bytes.len() as u64,
+                }),
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {}
+                Err(error) => return Err(error),
+            }
+        }
         let evidence_digest = digest(&serde_json::to_vec(&study.claims)?);
         let task = study.task_mut(task_id)?;
+        task.output_baseline = Some(baseline);
+        task.summary = None;
         task.evidence_digest = Some(evidence_digest);
         task.state = "running".into();
         task.session_id = Some(session.into());
@@ -1221,6 +1252,26 @@ impl Store {
         success: bool,
         summary: String,
     ) -> Result<()> {
+        self.research_finish_checked(id, task_id, success, summary, false)
+    }
+
+    pub(crate) fn research_auto_finish(
+        &self,
+        id: &str,
+        task_id: &str,
+        summary: String,
+    ) -> Result<()> {
+        self.research_finish_checked(id, task_id, true, summary, true)
+    }
+
+    fn research_finish_checked(
+        &self,
+        id: &str,
+        task_id: &str,
+        success: bool,
+        summary: String,
+        automatic: bool,
+    ) -> Result<()> {
         self.research_update(id, |study| {
             study.ensure_active()?;
             let root = self.research_root(study)?;
@@ -1252,9 +1303,15 @@ impl Store {
                         if bytes.is_empty() {
                             return Err(anyhow!("产物为空: {path}"));
                         }
+                        let sha256 = digest(&bytes);
+                        if automatic && task.output_baseline.as_ref().is_none_or(|baseline| {
+                            baseline.iter().any(|old| old.path == *path && old.sha256 == sha256)
+                        }) {
+                            return Err(anyhow!("产物尚未登记为本轮结果: {path}；请核查后执行 orx research finish 显式登记"));
+                        }
                         Ok(Artifact {
                             path: path.clone(),
-                            sha256: digest(&bytes),
+                            sha256,
                             bytes: bytes.len() as u64,
                         })
                     })
@@ -1347,8 +1404,17 @@ impl Store {
             if !crate::local::is_terminal(&run.status) {
                 return Err(anyhow!("仍有未结束的运行"));
             }
-            let log = std::fs::read(self.research_log_path(&run.id)?)?;
-            let log_hash = digest(&log);
+            let mut log = std::fs::File::open(self.research_log_path(&run.id)?)?;
+            let mut hasher = Sha256::new();
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let count = std::io::Read::read(&mut log, &mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..count]);
+            }
+            let log_hash = format!("{:x}", hasher.finalize());
             for claim in &study.claims {
                 if claim.input.run_id.as_deref() == Some(&run.id)
                     && claim.log_sha256.as_ref() != Some(&log_hash)
@@ -2069,6 +2135,7 @@ mod tests {
                 pending_nudge_turn_id: None,
                 summary: None,
                 artifacts: vec![],
+                output_baseline: None,
                 run_contract: None,
                 run_ids: vec!["run".into()],
                 previous_run_ids: vec![],
@@ -2794,4 +2861,6 @@ mod tests {
             .iter()
             .any(|d| d.gate == "G4" && d.status == "superseded"));
     }
+
+    include!("research_debt_tests.rs");
 }

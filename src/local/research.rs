@@ -207,7 +207,7 @@ pub fn turn_context(store: &Store, session: &str) -> Result<Option<String>> {
             .map(|d| format!("{}:{}", d.gate, d.status))
             .collect();
         format!(
-            "\n<current-plan-progress>\n当前计划版本: v{} (workflow: {})\n当前闸门状态: [{}]\n已完成任务 ({}/{}): [{}]\n运行中任务: [{}]\n失败任务: [{}]\n待执行任务: [{}]\n【自动推进与防重置规则】\n1. 用户批准 G1（及实验 G2/G3）后、以及前置任务完成验收后，平台后台会自动按 DAG 依赖批量派发就绪专家任务，并在子会话结束且声明产物非空时自动完成 SHA-256 验收。\n2. 严禁无故重新调用 `orx research plan` 重置已有计划！若单个未完成/失败任务需原地重跑，请执行 `orx research retry <task-id>`；若实验任务需绑定或更新代码/运行契约，请直接执行 `orx research prepare-run <task-id> <experiment-id> --backend <backend>`（无需新建计划版本）。\n3. 若因审稿意见、交付校验失败或方向转向需要重做已完成（completed）的任务，请调用 `orx research plan` 提交新版本并对需重做的任务显式设置 `\"forceRerun\": true`（未设置 `\"forceRerun\": true` 且产物未变动的已完成任务会自动保留进度）。\n</current-plan-progress>",
+            "\n<current-plan-progress>\n当前计划版本: v{} (workflow: {})\n当前闸门状态: [{}]\n已完成任务 ({}/{}): [{}]\n运行中任务: [{}]\n失败任务: [{}]\n待执行任务: [{}]\n【自动推进与防重置规则】\n1. 用户批准 G1（及实验 G2/G3）后、以及前置任务完成验收后，平台后台会自动按 DAG 依赖批量派发就绪专家任务，并在子会话结束且声明产物满足本轮归属检查时自动完成 SHA-256 验收；已有同字节结果需核查后通过 `orx research finish` 显式登记。\n2. 严禁无故重新调用 `orx research plan` 重置已有计划！若单个未完成/失败任务需原地重跑，请执行 `orx research retry <task-id>`；若实验任务需绑定或更新代码/运行契约，请直接执行 `orx research prepare-run <task-id> <experiment-id> --backend <backend>`（无需新建计划版本）。\n3. 若因审稿意见、交付校验失败或方向转向需要重做已完成（completed）的任务，请调用 `orx research plan` 提交新版本并对需重做的任务显式设置 `\"forceRerun\": true`（只有任务简报、角色、输出路径、依赖及实际流程未变且产物有效的已完成任务才会保留；简报变化会自动使该任务及下游重新执行，切换实际流程会使全部任务重新执行）。\n</current-plan-progress>",
             plan.version,
             study.workflow_mode(),
             gates.join(", "),

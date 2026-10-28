@@ -67,7 +67,24 @@ pub(super) async fn decide(
     if req.reason.len() > 8000 {
         return Err(bad_request("决策说明过长"));
     }
-    let (session, wakeup_prompt) = {
+    // Complete persistence and resumption even when the browser disconnects.
+    tokio::spawn(apply_decision(state, id, decision, req))
+        .await
+        .map_err(|error| ApiError::from(anyhow!("research decision task failed: {error}")))?
+}
+
+async fn apply_decision(
+    state: AppState,
+    id: String,
+    decision: String,
+    req: DecisionReq,
+) -> ApiResult {
+    let gate = state.data_dir_gate.clone().lock_owned().await;
+    reject_if_stopping(&state)?;
+    reject_if_moving(&state)?;
+    let client_turn_id = format!("research-decision-{decision}");
+    let (session, wakeup_prompt) = blocking_task(move || {
+        let _gate = gate;
         let store = Store::open()?;
         store
             .research_decide(&id, &decision, &req.scope_hash, req.approved, req.reason)
@@ -107,8 +124,8 @@ pub(super) async fn decide(
                 "研究闸门 {gate} 已由用户批准。前置已完成任务已保留，请立即为下一环节实验任务执行 `orx research prepare-run` 绑定运行契约，或推进剩余未完成步骤；严禁重新调用 `orx research plan` 重置已有进度。"
             ))
         };
-        (study.session_id, prompt)
-    };
+        Ok::<_, ApiError>((study.session_id, prompt))
+    }).await??;
     let resume_error = if let Some(prompt) = wakeup_prompt {
         state
             .chat
@@ -118,7 +135,7 @@ pub(super) async fn decide(
                 local::chat::TurnOverrides::default(),
                 vec![],
                 vec![],
-                Some(format!("research-decision-{decision}")),
+                Some(client_turn_id),
             )
             .await
             .err()

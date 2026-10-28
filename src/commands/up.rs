@@ -139,6 +139,7 @@ pub async fn run(args: UpArgs) -> Result<()> {
     // Plan-mode turns hand this port to the `orx mcp-gate` permission bridge.
     state.chat.set_up_port(actual_port);
     state.chat.resume_persisted_queues();
+    tokio::spawn(state.chat.clone().watch_turn_leases());
     {
         let chat = state.chat.clone();
         let moving = state.data_dir_move_in_progress.clone();
@@ -5472,6 +5473,9 @@ async fn move_data_dir(State(state): State<AppState>, Json(req): Json<DataDirReq
     };
 
     let data_dir_guard = state.data_dir_gate.clone().lock_owned().await;
+    // Lock ordering is scan gate -> heartbeat gate. A move waiting for a scan
+    // must not prevent the running chats from renewing their durable leases.
+    let turn_lease_guard = Arc::new(state.chat.pause_turn_heartbeats().await);
     let source_data_dir = crate::store::data_dir();
     let move_token = uuid::Uuid::new_v4().to_string();
     let (move_store, move_lock) = match Store::open().and_then(|store| {
@@ -5591,6 +5595,7 @@ async fn move_data_dir(State(state): State<AppState>, Json(req): Json<DataDirReq
     let target = std::path::PathBuf::from(path);
     tokio::spawn(async move {
         let _data_dir_guard = data_dir_guard;
+        let _turn_lease_guard = turn_lease_guard;
         let _move_lock = move_lock;
         use crate::local::datadir::MoveProgress;
         let chat_for_progress = chat.clone();
@@ -5608,7 +5613,11 @@ async fn move_data_dir(State(state): State<AppState>, Json(req): Json<DataDirReq
             }
         };
         let target_for_move = target.clone();
+        let worker_lease_guard = _turn_lease_guard.clone();
         let result = tokio::task::spawn_blocking(move || {
+            // A cancelled async move waiter must still exclude lease storage
+            // until the actual filesystem worker is done.
+            let _lease_guard = worker_lease_guard;
             crate::local::datadir::move_data_dir(target_for_move, on_progress)
         })
         .await;

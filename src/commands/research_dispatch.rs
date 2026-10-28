@@ -221,31 +221,62 @@ pub(crate) fn auto_dispatch_ignoring_session(
         match dispatch_study_task_sync(store, study_id, &task_id, ignore_session) {
             Ok(Some(session_id)) => dispatched.push((task_id, session_id)),
             Ok(None) => {}
-            Err(_) => break,
+            Err(error) => {
+                // Keep the DAG pending, but expose the reason through its
+                // existing task details. Independent ready tasks may proceed.
+                let reason = format!("派发受阻：{error}");
+                store.research_update(study_id, |s| {
+                    let task = s.task_mut(&task_id)?;
+                    if task.state == "pending" {
+                        task.summary = Some(reason);
+                    }
+                    Ok(())
+                })?;
+            }
         }
     }
     Ok(dispatched)
 }
 
+pub(crate) type PackageChecks = std::collections::HashMap<String, (u32, std::time::Instant)>;
+
+#[cfg(test)]
 pub(crate) fn reconcile_active_studies(store: &Store) -> Result<()> {
-    for study in store.research_active_studies()? {
-        let _ = auto_dispatch_sync(store, &study.id);
-        let Ok(updated) = store.research_study(&study.id) else {
-            continue;
-        };
+    reconcile_active_studies_with_checks(store, &mut PackageChecks::new())
+}
+
+pub(crate) fn reconcile_active_studies_with_checks(
+    store: &Store,
+    checks: &mut PackageChecks,
+) -> Result<()> {
+    let studies = store.research_active_studies()?;
+    checks.retain(|id, _| studies.iter().any(|s| &s.id == id));
+    for study in studies {
+        auto_dispatch_sync(store, &study.id)?;
+        let updated = store.research_study(&study.id)?;
         if updated
             .plan()
             .is_ok_and(|p| !p.tasks.is_empty() && p.tasks.iter().all(|t| t.state == "completed"))
         {
+            let version = updated.plan()?.version;
+            if checks
+                .get(&updated.id)
+                .is_some_and(|(checked_version, at)| {
+                    *checked_version == version && at.elapsed() < std::time::Duration::from_secs(60)
+                })
+            {
+                continue;
+            }
             let gate = crate::local::research::delivery_gate(updated.workflow_mode()).to_string();
             match store.research_package_scope(&updated) {
                 Ok(scope) => {
-                    let _ = store.research_update(&updated.id, |s| s.request_gate(&gate, scope));
+                    store.research_update(&updated.id, |s| s.request_gate(&gate, scope))?;
                 }
                 Err(_) => {
-                    let _ = store.research_update(&updated.id, |s| s.supersede_gate(&gate));
+                    store.research_update(&updated.id, |s| s.supersede_gate(&gate))?;
                 }
             }
+            checks.insert(updated.id.clone(), (version, std::time::Instant::now()));
         }
     }
     Ok(())
@@ -284,7 +315,7 @@ pub(crate) fn on_research_spawn_finished(
         let auto_finished = !interrupted
             && !failed
             && store
-                .research_finish(&study_id, &task_id, true, summary)
+                .research_auto_finish(&study_id, &task_id, summary)
                 .is_ok();
         if !auto_finished {
             let current = store.research_study(&study_id)?;
@@ -322,7 +353,7 @@ pub(crate) fn on_research_spawn_finished(
                     )
                 } else {
                     format!(
-                        "[orx 研究编排] 当前专家任务 `{}` 尚未完成验收（缺失或为空的声明产物：{}）。请在当前会话中立即补齐上述文件并执行 `orx research finish --file <json-path>`。",
+                        "[orx 研究编排] 当前专家任务 `{}` 尚未完成本轮验收（缺失、为空或尚未登记本轮归属的产物：{}）。请在当前会话中核查或补齐上述文件，并执行 `orx research finish --file <json-path>`。",
                         task_id, missing_desc
                     )
                 };
@@ -407,7 +438,7 @@ fn research_wakeup_text(
         .collect();
     if !failed.is_empty() {
         return Ok(format!(
-            "[orx 研究编排] 专家任务未通过验收：{}。已完成任务（{}/{}）：[{}]。若仅需原地重跑失败任务，请执行 `orx research retry <task-id>`；若需根据审稿或诊断反馈调整计划，请执行 `orx research plan --file <path>`（已完成且产物未变动的任务会自动继承，无需重跑）。",
+            "[orx 研究编排] 专家任务未通过验收：{}。已完成任务（{}/{}）：[{}]。若仅需原地重跑失败任务，请执行 `orx research retry <task-id>`；若需根据审稿或诊断反馈调整计划，请执行 `orx research plan --file <path>`（只有任务输入与实际流程未变且产物有效的已完成任务才会继承，无需重跑）。",
             failed.join("；"),
             completed.len(),
             total,

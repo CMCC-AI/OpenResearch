@@ -45,7 +45,7 @@ async fn busy_enqueue_sql_wait_keeps_queue_readers_available_after_waiter_cancel
         let worker_host = host.clone();
         let worker = tokio::spawn(async move {
             worker_host
-                .persist_busy_submission("session".into(), opened, item, turns, move || {
+                .persist_busy_submission("session".into(), opened, item, turns, None, move || {
                     let _ = started.send(());
                     Ok(())
                 })
@@ -55,9 +55,17 @@ async fn busy_enqueue_sql_wait_keeps_queue_readers_available_after_waiter_cancel
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(host.queue_persistence.try_lock().is_err());
         assert!(
-            host.turns.try_lock().is_err(),
-            "turn admission is still serialized"
+            host.turns.try_lock().is_ok(),
+            "other sessions do not wait for SQL"
         );
+        assert!(!host.is_busy("other").await);
+        assert!(!host.interrupt("other").await.unwrap());
+        assert!(host.plan_changes.session("other").try_lock_owned().is_ok());
+        assert!(host
+            .permission_changes
+            .session("other")
+            .try_lock_owned()
+            .is_ok());
         assert!(
             host.queued.try_lock().is_ok(),
             "queue readers must not span SQLite"
@@ -79,8 +87,18 @@ async fn busy_enqueue_sql_wait_keeps_queue_readers_available_after_waiter_cancel
             count
         );
         if reject {
-            assert!(host.plan_changes.lock().unwrap().is_empty());
-            assert!(host.permission_changes.lock().unwrap().is_empty());
+            assert!(host
+                .plan_changes
+                .session("session")
+                .lock_owned()
+                .await
+                .is_empty());
+            assert!(host
+                .permission_changes
+                .session("session")
+                .lock_owned()
+                .await
+                .is_empty());
             assert!(events.try_recv().is_err());
         } else {
             assert_eq!(events.try_recv().unwrap().0, "chat.queued");

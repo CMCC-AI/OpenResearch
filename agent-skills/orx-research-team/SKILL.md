@@ -136,9 +136,13 @@ decision in terms of what the user is agreeing to, then register the native plan
    and `as-quality-citation-auditor` tasks. Reviewers receive artifacts and
    evidence, not a copied author conversation. They must report blocking issues
    as task failure and require a revised plan; do not self-review. When revising
-   a plan with `orx research plan`, completed upstream tasks with unchanged specs
-   and valid artifacts are automatically inherited unless `"forceRerun": true` is
-   set on a task. Never re-run completed upstream work unnecessarily.
+   a plan with `orx research plan`, completed upstream tasks are inherited only
+   when their brief, role, outputs, dependencies and effective workflow are
+   unchanged and their artifacts remain valid. Changed tasks and their dependent
+   reviews must run again; a workflow change invalidates all task inheritance.
+   Use `"forceRerun": true` to redo a task even when its inputs are unchanged.
+   A plan-summary edit alone does not redo completed work. Never re-run
+   unaffected completed upstream work unnecessarily.
 10. `orx research package` requests G4 (G3 for W4 plan delivery) after tasks and registered outputs pass
     validation (the platform also requests it automatically when all planned tasks complete). Explain limitations and unresolved claims before approval.
     The user reviews the requested confirmation in the human-confirmation page.
