@@ -6143,7 +6143,7 @@ export function ChatPanel({
                   <div className={sidebarClasses.project}>
                     <ProjectInfoCard
                       readOnly={Boolean(readOnly)}
-                      onNewChat={readOnly ? undefined : () => { if (project.id === projectId) startNewTask(); else void navigate({ to: "/projects/$projectId/tasks/new", params: { projectId: project.id } }); }}
+                      onNewChat={readOnly ? undefined : () => void navigate({ to: "/projects", search: { project: project.id } })}
                       onOpen={() => readOnly ? onActiveSessionChange(activeId || readOnly.initialSessionId || null) : void navigate({ to: "/projects/$projectId", params: { projectId: project.id } })}
                       project={project}
                       chatCount={project.id === projectId ? sessions.filter(isSidebarSession).length : projectSessionsQueries[shownProjects.findIndex((item) => item.id === project.id)]?.data?.filter(isSidebarSession).length}

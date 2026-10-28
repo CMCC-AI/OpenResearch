@@ -96,6 +96,7 @@ export function ProjectsPage() {
         : !projects || !state ? <RoutePending />
           : (
             <ProjectsHome
+              key={start.project ?? "research-home"}
               preferredAgent={state.preferredAgent}
               projects={projects}
               initialDialogOpen={Boolean(start.new)}

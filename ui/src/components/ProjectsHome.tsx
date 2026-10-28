@@ -136,17 +136,13 @@ export function ProjectsHome({
   const existingProject = projects.find((project) => project.id === initialProjectId);
   const [modalOpen, setModalOpen] = useState(initialDialogOpen);
   const homeStashes = getComposerStashStore(getWorkspaceGeneration());
-  const [draft, setDraft] = useState(() => homeStashes.get("research-home")?.draft ?? "");
-  const [workMode, setWorkMode] = useState<NonNullable<ComposerStash["workMode"]>>(() => homeStashes.get("research-home")?.workMode ?? "normal");
-  const [attachments, setAttachments] = useState<ComposerStash["attachments"]>(() => homeStashes.get("research-home")?.attachments ?? []);
-  useEffect(() => { homeStashes.set("research-home", { draft, attachments, annotations: [], workMode }); }, [homeStashes, draft, attachments, workMode]);
+  const stashKey = initialProjectId ? `${initialProjectId}:new` : "research-home";
+  const [draft, setDraft] = useState(() => homeStashes.get(stashKey)?.draft ?? "");
+  const [workMode, setWorkMode] = useState<NonNullable<ComposerStash["workMode"]>>(() => homeStashes.get(stashKey)?.workMode ?? "normal");
+  const [attachments, setAttachments] = useState<ComposerStash["attachments"]>(() => homeStashes.get(stashKey)?.attachments ?? []);
+  useEffect(() => { homeStashes.set(stashKey, { draft, attachments, annotations: [], workMode }); }, [homeStashes, stashKey, draft, attachments, workMode]);
   useEffect(() => { if (initialDialogOpen) setModalOpen(true); }, [initialDialogOpen]);
   const [projectPendingDelete, setProjectPendingDelete] = useState<Project | null>(null);
-  useEffect(() => {
-    if (!initialProjectId) return;
-    const saved = getComposerStashStore(getWorkspaceGeneration()).get(`${initialProjectId}:new`);
-    if (saved) { setDraft(saved.draft); setAttachments(saved.attachments); setWorkMode(saved.workMode ?? "normal"); }
-  }, [initialProjectId]);
   const activity = useQuery(listProjectActivityQuery());
   const activityByProject = Object.fromEntries((activity.data ?? []).map((summary) => [summary.projectId, summary]));
 
@@ -179,7 +175,7 @@ export function ProjectsHome({
           onClose={() => setModalOpen(false)}
           onCreated={(project, githubPublicationError) => {
             setModalOpen(false);
-            homeStashes.delete("research-home");
+            homeStashes.delete(stashKey);
             onCreated(project, githubPublicationError, { draft, attachments, annotations: [], workMode });
           }}
         />
