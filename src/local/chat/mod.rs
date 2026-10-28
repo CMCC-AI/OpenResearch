@@ -25,6 +25,7 @@ use crate::local::autonomy::Autonomy;
 use crate::local::harness::ResumeAction;
 use crate::local::model::LocalProject;
 use crate::local::opencode::AgentHost;
+use crate::store::steering::ClientTurnConflict;
 use crate::store::{
     now_ms, ChatSpawnState, ChatTurnAdmission, Store, StoredChatMessage, StoredChatSession,
     StoredChatTurn, StoredQueuedChatMessage,
@@ -2697,7 +2698,7 @@ enum TurnState {
 
 /// A user message parked while the session was busy, replayed verbatim through
 /// the normal send path once the running turn ends.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct QueuedMessage {
     id: String,
@@ -2906,6 +2907,8 @@ impl TurnSettings {
 pub struct SteerMessage {
     pub display: String,
     pub text: String,
+    // Original queue-compatible payload and identity, retained through fallback.
+    submission: Option<Box<QueuedMessage>>,
 }
 
 #[derive(Clone)]
@@ -2944,6 +2947,7 @@ struct TurnSubmissionSetup {
     store: Store,
     session: StoredChatSession,
     existing: Option<StoredChatTurn>,
+    receipt: Option<crate::store::steering::ChatSubmission>,
     admission: TurnAdmission,
 }
 
@@ -2973,10 +2977,16 @@ async fn load_turn_submission_with_store(
             .get_chat_session(&session_id)?
             .ok_or_else(|| anyhow!("chat session not found"))?;
         let existing = store.get_chat_turn_by_client_id(&session_id, &client_turn_id)?;
+        let receipt = if matches!(&admission, TurnAdmission::Preclaimed(_)) {
+            None // Promotion is rechecked atomically in admit_chat_turn.
+        } else {
+            store.chat_submission(&session_id, &client_turn_id)?
+        };
         Ok(TurnSubmissionSetup {
             store,
             session,
             existing,
+            receipt,
             admission,
         })
     })
@@ -3017,20 +3027,10 @@ enum TurnSubmission {
     Started(String),
     Queued(String),
     QueuedExisting(String),
+    Steered(String),
     Existing(String),
     NotStarted,
 }
-
-#[derive(Debug)]
-struct ClientTurnConflict;
-
-impl std::fmt::Display for ClientTurnConflict {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("clientTurnId was already used with different content")
-    }
-}
-
-impl std::error::Error for ClientTurnConflict {}
 
 fn client_turn_conflict() -> crate::error::Error {
     crate::error::Error::new(ClientTurnConflict)
@@ -3047,6 +3047,8 @@ pub struct SendMessageResult {
     pub turn_id: String,
     pub queued: bool,
     pub existing: bool,
+    /// A native registration replay uses a receipt ID rather than a turn ID.
+    pub steered: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4526,42 +4528,54 @@ impl ChatHost {
         {
             return Ok(());
         }
-        let id = new_queued_id();
-        let client_turn_id = format!("ct_{}", uuid::Uuid::new_v4());
-        let messages = vec![AnnotatedText {
-            text: message.display.clone(),
-            annotations: Vec::new(),
-        }];
-        let transcript = TranscriptDisplay {
-            text: None,
-            annotations: None,
-            record_user_message: true,
-        };
-        let overrides = TurnOverrides::default();
-        let images = TurnAttachments::Uploaded(Vec::new());
-        let queued = QueuedMessage {
-            id: id.clone(),
-            client_turn_id: client_turn_id.clone(),
-            request_hash: turn_request_hash(&messages, &transcript, &overrides, &images)?,
-            // The raw text: the queue path expands slash-skills itself.
-            text: message.display,
-            transcript_text: None,
-            overrides,
-            images: Vec::new(),
-            annotations: Vec::new(),
-            dispatch_attempts: 0,
-            dispatch_error: None,
-            next_retry_at: None,
+        let registered = message.submission.is_some();
+        let queued = if let Some(queued) = message.submission {
+            *queued
+        } else {
+            let overrides = TurnOverrides::default();
+            let request_hash = turn_request_hash(
+                &[AnnotatedText {
+                    text: message.display.clone(),
+                    annotations: Vec::new(),
+                }],
+                &TranscriptDisplay {
+                    text: None,
+                    annotations: None,
+                    record_user_message: true,
+                },
+                &overrides,
+                &TurnAttachments::Uploaded(Vec::new()),
+            )?;
+            QueuedMessage {
+                id: new_queued_id(),
+                client_turn_id: format!("ct_{}", uuid::Uuid::new_v4()),
+                request_hash,
+                text: message.display,
+                transcript_text: None,
+                overrides,
+                images: Vec::new(),
+                annotations: Vec::new(),
+                dispatch_attempts: 0,
+                dispatch_error: None,
+                next_retry_at: None,
+            }
         };
         let payload_json = serde_json::to_string(&queued)?;
-        store.insert_queued_chat_message(&StoredQueuedChatMessage {
-            id,
+        let stored = StoredQueuedChatMessage {
+            id: queued.id.clone(),
             session_id: session_id.to_string(),
-            client_turn_id,
+            client_turn_id: queued.client_turn_id.clone(),
             request_hash: queued.request_hash.clone(),
             payload_json,
             created_at: now_ms(),
-        })?;
+        };
+        if registered {
+            if !store.park_chat_steer(&stored)? {
+                return Ok(());
+            }
+        } else {
+            store.insert_queued_chat_message(&stored)?;
+        }
         self.queued
             .lock()
             .unwrap()
@@ -5136,6 +5150,7 @@ impl ChatHost {
         client_turn_id: Option<String>,
     ) -> Result<Option<SendMessageResult>> {
         if !text.trim().is_empty() && images.is_empty() && annotations.is_empty() {
+            let submission = self.submission_lock(session_id).lock_owned().await;
             let sink = {
                 let steering = self.steering.lock().unwrap();
                 steering
@@ -5144,14 +5159,49 @@ impl ChatHost {
                     .map(|sink| sink.tx.clone())
             };
             if let Some(sink) = sink {
-                let store = Store::open()?;
-                let session = store
-                    .get_chat_session(session_id)?
-                    .ok_or_else(|| anyhow!("chat session not found"))?;
-                let project = store.get_local_project(&session.project_id)?;
+                let sid = session_id.to_string();
+                let (session, project) = crate::local::blocking::run(move || {
+                    let store = Store::open()?;
+                    let session = store
+                        .get_chat_session(&sid)?
+                        .ok_or_else(|| anyhow!("chat session not found"))?;
+                    let project = store.get_local_project(&session.project_id)?;
+                    Ok::<_, crate::error::Error>((session, project))
+                })
+                .await??;
                 if let Some(project) = &project {
                     prepare_project_slash_worktree(project, &text, session_id).await;
                 }
+                let messages = vec![AnnotatedText {
+                    text: text.clone(),
+                    annotations: Vec::new(),
+                }];
+                let transcript = TranscriptDisplay {
+                    text: None,
+                    annotations: None,
+                    record_user_message: true,
+                };
+                let request_hash = turn_request_hash(
+                    &messages,
+                    &transcript,
+                    &overrides,
+                    &TurnAttachments::Uploaded(Vec::new()),
+                )?;
+                let queued = QueuedMessage {
+                    id: new_queued_id(),
+                    client_turn_id: client_turn_id
+                        .filter(|id| !id.trim().is_empty())
+                        .unwrap_or_else(|| format!("ct_{}", uuid::Uuid::new_v4())),
+                    request_hash,
+                    text: text.clone(),
+                    transcript_text: None,
+                    overrides,
+                    images: Vec::new(),
+                    annotations: Vec::new(),
+                    dispatch_attempts: 0,
+                    dispatch_error: None,
+                    next_retry_at: None,
+                };
                 let message = SteerMessage {
                     text: project
                         .map(|project| {
@@ -5163,11 +5213,19 @@ impl ChatHost {
                             )
                         })
                         .unwrap_or_else(|| text.clone()),
-                    display: text.clone(),
+                    display: text,
+                    submission: Some(Box::new(queued)),
                 };
-                if sink.send(message).is_ok() {
-                    return Ok(None);
-                }
+                let sid = session_id.to_string();
+                let host = self.clone();
+                // Own the submission guard and channel handoff in the worker.
+                // Cancelling the HTTP waiter cannot cancel an admitted handoff.
+                return crate::local::blocking::run(move || {
+                    let _submission = submission;
+                    let store = Store::open()?;
+                    host.admit_steer_with_store(&sid, message, sink, &store)
+                })
+                .await?;
             }
         }
         self.send_message(
@@ -5180,6 +5238,58 @@ impl ChatHost {
         )
         .await
         .map(Some)
+    }
+
+    fn admit_steer_with_store(
+        &self,
+        session_id: &str,
+        message: SteerMessage,
+        sink: mpsc::UnboundedSender<SteerMessage>,
+        store: &Store,
+    ) -> Result<Option<SendMessageResult>> {
+        use crate::store::steering::SteerAdmission;
+        if self.queue_cancellation_pending(session_id)
+            || self.deleting_sessions.lock().unwrap().contains(session_id)
+        {
+            return Err(anyhow!("session is stopping or being deleted"));
+        }
+        let queued = message
+            .submission
+            .as_ref()
+            .expect("native admission requires request identity");
+        let stored = StoredQueuedChatMessage {
+            id: queued.id.clone(),
+            session_id: session_id.to_string(),
+            client_turn_id: queued.client_turn_id.clone(),
+            request_hash: queued.request_hash.clone(),
+            payload_json: serde_json::to_string(queued)?,
+            created_at: now_ms(),
+        };
+        match store.admit_chat_steer(&stored)? {
+            SteerAdmission::Conflict => Err(client_turn_conflict()),
+            SteerAdmission::Existing(receipt) => Ok(Some(SendMessageResult {
+                turn_id: if receipt.kind == "queued" {
+                    stored.client_turn_id
+                } else {
+                    receipt.id
+                },
+                queued: receipt.kind == "queued",
+                existing: true,
+                steered: receipt.kind == "steer",
+            })),
+            SteerAdmission::Inserted => match sink.send(message) {
+                Ok(()) => Ok(None),
+                Err(error) => {
+                    self.park_steer_with_store(session_id, error.0, store)?;
+                    Ok(Some(SendMessageResult {
+                        turn_id: stored.client_turn_id,
+                        queued: true,
+                        existing: false,
+                        steered: false,
+                    }))
+                }
+            },
+        }
     }
 
     /// Persist the user message and run one harness turn in the background.
@@ -5220,24 +5330,34 @@ impl ChatHost {
         .await
         .and_then(|submission| match submission {
             TurnSubmission::Started(turn_id) => Ok(SendMessageResult {
+                steered: false,
                 turn_id,
                 queued: false,
                 existing: false,
             }),
             TurnSubmission::Queued(turn_id) => Ok(SendMessageResult {
+                steered: false,
                 turn_id,
                 queued: true,
                 existing: false,
             }),
             TurnSubmission::QueuedExisting(turn_id) => Ok(SendMessageResult {
+                steered: false,
                 turn_id,
                 queued: true,
                 existing: true,
             }),
             TurnSubmission::Existing(turn_id) => Ok(SendMessageResult {
+                steered: false,
                 turn_id,
                 queued: false,
                 existing: true,
+            }),
+            TurnSubmission::Steered(id) => Ok(SendMessageResult {
+                turn_id: id,
+                queued: false,
+                existing: true,
+                steered: true,
             }),
             TurnSubmission::NotStarted => Err(anyhow!("turn was interrupted before it started")),
         })
@@ -5267,6 +5387,7 @@ impl ChatHost {
             .ok_or_else(|| anyhow!("chat turn not found"))?;
         if let Some(recovered_by) = turn.recovered_by_turn_id.clone() {
             return Ok(SendMessageResult {
+                steered: false,
                 turn_id: recovered_by,
                 queued: false,
                 existing: true,
@@ -5279,6 +5400,7 @@ impl ChatHost {
             )
         {
             return Ok(SendMessageResult {
+                steered: false,
                 turn_id: turn.id,
                 queued: false,
                 existing: true,
@@ -5440,6 +5562,7 @@ impl ChatHost {
                 match submission {
                     TurnSubmission::Started(turn_id) | TurnSubmission::Existing(turn_id) => {
                         Ok(SendMessageResult {
+                            steered: false,
                             turn_id,
                             queued: false,
                             existing: false,
@@ -5509,6 +5632,7 @@ impl ChatHost {
                     }
                 } else if !store.mark_chat_turn_recovered(turn_id, &recovered_by)? {
                     return Ok(SendMessageResult {
+                        steered: false,
                         turn_id: recovered_by,
                         queued: false,
                         existing: true,
@@ -5525,6 +5649,7 @@ impl ChatHost {
                     }),
                 );
                 Ok(SendMessageResult {
+                    steered: false,
                     turn_id: recovered_by,
                     queued: false,
                     existing,
@@ -5818,6 +5943,7 @@ impl ChatHost {
             store,
             session,
             existing,
+            receipt,
             admission,
         } = load_turn_submission_with_store(
             session_id.to_string(),
@@ -5832,6 +5958,16 @@ impl ChatHost {
             } else {
                 Err(client_turn_conflict())
             };
+        }
+        if let Some(receipt) = receipt {
+            if receipt.request_hash != request_hash {
+                return Err(client_turn_conflict());
+            }
+            return Ok(match receipt.kind.as_str() {
+                "queued" => TurnSubmission::QueuedExisting(client_turn_id),
+                "steer" => TurnSubmission::Steered(receipt.id),
+                _ => TurnSubmission::Existing(receipt.id),
+            });
         }
         if let Some(mode) = overrides
             .permission_mode
@@ -6352,6 +6488,10 @@ impl ChatHost {
             ChatTurnAdmission::Existing(existing) => {
                 guard.release().await;
                 return Ok(TurnSubmission::Existing(existing.id));
+            }
+            ChatTurnAdmission::Steered(id) => {
+                guard.release().await;
+                return Ok(TurnSubmission::Steered(id));
             }
             ChatTurnAdmission::Conflict => {
                 guard.release().await;
@@ -8991,12 +9131,43 @@ impl TurnCtx {
     /// Record a steer the harness just delivered, inline where the running turn
     /// received it. Flushed straight away: the user is waiting to see that the
     /// message landed, so this can't sit out the flush interval.
-    pub fn record_steer(&mut self, display: &str) {
+    pub async fn record_steer(&mut self, message: &SteerMessage, confirmed: bool) {
+        self.record_steer_with_store(message, confirmed, Store::open)
+            .await;
+    }
+
+    async fn record_steer_with_store(
+        &mut self,
+        message: &SteerMessage,
+        confirmed: bool,
+        open: impl FnOnce() -> Result<Store> + Send + 'static,
+    ) {
+        let client_id = message
+            .submission
+            .as_ref()
+            .map(|queued| queued.client_turn_id.clone());
         self.upsert_part(WirePart::steer(
-            format!("steer-{}", uuid::Uuid::new_v4()),
-            display,
+            client_id
+                .as_ref()
+                .map(|id| format!("steer-{id}"))
+                .unwrap_or_else(|| format!("steer-{}", uuid::Uuid::new_v4())),
+            &message.display,
         ));
-        let _ = self.flush();
+        let session_id = self.session_id.clone();
+        // Keep both the receipt write and fenced transcript checkpoint off the
+        // harness event loop; a slow SQLite writer must not block Tokio.
+        if let Err(error) = self
+            .flush_async_with_store(true, move || {
+                let store = open()?;
+                if let Some(client_id) = client_id {
+                    store.mark_chat_steer_handoff(&session_id, &client_id, confirmed)?;
+                }
+                Ok(store)
+            })
+            .await
+        {
+            self.push_error(format!("Could not record steering handoff: {error}"));
+        }
     }
 
     /// Like `upsert_part`, but carries forward an existing part's `children` when
@@ -13580,7 +13751,7 @@ mod transcript_tree_tests {
 mod steering_tests {
     use super::*;
 
-    fn test_host() -> Arc<ChatHost> {
+    pub(super) fn test_host() -> Arc<ChatHost> {
         Arc::new(ChatHost::new(
             Arc::new(crate::local::opencode::AgentHost::new(None)),
             Arc::new(crate::local::codex::CodexHost::new()),
@@ -13588,7 +13759,7 @@ mod steering_tests {
         ))
     }
 
-    fn test_store(tag: &str) -> (Store, PathBuf) {
+    pub(super) fn test_store(tag: &str) -> (Store, PathBuf) {
         let dir = std::env::temp_dir().join(format!("orx-steer-{tag}-{}", uuid::Uuid::new_v4()));
         let store = Store::open_at(dir.clone()).unwrap();
         store
@@ -13633,6 +13804,7 @@ mod steering_tests {
 
     fn steer(text: &str) -> SteerMessage {
         SteerMessage {
+            submission: None,
             display: text.into(),
             text: text.into(),
         }
@@ -16881,6 +17053,7 @@ mod checkpoint_tests {
         host.park_steer_with_store(
             "session",
             SteerMessage {
+                submission: None,
                 text: "pending".into(),
                 display: "pending".into(),
             },
@@ -16947,6 +17120,7 @@ mod checkpoint_tests {
         host.park_steer_with_store(
             "session",
             SteerMessage {
+                submission: None,
                 text: "pending".into(),
                 display: "pending".into(),
             },
@@ -16997,6 +17171,7 @@ mod checkpoint_tests {
             host.park_steer_with_store(
                 "session",
                 SteerMessage {
+                    submission: None,
                     text: text.into(),
                     display: text.into(),
                 },
@@ -17056,6 +17231,7 @@ mod checkpoint_tests {
         host.park_steer_with_store(
             "session",
             SteerMessage {
+                submission: None,
                 text: "first".into(),
                 display: "first".into(),
             },
@@ -17082,6 +17258,7 @@ mod checkpoint_tests {
                 other_host.park_steer_with_store(
                     "session",
                     SteerMessage {
+                        submission: None,
                         text: "second".into(),
                         display: "second".into(),
                     },
@@ -18008,3 +18185,6 @@ mod queue_read_lock_tests;
 
 #[cfg(test)]
 mod debt_tests;
+
+#[cfg(test)]
+mod steering_receipt_tests;

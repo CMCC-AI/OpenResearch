@@ -4,7 +4,8 @@ export interface SubmissionReceipt {
   submission: { kind: string; id: string } | null;
 }
 
-/** A busy session and an absent receipt cannot establish ownership of a send. */
+/** A receipt establishes server registration, not native delivery or model success.
+ * A busy session and an absent receipt cannot establish ownership of a send. */
 export async function reconcileSubmission({ sessionId, clientTurnId, isCurrent, lookup, rejected, timeoutMs = 3000 }: {
   sessionId: string;
   clientTurnId: string;
@@ -24,7 +25,7 @@ export async function reconcileSubmission({ sessionId, clientTurnId, isCurrent, 
     const receipt = await Promise.race([lookup(controller.signal), deadline]);
     if (!isCurrent()) return "retired";
     return receipt?.sessionId === sessionId && receipt?.clientTurnId === clientTurnId
-      && (receipt.submission?.kind === "turn" || receipt.submission?.kind === "queued")
+      && (receipt.submission?.kind === "turn" || receipt.submission?.kind === "queued" || receipt.submission?.kind === "steer")
       && typeof receipt.submission.id === "string" && receipt.submission.id.length > 0
       ? "accepted" : "unknown";
   } catch {

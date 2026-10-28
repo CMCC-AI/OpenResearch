@@ -11,6 +11,7 @@
 pub(crate) mod research;
 mod research_metrics;
 mod schema;
+pub(crate) mod steering;
 mod telemetry;
 pub(crate) use telemetry::{InvocationIdentity, TokenUsage};
 
@@ -880,6 +881,16 @@ impl Store {
             );
             CREATE INDEX IF NOT EXISTS idx_chat_queued_messages_session
                 ON chat_queued_messages(session_id, created_at);
+            CREATE TABLE IF NOT EXISTS chat_steering_requests (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                client_turn_id TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                state TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                UNIQUE(session_id, client_turn_id)
+            );
             CREATE TABLE IF NOT EXISTS chat_run_wakeups (
                 run_id          TEXT NOT NULL,
                 chat_session_id TEXT NOT NULL,
@@ -2002,6 +2013,11 @@ impl Store {
             params![id],
         )?;
         tx.execute(
+            "DELETE FROM chat_steering_requests WHERE session_id IN
+               (SELECT id FROM chat_sessions WHERE project_id = ?1)",
+            params![id],
+        )?;
+        tx.execute(
             "DELETE FROM chat_queued_messages WHERE session_id IN
                (SELECT id FROM chat_sessions WHERE project_id = ?1)",
             params![id],
@@ -2359,6 +2375,10 @@ impl Store {
         }
         tx.execute(
             "DELETE FROM chat_queued_messages WHERE session_id = ?1",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM chat_steering_requests WHERE session_id = ?1",
             params![id],
         )?;
         tx.execute("DELETE FROM chat_turns WHERE session_id = ?1", params![id])?;
@@ -2766,6 +2786,24 @@ impl Store {
                 ChatTurnAdmission::Conflict
             });
         }
+        let steer = tx
+            .query_row(
+                "SELECT id, request_hash FROM chat_steering_requests s
+             WHERE s.session_id = ?1 AND s.client_turn_id = ?2
+             AND NOT (s.state = 'queued' AND s.request_hash = ?3 AND EXISTS (
+                 SELECT 1 FROM chat_queued_messages q WHERE q.session_id = s.session_id
+                 AND q.client_turn_id = s.client_turn_id AND q.request_hash = s.request_hash))",
+                params![turn.session_id, turn.client_turn_id, turn.request_hash],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        if let Some((id, hash)) = steer {
+            return Ok(if hash == turn.request_hash {
+                ChatTurnAdmission::Steered(id)
+            } else {
+                ChatTurnAdmission::Conflict
+            });
+        }
         if let Some(message) = user_message {
             tx.execute(
                 "INSERT INTO chat_messages
@@ -2860,14 +2898,9 @@ impl Store {
         session_id: &str,
         client_turn_id: &str,
     ) -> Result<Option<(String, String)>> {
-        Ok(self.conn.query_row(
-            "SELECT 'turn', id FROM chat_turns WHERE session_id = ?1 AND client_turn_id = ?2
-             UNION ALL
-             SELECT 'queued', id FROM chat_queued_messages WHERE session_id = ?1 AND client_turn_id = ?2
-             LIMIT 1",
-            params![session_id, client_turn_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).optional()?)
+        Ok(self
+            .chat_submission(session_id, client_turn_id)?
+            .map(|receipt| (receipt.kind, receipt.id)))
     }
 
     pub fn chat_native_thread_has_named_model(
@@ -2892,7 +2925,9 @@ impl Store {
             "INSERT INTO chat_queued_messages
              (id, session_id, client_turn_id, request_hash, payload_json, created_at)
              SELECT ?1, ?2, ?3, ?4, ?5, ?6
-             WHERE EXISTS (SELECT 1 FROM chat_sessions WHERE id = ?2)",
+             WHERE EXISTS (SELECT 1 FROM chat_sessions WHERE id = ?2)
+             AND NOT EXISTS (SELECT 1 FROM chat_steering_requests
+                 WHERE session_id = ?2 AND client_turn_id = ?3)",
             params![
                 message.id,
                 message.session_id,
@@ -2903,7 +2938,15 @@ impl Store {
             ],
         )?;
         if changed == 0 {
-            return Err(anyhow!("chat session not found"));
+            if self
+                .chat_submission(&message.session_id, &message.client_turn_id)?
+                .is_some_and(|receipt| receipt.request_hash != message.request_hash)
+            {
+                return Err(crate::error::Error::new(steering::ClientTurnConflict));
+            }
+            return Err(anyhow!(
+                "chat session missing or request already registered as steering"
+            ));
         }
         Ok(())
     }
@@ -3653,6 +3696,7 @@ pub struct StoredQueuedChatMessage {
 pub enum ChatTurnAdmission {
     Inserted,
     Existing(Box<StoredChatTurn>),
+    Steered(String),
     Conflict,
 }
 
@@ -4282,7 +4326,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn chat_turn_fixture(id: &str, client_turn_id: &str) -> StoredChatTurn {
+    pub(super) fn chat_turn_fixture(id: &str, client_turn_id: &str) -> StoredChatTurn {
         StoredChatTurn {
             id: id.into(),
             session_id: "chat_1".into(),
@@ -4977,7 +5021,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn chat_session_fixture(id: &str) -> StoredChatSession {
+    pub(super) fn chat_session_fixture(id: &str) -> StoredChatSession {
         StoredChatSession {
             id: id.into(),
             project_id: "proj_1".into(),
@@ -6411,3 +6455,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+#[path = "store/steering_tests.rs"]
+mod steering_tests;

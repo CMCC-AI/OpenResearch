@@ -514,7 +514,7 @@ test("receipt recovery keeps HTTP rejections distinct from ambiguous responses a
   for (const [cause, mode, expected, reads] of [
     [error, undefined, "rejected", 0], [new HttpResponseError("timeout", 408), undefined, "unknown", 1],
     [new HttpResponseError("admission failure", 400), undefined, "unknown", 1],
-    [new HttpResponseError("upstream", 500), undefined, "unknown", 1], [new Error("offline"), "steer", "unknown", 0],
+    [new HttpResponseError("upstream", 500), undefined, "unknown", 1], [new Error("offline"), "steer", "unknown", 1],
   ]) {
     let queried = 0;
     const recover = evaluate(`return ${declaration(file, "resolveSubmissionFailure")}`, {
@@ -525,6 +525,22 @@ test("receipt recovery keeps HTTP rejections distinct from ambiguous responses a
     assert.equal(await recover(cause, "s"), expected);
     assert.equal(queried, reads);
   }
+});
+
+test("steering lost-response recovery queries the original durable registration", async () => {
+  const { reconcileSubmission } = await import("../src/chatSubmission.ts");
+  const file = source("ChatPanel.tsx");
+  let reads = 0;
+  const recover = evaluate(`return ${declaration(file, "resolveSubmissionFailure")}`, {
+    inSourceScope: () => true, deletedSessionIds: new Set(), deliveryAttempted: true,
+    reconcileSubmission, HttpResponseError: class extends Error {}, submissionMode: "steer", clientTurnId: "native-key",
+    getChatSubmission: async (session, client, signal) => {
+      reads++; assert.equal(session, "s"); assert.equal(client, "native-key"); assert.ok(signal instanceof AbortSignal);
+      return { sessionId: session, clientTurnId: client, submission: { kind: "steer", id: "registered" } };
+    },
+  });
+  assert.equal(await recover(new Error("response lost"), "s"), "accepted");
+  assert.equal(reads, 1);
 });
 
 test("retry transport retains the captured mode and request ID on both sending branches", async () => {

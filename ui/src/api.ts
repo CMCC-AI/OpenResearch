@@ -2217,6 +2217,8 @@ export const runShellCommand = (sessionId: string, command: string) =>
   post<{ message: ChatMessage }>(`/api/chat/sessions/${sessionId}/shell`, { command });
 
 export interface ChatTurnResult {
+  /** A replay of a registered native steer has a receipt ID, not a new turn. */
+  steered?: boolean;
   turnId: string;
   queued: boolean;
   existing: boolean;

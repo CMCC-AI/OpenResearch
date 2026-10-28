@@ -2337,14 +2337,13 @@ async fn run_attempt(ctx: &mut TurnCtx, spec: SpawnSpec) -> Result<(TurnState, u
                 continue;
             }
             Waited::Steer(steer) => {
-                // A failed write means the child is gone and this turn is about
-                // to error out — park the text so it survives into the next one.
+                // A failed write/flush may follow a partial or complete write.
+                // Preserve uncertainty rather than executing the text twice.
                 match client.send_user_message(&steer.text).await {
-                    Ok(()) => ctx.record_steer(&steer.display),
-                    Err(_) => {
-                        if let Err(error) = ctx.host.park_steer(&ctx.session_id, steer) {
-                            ctx.push_error(format!("Could not preserve steering message: {error}"));
-                        }
+                    Ok(()) => ctx.record_steer(&steer, true).await,
+                    Err(error) => {
+                        ctx.record_steer(&steer, false).await;
+                        ctx.push_error(format!("claude did not confirm the steering message ({error}) — check the transcript before deciding whether a new instruction is needed"));
                     }
                 }
                 continue;

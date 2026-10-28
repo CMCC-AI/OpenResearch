@@ -5488,9 +5488,7 @@ export function ChatPanel({
       return reconcileSubmission({
         sessionId, clientTurnId,
         isCurrent: () => inSourceScope() && !deletedSessionIds.has(sessionId),
-        lookup: (signal) => submissionMode === "steer"
-          ? Promise.reject(new Error("Steering receipts are not available"))
-          : getChatSubmission(sessionId, clientTurnId, signal),
+        lookup: (signal) => getChatSubmission(sessionId, clientTurnId, signal),
         // The send API also maps internal/admission failures to 400, so that
         // status alone cannot establish that nothing was persisted.
         rejected: error instanceof HttpResponseError && [401, 403, 404, 409, 413, 415, 422, 429].includes(error.status),

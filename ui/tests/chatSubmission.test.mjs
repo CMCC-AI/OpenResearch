@@ -5,7 +5,7 @@ const receipt = (kind = "turn", sessionId = "s", clientTurnId = "client") => ({ 
 const resolve = (lookup, extra = {}) => reconcileSubmission({ sessionId: "s", clientTurnId: "client", isCurrent: () => true, rejected: false, lookup, ...extra });
 
 test("only the matching durable request receipt confirms a lost response", async () => {
-  for (const kind of ["turn", "queued"]) assert.equal(await resolve(async () => receipt(kind)), "accepted");
+  for (const kind of ["turn", "queued", "steer"]) assert.equal(await resolve(async () => receipt(kind)), "accepted");
   for (const value of [receipt("turn", "other"), receipt("turn", "s", "other"), receipt("steering"), { ...receipt(), submission: null }, { ...receipt(), submission: { kind: "turn", id: "" } }, null, { busy: true }]) {
     assert.equal(await resolve(async () => value), "unknown");
   }

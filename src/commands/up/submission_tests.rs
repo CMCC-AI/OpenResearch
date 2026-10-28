@@ -52,18 +52,22 @@ fn submission_http_binds_receipts_to_session_and_request() {
                 id: "queue".into(), session_id: "one".into(), client_turn_id: "client".into(),
                 request_hash: "secret-hash".into(), payload_json: "private material body".into(), created_at: 1,
             }).unwrap();
+            store.admit_chat_steer(&crate::store::StoredQueuedChatMessage {
+                id: "native-receipt".into(), session_id: "one".into(), client_turn_id: "native".into(),
+                request_hash: "secret-hash".into(), payload_json: "private material body".into(), created_at: 1,
+            }).unwrap();
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let app = Router::new().route("/api/chat/sessions/{id}/submissions/{clientId}", get(chat_submission));
             let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
             let client = crate::net::loopback_client().build().unwrap();
-            for (session_id, request_id, expected) in [("one", "client", true), ("one", "other", false), ("two", "client", false)] {
+            for (session_id, request_id, expected) in [("one", "client", Some(("queued", "queue"))), ("one", "native", Some(("steer", "native-receipt"))), ("one", "other", None), ("two", "client", None), ("two", "native", None)] {
                 let response = client.get(format!("http://{address}/api/chat/sessions/{session_id}/submissions/{request_id}")).send().await.unwrap();
                 assert_eq!(response.status(), StatusCode::OK);
                 let value: Value = response.json().await.unwrap();
                 assert_eq!(value["sessionId"], session_id);
                 assert_eq!(value["clientTurnId"], request_id);
-                if expected { assert_eq!(value["submission"], json!({"kind":"queued","id":"queue"})); }
+                if let Some((kind, id)) = expected { assert_eq!(value["submission"], json!({"kind":kind,"id":id})); }
                 else { assert!(value["submission"].is_null()); }
                 assert!(!value.to_string().contains("private material"));
                 assert!(!value.to_string().contains("secret-hash"));
