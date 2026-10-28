@@ -77,7 +77,7 @@ jobs:
             echo "Release ${tag} already exists at the verified revision."
             exit 0
           fi
-          gh release create "$tag" --verify-tag --latest \
+          gh release create "$tag" --verify-tag --latest --target "$GITHUB_SHA" \
             --title "MobileSci ${version}" \
             --notes-file "release-notes/${tag}.md" \
             .mobilesci-run/source-release/*.tar.gz \
