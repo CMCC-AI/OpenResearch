@@ -139,10 +139,16 @@ decision in terms of what the user is agreeing to, then register the native plan
    evidence, not a copied author conversation. They must report blocking issues
    as task failure and require a revised plan; do not self-review. When revising
    a plan with `orx research plan`, completed upstream tasks are inherited only
-   when their brief, role, outputs, dependencies and effective workflow are
-   unchanged and their artifacts remain valid. Changed tasks and their dependent
+   when their provided material set, brief, role, outputs, dependencies and
+   effective workflow are unchanged and their artifacts remain valid. Changed tasks and their dependent
    reviews must run again; a workflow change invalidates all task inheritance.
    Use `"forceRerun": true` to redo a task even when its inputs are unchanged.
+   Each new plan fixes the material packages on the lead's active branch;
+   later uploads do not silently change that approved input set. To include
+   different materials, revise the plan and confirm G1 again; a shared material
+   change invalidates all task inheritance. The server records these IDs, so
+   do not add materialIds to the submitted PlanInput. Legacy plans with current
+   materials require revision before dispatch because their old scope is unknown.
    A plan-summary edit alone does not redo completed work. Never re-run
    unaffected completed upstream work unnecessarily.
 10. `orx research package` requests G4 (G3 for W4 plan delivery) after tasks and registered outputs pass

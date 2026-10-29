@@ -99,6 +99,10 @@ impl ResearchTask {
 #[serde(rename_all = "camelCase")]
 pub struct ResearchPlan {
     pub version: u32,
+    /// Immutable package IDs visible on the lead's branch when this plan was created.
+    /// None is legacy data; Some(empty) explicitly fixes a plan with no materials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material_ids: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow: Option<String>,
     pub summary: String,
@@ -260,6 +264,9 @@ impl Study {
         // Preserve existing approval hashes when deserializing older plans.
         if let Some(workflow) = &plan.workflow {
             scope["workflow"] = serde_json::json!(workflow);
+        }
+        if let Some(ids) = &plan.material_ids {
+            scope["materialIds"] = serde_json::json!(ids);
         }
         Ok(serde_json::to_string(&scope)?)
     }
@@ -646,11 +653,33 @@ impl Store {
                         .collect()
                 })
                 .unwrap_or_default();
+            // Material packages are immutable. Their IDs already identify the
+            // source/hash snapshot; do not re-read every original under this write lock.
+            let material_ids = crate::local::materials::session_ids(self, &study.session_id)?;
+            let same_materials = match study.plans.last().and_then(|plan| plan.material_ids.as_ref()) {
+                Some(previous) => previous == &material_ids,
+                None if material_ids.is_empty() => {
+                    // Retain ordinary legacy no-material plans, but never infer
+                    // that an old expert's known material inputs were also empty.
+                    let mut had_materials = false;
+                    for task in prev_tasks.values() {
+                        if let Some(session) = &task.session_id {
+                            if self.get_chat_session(session)?.and_then(|s| s.bootstrap_context)
+                                .is_some_and(|context| context.contains("<research-materials>")) {
+                                had_materials = true;
+                                break;
+                            }
+                        }
+                    }
+                    !had_materials
+                }
+                None => false, // No recorded baseline for a legacy material plan.
+            };
             let mut inherited_ids = HashSet::new();
             loop {
                 let before = inherited_ids.len();
                 for spec in &input.tasks {
-                    if !same_workflow || inherited_ids.contains(&spec.id) || spec.force_rerun {
+                    if !same_workflow || !same_materials || inherited_ids.contains(&spec.id) || spec.force_rerun {
                         continue;
                     }
                     let Some(prev) = prev_tasks.get(&spec.id) else {
@@ -744,6 +773,7 @@ impl Store {
             study.delivery_error = None;
             study.plans.push(ResearchPlan {
                 version,
+                material_ids: Some(material_ids),
                 workflow: input.workflow,
                 summary: input.summary,
                 tasks,
@@ -2075,6 +2105,7 @@ mod tests {
         study.created_at = 1000;
         study.plans.push(ResearchPlan {
             version: 1,
+            material_ids: None,
             workflow: None,
             summary: "test".into(),
             tasks: vec![ResearchTask {
@@ -2817,4 +2848,5 @@ mod tests {
 
     include!("research_debt_tests.rs");
     include!("research_evidence_tests.rs");
+    include!("research_material_tests.rs");
 }

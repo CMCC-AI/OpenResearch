@@ -169,7 +169,17 @@ pub(crate) fn dispatch_study_task_sync(
         reasoning_level: parent.reasoning_level.clone(),
         archived: false,
         context_usage_json: None,
-        bootstrap_context: Some(crate::local::materials::session_context(store, &parent.id)?),
+        bootstrap_context: Some(match &study.plan()?.material_ids {
+            Some(ids) => crate::local::materials::context_for(ids, &parent.project_id)?,
+            None => {
+                if !crate::local::materials::session_ids(store, &parent.id)?.is_empty() {
+                    return Err(anyhow!(
+                        "旧计划未固定材料范围，请修订计划并重新确认 G1 后再派发"
+                    ));
+                }
+                String::new()
+            }
+        }),
         goal: None,
         autonomy: None,
         active_leaf_id: None,
