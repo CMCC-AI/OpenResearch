@@ -1178,6 +1178,45 @@ impl Store {
         }
         Ok(false)
     }
+    /// End scheduling without cancelling experiments or removing research history.
+    /// The writer serializes this check with task binding and durable turn admission.
+    pub fn research_end(&self, id: &str, version: u32, busy_sessions: &[String]) -> Result<()> {
+        self.research_update(id, |study| {
+            if study.plans.last().map_or(0, |plan| plan.version) != version {
+                return Err(anyhow!("研究计划已变化，请刷新后再结束"));
+            }
+            if study.status == "stopped" {
+                return Ok(());
+            }
+            study.ensure_active()?;
+            if study.plan().is_ok_and(|plan| plan.tasks.iter().any(|task| task.state == "running")) {
+                return Err(anyhow!("仍有执行中或待验收的专家任务，请先完成或停止任务"));
+            }
+            if self.research_runs(study)?.iter().any(|run| !crate::local::is_terminal(&run.status)) {
+                return Err(anyhow!("仍有未结束的实验，请先等待或取消实验"));
+            }
+            let mut sessions = vec![study.session_id.clone()];
+            let mut statement = self.conn.prepare("SELECT session_id FROM research_sessions WHERE study_id=?1")?;
+            sessions.extend(statement.query_map([id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?);
+            for session in sessions {
+                let pending: bool = self.conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM chat_turn_leases WHERE chat_session_id=?1 AND heartbeat_at>=?2)
+                     OR EXISTS(SELECT 1 FROM chat_queued_messages WHERE session_id=?1)
+                     OR EXISTS(SELECT 1 FROM chat_spawns WHERE session_id=?1 AND state!='done')
+                     OR EXISTS(SELECT 1 FROM chat_steering_requests WHERE session_id=?1 AND state='registered')",
+                    params![session, now_ms() - super::CHAT_TURN_LEASE_TTL_MS],
+                    |row| row.get(0),
+                )?;
+                if pending || busy_sessions.contains(&session) {
+                    return Err(anyhow!("研究会话仍在处理或等待发送，请先停止回复或处理队列后再结束"));
+                }
+            }
+            study.status = "stopped".into();
+            Ok(())
+        })
+    }
+
     pub fn research_active_studies(&self) -> Result<Vec<Study>> {
         let mut stmt = self.conn.prepare("SELECT document FROM research_studies")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
@@ -2849,4 +2888,5 @@ mod tests {
     include!("research_debt_tests.rs");
     include!("research_evidence_tests.rs");
     include!("research_material_tests.rs");
+    include!("research_lifecycle_tests.rs");
 }

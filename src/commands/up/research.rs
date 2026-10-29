@@ -55,6 +55,41 @@ fn browser_decision(headers: &HeaderMap) -> std::result::Result<(), ApiError> {
     }
     Ok(())
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct EndReq {
+    version: u32,
+}
+
+pub(super) async fn end(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<EndReq>,
+) -> ApiResult {
+    browser_decision(&headers)?;
+    reject_if_stopping(&state)?;
+    reject_if_moving(&state)?;
+    // Keep the actual worker protected if the browser disconnects while waiting.
+    tokio::spawn(async move {
+        let gate = state.data_dir_gate.clone().lock_owned().await;
+        reject_if_stopping(&state)?;
+        reject_if_moving(&state)?;
+        let busy = state.chat.busy_sessions().await;
+        blocking_api(move || {
+            let _gate = gate;
+            Store::open()?
+                .research_end(&id, req.version, &busy)
+                .map_err(bad_request)?;
+            Ok(Json(json!({"ok":true})))
+        })
+        .await
+    })
+    .await
+    .map_err(|error| ApiError::from(anyhow!("research end task failed: {error}")))?
+}
+
 pub(super) async fn decide(
     State(state): State<AppState>,
     Path((id, decision)): Path<(String, String)>,
@@ -198,5 +233,18 @@ mod tests {
         let mut forged = input;
         forged["approver"] = serde_json::json!("another-user");
         assert!(serde_json::from_value::<DecisionReq>(forged).is_err());
+    }
+
+    #[test]
+    fn research_end_requires_an_explicit_plan_version_and_no_extra_controls() {
+        assert!(serde_json::from_value::<EndReq>(json!({"version":0})).is_ok());
+        for value in [
+            json!({}),
+            json!({"version":-1}),
+            json!({"version":1,"cancelRuns":true}),
+            json!({"version":1,"approver":"agent"}),
+        ] {
+            assert!(serde_json::from_value::<EndReq>(value).is_err());
+        }
     }
 }

@@ -236,6 +236,9 @@ pub(crate) fn auto_dispatch_ignoring_session(
                 // existing task details. Independent ready tasks may proceed.
                 let reason = format!("派发受阻：{error}");
                 store.research_update(study_id, |s| {
+                    if s.status != "active" {
+                        return Ok(());
+                    }
                     let task = s.task_mut(&task_id)?;
                     if task.state == "pending" {
                         task.summary = Some(reason);
@@ -281,12 +284,18 @@ pub(crate) fn reconcile_active_studies_with_checks(
             match store.research_package_scope(&updated) {
                 Ok(scope) => {
                     store.research_update(&updated.id, |s| {
+                        if s.status != "active" || s.plan()?.version != version {
+                            return Ok(());
+                        }
                         s.delivery_error = None;
                         s.request_gate(&gate, scope)
                     })?;
                 }
                 Err(error) => {
                     store.research_update(&updated.id, |s| {
+                        if s.status != "active" || s.plan()?.version != version {
+                            return Ok(());
+                        }
                         s.delivery_error = Some(error.to_string());
                         s.supersede_gate(&gate)
                     })?;

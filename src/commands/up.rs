@@ -512,6 +512,7 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
     let app = Router::new()
         .route("/api/health", get(health))
         .route("/api/research/sessions/{id}", get(research::session))
+        .route("/api/research/studies/{id}/end", post(research::end))
         .route(
             "/api/research/studies/{id}/decisions/{decision}",
             post(research::decide),

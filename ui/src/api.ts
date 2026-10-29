@@ -2356,3 +2356,5 @@ export const getResearchStudy = (sessionId: string, signal?: AbortSignal) =>
   get<{ study: import("./research").ResearchStudy | null; runs: Run[]; metrics?: import("./research").ResearchMetrics | null }>(`/api/research/sessions/${sessionId}`, signal);
 export const decideResearchGate = (studyId: string, decisionId: string, scopeHash: string, approved: boolean, reason: string) =>
   post<{ ok: boolean; resumeError?: string | null }>(`/api/research/studies/${studyId}/decisions/${decisionId}`, { scopeHash, approved, reason });
+export const endResearchStudy = (studyId: string, version: number) =>
+  post<{ ok: boolean }>(`/api/research/studies/${studyId}/end`, { version });

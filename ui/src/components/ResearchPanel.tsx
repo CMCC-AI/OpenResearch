@@ -1,7 +1,7 @@
 import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { getResearchStudy, decideResearchGate } from "../api";
+import { getResearchStudy, decideResearchGate, endResearchStudy } from "../api";
 import { workspaceKey } from "../queries/client";
 import { currentDecisions, deliveryGate, researchProgress, researchModes, presetWorkflowModes, researchWorkflowMode, researchAttention, researchWorkflow, gateNames, type ResearchDecision, type ResearchMode } from "../research";
 import { Button } from "./ui/Button";
@@ -42,8 +42,14 @@ export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSess
   const pendingDecisions = decisions.filter((decision) => decision.status === "pending");
   const decided = decisions.filter((decision) => decision.status !== "pending");
   const decisionCards = <>
+    {study?.status === "active" && !readOnly && <details className="rounded border border-border p-3">
+      <summary className="cursor-pointer text-sm text-subtext">结束本轮研究</summary>
+      <p className="my-2 text-sm text-subtext">结束后不再自动派发专家任务，材料、实验、产物和确认记录均保留。这不会批准交付或取消实验；仍有任务、实验或消息在处理时，请先完成或停止后再结束。结束后不能继续修订本轮计划。</p>
+      <Button size="small" disabled={working || disabled} onClick={() => void act(() => endResearchStudy(study.id, plan?.version ?? 0))}>确认结束研究</Button>
+    </details>}
     {study?.deliveryError && <p role="alert" className="text-sm text-accent-red">交付确认受阻：{study.deliveryError}</p>}
-    {pendingDecisions.length > 0 ? pendingDecisions.map(renderDecision) : <p className="text-sm text-subtext">{study && plan?.tasks.length && plan.tasks.every((task) => task.state === "completed") && !decisions.some((decision) => decision.status === "approved" && decision.gate === deliveryGate(researchWorkflowMode(study))) ? "交付确认尚未生成，请先处理交付校验问题；无需重复修订全部任务。" : "暂无待确认事项"}</p>}
+    {study?.status === "stopped" && <p role="status" className="text-sm text-subtext">本轮研究已结束，历史记录继续保留。</p>}
+    {pendingDecisions.length > 0 ? pendingDecisions.map(renderDecision) : <p className="text-sm text-subtext">{study?.status === "active" && plan?.tasks.length && plan.tasks.every((task) => task.state === "completed") && !decisions.some((decision) => decision.status === "approved" && decision.gate === deliveryGate(researchWorkflowMode(study))) ? "交付确认尚未生成，请先处理交付校验问题；无需重复修订全部任务。" : "暂无待确认事项"}</p>}
     {decided.length > 0 && <details><summary className="cursor-pointer text-xs text-subtext">确认记录（{decided.length}）</summary><div className="mt-2 flex flex-col gap-2">{decided.map(renderDecision)}</div></details>}
     {error && <p role="alert" className="text-sm text-accent-red">{error}</p>}
   </>;
