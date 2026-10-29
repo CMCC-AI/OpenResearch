@@ -1,9 +1,8 @@
 //! Capture bounded evidence outside the write transaction, then revalidate its
 //! study, run and file identity before appending to the current aggregate.
-use std::fs::{File, Metadata};
 use std::io::Read;
-use std::time::SystemTime;
 
+use super::files::FileSource;
 use super::*;
 
 pub(super) const MAX_CLAIM_INPUT_BYTES: usize = 64 * 1024;
@@ -14,7 +13,7 @@ pub(super) struct PreparedClaim {
     project_id: String,
     claim: EvidenceClaim,
     run: Option<RunSource>,
-    log: Option<LogSource>,
+    log: Option<FileSource>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -35,40 +34,6 @@ impl From<&StoredRun> for RunSource {
             commit_sha: run.commit_sha.clone(),
             updated_at: run.updated_at,
         }
-    }
-}
-
-#[derive(PartialEq, Eq)]
-struct LogStamp {
-    bytes: u64,
-    modified: SystemTime,
-}
-impl LogStamp {
-    fn read(metadata: Metadata) -> Result<Self> {
-        if !metadata.is_file() {
-            return Err(anyhow!("实验日志必须为普通文件"));
-        }
-        Ok(Self {
-            bytes: metadata.len(),
-            modified: metadata.modified()?,
-        })
-    }
-}
-
-struct LogSource {
-    path: PathBuf,
-    file: File,
-    identity: same_file::Handle,
-    stamp: LogStamp,
-}
-impl LogSource {
-    fn check_unchanged(&self) -> Result<()> {
-        if self.stamp != LogStamp::read(self.file.metadata()?)?
-            || self.identity != same_file::Handle::from_path(&self.path)?
-        {
-            return Err(anyhow!("实验日志读取后发生变化，请重新登记证据"));
-        }
-        Ok(())
     }
 }
 
@@ -191,18 +156,8 @@ impl Store {
                 return Err(anyhow!("结论必须关联本项目已结束的 Run"));
             }
             let path = self.research_log_path(&run.id)?;
-            let file = File::open(&path)?;
-            let stamp = LogStamp::read(file.metadata()?)?;
-            let identity = same_file::Handle::from_file(file.try_clone()?)?;
-            let mut log = LogSource {
-                path,
-                file,
-                identity,
-                stamp,
-            };
-            // A growing file cannot keep a read alive indefinitely. Any append
-            // or replacement is rejected by metadata/identity checks below.
-            let mut reader = (&mut log.file).take(log.stamp.bytes.saturating_add(1));
+            let mut log = FileSource::open(&path, "实验日志")?;
+            let mut reader = log.reader();
             let (hash, excerpt) = read_log(&mut reader, start, end)?;
             log.check_unchanged()?;
             claim.log_sha256 = Some(hash);

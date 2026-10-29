@@ -11,6 +11,7 @@ use super::{now_ms, Store, StoredRun};
 use crate::error::{anyhow, Result};
 
 mod evidence;
+mod files;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -298,7 +299,9 @@ pub fn safe_relative(path: &str) -> bool {
             .components()
             .all(|c| matches!(c, Component::Normal(_)))
 }
-pub fn read_artifact(root: &Path, relative: &str) -> Result<Vec<u8>> {
+const MAX_ARTIFACT_BYTES: u64 = 32 * 1024 * 1024;
+
+pub fn inspect_artifact(root: &Path, relative: &str) -> Result<Artifact> {
     if !safe_relative(relative) {
         return Err(anyhow!("产物路径必须为目录内的相对路径"));
     }
@@ -307,10 +310,15 @@ pub fn read_artifact(root: &Path, relative: &str) -> Result<Vec<u8>> {
     if !path.starts_with(&root) || !path.is_file() {
         return Err(anyhow!("产物路径越界或不是文件"));
     }
-    if path.metadata()?.len() > 32 * 1024 * 1024 {
+    let mut source = files::FileSource::open(&path, "研究产物")?;
+    if source.bytes() > MAX_ARTIFACT_BYTES {
         return Err(anyhow!("单个研究包产物超过 32 MiB"));
     }
-    Ok(std::fs::read(path)?)
+    Ok(Artifact {
+        path: relative.into(),
+        sha256: source.hash()?,
+        bytes: source.bytes(),
+    })
 }
 pub fn validate_plan(input: &PlanInput, mode: &str) -> Result<()> {
     if let Some(workflow) = &input.workflow {
@@ -704,8 +712,8 @@ impl Store {
                     let artifacts_valid = root.as_ref().is_some_and(|root_dir| {
                         !prev.artifacts.is_empty()
                             && prev.artifacts.iter().all(|a| {
-                                read_artifact(root_dir, &a.path)
-                                    .is_ok_and(|bytes| digest(&bytes) == a.sha256)
+                                inspect_artifact(root_dir, &a.path)
+                                    .is_ok_and(|current| current.sha256 == a.sha256)
                             })
                     });
                     if artifacts_valid {
@@ -788,7 +796,7 @@ impl Store {
         let root = self.research_root(&study)?;
         for dependency in &study.task(task_id)?.spec.depends_on {
             for artifact in &study.task(dependency)?.artifacts {
-                if digest(&read_artifact(&root, &artifact.path)?) != artifact.sha256 {
+                if inspect_artifact(&root, &artifact.path)?.sha256 != artifact.sha256 {
                     return Err(anyhow!("前置产物已变化，需要重新验收: {}", artifact.path));
                 }
             }
@@ -800,12 +808,8 @@ impl Store {
         }
         let mut baseline = Vec::new();
         for path in &study.task(task_id)?.spec.outputs {
-            match read_artifact(&root, path) {
-                Ok(bytes) => baseline.push(Artifact {
-                    path: path.clone(),
-                    sha256: digest(&bytes),
-                    bytes: bytes.len() as u64,
-                }),
+            match inspect_artifact(&root, path) {
+                Ok(artifact) => baseline.push(artifact),
                 Err(error)
                     if error
                         .downcast_ref::<std::io::Error>()
@@ -1374,21 +1378,17 @@ impl Store {
                     .outputs
                     .iter()
                     .map(|path| {
-                        let bytes = read_artifact(&root, path)?;
-                        if bytes.is_empty() {
+                        let artifact = inspect_artifact(&root, path)?;
+                        if artifact.bytes == 0 {
                             return Err(anyhow!("产物为空: {path}"));
                         }
-                        let sha256 = digest(&bytes);
+                        let sha256 = &artifact.sha256;
                         if automatic && task.output_baseline.as_ref().is_none_or(|baseline| {
-                            baseline.iter().any(|old| old.path == *path && old.sha256 == sha256)
+                            baseline.iter().any(|old| old.path == *path && old.sha256 == *sha256)
                         }) {
                             return Err(anyhow!("产物尚未登记为本轮结果: {path}；请核查后执行 orx research finish 显式登记"));
                         }
-                        Ok(Artifact {
-                            path: path.clone(),
-                            sha256,
-                            bytes: bytes.len() as u64,
-                        })
+                        Ok(artifact)
                     })
                     .collect::<Result<Vec<_>>>()?;
             }
@@ -1416,7 +1416,7 @@ impl Store {
         }
         let root = self.research_root(study)?;
         for artifact in plan.tasks.iter().flat_map(|t| &t.artifacts) {
-            if digest(&read_artifact(&root, &artifact.path)?) != artifact.sha256 {
+            if inspect_artifact(&root, &artifact.path)?.sha256 != artifact.sha256 {
                 return Err(anyhow!("产物变化，需要重新审查: {}", artifact.path));
             }
         }
@@ -1425,17 +1425,8 @@ impl Store {
             if !crate::local::is_terminal(&run.status) {
                 return Err(anyhow!("仍有未结束的运行"));
             }
-            let mut log = std::fs::File::open(self.research_log_path(&run.id)?)?;
-            let mut hasher = Sha256::new();
-            let mut buffer = [0u8; 64 * 1024];
-            loop {
-                let count = std::io::Read::read(&mut log, &mut buffer)?;
-                if count == 0 {
-                    break;
-                }
-                hasher.update(&buffer[..count]);
-            }
-            let log_hash = format!("{:x}", hasher.finalize());
+            let mut log = files::FileSource::open(&self.research_log_path(&run.id)?, "实验日志")?;
+            let log_hash = log.hash()?;
             for claim in &study.claims {
                 if claim.input.support == "experiment"
                     && claim.input.run_id.as_deref() == Some(&run.id)
@@ -2047,10 +2038,12 @@ mod tests {
         {
             std::os::unix::fs::symlink(external.path().join("outside"), dir.path().join("escape"))
                 .unwrap();
-            assert!(read_artifact(dir.path(), "escape").is_err());
+            assert!(inspect_artifact(dir.path(), "escape").is_err());
         }
         std::fs::write(dir.path().join("ok.md"), "ok").unwrap();
-        assert_eq!(read_artifact(dir.path(), "ok.md").unwrap(), b"ok");
+        let artifact = inspect_artifact(dir.path(), "ok.md").unwrap();
+        assert_eq!(artifact.sha256, digest(b"ok"));
+        assert_eq!(artifact.bytes, 2);
     }
     #[test]
     fn research_metrics_union_activity_and_scope_real_token_usage() {
@@ -2889,4 +2882,5 @@ mod tests {
     include!("research_evidence_tests.rs");
     include!("research_material_tests.rs");
     include!("research_lifecycle_tests.rs");
+    include!("research_file_tests.rs");
 }

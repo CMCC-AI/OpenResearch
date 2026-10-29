@@ -272,7 +272,7 @@ fn plan_inheritance_invalidates_changed_brief_and_transitive_reviews_only() {
             }
             let old = &before.task(id).unwrap().artifacts[0];
             assert_eq!(
-                digest(&read_artifact(&store.research_root(&revised).unwrap(), &old.path).unwrap()),
+                inspect_artifact(&store.research_root(&revised).unwrap(), &old.path).unwrap().sha256,
                 old.sha256
             );
         }

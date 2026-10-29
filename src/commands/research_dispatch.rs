@@ -356,8 +356,8 @@ pub(crate) fn on_research_spawn_finished(
                     .outputs
                     .iter()
                     .filter(|p| {
-                        crate::store::research::read_artifact(&root, p)
-                            .map(|b| b.is_empty())
+                        crate::store::research::inspect_artifact(&root, p)
+                            .map(|artifact| artifact.bytes == 0)
                             .unwrap_or(true)
                     })
                     .cloned()
