@@ -13,6 +13,12 @@ use crate::error::{anyhow, Result};
 mod evidence;
 mod files;
 
+/// The same membership drives accounting and lifecycle protection: the lead,
+/// every registered expert (including past plans), and their chat descendants.
+/// UNION deduplicates overlapping roots and terminates even for legacy cycles.
+pub(super) const RESEARCH_MEMBERS_CTE: &str =
+    "WITH RECURSIVE members(id) AS (SELECT ?2 UNION SELECT session_id FROM research_sessions WHERE study_id=?1 UNION SELECT s.id FROM chat_sessions s JOIN members m ON s.parent_session_id=m.id OR s.side_parent_session_id=m.id) ";
+
 // Share the exact predicate so SQLite can use the partial index without
 // parsing ended studies. Malformed legacy JSON must not prevent index creation.
 const ACTIVE_STUDY_FILTER: &str =
@@ -1250,10 +1256,9 @@ impl Store {
             if self.research_runs(study)?.iter().any(|run| !crate::local::is_terminal(&run.status)) {
                 return Err(anyhow!("仍有未结束的实验，请先等待或取消实验"));
             }
-            let mut sessions = vec![study.session_id.clone()];
-            let mut statement = self.conn.prepare("SELECT session_id FROM research_sessions WHERE study_id=?1")?;
-            sessions.extend(statement.query_map([id], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?);
+            let mut statement = self.conn.prepare(&format!("{RESEARCH_MEMBERS_CTE} SELECT id FROM members"))?;
+            let sessions = statement.query_map(params![study.id, study.session_id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
             for session in sessions {
                 let pending: bool = self.conn.query_row(
                     "SELECT EXISTS(SELECT 1 FROM chat_turn_leases WHERE chat_session_id=?1 AND heartbeat_at>=?2)

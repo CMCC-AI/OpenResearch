@@ -149,3 +149,100 @@ fn research_end_checks_lead_and_historical_session_activity_without_clearing_it(
         }
     }
 }
+
+#[test]
+fn research_end_checks_related_branches_without_blocking_unrelated_sessions() {
+    for session in ["lead-side", "expert-side", "nested-side", "child"] {
+        for activity in ["memory", "lease", "queue", "spawn", "steer"] {
+            let (_dir, store, study) = setup();
+            store.conn.execute_batch("INSERT INTO chat_sessions(id,project_id,harness,created_at,updated_at,side_parent_session_id,parent_session_id) VALUES
+                ('old-expert','project','codex',1,1,NULL,NULL),
+                ('lead-side','project','codex',1,1,'lead',NULL),
+                ('expert-side','project','codex',1,1,'old-expert',NULL),
+                ('nested-side','project','codex',1,1,'expert-side',NULL),
+                ('child','project','codex',1,1,NULL,'nested-side'),
+                ('unrelated','project','codex',1,1,NULL,NULL);").unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO research_sessions VALUES('old-expert',?1,'old',0)",
+                    [&study.id],
+                )
+                .unwrap();
+            let busy = if activity == "memory" {
+                vec![session.into()]
+            } else {
+                vec![]
+            };
+            match activity {
+                "lease" => {
+                    store
+                        .conn
+                        .execute(
+                            "INSERT INTO chat_turn_leases VALUES(?1,'lease',?2)",
+                            params![session, now_ms()],
+                        )
+                        .unwrap();
+                }
+                "queue" => {
+                    store.conn.execute("INSERT INTO chat_queued_messages VALUES('q',?1,'client','hash','{}',1)", [session]).unwrap();
+                }
+                "spawn" => {
+                    store.conn.execute("INSERT INTO chat_spawns(session_id,parent_session_id,prompt,requested_at) VALUES(?1,'lead','work',1)", [session]).unwrap();
+                }
+                "steer" => {
+                    store.conn.execute("INSERT INTO chat_steering_requests VALUES('s',?1,'client','hash','{}','registered',1)", [session]).unwrap();
+                }
+                _ => {}
+            }
+            assert!(
+                store.research_end(&study.id, 0, &busy).is_err(),
+                "accepted {session}/{activity}"
+            );
+            assert_eq!(store.research_study(&study.id).unwrap().status, "active");
+            store.conn.execute_batch("DELETE FROM chat_turn_leases; DELETE FROM chat_queued_messages; DELETE FROM chat_spawns; DELETE FROM chat_steering_requests;
+                INSERT INTO chat_queued_messages VALUES('other-q','unrelated','other-client','hash','{}',1);").unwrap();
+            store
+                .research_end(&study.id, 0, &["unrelated".into()])
+                .unwrap();
+            assert_eq!(
+                store
+                    .list_queued_chat_messages_for_session("unrelated")
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+    }
+}
+
+#[test]
+fn research_end_member_union_deduplicates_overlapping_roots_and_legacy_cycles() {
+    let (_dir, store, study) = setup();
+    store.conn.execute_batch("INSERT INTO chat_sessions(id,project_id,harness,created_at,updated_at,parent_session_id,side_parent_session_id) VALUES
+        ('expert','project','codex',1,1,'lead',NULL),
+        ('a','project','codex',1,1,'b','lead'),
+        ('b','project','codex',1,1,'a',NULL);").unwrap();
+    store
+        .conn
+        .execute(
+            "INSERT INTO research_sessions VALUES('expert',?1,'past',0)",
+            [&study.id],
+        )
+        .unwrap();
+    // LIMIT lets this regression fail instead of hanging if UNION accidentally
+    // becomes UNION ALL on an overlapping/cyclic legacy graph.
+    let members: Vec<String> = store
+        .conn
+        .prepare(&format!(
+            "{RESEARCH_MEMBERS_CTE} SELECT id FROM members LIMIT 16"
+        ))
+        .unwrap()
+        .query_map(params![study.id, study.session_id], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(members.len(), 4);
+    assert_eq!(members.iter().collect::<HashSet<_>>().len(), 4);
+    store.research_end(&study.id, 0, &[]).unwrap();
+}

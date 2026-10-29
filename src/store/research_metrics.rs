@@ -141,7 +141,7 @@ impl Store {
             study.updated_at.min(now)
         };
         let busy: HashSet<&str> = busy_sessions.iter().map(String::as_str).collect();
-        let members = "WITH RECURSIVE members(id) AS (SELECT ?2 UNION SELECT session_id FROM research_sessions WHERE study_id=?1 UNION SELECT s.id FROM chat_sessions s JOIN members m ON s.parent_session_id=m.id OR s.side_parent_session_id=m.id) ";
+        let members = super::research::RESEARCH_MEMBERS_CTE;
         let mut statement = self.conn.prepare(&format!("{members} SELECT a.session_id,a.started_at,a.ended_at,a.observed_at,a.complete FROM chat_activity_spans a JOIN members m ON m.id=a.session_id WHERE COALESCE(a.ended_at,a.observed_at)>=?3"))?;
         let rows = statement.query_map(
             params![study.id, study.session_id, study.created_at],
