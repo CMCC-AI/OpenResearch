@@ -2684,6 +2684,10 @@ struct GateToken {
 }
 
 enum TurnState {
+    /// Worktree maintenance owns the slot; Stop must not release it.
+    Migrating {
+        reservation_id: String,
+    },
     Reserved {
         turn_id: Option<String>,
         reservation_id: String,
@@ -3392,6 +3396,40 @@ pub struct SessionDeletionLease {
     session_id: String,
 }
 
+/// Held by the actual maintenance worker, including after its waiter is cancelled.
+struct IdleSessionGuard {
+    turns: Arc<Mutex<HashMap<String, TurnState>>>,
+    events: broadcast::Sender<(&'static str, Value)>,
+    sessions: Vec<String>,
+    reservation_id: String,
+    cleanup: Vec<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for IdleSessionGuard {
+    fn drop(&mut self) {
+        let sessions = std::mem::take(&mut self.sessions);
+        let reservation_id = self.reservation_id.clone();
+        let cleanup = std::mem::take(&mut self.cleanup);
+        let events = self.events.clone();
+        let clear = move |turns: &mut HashMap<String, TurnState>| {
+            for session in sessions {
+                if matches!(turns.get(&session), Some(TurnState::Migrating { reservation_id: current }) if current == &reservation_id)
+                {
+                    turns.remove(&session);
+                    let _ = events.send(("chat.busy", json!({"sessionId":session,"busy":false})));
+                }
+            }
+            drop(cleanup);
+        };
+        if let Ok(mut turns) = self.turns.try_lock() {
+            clear(&mut turns);
+        } else {
+            let turns = self.turns.clone();
+            tokio::spawn(async move { clear(&mut *turns.lock().await) });
+        }
+    }
+}
+
 impl Drop for SessionDeletionLease {
     fn drop(&mut self) {
         self.deleting.lock().unwrap().remove(&self.session_id);
@@ -4044,22 +4082,79 @@ impl ChatHost {
         self.turns.lock().await.contains_key(session_id)
     }
 
-    /// Run `f` only if none of `session_ids` has a turn, holding the turn map so none can start
-    /// until it returns.
+    /// Reserve only affected sessions, then run storage and worktree maintenance
+    /// off the async scheduler without holding the global turn map.
     pub async fn while_idle<T>(
         &self,
         session_ids: &[String],
-        f: impl FnOnce() -> Result<T>,
+        f: impl FnOnce() -> Result<T> + Send + 'static,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+    {
+        self.while_idle_with_store(session_ids, Store::open, f)
+            .await
+    }
+
+    async fn while_idle_with_store<T: Send + 'static>(
+        &self,
+        session_ids: &[String],
+        open: impl FnOnce() -> Result<Store> + Send + 'static,
+        f: impl FnOnce() -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        let turns = self.turns.lock().await;
-        for session_id in session_ids {
-            if turns.contains_key(session_id) || Store::open()?.chat_turn_leased(session_id)? {
+        let mut sessions = session_ids.to_vec();
+        sessions.sort();
+        sessions.dedup();
+        let mut turns = self.turns.lock().await;
+        let mut cleanup = Vec::new();
+        for session in &sessions {
+            if self.restarting.load(std::sync::atomic::Ordering::SeqCst)
+                || turns.contains_key(session)
+                || self.deleting_sessions.lock().unwrap().contains(session)
+            {
                 return Err(anyhow!(
                     "Wait for the running chats to finish, then try again."
                 ));
             }
+            cleanup.push(
+                self.cleanup_lock(session)
+                    .try_lock_owned()
+                    .map_err(|_| anyhow!("Wait for chat storage to finish, then try again."))?,
+            );
         }
-        f()
+        let reservation_id = uuid::Uuid::new_v4().to_string();
+        for session in &sessions {
+            turns.insert(
+                session.clone(),
+                TurnState::Migrating {
+                    reservation_id: reservation_id.clone(),
+                },
+            );
+            self.emit("chat.busy", json!({"sessionId":session,"busy":true}));
+        }
+        let guard = IdleSessionGuard {
+            turns: self.turns.clone(),
+            events: self.events.clone(),
+            sessions,
+            reservation_id,
+            cleanup,
+        };
+        drop(turns);
+        crate::local::blocking::run(move || {
+            let _guard = guard;
+            if !_guard.sessions.is_empty() {
+                let store = open()?;
+                for session in &_guard.sessions {
+                    if store.chat_turn_leased(session)? {
+                        return Err(anyhow!(
+                            "Wait for the running chats to finish, then try again."
+                        ));
+                    }
+                }
+            }
+            f()
+        })
+        .await?
     }
 
     /// Background queue settlement may remain after the turn slot is freed.
@@ -7110,6 +7205,10 @@ impl ChatHost {
                 return Ok(false);
             };
             match std::mem::replace(state, TurnState::Cancelling) {
+                TurnState::Migrating { reservation_id } => {
+                    *state = TurnState::Migrating { reservation_id };
+                    return Ok(false);
+                }
                 TurnState::Active(active) => (Some(active), None),
                 TurnState::Reserved { turn_id, .. } => (None, turn_id),
                 TurnState::Draining => (None, None),
@@ -7773,6 +7872,12 @@ impl ChatHost {
         let _deleting = self
             .begin_session_delete(session_id)
             .ok_or_else(|| anyhow!("session deletion is already in progress"))?;
+        if matches!(
+            self.turns.lock().await.get(session_id),
+            Some(TurnState::Migrating { .. })
+        ) {
+            return Err(anyhow!("会话工作区正在迁移，请完成后再删除"));
+        }
         let store = Store::open()?;
         // Reject before recursively deleting persistent children or stopping
         // agents. The store rechecks this under its deletion transaction.
@@ -11906,16 +12011,26 @@ mod bridge_tests {
                 reservation_id: uuid::Uuid::new_v4().to_string(),
             },
         );
-        let mut ran = false;
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let marked = ran.clone();
         assert!(host
-            .while_idle(&["busy".into()], || {
-                ran = true;
+            .while_idle(&["busy".into()], move || {
+                marked.store(true, std::sync::atomic::Ordering::SeqCst);
                 Ok(())
             })
             .await
             .is_err());
-        assert!(!ran);
-        assert_eq!(host.while_idle(&[], || Ok(7)).await.unwrap(), 7);
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+        let turns = host.turns.clone();
+        assert_eq!(
+            host.while_idle(&[], move || {
+                assert!(turns.try_lock().is_ok());
+                Ok(7)
+            })
+            .await
+            .unwrap(),
+            7
+        );
     }
 
     #[tokio::test]
@@ -18218,3 +18333,6 @@ mod debt_tests;
 
 #[cfg(test)]
 mod steering_receipt_tests;
+
+#[cfg(test)]
+mod idle_migration_tests;

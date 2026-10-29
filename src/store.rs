@@ -1663,7 +1663,7 @@ impl Store {
             params![chat_session_id, now_ms() - CHAT_TURN_LEASE_TTL_MS],
             |_| Ok(()),
         );
-        Ok(matches!(leased, Ok(())))
+        Ok(leased.optional()?.is_some())
     }
 
     /// Record that a spawned helper's turn ended. An unstamped row whose lease

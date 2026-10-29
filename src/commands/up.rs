@@ -1992,7 +1992,7 @@ async fn create_project(
         .ok_or_else(|| bad_request("project deletion is in progress"))?;
     drop(create_admission);
     let (project, github_publication_error) = if github_sync_enabled {
-        match push_project_for_sync(project.clone(), &state.chat).await {
+        match push_project_for_sync(project.clone(), &state).await {
             Ok((project, _)) => (project, None),
             Err(error) => {
                 let project = Store::open()?
@@ -2154,43 +2154,92 @@ async fn create_independent_project_repository(
     mut project: local::model::LocalProject,
     chat: &ChatHost,
 ) -> Result<local::model::LocalProject> {
-    let store = Store::open()?;
-    let legacy = store
-        .list_chat_sessions_by_project(&project.id)?
-        .into_iter()
-        .map(|session| session.id)
-        .filter(|id| {
-            local::git::existing_session_worktree_path(&project, id)
-                != local::git::session_worktree_path(&project.id, id)
-        })
-        .collect::<Vec<_>>();
-    // `git worktree move` would pull a running turn's checkout out from under it.
-    chat.while_idle(&legacy, || {
-        local::git::migrate_legacy_project_worktrees(&project, &legacy)
+    let inspected = project.clone();
+    let legacy = local::blocking::run(move || -> Result<Vec<String>> {
+        let store = Store::open()?;
+        Ok(store
+            .list_chat_sessions_by_project(&inspected.id)?
+            .into_iter()
+            .map(|session| session.id)
+            .filter(|id| {
+                local::git::existing_session_worktree_path(&inspected, id)
+                    != local::git::session_worktree_path(&inspected.id, id)
+            })
+            .collect())
+    })
+    .await??;
+    // The worker owns the affected slots until git has actually finished.
+    let migrating = project.clone();
+    let affected = legacy.clone();
+    chat.while_idle(&legacy, move || {
+        local::git::migrate_legacy_project_worktrees(&migrating, &affected)
     })
     .await?;
     let source_repository = project
         .has_github_repository()
         .then(|| (project.github_owner.clone(), project.github_repo.clone()));
-    let reroot_shallow = local::git::prepare_shallow_repository_for_publication(
-        std::path::Path::new(&project.repo_path),
-    )?;
+    let path = project.repo_path.clone();
+    let reroot_shallow = local::blocking::run(move || {
+        local::git::prepare_shallow_repository_for_publication(std::path::Path::new(&path))
+    })
+    .await??;
     let (owner, repo) = local::github::create_project_repo(&project.slug).await?;
     if reroot_shallow {
-        local::git::reroot_shallow_repository(
-            std::path::Path::new(&project.repo_path),
-            &project.baseline_branch,
-            source_repository.as_ref(),
-        )?;
+        let path = project.repo_path.clone();
+        let baseline = project.baseline_branch.clone();
+        local::blocking::run(move || {
+            local::git::reroot_shallow_repository(
+                std::path::Path::new(&path),
+                &baseline,
+                source_repository.as_ref(),
+            )
+        })
+        .await??;
     }
     project.github_owner = owner;
     project.github_repo = repo;
     project.github_sync_enabled = false;
-    store.update_local_project(&project)?;
+    let saved = project.clone();
+    local::blocking::run(move || Store::open()?.update_local_project(&saved)).await??;
     Ok(project)
 }
 
 async fn push_project_for_sync(
+    project: local::model::LocalProject,
+    state: &AppState,
+) -> Result<(local::model::LocalProject, local::github::Status)> {
+    // Register before detaching so disconnect cannot let deletion, a data-dir
+    // move or an automatic restart overtake an actual publication worker.
+    let admission = state
+        .project_lifecycle
+        .admit(&project.id)
+        .ok_or_else(|| anyhow!("project deletion is in progress"))?;
+    if DRAINING.load(Ordering::SeqCst) {
+        return Err(anyhow!(
+            "OpenResearch is restarting; try again once it is ready."
+        ));
+    }
+    reject_if_stopping(state).map_err(|error| anyhow!(error.1))?;
+    reject_if_moving(state).map_err(|error| anyhow!(error.1))?;
+    let state = state.clone();
+    tokio::spawn(async move {
+        let _admission = admission;
+        let _publication = project_publication_lock(&state, &project.id).await;
+        reject_if_stopping(&state).map_err(|error| anyhow!(error.1))?;
+        reject_if_moving(&state).map_err(|error| anyhow!(error.1))?;
+        let project = local::blocking::run(move || {
+            Store::open()?
+                .get_local_project(&project.id)?
+                .ok_or_else(|| anyhow!("project not found"))
+        })
+        .await??;
+        push_project_for_sync_inner(project, &state.chat).await
+    })
+    .await
+    .map_err(|error| anyhow!("project publication task failed: {error}"))?
+}
+
+async fn push_project_for_sync_inner(
     mut project: local::model::LocalProject,
     chat: &ChatHost,
 ) -> Result<(local::model::LocalProject, local::github::Status)> {
@@ -2237,7 +2286,8 @@ async fn push_project_for_sync(
     }
 
     project.github_sync_enabled = true;
-    Store::open()?.update_local_project(&project)?;
+    let saved = project.clone();
+    local::blocking::run(move || Store::open()?.update_local_project(&saved)).await??;
     Ok((project, github_status))
 }
 
@@ -2248,12 +2298,11 @@ async fn enable_project_github(State(state): State<AppState>, Path(id): Path<Str
         .admit(&id)
         .ok_or_else(|| bad_request("project deletion is in progress"))?;
     reject_if_moving(&state)?;
-    let _lock = project_publication_lock(&state, &id).await;
     let store = Store::open()?;
     let project = store
         .get_local_project(&id)?
         .ok_or_else(|| not_found("project"))?;
-    let (project, github_status) = push_project_for_sync(project, &state.chat)
+    let (project, github_status) = push_project_for_sync(project, &state)
         .await
         .map_err(bad_request)?;
     let git_status = project_git_json(&project, github_status);
@@ -5109,6 +5158,7 @@ async fn begin_restart(state: &AppState, own_requests: usize) -> bool {
     DRAINING.store(true, Ordering::SeqCst);
     if ACTIVE.load(Ordering::SeqCst) <= own_requests
         && !state.data_dir_move_in_progress.load(Ordering::SeqCst)
+        && state.project_lifecycle.operation_count() == 0
         && state.remote_sessions.list().await.iter().all(|session| {
             matches!(
                 session.status,
