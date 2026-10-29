@@ -1,5 +1,7 @@
 # Steering 持久回执与跨通道去重
 
+后续状态：本记录保留服务端批次的实现边界；前端 pending 跨刷新恢复已继续实施，见 [待确认请求恢复](pending-submission-recovery-2026-10-29.md)。
+
 ## 解决的问题
 
 原实现 `steer_message` 只向内存 channel 发送 `display/text`，随后返回成功；HTTP 回包丢失后无持久回执可查。原生拒绝时 `park_steer` 又生成新的 client ID 和默认设置，无法证明后续队列与最初请求是同一次提交。普通 turn／队列已有各自幂等记录，但不能阻止与 steering 重复投递。

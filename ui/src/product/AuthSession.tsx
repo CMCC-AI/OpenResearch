@@ -1,3 +1,4 @@
+import { pendingOwner, revokePendingOwner } from "../pendingSubmissions";
 import { PersonalResearchGate } from "./PersonalResearchGate";
 import { stripAppBase, appHref } from "../appBasePath";
 import { Navigate, useRouterState } from "@tanstack/react-router";
@@ -103,6 +104,7 @@ export function AuthSessionProvider({
   }, [accountUrl, cloud]);
 
   const logout = useCallback(async () => {
+    if (user) await revokePendingOwner(pendingOwner(accountUrl, user.id)).catch(() => undefined);
     if (accountUrl) {
       await fetch(cloud ? "/_platform/logout" : `${accountUrl}/api/platform/browser-logout`, {
         method: "POST",
@@ -114,7 +116,7 @@ export function AuthSessionProvider({
     setDeepLiteratureUrl(null);
     setStorage(null);
     window.location.assign(cloud ? accountUrl : appHref("/"));
-  }, [accountUrl, cloud]);
+  }, [accountUrl, cloud, user]);
 
   const value = useMemo(
     () => ({ accountUrl, loading, user, canAccessResearch, deepLiteratureUrl, storage, login, logout }),

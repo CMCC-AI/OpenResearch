@@ -5,13 +5,14 @@ import test from "node:test";
 import React from "react";
 import ts from "typescript";
 
-function authGate(pathname, user, loading = false, canAccessResearch = true, privateResearch = false) {
+function authGate(pathname, user, loading = false, canAccessResearch = true, privateResearch = false, lifecycle = []) {
   let stateIndex = 0;
   const source = readFileSync(new URL("../src/product/AuthSession.tsx", import.meta.url), "utf8");
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports = {};
   const mocks = {
     "../appBasePath": appBase,
+    "../pendingSubmissions": { pendingOwner: (account, id) => JSON.stringify([account, id]), revokePendingOwner: async owner => { lifecycle.push(["clear-pending", owner]); } },
     react: { ...React, useState: () => { const values = [loading, user, canAccessResearch, null, null, privateResearch]; return [values[stateIndex++], () => {}]; }, useEffect: () => {}, useCallback: (fn) => fn, useMemo: (fn) => fn() },
     "react/jsx-runtime": jsx,
     "@tanstack/react-router": { Navigate: "Navigate", useRouterState: ({ select }) => select({ location: { pathname } }) },
@@ -19,10 +20,12 @@ function authGate(pathname, user, loading = false, canAccessResearch = true, pri
     "./PersonalResearchGate": { PersonalResearchGate: "PersonalResearchGate" },
     "./CloudWorkspace": { isCloudWorkspace: () => false },
   };
-  new Function("require", "exports", "location", code)((name) => {
+  new Function("require", "exports", "location", "window", "fetch", code)((name) => {
     if (!(name in mocks)) throw new Error(`Unexpected dependency ${name}`);
     return mocks[name];
-  }, exports, { protocol: "http:", host: "localhost:4791" });
+  }, exports, { protocol: "http:", host: "localhost:4791" },
+    { location: { assign: path => lifecycle.push(["navigate", path]) } },
+    async path => { lifecycle.push(["logout", path]); });
   return exports.AuthSessionProvider({ runtime: { kind: "local", accountUrl: "http://localhost:5300" }, children: "page" });
 }
 import * as jsx from "react/jsx-runtime";
@@ -83,4 +86,16 @@ test("workspace settings keep login, research access, and private runtime gates"
     assert.equal(authGate(path, { id: "user" }, false, true, true).props.children.type, "PersonalResearchGate");
     assert.equal(authGate(path, { id: "user" }).props.children, "page");
   }
+});
+
+
+test("logout revokes the account recovery records before ending the browser session", async () => {
+  const lifecycle = [];
+  const result = authGate("/", { id: "user", name: "user", email: "user@example.test" }, false, true, false, lifecycle);
+  await result.props.value.logout();
+  assert.deepEqual(lifecycle, [
+    ["clear-pending", JSON.stringify(["http://localhost:5300", "user"])],
+    ["logout", "http://localhost:5300/api/platform/browser-logout"],
+    ["navigate", "/"],
+  ]);
 });

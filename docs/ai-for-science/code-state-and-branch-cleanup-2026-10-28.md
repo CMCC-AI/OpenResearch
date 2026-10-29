@@ -1,6 +1,6 @@
 # 代码状态复核与本地分支清理（2026-10-28）
 
-后续实施：下文是 `a421c09` 的检查快照。steering 持久登记、跨通道去重与原身份回退已继续实施，见 [steering 回执记录](steering-receipts-2026-10-28.md)；pending 跨刷新恢复仍未完成。
+后续实施：下文是 `a421c09` 的检查快照。steering 持久登记、跨通道去重与原身份回退见 [steering 回执记录](steering-receipts-2026-10-28.md)；pending 跨刷新恢复已于后续批次实施，见 [恢复记录](pending-submission-recovery-2026-10-29.md)。
 
 ## 检查基线
 

@@ -14,6 +14,7 @@ let identity: string | null = null;
 let generation = 0;
 const listeners = new Set<() => void>();
 export const getWorkspaceGeneration = () => generation;
+export const getWorkspaceIdentity = () => identity;
 export const subscribeWorkspace = (listener: () => void) => {
   listeners.add(listener);
   return () => { listeners.delete(listener); };

@@ -1,3 +1,6 @@
+import { appBasePath } from "../appBasePath";
+import { useOptionalAuthSession } from "../product/AuthSession";
+import { pendingJournal, pendingOwner, pendingScope, pendingKey, rescopePendingSignature, recoveredSettings, PendingConflictError, beginPendingFlight, hasPendingFlight, subscribePendingFlights, samePendingComposer, type PendingSubmission } from "../pendingSubmissions";
 import { reconcileSubmission } from "../chatSubmission";
 import { MaterialChip } from "./MaterialChip";
 import { resolveStarterPrompts } from "../starterPrompts";
@@ -31,6 +34,7 @@ import {
   queryClient,
   workspaceKey,
   getWorkspaceGeneration,
+  getWorkspaceIdentity,
 } from "../queries/client";
 import { LOCAL_PREFIX, SHELL_TOOL } from "../queries/chatState";
 import { CancelledError, useInfiniteQuery, useMutation, useQueries, useQuery } from "@tanstack/react-query";
@@ -4347,6 +4351,91 @@ export function ChatPanel({
   const [retryingQueuedId, setRetryingQueuedId] = useState<string | null>(null);
   const preparingSend = useRef(false);
   const pendingClientTurn = useRef<{ signature: string; id: string; sessionId: string | null; mode?: "steer" } | null>(null);
+  const pendingAuth = useOptionalAuthSession();
+  const pendingActor = pendingAuth?.user ? pendingOwner(pendingAuth.accountUrl, pendingAuth.user.id) : null;
+  const runtimeIdentity = getWorkspaceIdentity();
+  const pendingStorageScope = !readOnly && pendingActor && runtimeIdentity
+    ? pendingScope(pendingActor, appBasePath, runtimeIdentity, projectId) : null;
+  const [pendingRecovery, setPendingRecovery] = useState<PendingSubmission | null>(null);
+  const [pendingLoading, setPendingLoading] = useState(false);
+  const [pendingRefresh, setPendingRefresh] = useState(0);
+  useEffect(() => subscribePendingFlights(key => {
+    if (activeId && pendingStorageScope && key === pendingKey(pendingStorageScope, activeId)) setPendingRefresh(value => value + 1);
+  }), [activeId, pendingStorageScope]);
+  useEffect(() => {
+    if (!activeId || mainView !== "chat" || !pendingStorageScope) { setPendingRecovery(null); setPendingLoading(false); return; }
+    let current = true;
+    const sid = activeId;
+    const entryComposer = composerLiveRef.current;
+    setPendingLoading(true);
+    if (hasPendingFlight(pendingKey(pendingStorageScope, sid))) return () => { current = false; };
+    void (async () => {
+      const row = await pendingJournal.read(pendingStorageScope, sid);
+      if (!current || !isCurrentScope(sessionsOptions.queryKey) || deletedSessionIds.has(sid)) return;
+      if (!row) { setPendingRecovery(null); return; }
+      const resolution = await reconcileSubmission({ sessionId: sid, clientTurnId: row.id, rejected: false,
+        isCurrent: () => current && isCurrentScope(sessionsOptions.queryKey) && !deletedSessionIds.has(sid),
+        lookup: signal => getChatSubmission(sid, row.id, signal) });
+      if (resolution === "retired" || hasPendingFlight(pendingKey(pendingStorageScope, sid))) return;
+      if (pendingClientTurn.current?.sessionId === sid && pendingClientTurn.current.id !== row.id) return;
+      if (resolution === "accepted") {
+        await pendingJournal.remove(pendingStorageScope, sid, row.id).catch(() => undefined);
+        if (current) {
+          if (pendingClientTurn.current?.id === row.id) pendingClientTurn.current = null;
+          setPendingRecovery(null);
+          setAttachError(value => value?.startsWith("发送结果尚未确认") || value === "上次发送仍未确认，请先核实结果或放弃本地记录。" ? null : value);
+          if (samePendingComposer(entryComposer, row.composer) && samePendingComposer(composerLiveRef.current, entryComposer)) {
+            composerLiveRef.current = { ...entryComposer, draft: "", attachments: [], annotations: [] };
+            setDraft(""); setAttachments([]); setAnnotations([]);
+          }
+          void reseedSession(sid);
+        }
+        return;
+      }
+      if (!current) return;
+      pendingClientTurn.current = { ...row, signature: rescopePendingSignature(row.signature, sessionsOptions.queryKey) };
+      setPendingRecovery(row);
+      const live = composerLiveRef.current;
+      if (!live.draft && !live.attachments.length && !live.annotations.length) {
+        composerLiveRef.current = row.composer;
+        setDraft(row.composer.draft);
+        setAttachments(row.composer.attachments);
+        setAnnotations(row.composer.annotations);
+        setResearchMode(row.composer.workMode ?? "normal");
+      }
+    })().catch(error => { if (current) setAttachError(error instanceof Error ? error.message : String(error)); })
+      .finally(() => { if (current) setPendingLoading(false); });
+    return () => { current = false; };
+  }, [activeId, mainView, pendingStorageScope, pendingRefresh, sessionsOptions]);
+
+  function restorePendingRecovery() {
+    const row = pendingRecovery;
+    if (!row || row.scope !== pendingStorageScope || composerScopeRef.current.activeId !== row.sessionId || hasPendingFlight(row.key)) return;
+    const live = composerLiveRef.current;
+    if ((live.draft || live.attachments.length || live.annotations.length) && !samePendingComposer(live, row.composer)) {
+      setAttachError("编辑区已有内容，请先保留或清空后恢复上次草稿。"); return;
+    }
+    composerLiveRef.current = row.composer;
+    setDraft(row.composer.draft); setAttachments(row.composer.attachments); setAnnotations(row.composer.annotations);
+    setResearchMode(row.composer.workMode ?? "normal");
+    const settings = recoveredSettings(row.signature);
+    if (settings) { const { planMode, ...selection } = settings; setSessionOverride(selection); setPlanModeOverride(planMode ?? null); planModeOverrideRef.current = planMode ?? null; }
+  }
+
+  async function discardPendingRecovery() {
+    const row = pendingRecovery;
+    if (!row || !pendingStorageScope || row.scope !== pendingStorageScope || hasPendingFlight(row.key)) return;
+    const finish = beginPendingFlight(row.key, `discard:${row.id}`);
+    try {
+      await pendingJournal.remove(pendingStorageScope, row.sessionId, row.id);
+      if (composerScopeRef.current.activeId !== row.sessionId) return;
+      if (pendingClientTurn.current?.id === row.id) pendingClientTurn.current = null;
+      setPendingRecovery(null);
+      setAttachError(null);
+    } catch (error) { setAttachError(error instanceof Error ? error.message : String(error)); }
+    finally { finish(); }
+  }
+
   // Sessions whose title was just replaced by a harness-generated one, mapped
   // to a nonce that bumps per reveal so a second retitle remounts the spans and
   // replays the animation instead of sitting on a finished one.
@@ -5343,11 +5432,14 @@ export function ChatPanel({
 
   /** `queue` (the ⌘/Ctrl+Enter chord) parks the message even on a harness that steers. */
   async function send({ queue = false, starter }: { queue?: boolean; starter?: string } = {}) {
+    if (pendingLoading || (activeId && pendingStorageScope && hasPendingFlight(pendingKey(pendingStorageScope, activeId)))) return;
     if (activeId && stopRequests.current.has(activeId)) return;
     // Slash tokens stay in the wire form: the server resolves every selected
     // skill and supplies this exact message as their shared request context.
     const originalText = (starter ?? draft).trim();
-    const composerCommand = !pendingQuestion && starter === undefined
+    const replayingPending = starter === undefined && pendingRecovery?.sessionId === activeId
+      && pendingRecovery.scope === pendingStorageScope && samePendingComposer(composerLiveRef.current, pendingRecovery.composer) ? pendingRecovery : null;
+    const composerCommand = !replayingPending && !pendingQuestion && starter === undefined
       ? parseComposerCommand(originalText, opts?.planActivation)
       : null;
     if (composerCommand && composerCommand.name !== "plan") {
@@ -5367,7 +5459,7 @@ export function ChatPanel({
     if (preparingSend.current || uploadingMaterialsRef.current) return;
     const planRequested = !!composerCommand;
     const toggledPlanMode = !planActive;
-    const independentPlanMode = effectiveCommandPlanMode(
+    const independentPlanMode = replayingPending ? recoveredSettings(replayingPending.signature)?.planMode : effectiveCommandPlanMode(
       opts?.planActivation,
       planRequested ? toggledPlanMode : undefined,
       planModeOverrideRef.current,
@@ -5375,7 +5467,7 @@ export function ChatPanel({
     const planPermissionMode = planRequested && activeHarness?.id === "claude-code"
       ? toggledPlanMode ? "plan" : "auto"
       : undefined;
-    const text = composerCommand ? composerCommand.prompt : originalText;
+    const text = replayingPending ? JSON.parse(replayingPending.signature).text as string : composerCommand ? composerCommand.prompt : originalText;
     const pending = attachments;
     const pendingAnnotations = annotations;
     const wireAnnotations = pendingAnnotations.map((annotation) => ({
@@ -5475,12 +5567,46 @@ export function ChatPanel({
         : null,
     });
     const turnSignature = signatureFor(sourceSessionId);
+    if (pendingClientTurn.current?.sessionId === sourceSessionId
+      && JSON.stringify(JSON.parse(pendingClientTurn.current.signature).workspace) === JSON.stringify(sessionsOptions.queryKey)
+      && pendingClientTurn.current.signature !== turnSignature) {
+      setAttachError("上次发送仍未确认，请先核实结果或放弃本地记录。");
+      return;
+    }
     const retryingSubmission = pendingClientTurn.current?.signature === turnSignature ? pendingClientTurn.current : null;
     const submissionMode = retryingSubmission ? retryingSubmission.mode : busy && steering && !queue && !planRequested ? "steer" : undefined;
     const clientTurnId = pendingClientTurn.current?.signature === turnSignature
       ? pendingClientTurn.current.id
       : createClientTurnId();
     pendingClientTurn.current = { signature: turnSignature, id: clientTurnId, sessionId: sourceSessionId, mode: submissionMode };
+    let pendingSaved: PendingSubmission | null = null;
+    const retryWire = pendingRecovery?.id === clientTurnId && pendingRecovery.scope === pendingStorageScope
+      && pendingRecovery.sessionId === sourceSessionId ? pendingRecovery.wire : null;
+    let endPendingFlight: (() => void) | undefined;
+    const savePendingSubmission = async (sid: string, images: ChatImageAttachment[], options: import("../api").TurnOptions) => {
+      if (!pendingStorageScope || !pendingActor) return;
+      if (!endPendingFlight) endPendingFlight = beginPendingFlight(pendingKey(pendingStorageScope, sid), clientTurnId);
+      const row: PendingSubmission = {
+        wire: { images, options, annotations: wireAnnotations },
+        key: pendingKey(pendingStorageScope, sid), scope: pendingStorageScope, owner: pendingActor,
+        id: clientTurnId, sessionId: sid, mode: submissionMode, signature: signatureFor(sid),
+        composer: { draft: originalText, workMode: researchMode, attachments: pending,
+          annotations: pendingAnnotations.map(({ range: _range, ...annotation }) => annotation) },
+      };
+      const persisted = await pendingJournal.save(row);
+      pendingSaved = row;
+      if (inSourceScope()) {
+        if (!persisted) setAttachError("浏览器无法持久保存恢复记录；本次仅在当前页面保留，请勿刷新。");
+      }
+    };
+    const finishPendingSubmission = async (sid: string) => {
+      if (pendingStorageScope) await pendingJournal.remove(pendingStorageScope, sid, clientTurnId).catch(() => undefined);
+      if (inSourceScope() && pendingClientTurn.current?.id === clientTurnId) pendingClientTurn.current = null;
+      if (inSourceScope()) {
+        setPendingRecovery(current => current?.id === clientTurnId ? null : current);
+        setAttachError(current => current === "浏览器无法持久保存恢复记录；本次仅在当前页面保留，请勿刷新。" ? null : current);
+      }
+    };
     let deliveryAttempted = false;
     const resolveSubmissionFailure = async (error: unknown, sessionId: string) => {
       if (!inSourceScope() || deletedSessionIds.has(sessionId)) return "retired";
@@ -5494,48 +5620,172 @@ export function ChatPanel({
         rejected: error instanceof HttpResponseError && [401, 403, 404, 409, 413, 415, 422, 429].includes(error.status),
       });
     };
-    if (busy) {
-      // A turn is already running. Steering hands the message to it now, and
-      // the delivered text comes back inline on the assistant message. Parking
-      // (no steering support, or the queue chord) instead runs it when the turn
-      // ends: the server enqueues it and echoes chat.queued to render the chip
-      // — no optimistic transcript bubble, since it hasn't run yet.
-      if (!activeId || !activeHarness?.agentReady) {
+    try {
+      if (pendingStorageScope && sourceSessionId) endPendingFlight = beginPendingFlight(pendingKey(pendingStorageScope, sourceSessionId), clientTurnId);
+      if (busy) {
+        // A turn is already running. Steering hands the message to it now, and
+        // the delivered text comes back inline on the assistant message. Parking
+        // (no steering support, or the queue chord) instead runs it when the turn
+        // ends: the server enqueues it and echoes chat.queued to render the chip
+        // — no optimistic transcript bubble, since it hasn't run yet.
+        if (!activeId || !activeHarness?.agentReady) {
+          clearFailedPlanCommand();
+          return;
+        }
+        const sid = activeId;
+        setDraft("");
+        setAttachments([]);
+        setAnnotations([]);
+        setAttachError(null);
+        setImageRefusedFor(null);
+        // Always send the composer's settings, steer or not: a permission or
+        // plan change persists itself before this message, so the server's
+        // comparison against the *running* turn is the only thing that catches
+        // it — and a mismatch parks the message, which also persists the change.
+        const turnOpts = retryWire?.options ?? (effective
+          ? {
+            model: effective.model,
+            serviceTier: effective.serviceTier,
+            permissionMode: effective.permissionMode,
+            // The composer's plan state, not just an unpersisted toggle: a
+            // toggle that already persisted would otherwise reach the server
+            // as "no change" and steer into a turn still running without it.
+            planMode:
+              opts?.planActivation === "command"
+                ? (independentPlanMode ?? openSession?.planMode)
+                : independentPlanMode,
+            reasoningLevel: effective.reasoningLevel,
+          }
+          : {});
+        if (inSourceScope()) setSessionOverride({});
+        try {
+          const images: ChatImageAttachment[] = (retryWire?.images ?? await uploadSendMaterials(pending));
+          const sendBusy = async () => {
+            await savePendingSubmission(sid, images, turnOpts);
+            if (!isCurrentScope(sessionsOptions.queryKey) || deletedSessionIds.has(sid)) throw new DOMException("Workspace changed", "AbortError");
+            deliveryAttempted = true;
+            return sendChatMessage(
+              sid,
+              text,
+              turnOpts,
+              images.length ? images : undefined,
+              wireAnnotations,
+              clientTurnId,
+              submissionMode,
+            );
+          };
+          const response = await queueSessionMutation(sendBusy);
+          if (response.turn?.existing) await reseedSession(sid);
+          if (inSourceScope()) setRecoveryOverrides(EMPTY_RECOVERY_OVERRIDES);
+          await finishPendingSubmission(sid!);
+        } catch (error) {
+          const resolution = await resolveSubmissionFailure(error, sid);
+          if (resolution === "retired" || !inSourceScope() || deletedSessionIds.has(sid)) return;
+          if (resolution === "accepted") {
+            await finishPendingSubmission(sid!);
+            await reseedSession(sid);
+            return;
+          }
+          if (resolution === "rejected") await finishPendingSubmission(sid);
+          if (error instanceof PendingConflictError) setPendingRefresh(value => value + 1);
+          if (resolution === "unknown" && pendingSaved) setPendingRecovery(pendingSaved);
+          setAttachError(resolution === "unknown" ? "发送结果尚未确认，请先检查对话与排队消息，避免重复提交。" : error instanceof Error ? error.message : String(error));
+          clearFailedPlanCommand();
+          restoreComposer();
+        }
+        return;
+      }
+      if (!activeHarness?.agentReady) {
         clearFailedPlanCommand();
         return;
       }
-      const sid = activeId;
-      setDraft("");
-      setAttachments([]);
-      setAnnotations([]);
-      setAttachError(null);
-      setImageRefusedFor(null);
-      // Always send the composer's settings, steer or not: a permission or
-      // plan change persists itself before this message, so the server's
-      // comparison against the *running* turn is the only thing that catches
-      // it — and a mismatch parks the message, which also persists the change.
-      const turnOpts = effective
-        ? {
-          model: effective.model,
-          serviceTier: effective.serviceTier,
-          permissionMode: effective.permissionMode,
-          // The composer's plan state, not just an unpersisted toggle: a
-          // toggle that already persisted would otherwise reach the server
-          // as "no change" and steer into a turn still running without it.
-          planMode:
-            opts?.planActivation === "command"
-              ? (independentPlanMode ?? openSession?.planMode)
-              : independentPlanMode,
-          reasoningLevel: effective.reasoningLevel,
-        }
-        : {};
-      if (inSourceScope()) setSessionOverride({});
+      // `composerSelection` already resolves to the open session's settings (+ any
+      // unsent tweak) or, for a new session, the global preference.
+      if (!effective) {
+        clearFailedPlanCommand();
+        return;
+      }
+      let sid = activeId;
       try {
-        const images: ChatImageAttachment[] = await uploadSendMaterials(pending);
-        const sendBusy = () => {
+        // Clear before the first await — once the scope can move, a stash
+        // cleanup must never see the sent text still in the composer. Failure
+        // paths below restore it via restoreComposer().
+        setDraft((current) => current === draft ? "" : current);
+        setAttachments((current) => current === pending ? [] : current);
+        setAnnotations((current) => (current === pendingAnnotations ? [] : current));
+        setAttachError(null);
+        setImageRefusedFor(null);
+        preparingSend.current = true;
+        try {
+          if (!sid) {
+            const session = await openNewSession(effective, independentPlanMode, text);
+            sid = session.id;
+            sourceSessionId = session.id;
+            if (pendingClientTurn.current?.id === clientTurnId) {
+              pendingClientTurn.current.signature = signatureFor(session.id);
+              pendingClientTurn.current.sessionId = session.id;
+            }
+          }
+          if (!isCurrentScope(sessionsOptions.queryKey)) return;
+          const historySid = sid;
+          const history = getChatMessagesQuery(historySid);
+          let cancelledHistory = false;
+          for (;;) {
+            if (!isCurrentScope(sessionsOptions.queryKey) || deletedSessionIds.has(historySid)) return;
+            try {
+              // Join pending repair; a cancelled repair's cached baseline is not final.
+              await queryClient.fetchQuery({
+                ...history,
+                ...(cancelledHistory || queryClient.getQueryState(history.queryKey)?.fetchStatus === "fetching" ? { staleTime: 0 } : {}),
+              });
+              break;
+            } catch (cause) {
+              if (!(cause instanceof CancelledError)) throw cause;
+              if (!isCurrentScope(sessionsOptions.queryKey) || deletedSessionIds.has(historySid)) return;
+              cancelledHistory = true;
+              // Yield so repeated reconnect cancellation cannot starve scope retirement.
+              await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            }
+          }
+        } finally {
+          preparingSend.current = false;
+        }
+        if (!isCurrentScope(sessionsOptions.queryKey) || deletedSessionIds.has(sid)) return;
+        dispatch({
+          type: "optimisticUser",
+          sessionId: sid,
+          text: text || m.chat_asked_about_selection(),
+          attachments: pending.map((a) => ({ url: a.file ? "" : a.dataUrl, mediaType: a.mediaType, name: a.name })),
+          annotations: pendingAnnotations,
+        });
+        dispatch({ type: "busy", sessionId: sid, busy: true });
+        if (inSourceScope()) pinTranscriptToBottom();
+        // The session being sent to is never archived after this turn (new ones
+        // start active; existing ones are unarchived server-side by activity) —
+        // leave the Archived-only view so its row stays visible.
+        if (inSourceScope() && sessionFilter === "archived") setSessionFilter("active");
+        // `effective.harness` is always the target session's harness (locked once
+        // it exists), so these overrides are always valid — the backend persists
+        // them as the session's sticky settings. Clear the unsent tweak now.
+        const turnOpts = retryWire?.options ?? (effective
+          ? {
+            model: effective.model,
+            serviceTier: effective.serviceTier,
+            permissionMode: effective.permissionMode,
+            planMode: independentPlanMode,
+            reasoningLevel: effective.reasoningLevel,
+          }
+          : {});
+        if (inSourceScope()) setSessionOverride({});
+        const images: ChatImageAttachment[] = (retryWire?.images ?? await uploadSendMaterials(pending));
+        const targetSessionId = sid;
+        if (!targetSessionId) throw new Error(m.chat_session_not_created());
+        const sendTurn = async () => {
+          await savePendingSubmission(targetSessionId, images, turnOpts);
+          if (!isCurrentScope(sessionsOptions.queryKey) || deletedSessionIds.has(targetSessionId)) throw new DOMException("Workspace changed", "AbortError");
           deliveryAttempted = true;
           return sendChatMessage(
-            sid,
+            targetSessionId,
             text,
             turnOpts,
             images.length ? images : undefined,
@@ -5544,151 +5794,40 @@ export function ChatPanel({
             submissionMode,
           );
         };
-        const response = await queueSessionMutation(sendBusy);
-        if (response.turn?.existing) await reseedSession(sid);
+        const response = await queueSessionMutation(sendTurn);
+        if (response.turn?.existing) await reseedSession(targetSessionId);
         if (inSourceScope()) setRecoveryOverrides(EMPTY_RECOVERY_OVERRIDES);
-        if (pendingClientTurn.current?.id === clientTurnId) pendingClientTurn.current = null;
-      } catch (error) {
-        const resolution = await resolveSubmissionFailure(error, sid);
-        if (resolution === "retired" || !inSourceScope() || deletedSessionIds.has(sid)) return;
+        await finishPendingSubmission(sid!);
+      } catch (err) {
+        if (!isCurrentScope(sessionsOptions.queryKey)) return;
+        const resolution = sid ? await resolveSubmissionFailure(err, sid) : "rejected";
+        if (resolution === "retired" || !inSourceScope() || (sid && deletedSessionIds.has(sid))) return;
         if (resolution === "accepted") {
-          if (pendingClientTurn.current?.id === clientTurnId) pendingClientTurn.current = null;
+          await finishPendingSubmission(sid!);
+          await reseedSession(sid!);
+          return;
+        }
+        if (resolution === "rejected" && sid) await finishPendingSubmission(sid);
+        if (err instanceof PendingConflictError) setPendingRefresh(value => value + 1);
+        restoreComposer();
+        clearFailedPlanCommand();
+        if (!sid) return;
+        if (resolution === "unknown") {
+          if (pendingSaved) setPendingRecovery(pendingSaved);
+          // Keep the request identity and the restored draft; busy belongs to a session,
+          // not necessarily this submission. Reconciliation may also refresh that state.
+          if (inSourceScope()) setAttachError("发送结果尚未确认，请检查对话与排队消息后再重试。");
           await reseedSession(sid);
           return;
         }
-        setAttachError(resolution === "unknown" ? "发送结果尚未确认，请先检查对话与排队消息，避免重复提交。" : error instanceof Error ? error.message : String(error));
-        clearFailedPlanCommand();
-        restoreComposer();
-      }
-      return;
-    }
-    if (!activeHarness?.agentReady) {
-      clearFailedPlanCommand();
-      return;
-    }
-    // `composerSelection` already resolves to the open session's settings (+ any
-    // unsent tweak) or, for a new session, the global preference.
-    if (!effective) {
-      clearFailedPlanCommand();
-      return;
-    }
-    let sid = activeId;
-    try {
-      // Clear before the first await — once the scope can move, a stash
-      // cleanup must never see the sent text still in the composer. Failure
-      // paths below restore it via restoreComposer().
-      setDraft((current) => current === draft ? "" : current);
-      setAttachments((current) => current === pending ? [] : current);
-      setAnnotations((current) => (current === pendingAnnotations ? [] : current));
-      setAttachError(null);
-      setImageRefusedFor(null);
-      preparingSend.current = true;
-      try {
-        if (!sid) {
-          const session = await openNewSession(effective, independentPlanMode, text);
-          sid = session.id;
-          sourceSessionId = session.id;
-          if (pendingClientTurn.current?.id === clientTurnId) {
-            pendingClientTurn.current.signature = signatureFor(session.id);
-            pendingClientTurn.current.sessionId = session.id;
-          }
-        }
-        if (!isCurrentScope(sessionsOptions.queryKey)) return;
-        const historySid = sid;
-        const history = getChatMessagesQuery(historySid);
-        let cancelledHistory = false;
-        for (;;) {
-          if (!isCurrentScope(sessionsOptions.queryKey) || deletedSessionIds.has(historySid)) return;
-          try {
-            // Join pending repair; a cancelled repair's cached baseline is not final.
-            await queryClient.fetchQuery({
-              ...history,
-              ...(cancelledHistory || queryClient.getQueryState(history.queryKey)?.fetchStatus === "fetching" ? { staleTime: 0 } : {}),
-            });
-            break;
-          } catch (cause) {
-            if (!(cause instanceof CancelledError)) throw cause;
-            if (!isCurrentScope(sessionsOptions.queryKey) || deletedSessionIds.has(historySid)) return;
-            cancelledHistory = true;
-            // Yield so repeated reconnect cancellation cannot starve scope retirement.
-            await new Promise<void>((resolve) => setTimeout(resolve, 0));
-          }
-        }
-      } finally {
-        preparingSend.current = false;
-      }
-      if (!isCurrentScope(sessionsOptions.queryKey) || deletedSessionIds.has(sid)) return;
-      dispatch({
-        type: "optimisticUser",
-        sessionId: sid,
-        text: text || m.chat_asked_about_selection(),
-        attachments: pending.map((a) => ({ url: a.file ? "" : a.dataUrl, mediaType: a.mediaType, name: a.name })),
-        annotations: pendingAnnotations,
-      });
-      dispatch({ type: "busy", sessionId: sid, busy: true });
-      if (inSourceScope()) pinTranscriptToBottom();
-      // The session being sent to is never archived after this turn (new ones
-      // start active; existing ones are unarchived server-side by activity) —
-      // leave the Archived-only view so its row stays visible.
-      if (inSourceScope() && sessionFilter === "archived") setSessionFilter("active");
-      // `effective.harness` is always the target session's harness (locked once
-      // it exists), so these overrides are always valid — the backend persists
-      // them as the session's sticky settings. Clear the unsent tweak now.
-      const turnOpts = effective
-        ? {
-          model: effective.model,
-          serviceTier: effective.serviceTier,
-          permissionMode: effective.permissionMode,
-          planMode: independentPlanMode,
-          reasoningLevel: effective.reasoningLevel,
-        }
-        : {};
-      if (inSourceScope()) setSessionOverride({});
-      const images: ChatImageAttachment[] = await uploadSendMaterials(pending);
-      const targetSessionId = sid;
-      if (!targetSessionId) throw new Error(m.chat_session_not_created());
-      const sendTurn = () => {
-        deliveryAttempted = true;
-        return sendChatMessage(
-          targetSessionId,
-          text,
-          turnOpts,
-          images.length ? images : undefined,
-          wireAnnotations,
-          clientTurnId,
-          submissionMode,
-        );
-      };
-      const response = await queueSessionMutation(sendTurn);
-      if (response.turn?.existing) await reseedSession(targetSessionId);
-      if (inSourceScope()) setRecoveryOverrides(EMPTY_RECOVERY_OVERRIDES);
-      if (pendingClientTurn.current?.id === clientTurnId) pendingClientTurn.current = null;
-    } catch (err) {
-      if (!isCurrentScope(sessionsOptions.queryKey)) return;
-      const resolution = sid ? await resolveSubmissionFailure(err, sid) : "rejected";
-      if (resolution === "retired" || !inSourceScope() || (sid && deletedSessionIds.has(sid))) return;
-      if (resolution === "accepted") {
-        if (pendingClientTurn.current?.id === clientTurnId) pendingClientTurn.current = null;
-        await reseedSession(sid!);
-        return;
-      }
-      restoreComposer();
-      clearFailedPlanCommand();
-      if (!sid) return;
-      if (resolution === "unknown") {
-        // Keep the request identity and the restored draft; busy belongs to a session,
-        // not necessarily this submission. Reconciliation may also refresh that state.
-        if (inSourceScope()) setAttachError("发送结果尚未确认，请检查对话与排队消息后再重试。");
+        const msg = err instanceof Error ? err.message : String(err);
+        // An explicit rejection may belong to a session running somebody else's turn.
+        // Refresh its actual state rather than clearing busy on behalf of this request.
         await reseedSession(sid);
-        return;
+        if (!inSourceScope() || deletedSessionIds.has(sid)) return;
+        dispatch({ type: "localError", sessionId: sid, text: m.chat_message_not_sent({ error: ltr(msg) }) });
       }
-      const msg = err instanceof Error ? err.message : String(err);
-      // An explicit rejection may belong to a session running somebody else's turn.
-      // Refresh its actual state rather than clearing busy on behalf of this request.
-      await reseedSession(sid);
-      if (!inSourceScope() || deletedSessionIds.has(sid)) return;
-      dispatch({ type: "localError", sessionId: sid, text: m.chat_message_not_sent({ error: ltr(msg) }) });
-    }
+    } finally { endPendingFlight?.(); }
   }
 
   /** Create the session a first message (or `!` command) lands in and open it. */
@@ -5947,6 +6086,7 @@ export function ChatPanel({
    * and the cached transcript. Used on delete (ours or another dashboard's). */
   function forgetSession(sessionId: string) {
     removeCachedSession(sessionId);
+    if (pendingStorageScope) void pendingJournal.read(pendingStorageScope, sessionId).then(row => row && pendingJournal.remove(pendingStorageScope, sessionId, row.id)).catch(() => undefined);
     composerStashRef.current.delete(sessionId);
     if (prefillScopeRef.current === sessionId) prefillScopeRef.current = null;
     if (composerScopeRef.current.projectId === projectId
@@ -6775,6 +6915,13 @@ export function ChatPanel({
                 {imageInputError ?? attachError}
               </div>
             )}
+            {pendingLoading && <div className="px-3 pt-2 text-sm text-subtext" role="status">正在核实待确认请求…</div>}
+            {pendingRecovery?.sessionId === activeId && pendingRecovery.scope === pendingStorageScope && <div className="flex flex-wrap items-center gap-2 px-3 pt-2 text-sm text-subtext" role="status">
+              <span>上次发送尚未确认，重试将保留原请求身份。放弃记录不会撤回已发送的请求。</span>
+              <button type="button" className="underline" disabled={pendingLoading || hasPendingFlight(pendingRecovery.key)} onClick={() => setPendingRefresh(value => value + 1)}>核实发送结果</button>
+              <button type="button" className="underline" disabled={pendingLoading || hasPendingFlight(pendingRecovery.key)} onClick={restorePendingRecovery}>恢复上次草稿与设置</button>
+              <button type="button" className="underline" disabled={pendingLoading || hasPendingFlight(pendingRecovery.key)} onClick={() => void discardPendingRecovery()}>仅放弃本地记录</button>
+            </div>}
             {settingsError && (
               <div className="composer-settings-error pt-1.5 px-3 pb-0 text-sm text-accent-red" role="alert">
                 {settingsError}

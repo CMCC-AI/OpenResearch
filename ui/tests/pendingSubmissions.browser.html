@@ -1,0 +1,38 @@
+<!doctype html><html><meta charset="utf-8"><title>Pending recovery smoke</title><body><pre id="result">Running IndexedDB recovery checks…</pre><script type="module">
+import {createPendingJournal,indexedPendingStorage,pendingOwner,pendingScope,pendingKey,revokePendingOwner} from '/src/pendingSubmissions.ts';
+const output=document.querySelector('#result');
+const marker='pending-smoke:'+location.pathname;
+const owner=sessionStorage.getItem(marker) || pendingOwner('smoke-account',crypto.randomUUID());
+const scope=pendingScope(owner,'/smoke','test-runtime','test-project');
+const journal=createPendingJournal(indexedPendingStorage);
+const content=new Uint8Array(6*1024*1024);content[0]=17;content[content.length-1]=93;
+const file=new File([content],'folder-report.txt',{type:'text/plain',lastModified:123});
+const row={owner,scope,key:pendingKey(scope,'test-session'),sessionId:'test-session',id:'first',mode:'steer',signature:JSON.stringify({sessionId:'test-session',workspace:['workspace',1],text:'original',settings:{model:null,planMode:false}}),composer:{draft:'original',workMode:'team',attachments:[{file,dataUrl:'',mediaType:'text/plain',name:'folder/subfolder/report.txt',size:file.size}],annotations:[{id:'annotation',text:'quote'}]},wire:{images:[{mediaType:'text/plain',dataBase64:'',materialId:'original-material'}],options:{model:null,planMode:false},annotations:[{text:'quote'}]}};
+const checks=[]; const check=(condition,message)=>{if(!condition)throw new Error(message);checks.push(message)};
+try {
+ if(!sessionStorage.getItem(marker)){await journal.save(row);sessionStorage.setItem(marker,owner);location.reload();await new Promise(()=>{});}
+ const reloaded=await createPendingJournal(indexedPendingStorage).read(scope,row.sessionId);
+ check(reloaded.composer.attachments[0].file instanceof File,'File survives a full page reload and native IndexedDB reopen');
+ const bytes=new Uint8Array(await reloaded.composer.attachments[0].file.arrayBuffer());
+ check(bytes.length===6*1024*1024 && bytes[0]===17 && bytes[bytes.length-1]===93 && reloaded.composer.attachments[0].file.lastModified===123,'6 MiB file bytes and metadata survive');
+ check(reloaded.composer.attachments[0].name==='folder/subfolder/report.txt','folder relative paths survive refresh');
+ check(reloaded.wire.images[0].materialId==='original-material','registered material identity survives');
+ await journal.remove(scope,row.sessionId,'late-old-id');
+ check((await journal.read(scope,row.sessionId)).id==='first','late result cannot remove current request');
+ await journal.remove(scope,row.sessionId,'first');
+ const race=await Promise.allSettled([journal.save({...row,id:'A'}),journal.save({...row,id:'B'})]);
+ check(race.filter(r=>r.status==='fulfilled').length===1 && race.filter(r=>r.status==='rejected').length===1,'competing tabs cannot overwrite an unresolved request');
+ const winner=await journal.read(scope,row.sessionId);
+ await journal.remove(scope,row.sessionId,winner.id);
+ await indexedPendingStorage.put({...row,id:'malformed',signature:'{'});
+ let invalid=false;try{await journal.read(scope,row.sessionId)}catch{invalid=true}
+ check(invalid,'malformed record is reported and never restored');
+ await journal.save({...row,id:'valid'});
+ check((await journal.read(scope,row.sessionId)).id==='valid','malformed storage does not permanently block a new request');
+ await revokePendingOwner(owner);
+ check(await journal.read(scope,row.sessionId)===null,'logout clears pending files and metadata');
+ let rejected=false;try {await journal.save({...row,id:'late-after-logout'})}catch{rejected=true}
+ check(rejected,'late writes cannot recreate a logged-out account record');
+ output.textContent='PASS '+checks.length+' native IndexedDB checks\n'+checks.join('\n');
+}catch(error){output.textContent='FAIL '+error.stack}finally{await indexedPendingStorage.clearOwner(owner).catch(()=>{});sessionStorage.removeItem(marker)}
+</script></body></html>

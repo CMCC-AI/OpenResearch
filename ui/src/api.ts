@@ -2180,7 +2180,7 @@ export const chatAttachmentUrl = (name: string) =>
 export const getChatSubmission = (sessionId: string, clientTurnId: string, signal?: AbortSignal) =>
   projectRequest(`/api/chat/sessions/${encodeURIComponent(sessionId)}/submissions/${encodeURIComponent(clientTurnId)}`, { signal, cache: "no-store" }).then(response => json<{
     sessionId: string; clientTurnId: string;
-    submission: { kind: "turn" | "queued"; id: string } | null;
+    submission: { kind: "turn" | "queued" | "steer"; id: string } | null;
   }>(response));
 
 export const sendChatMessage = (

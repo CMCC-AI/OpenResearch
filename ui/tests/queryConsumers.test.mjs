@@ -13,12 +13,13 @@ function evaluate(code, bindings) {
 function declaration(file, name) {
   let found;
   function visit(node) {
-    if (ts.isVariableDeclaration(node) && node.name.getText(file) === name) found = node;
+    if ((ts.isVariableDeclaration(node) && node.name.getText(file) === name)
+      || (ts.isFunctionDeclaration(node) && node.name?.text === name)) found = node;
     ts.forEachChild(node, visit);
   }
   visit(file);
   assert.ok(found, name);
-  return found.initializer.getText(file);
+  return found.initializer?.getText(file) ?? found.getText(file);
 }
 
 function sendPreparation() {
@@ -29,7 +30,12 @@ function sendPreparation() {
     ts.forEachChild(node, visit);
   }
   visit(file);
-  const turn = send.body.statements.find((node) => ts.isTryStatement(node) && node.tryBlock.getText(file).includes('type: "optimisticUser"'));
+  let turn;
+  function findTurn(node) {
+    if (ts.isTryStatement(node) && node.tryBlock.statements.some(statement => statement.getText(file).includes('type: "optimisticUser"') && !ts.isTryStatement(statement) && !ts.isIfStatement(statement))) turn = node;
+    ts.forEachChild(node, findTurn);
+  }
+  findTurn(send);
   const statements = turn.tryBlock.statements;
   const optimisticIndex = statements.findIndex((node) => node.getText(file).includes('type: "optimisticUser"'));
   const prefix = statements.slice(0, optimisticIndex + 1).map((node) => node.getText(file)).join("\n");
@@ -418,7 +424,9 @@ function sendFunction() {
 
 test("lost send responses use request receipts rather than another turn's busy state", async () => {
   const { file, send } = sendFunction();
-  const block = send.body.statements.find(node => ts.isTryStatement(node) && node.tryBlock.getText(file).includes('type: "optimisticUser"'));
+  let block;
+  function findBlock(node) { if (ts.isTryStatement(node) && node.catchClause?.getText(file).includes('dispatch({ type: "localError"')) block = node; ts.forEachChild(node, findBlock); }
+  findBlock(send);
   const code = block.catchClause.block.statements.map(node => node.getText(file)).join("\n");
   for (const resolution of ["accepted", "unknown", "rejected", "retired", "late-retired"]) {
     let restored = 0, reseeded = 0;
@@ -427,6 +435,7 @@ test("lost send responses use request receipts rather than another turn's busy s
     await evaluate(`return (async () => { ${code} })()`, {
       sid: "s", err: new Error("offline"), sessionsOptions: { queryKey: [] }, isCurrentScope: () => true,
       resolveSubmissionFailure: async () => resolution === "late-retired" ? "accepted" : resolution, pendingClientTurn: pending, clientTurnId: "request",
+      finishPendingSubmission: async () => { pending.current = null; }, PendingConflictError: class extends Error {}, pendingSaved: null, setPendingRefresh: () => {},
       restoreComposer: () => { restored++; }, clearFailedPlanCommand: () => {},
       reseedSession: async () => { reseeded++; }, inSourceScope: () => resolution !== "late-retired",
       setAttachError: warning => warnings.push(warning), dispatch: action => actions.push(action),
@@ -548,10 +557,191 @@ test("retry transport retains the captured mode and request ID on both sending b
   for (const callback of ["sendTurn", "sendBusy"]) for (const mode of [undefined, "steer"]) {
     let sent;
     const send = evaluate(`return ${declaration(file, callback)}`, {
-      deliveryAttempted: false, sendChatMessage: async (...args) => { sent = args; },
+      deliveryAttempted: false, savePendingSubmission: async () => {}, isCurrentScope: () => true, sessionsOptions: { queryKey: [] }, deletedSessionIds: new Set(), sendChatMessage: async (...args) => { sent = args; },
       targetSessionId: "s", sid: "s", text: "payload", turnOpts: {}, images: [], wireAnnotations: [], clientTurnId: "original", submissionMode: mode,
     });
     await send();
     assert.equal(sent[0], "s"); assert.equal(sent[5], "original"); assert.equal(sent[6], mode);
+  }
+});
+
+function pendingHydrationEffect() {
+  const file = source("ChatPanel.tsx"); let effect;
+  function visit(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(file) === "useEffect"
+      && node.arguments[1]?.getText(file).includes("pendingStorageScope")
+      && node.arguments[0].getText(file).includes("pendingJournal.read")) effect = node.arguments[0];
+    ts.forEachChild(node, visit);
+  }
+  visit(file); return effect.getText(file);
+}
+function savedPending() {
+  return { id: "original", sessionId: "s", mode: "steer", scope: "scope", owner: "actor", key: JSON.stringify(["scope", "s"]),
+    signature: JSON.stringify({ sessionId: "s", workspace: ["workspace", 1], text: "original", settings: { model: null, planMode: false } }),
+    composer: { draft: "original", attachments: [], annotations: [{ id: "quote", text: "source" }], workMode: "team" },
+    wire: { images: [{ materialId: "original-material", dataBase64: "", mediaType: "application/pdf" }], options: { model: null }, annotations: [{ text: "source" }] } };
+}
+async function hydrationHarness({ record = savedPending(), initial, receipt = null, lookup } = {}) {
+  const helpers = await import("../src/pendingSubmissions.ts");
+  const { reconcileSubmission } = await import("../src/chatSubmission.ts");
+  const composer = initial ?? { draft: "", attachments: [], annotations: [] };
+  const state = { draft: composer.draft, attachments: composer.attachments, annotations: composer.annotations, loading: null, recovery: null, removed: [], reseeded: 0, selection: null };
+  const live = { current: composer }, pending = { current: { id: "original", sessionId: "s" } };
+  const bindings = { activeId: "s", mainView: "chat", pendingStorageScope: "scope", sessionsOptions: { queryKey: ["workspace", 4] },
+    composerLiveRef: live, pendingClientTurn: pending, planModeOverrideRef: { current: null },
+    isCurrentScope: () => true, deletedSessionIds: new Set(), ...helpers, hasPendingFlight: () => false,
+    pendingJournal: { read: async () => record, remove: async (...args) => state.removed.push(args) },
+    reconcileSubmission, getChatSubmission: lookup ?? (async () => ({ sessionId: "s", clientTurnId: "original", submission: receipt })),
+    setPendingRecovery: value => { state.recovery = value; }, setPendingLoading: value => { state.loading = value; },
+    setDraft: value => { state.draft = value; }, setAttachments: value => { state.attachments = value; }, setAnnotations: value => { state.annotations = value; },
+    setResearchMode: value => { state.workMode = value; }, setSessionOverride: value => { state.selection = value; }, setPlanModeOverride: () => {},
+    setAttachError: value => { state.error = value; }, reseedSession: async () => { state.reseeded++; },
+  };
+  return { state, live, pending, run: extra => evaluate(`return (${pendingHydrationEffect()})();`, { ...bindings, ...extra }) };
+}
+
+test("pending hydration restores an unknown request without sending or overwriting a newer draft", async () => {
+  for (const draft of ["", "new unsent work"]) {
+    const harness = await hydrationHarness({ initial: { draft, attachments: [], annotations: [] } });
+    const cleanup = harness.run(); await until(() => harness.state.loading === false);
+    assert.equal(harness.state.draft, draft || "original");
+    assert.equal(harness.pending.current.id, "original"); assert.equal(harness.pending.current.mode, "steer");
+    assert.equal(JSON.parse(harness.pending.current.signature).workspace[1], 4);
+    assert.equal(harness.state.selection, null, "background lookup must not change current model settings");
+    assert.equal(harness.state.removed.length, 0); cleanup();
+  }
+});
+
+test("confirmed registration clears only the unchanged recovered draft and keeps edits made during lookup", async () => {
+  for (const edited of [false, true]) {
+    let release;
+    const record = savedPending();
+    const harness = await hydrationHarness({ initial: record.composer, lookup: () => new Promise(done => { release = done; }) });
+    const cleanup = harness.run(); await until(() => release);
+    if (edited) { harness.live.current = { draft: "new work", attachments: [], annotations: [] }; harness.state.draft = "new work"; }
+    release({ sessionId: "s", clientTurnId: "original", submission: { kind: "steer", id: "registered" } });
+    await until(() => harness.state.loading === false);
+    assert.equal(harness.state.draft, edited ? "new work" : "");
+    assert.equal(harness.live.current.draft, edited ? "new work" : "", "route cleanup must not resurrect a confirmed draft");
+    assert.equal(harness.pending.current, null); assert.equal(harness.state.reseeded, 1);
+    assert.deepEqual(harness.state.removed, [["scope", "s", "original"]]); cleanup();
+  }
+});
+
+test("retired hydration cannot restore another chat, and live local sends are not mistaken for unknown delivery", async () => {
+  let release;
+  const retired = await hydrationHarness({ lookup: () => new Promise(done => { release = done; }) });
+  const cleanup = retired.run(); await until(() => release); cleanup();
+  release({ sessionId: "s", clientTurnId: "original", submission: null });
+  await new Promise(done => setImmediate(done));
+  assert.equal(retired.state.draft, ""); assert.equal(retired.state.recovery, null);
+  let reads = 0;
+  const live = await hydrationHarness();
+  const stop = live.run({ hasPendingFlight: () => true, pendingJournal: { read: () => { reads++; } } });
+  assert.equal(reads, 0); assert.equal(live.state.loading, true); stop();
+});
+
+test("explicit recovery restores original settings but refuses to replace different unsent work", async () => {
+  const file = source("ChatPanel.tsx"), helpers = await import("../src/pendingSubmissions.ts");
+  for (const draft of ["original", "different work"]) {
+    const record = savedPending(), changes = [];
+    const restore = evaluate(`return ${declaration(file, "restorePendingRecovery")}`, {
+      pendingRecovery: record, pendingStorageScope: "scope", composerScopeRef: { current: { activeId: "s" } },
+      composerLiveRef: { current: { ...record.composer, draft } }, ...helpers,
+      setDraft: value => changes.push(["draft", value]), setAttachments: () => {}, setAnnotations: () => {}, setResearchMode: () => {},
+      setSessionOverride: value => changes.push(["settings", value]), setPlanModeOverride: value => changes.push(["plan", value]), planModeOverrideRef: { current: null },
+      setAttachError: value => changes.push(["warning", value]),
+    });
+    restore();
+    if (draft === "original") { assert.deepEqual(changes[1], ["settings", { model: null }]); assert.deepEqual(changes[2], ["plan", false]); }
+    else { assert.equal(changes.length, 1); assert.equal(changes[0][0], "warning"); }
+  }
+});
+
+test("both send branches wait for the recovery record and recheck runtime scope before transport", async () => {
+  const file = source("ChatPanel.tsx");
+  for (const callback of ["sendTurn", "sendBusy"]) for (const retired of [false, true]) {
+    let release, posted = 0;
+    const save = new Promise(done => { release = done; });
+    const send = evaluate(`return ${declaration(file, callback)}`, {
+      savePendingSubmission: () => save, deliveryAttempted: false, isCurrentScope: () => !retired,
+      sessionsOptions: { queryKey: [] }, deletedSessionIds: new Set(),
+      targetSessionId: "s", sid: "s", images: [], turnOpts: {}, text: "original", wireAnnotations: [], clientTurnId: "original", submissionMode: "steer",
+      sendChatMessage: async () => { posted++; },
+    });
+    const sending = send(); assert.equal(posted, 0); release();
+    if (retired) await assert.rejects(sending, error => error.name === "AbortError"); else await sending;
+    assert.equal(posted, retired ? 0 : 1);
+  }
+});
+
+test("recovering a slash Plan request reuses its wire text and does not toggle the command again", () => {
+  const { file, send } = sendFunction();
+  const sendSource = ts.createSourceFile("send.ts", send.getText(file), ts.ScriptTarget.Latest, true);
+  const row = savedPending(); row.composer.draft = "/plan investigate";
+  row.signature = JSON.stringify({ sessionId: "s", workspace: ["workspace", 1], text: "investigate", settings: { model: null, planMode: true } });
+  const result = evaluate(`
+    const replayingPending = ${declaration(sendSource, "replayingPending")};
+    const composerCommand = ${declaration(sendSource, "composerCommand")};
+    const independentPlanMode = ${declaration(sendSource, "independentPlanMode")};
+    const text = ${declaration(sendSource, "text")};
+    return { composerCommand, independentPlanMode, text };`, {
+      starter: undefined, pendingRecovery: row, activeId: "s", pendingStorageScope: "scope", composerLiveRef: { current: row.composer },
+      samePendingComposer: (a, b) => a === b,
+      recoveredSettings: signature => JSON.parse(signature).settings,
+      parseComposerCommand: () => assert.fail("a retry must not execute the local command again"),
+      effectiveCommandPlanMode: () => assert.fail("a retry must not toggle the current mode"),
+    });
+  assert.deepEqual(result, { composerCommand: null, independentPlanMode: true, text: "investigate" });
+});
+
+test("both transport preparations reuse registered material references and frozen options after reload", async () => {
+  const { file, send } = sendFunction(); const options = [], attachments = [];
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(file) === "turnOpts" && node.initializer.getText(file).includes("retryWire")) options.push(node.initializer.getText(file));
+    if (ts.isVariableDeclaration(node) && node.name.getText(file) === "images" && node.initializer?.getText(file).includes("retryWire")) attachments.push(node.initializer.getText(file));
+    ts.forEachChild(node, visit);
+  }
+  visit(send); assert.equal(options.length, 2); assert.equal(attachments.length, 2);
+  const wire = savedPending().wire;
+  for (const expression of options) assert.deepEqual(evaluate(`return ${expression}`, { retryWire: wire, effective: { model: "new-default" } }), wire.options);
+  for (const expression of attachments) {
+    const value = await evaluate(`return (async () => ${expression})()`, {
+      retryWire: wire, uploadSendMaterials: () => assert.fail("registered materials must not be uploaded again"), pending: [],
+    });
+    assert.equal(value[0].materialId, "original-material");
+  }
+});
+
+test("discarding a local record excludes live sends and cannot clear a newly selected chat", async () => {
+  const file = source("ChatPanel.tsx"), helpers = await import("../src/pendingSubmissions.ts");
+  for (const outcome of ["success", "retired", "storage-error"]) {
+    const row = savedPending(), pending = { current: { id: row.id } }, view = { current: { activeId: "s" } };
+    let release, recovery = row, warning;
+    const removal = new Promise((resolve, reject) => { release = () => outcome === "storage-error" ? reject(new Error("storage offline")) : resolve(); });
+    const discard = evaluate(`return ${declaration(file, "discardPendingRecovery")}`, {
+      ...helpers, pendingRecovery: row, pendingStorageScope: "scope", composerScopeRef: view, pendingClientTurn: pending,
+      pendingJournal: { remove: () => removal }, setPendingRecovery: value => { recovery = value; }, setAttachError: value => { warning = value; },
+    });
+    const deleting = discard();
+    assert.ok(helpers.hasPendingFlight(row.key));
+    assert.throws(() => helpers.beginPendingFlight(row.key, "new-send"), helpers.PendingConflictError);
+    if (outcome === "retired") view.current = { activeId: "other-chat" };
+    release(); await deleting;
+    assert.equal(helpers.hasPendingFlight(row.key), false);
+    if (outcome === "success") { assert.equal(recovery, null); assert.equal(pending.current, null); }
+    else { assert.equal(recovery, row); assert.equal(pending.current.id, row.id); }
+    if (outcome === "storage-error") assert.equal(warning, "storage offline");
+  }
+});
+
+
+test("non-chat views and unverified persistence scopes do not load conversation recovery records", async () => {
+  for (const boundary of [{ mainView: "files" }, { pendingStorageScope: null }, { activeId: null }]) {
+    const harness = await hydrationHarness();
+    harness.run({ ...boundary, pendingJournal: { read: () => assert.fail("inactive scope must not load pending records") } });
+    assert.equal(harness.state.loading, false);
+    assert.equal(harness.state.recovery, null);
+    assert.equal(harness.state.draft, "");
   }
 });
