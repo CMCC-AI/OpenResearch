@@ -253,6 +253,31 @@ pub(crate) fn auto_dispatch_ignoring_session(
 
 pub(crate) type PackageChecks = std::collections::HashMap<String, (u32, std::time::Instant)>;
 
+fn persist_package_check(
+    store: &Store,
+    study_id: &str,
+    version: u32,
+    gate: &str,
+    outcome: std::result::Result<String, String>,
+) -> Result<bool> {
+    store.research_update(study_id, |study| {
+        if study.status != "active" || study.plan()?.version != version {
+            return Ok(false);
+        }
+        match outcome {
+            Ok(scope) => {
+                study.delivery_error = None;
+                study.request_gate(gate, scope)?;
+            }
+            Err(error) => {
+                study.delivery_error = Some(error);
+                study.supersede_gate(gate)?;
+            }
+        }
+        Ok(true)
+    })
+}
+
 #[cfg(test)]
 pub(crate) fn reconcile_active_studies(store: &Store) -> Result<()> {
     reconcile_active_studies_with_checks(store, &mut PackageChecks::new())
@@ -281,27 +306,12 @@ pub(crate) fn reconcile_active_studies_with_checks(
                 continue;
             }
             let gate = crate::local::research::delivery_gate(updated.workflow_mode()).to_string();
-            match store.research_package_scope(&updated) {
-                Ok(scope) => {
-                    store.research_update(&updated.id, |s| {
-                        if s.status != "active" || s.plan()?.version != version {
-                            return Ok(());
-                        }
-                        s.delivery_error = None;
-                        s.request_gate(&gate, scope)
-                    })?;
-                }
-                Err(error) => {
-                    store.research_update(&updated.id, |s| {
-                        if s.status != "active" || s.plan()?.version != version {
-                            return Ok(());
-                        }
-                        s.delivery_error = Some(error.to_string());
-                        s.supersede_gate(&gate)
-                    })?;
-                }
+            let outcome = store
+                .research_package_scope(&updated)
+                .map_err(|error| error.to_string());
+            if persist_package_check(store, &updated.id, version, &gate, outcome)? {
+                checks.insert(updated.id.clone(), (version, std::time::Instant::now()));
             }
-            checks.insert(updated.id.clone(), (version, std::time::Instant::now()));
         }
     }
     Ok(())
@@ -329,19 +339,35 @@ pub(crate) fn on_research_spawn_finished(
     {
         return Ok(Some(ResearchWakeAction::RetireSilently));
     }
+    for run_id in &study.task(&task_id)?.run_ids {
+        let run = store
+            .get_run(run_id)?
+            .ok_or_else(|| anyhow!("研究 {study_id} 的 Run 记录缺失: {run_id}"))?;
+        if !crate::local::is_terminal(&run.status) {
+            return Err(anyhow!("研究任务仍有未结束的实验: {run_id}"));
+        }
+    }
     if !interrupted {
-        let _ = store.mark_chat_spawn_finished(session_id);
+        store.mark_chat_spawn_finished(session_id)?;
     }
     if study.task(&task_id)?.state == "running" {
         let summary = reply
             .clone()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| format!("已完成任务 {task_id}"));
-        let auto_finished = !interrupted
-            && !failed
-            && store
-                .research_auto_finish(&study_id, &task_id, summary)
-                .is_ok();
+        let auto_finished = if !interrupted && !failed {
+            match store.research_auto_finish(&study_id, &task_id, summary) {
+                Ok(()) => true,
+                // Missing/stale outputs can use the existing nudge flow. A
+                // storage failure must not consume a recovery attempt instead.
+                Err(error) if error.downcast_ref::<rusqlite::Error>().is_some() => {
+                    return Err(error)
+                }
+                Err(_) => false,
+            }
+        } else {
+            false
+        };
         if !auto_finished {
             let current = store.research_study(&study_id)?;
             let task = current.task(&task_id)?;
@@ -382,27 +408,24 @@ pub(crate) fn on_research_spawn_finished(
                         task_id, missing_desc
                     )
                 };
-                if store
-                    .research_nudge_task(&study_id, &task_id, session_id, nudge.clone())
-                    .is_ok()
-                {
-                    return Ok(Some(ResearchWakeAction::NudgeHelper(nudge)));
-                }
+                store.research_nudge_task(&study_id, &task_id, session_id, nudge.clone())?;
+                return Ok(Some(ResearchWakeAction::NudgeHelper(nudge)));
             }
-            if !interrupted
-                && attempts <= 1
-                && store.research_retry_task(&study_id, &task_id).is_ok()
-            {
+            if !interrupted && attempts <= 1 {
+                store.research_retry_task(&study_id, &task_id)?;
             } else {
                 let reason = reply
                     .filter(|s| !s.trim().is_empty())
                     .unwrap_or_else(|| "专家会话结束但未生成全部声明产物".into());
-                let _ = store.research_finish(&study_id, &task_id, false, reason);
+                store.research_finish(&study_id, &task_id, false, reason)?;
             }
         }
     }
     let dispatched = auto_dispatch_ignoring_session(store, &study_id, Some(session_id))?;
     study = store.research_study(&study_id)?;
+    if study.status != "active" || study.plan()?.version != version {
+        return Ok(Some(ResearchWakeAction::RetireSilently));
+    }
     let mut package_error = None;
     let mut valid_package_hash = None;
     if study
@@ -410,18 +433,21 @@ pub(crate) fn on_research_spawn_finished(
         .is_ok_and(|p| !p.tasks.is_empty() && p.tasks.iter().all(|t| t.state == "completed"))
     {
         let gate = crate::local::research::delivery_gate(study.workflow_mode()).to_string();
-        match store.research_package_scope(&study) {
-            Ok(scope) => {
-                valid_package_hash = Some(crate::store::research::digest(scope.as_bytes()));
-                let _ = store.research_update(&study_id, |s| s.request_gate(&gate, scope));
-                study = store.research_study(&study_id)?;
-            }
-            Err(err) => {
-                let _ = store.research_update(&study_id, |s| s.supersede_gate(&gate));
-                study = store.research_study(&study_id)?;
-                package_error = Some(err.to_string());
-            }
+        let outcome = store
+            .research_package_scope(&study)
+            .map_err(|error| error.to_string());
+        valid_package_hash = outcome
+            .as_ref()
+            .ok()
+            .map(|scope| crate::store::research::digest(scope.as_bytes()));
+        package_error = outcome.as_ref().err().cloned();
+        if !persist_package_check(store, &study_id, version, &gate, outcome)? {
+            return Ok(Some(ResearchWakeAction::RetireSilently));
         }
+        study = store.research_study(&study_id)?;
+    }
+    if study.status != "active" || study.plan()?.version != version {
+        return Ok(Some(ResearchWakeAction::RetireSilently));
     }
     let plan = study.plan()?;
     let any_running = plan.tasks.iter().any(|t| t.state == "running") || !dispatched.is_empty();

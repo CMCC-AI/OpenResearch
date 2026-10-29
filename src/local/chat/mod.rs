@@ -10525,51 +10525,71 @@ async fn process_chat_spawns_guarded(
         }
         let snapshot = spawn.clone();
         let (next_store, action) = spawn_store_stage(store, gate.clone(), move |s| {
-            if s.chat_turn_leased(&snapshot.session_id)?
-                || s.research_session_has_active_runs(&snapshot.session_id)?
-            {
-                return Ok(None);
-            }
-            if !snapshot.wake_parent || s.get_chat_session(&snapshot.parent_session_id)?.is_none() {
-                retire_spawn(s, &snapshot.session_id, ChatSpawnState::Running)?;
-                return Ok(None);
-            }
-            let interrupted = s
-                .get_chat_spawn(&snapshot.session_id)?
-                .is_some_and(|row| row.finished_at.is_none());
-            let (reply, failed) = match s
-                .get_chat_session(&snapshot.session_id)?
-                .map(|child| spawn_outcome(s, &child))
-                .transpose()?
-            {
-                Some(SpawnOutcome::Reply(text)) => (Some(text), false),
-                Some(SpawnOutcome::Failed(error)) => (Some(error), true),
-                Some(SpawnOutcome::Interrupted) => (None, true),
-                Some(SpawnOutcome::Silent) | None => (None, false),
-            };
-            let action = crate::commands::research_dispatch::on_research_spawn_finished(
-                s,
-                &snapshot.session_id,
-                interrupted,
-                reply,
-                failed,
-            )?;
-            if let Some(action) = action {
-                return Ok(Some(action));
-            }
-            match spawn_report_text(s, &snapshot, interrupted) {
-                Ok(text) => Ok(Some(
-                    crate::commands::research_dispatch::ResearchWakeAction::WakeLead(text),
-                )),
-                Err(error) => {
-                    eprintln!("orx up: could not summarize spawned agent: {error}");
-                    retire_spawn(s, &snapshot.session_id, ChatSpawnState::Running)?;
-                    Ok(None)
+            let result = (|| -> Result<_> {
+                if s.chat_turn_leased(&snapshot.session_id)?
+                    || s.research_session_has_active_runs(&snapshot.session_id)?
+                {
+                    return Ok(None);
                 }
-            }
+                if !snapshot.wake_parent
+                    || s.get_chat_session(&snapshot.parent_session_id)?.is_none()
+                {
+                    retire_spawn(s, &snapshot.session_id, ChatSpawnState::Running)?;
+                    return Ok(None);
+                }
+                let interrupted = s
+                    .get_chat_spawn(&snapshot.session_id)?
+                    .is_some_and(|row| row.finished_at.is_none());
+                let (reply, failed) = match s
+                    .get_chat_session(&snapshot.session_id)?
+                    .map(|child| spawn_outcome(s, &child))
+                    .transpose()?
+                {
+                    Some(SpawnOutcome::Reply(text)) => (Some(text), false),
+                    Some(SpawnOutcome::Failed(error)) => (Some(error), true),
+                    Some(SpawnOutcome::Interrupted) => (None, true),
+                    Some(SpawnOutcome::Silent) | None => (None, false),
+                };
+                let action = crate::commands::research_dispatch::on_research_spawn_finished(
+                    s,
+                    &snapshot.session_id,
+                    interrupted,
+                    reply,
+                    failed,
+                )?;
+                if let Some(action) = action {
+                    return Ok(Some(action));
+                }
+                match spawn_report_text(s, &snapshot, interrupted) {
+                    Ok(text) => Ok(Some(
+                        crate::commands::research_dispatch::ResearchWakeAction::WakeLead(text),
+                    )),
+                    Err(error) => {
+                        eprintln!("orx up: could not summarize spawned agent: {error}");
+                        retire_spawn(s, &snapshot.session_id, ChatSpawnState::Running)?;
+                        Ok(None)
+                    }
+                }
+            })();
+            Ok(result)
         })
         .await?;
         store = next_store;
+        let action = match action {
+            Ok(action) => action,
+            Err(error) => {
+                eprintln!(
+                    "orx up: could not settle spawned agent {}: {error:#}",
+                    spawn.session_id
+                );
+                // SQL failures can affect every row. Invalid research data is
+                // local to this helper: retain it and continue unrelated work.
+                if error.downcast_ref::<rusqlite::Error>().is_some() {
+                    return Err(error);
+                }
+                continue;
+            }
+        };
         match action {
             None => {}
             Some(crate::commands::research_dispatch::ResearchWakeAction::RetireSilently) => {
@@ -18336,3 +18356,6 @@ mod steering_receipt_tests;
 
 #[cfg(test)]
 mod idle_migration_tests;
+
+#[cfg(test)]
+mod research_settlement_tests;

@@ -559,8 +559,11 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()?
-            .ok_or_else(|| anyhow!("研究不存在"))?;
-        Ok(serde_json::from_str(&text)?)
+            .ok_or_else(|| anyhow!("研究不存在: {id}"))?;
+        serde_json::from_str(&text).map_err(|error| {
+            let context = format!("研究 {id} 数据解析失败：{error}");
+            crate::error::Error::new(error).context(context)
+        })
     }
     pub fn research_for_session(&self, session: &str) -> Result<Option<Study>> {
         let id: Option<String> = self.conn.query_row("WITH RECURSIVE lineage(id,depth) AS (SELECT ?1,0 UNION ALL SELECT COALESCE(s.side_parent_session_id,s.parent_session_id),l.depth+1 FROM chat_sessions s JOIN lineage l ON s.id=l.id WHERE l.depth<16 AND COALESCE(s.side_parent_session_id,s.parent_session_id) IS NOT NULL) SELECT id FROM research_studies WHERE session_id IN (SELECT id FROM lineage) UNION SELECT study_id FROM research_sessions WHERE session_id IN (SELECT id FROM lineage) LIMIT 1", [session], |r| r.get(0)).optional()?;
@@ -1123,37 +1126,30 @@ impl Store {
                 return Ok(());
             }
             if task.state == "running" {
-                let finished = task.session_id.as_deref().is_some_and(|sid| {
-                    !self.chat_turn_leased(sid).unwrap_or(true)
+                let finished = if let Some(sid) = task.session_id.as_deref() {
+                    !self.chat_turn_leased(sid)?
                         && self
                             .conn
                             .query_row(
                                 "SELECT EXISTS(SELECT 1 FROM chat_spawns WHERE session_id=?1 AND (state='done' OR finished_at IS NOT NULL))",
                                 [sid],
                                 |r| r.get::<_, bool>(0),
-                            )
-                            .unwrap_or(false)
-                });
+                            )?
+                } else {
+                    false
+                };
                 if !finished {
                     return Err(anyhow!("专家会话仍在执行中，请等待其结束后再重试"));
                 }
             }
-            for run_id in &task.run_ids {
-                if self
-                    .get_run(run_id)?
-                    .is_some_and(|r| !crate::local::is_terminal(&r.status))
-                {
-                    return Err(anyhow!("仍有运行中的实验，请先等待或取消"));
-                }
+            let runs = task.run_ids.iter().map(|run_id| {
+                self.get_run(run_id)?.ok_or_else(|| anyhow!("研究 {id} 的 Run 记录缺失: {run_id}"))
+            }).collect::<Result<Vec<_>>>()?;
+            if runs.iter().any(|run| !crate::local::is_terminal(&run.status)) {
+                return Err(anyhow!("仍有运行中的实验，请先等待或取消"));
             }
             let has_succeeded_run = task.spec.role == "as-experiment-operator"
-                && !task.run_ids.is_empty()
-                && task.run_ids.iter().all(|run_id| {
-                    self.get_run(run_id)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|r| r.status == "done")
-                });
+                && !runs.is_empty() && runs.iter().all(|run| run.status == "done");
             if !has_succeeded_run {
                 if let Ok(old_s) = task.run_gate_scope() {
                     let old_hash = digest(old_s.as_bytes());
@@ -1206,33 +1202,33 @@ impl Store {
         else {
             return Ok(false);
         };
-        let Ok(study) = self.research_study(&study_id) else {
-            return Ok(false);
-        };
-        if study.status != "active" || study.plan().map_or(true, |p| p.version != version) {
+        let study = self.research_study(&study_id)?;
+        if study.status != "active" {
             return Ok(false);
         }
-        let Ok(task) = study.task(&task_id) else {
+        if study.plan()?.version != version {
             return Ok(false);
-        };
+        }
+        let task = study.task(&task_id)?;
         if task.session_id.as_deref() != Some(session) {
             return Ok(false);
         }
         for run_id in &task.run_ids {
-            if let Some(run) = self.get_run(run_id)? {
-                if !crate::local::is_terminal(&run.status) {
-                    return Ok(true);
-                }
-                if run.status != "cancelled"
-                    && self.get_chat_session(session)?.is_some()
-                    && self.conn.query_row(
+            let run = self
+                .get_run(run_id)?
+                .ok_or_else(|| anyhow!("研究 {study_id} 的 Run 记录缺失: {run_id}"))?;
+            if !crate::local::is_terminal(&run.status) {
+                return Ok(true);
+            }
+            if run.status != "cancelled"
+                && self.get_chat_session(session)?.is_some()
+                && self.conn.query_row(
                         "SELECT EXISTS(SELECT 1 FROM chat_run_wakeups WHERE run_id=?1 AND chat_session_id=?2 AND state!='delivered')",
                         params![run_id, session],
                         |r| r.get::<_, bool>(0),
-                    )?
-                {
-                    return Ok(true);
-                }
+                )?
+            {
+                return Ok(true);
             }
         }
         Ok(false)
@@ -1556,7 +1552,10 @@ impl Store {
             .chain(study.claims.iter().filter_map(|c| c.input.run_id.as_ref()))
             .collect();
         ids.into_iter()
-            .map(|id| self.get_run(id)?.ok_or_else(|| anyhow!("研究 Run 丢失")))
+            .map(|id| {
+                self.get_run(id)?
+                    .ok_or_else(|| anyhow!("研究 Run 记录缺失: {id}"))
+            })
             .collect()
     }
 }
@@ -2941,4 +2940,5 @@ mod tests {
     include!("research_lifecycle_tests.rs");
     include!("research_file_tests.rs");
     include!("research_aggregate_tests.rs");
+    include!("research_settlement_tests.rs");
 }
