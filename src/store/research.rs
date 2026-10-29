@@ -13,6 +13,11 @@ use crate::error::{anyhow, Result};
 mod evidence;
 mod files;
 
+// Share the exact predicate so SQLite can use the partial index without
+// parsing ended studies. Malformed legacy JSON must not prevent index creation.
+const ACTIVE_STUDY_FILTER: &str =
+    "CASE WHEN json_valid(document) THEN json_extract(document, '$.status') = 'active' ELSE 0 END";
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskSpec {
@@ -539,6 +544,9 @@ pub(super) fn migrate(conn: &rusqlite::Connection) -> Result<()> {
         DELETE FROM research_sessions WHERE study_id IN (SELECT id FROM research_studies WHERE project_id=OLD.id);
         DELETE FROM research_experiments WHERE study_id IN (SELECT id FROM research_studies WHERE project_id=OLD.id);
         DELETE FROM research_studies WHERE project_id=OLD.id; END;")?;
+    conn.execute_batch(&format!(
+        "CREATE INDEX IF NOT EXISTS idx_research_studies_active ON research_studies(id) WHERE {ACTIVE_STUDY_FILTER}"
+    ))?;
     Ok(())
 }
 impl Store {
@@ -1269,7 +1277,9 @@ impl Store {
     }
 
     pub fn research_active_studies(&self) -> Result<Vec<Study>> {
-        let mut stmt = self.conn.prepare("SELECT document FROM research_studies")?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT document FROM research_studies WHERE {ACTIVE_STUDY_FILTER}"
+        ))?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         let mut studies = Vec::new();
         for row in rows {
