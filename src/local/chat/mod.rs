@@ -10168,12 +10168,16 @@ async fn process_run_monitoring_alerts(
         }
         let id = session_id.clone();
         let (next_store, claimed) = spawn_store_stage(store, gate.clone(), move |s| {
+            // No notification is sent until every flag is claimed. Roll back
+            // earlier flags if a later write fails, so unsent alerts can retry.
+            let tx = s.begin_immediate()?;
             let mut claimed = Vec::new();
             for wakeup in alerts {
                 if s.set_run_wakeup_monitoring_alerted(&wakeup.run.id, &id, true)? {
                     claimed.push(wakeup.run);
                 }
             }
+            tx.commit()?;
             Ok(claimed)
         })
         .await?;
@@ -13517,6 +13521,133 @@ with other project runs using `orx runs p1` and inspect the file located by `orx
 - run `run_y` of experiment `exp_1` (still **running**)\n\
 Run `orx exp status <expId>` for the reason and tell the user so they can fix it. orx wakes you \
 once it can see a run finish; until then each run keeps its current status."
+        );
+    }
+
+    #[test]
+    fn monitoring_alert_claim_failure_does_not_consume_unsent_alerts() {
+        const CHILD: &str = "ORX_TEST_MONITORING_CLAIM_ROLLBACK";
+        const TEST: &str = "local::chat::run_wakeup_tests::monitoring_alert_claim_failure_does_not_consume_unsent_alerts";
+        async fn check() {
+            let store = Store::open().unwrap();
+            session(&store, "owner");
+            for id in ["run_x", "run_y", "run_z"] {
+                let mut row = unmonitored_run();
+                row.id = id.into();
+                store.upsert_run(&row).unwrap();
+                store.register_run_wakeup(id, "owner").unwrap();
+            }
+            store
+                .set_run_wakeup_monitoring_alerted("run_z", "owner", true)
+                .unwrap();
+            let tx = store.begin().unwrap();
+            tx.execute_batch("CREATE TRIGGER fail_second_alert BEFORE UPDATE OF monitoring_alerted ON chat_run_wakeups
+                WHEN NEW.monitoring_alerted=1 AND NEW.run_id='run_y'
+                BEGIN SELECT RAISE(ABORT, 'injected monitoring claim failure'); END;").unwrap();
+            tx.commit().unwrap();
+            let host = bare_host();
+            let error = process_run_monitoring_alerts(&host, Store::open().unwrap(), None, None)
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("injected monitoring claim failure"),
+                "{error:#}"
+            );
+            let rows = store.list_active_run_wakeups().unwrap();
+            assert_eq!(rows.len(), 3);
+            assert!(
+                rows.iter()
+                    .all(|row| row.monitoring_alerted == (row.run.id == "run_z")),
+                "a failed claim batch consumed an alert before notification"
+            );
+            assert!(rows.iter().all(|row| row.run.status == "starting"));
+            let tx = store.begin().unwrap();
+            let turns: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM chat_turns WHERE session_id='owner'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(turns, 0);
+            tx.commit().unwrap();
+            // Drop cleanup owns the reservation after the failed storage phase.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while host.is_busy("owner").await {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let tx = store.begin().unwrap();
+            tx.execute_batch("DROP TRIGGER fail_second_alert;
+                CREATE TABLE observed_alert_claims(run_id TEXT);
+                CREATE TRIGGER observe_alert_claim AFTER UPDATE OF monitoring_alerted ON chat_run_wakeups
+                WHEN NEW.monitoring_alerted=1
+                BEGIN INSERT INTO observed_alert_claims VALUES(NEW.run_id); END;").unwrap();
+            tx.commit().unwrap();
+            // Missing project p1 stops hidden-turn setup before any harness launch.
+            // The next pass can claim both unsent alerts, then rearm them on that error.
+            process_run_monitoring_alerts(&host, Store::open().unwrap(), None, None)
+                .await
+                .unwrap();
+            let tx = store.begin().unwrap();
+            let mut stmt = tx
+                .prepare("SELECT run_id FROM observed_alert_claims ORDER BY run_id")
+                .unwrap();
+            let ids = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(ids, ["run_x", "run_y"]);
+            let turns: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM chat_turns WHERE session_id='owner'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(turns, 0);
+            drop(stmt);
+            tx.commit().unwrap();
+            assert!(store
+                .list_active_run_wakeups()
+                .unwrap()
+                .iter()
+                .all(|row| row.monitoring_alerted == (row.run.id == "run_z")));
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while host.is_busy("owner").await {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        if std::env::var_os(CHILD).is_some() {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(check());
+            return;
+        }
+        let root =
+            std::env::temp_dir().join(format!("orx-monitoring-claim-{}", uuid::Uuid::new_v4()));
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env(CHILD, "1")
+            .env("ORX_DATA_DIR", &root)
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(root);
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 
