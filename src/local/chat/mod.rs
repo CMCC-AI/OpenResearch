@@ -9323,12 +9323,21 @@ impl TurnCtx {
         &mut self,
         open: impl FnOnce() -> Result<Store> + Send + 'static,
     ) -> Result<()> {
+        self.maybe_flush_async_at(Instant::now(), open).await
+    }
+
+    // Sample the cadence once, independently of storage and scheduler latency.
+    async fn maybe_flush_async_at(
+        &mut self,
+        now: Instant,
+        open: impl FnOnce() -> Result<Store> + Send + 'static,
+    ) -> Result<()> {
         let tool_states = tool_state_signature(&self.assistant.parts);
         let unattempted_state = tool_states != self.last_flushed_tool_states
             && tool_states != self.last_attempted_tool_states;
-        if unattempted_state || self.last_flush.elapsed() >= FLUSH_INTERVAL {
+        if unattempted_state || now.saturating_duration_since(self.last_flush) >= FLUSH_INTERVAL {
             self.last_attempted_tool_states = tool_states;
-            self.flush_async_with_store(false, open).await?;
+            self.flush_async_kind_at(false, false, now, open).await?;
         }
         Ok(())
     }
@@ -9387,7 +9396,18 @@ impl TurnCtx {
         final_write: bool,
         open: impl FnOnce() -> Result<Store> + Send + 'static,
     ) -> Result<()> {
-        self.last_flush = Instant::now();
+        self.flush_async_kind_at(force, final_write, Instant::now(), open)
+            .await
+    }
+
+    async fn flush_async_kind_at(
+        &mut self,
+        force: bool,
+        final_write: bool,
+        now: Instant,
+        open: impl FnOnce() -> Result<Store> + Send + 'static,
+    ) -> Result<()> {
+        self.last_flush = now;
         if self.assistant.parts.is_empty() {
             return Ok(());
         }
@@ -9398,7 +9418,10 @@ impl TurnCtx {
             .parts
             .iter()
             .any(|part| part.prompt.is_some());
-        if !force && !has_prompt && self.last_persist.elapsed() < CHECKPOINT_INTERVAL {
+        if !force
+            && !has_prompt
+            && now.saturating_duration_since(self.last_persist) < CHECKPOINT_INTERVAL
+        {
             self.host.emit(
                 "chat.message",
                 message_json(&self.assistant, &self.session_id),
@@ -17708,14 +17731,21 @@ mod checkpoint_tests {
         let (_, first) = events.try_recv().unwrap();
         assert_eq!(first["message"]["parts"][0]["text"], "first");
         ctx.assistant.parts[0].text = Some("latest delta".into());
-        ctx.maybe_flush_async_with_store(|| panic!("75ms throttle must not open storage"))
-            .await
-            .unwrap();
+        // The first checkpoint uses real SQLite. Subsequent cadence checks use
+        // its completion as a fixed origin, even if the test thread is delayed.
+        let clock = ctx.last_persist;
+        ctx.last_flush = clock;
+        ctx.maybe_flush_async_at(clock + FLUSH_INTERVAL - Duration::from_nanos(1), || {
+            panic!("75ms throttle must not open storage")
+        })
+        .await
+        .unwrap();
         assert!(events.try_recv().is_err());
-        ctx.last_flush = Instant::now() - FLUSH_INTERVAL;
-        ctx.maybe_flush_async_with_store(|| panic!("broadcast-only delta must not open storage"))
-            .await
-            .unwrap();
+        ctx.maybe_flush_async_at(clock + FLUSH_INTERVAL, || {
+            panic!("broadcast-only delta must not open storage")
+        })
+        .await
+        .unwrap();
         let (_, delta) = events.try_recv().unwrap();
         assert_eq!(delta["message"]["parts"][0]["text"], "latest delta");
         assert!(store
@@ -17724,11 +17754,11 @@ mod checkpoint_tests {
             .unwrap()
             .parts_json
             .contains("first"));
-        ctx.last_flush = Instant::now() - FLUSH_INTERVAL;
-        ctx.last_persist = Instant::now() - CHECKPOINT_INTERVAL;
         let acknowledged = ctx.last_persisted_snapshot.clone();
         assert!(ctx
-            .maybe_flush_async_with_store(|| Err(anyhow!("injected event write failure")))
+            .maybe_flush_async_at(clock + CHECKPOINT_INTERVAL, || Err(anyhow!(
+                "injected event write failure"
+            )))
             .await
             .is_err());
         assert_eq!(ctx.last_persisted_snapshot, acknowledged);

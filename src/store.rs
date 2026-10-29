@@ -526,21 +526,22 @@ fn normalize_permission_modes(conn: &Connection) -> Result<()> {
     if !needed {
         return Ok(());
     }
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     // Provider-owned permission ids + the independent Codex/OpenCode Plan
     // axis. These updates are idempotent and intentionally do not touch
     // Claude's native `plan`, Manual, or Accept edits modes.
-    let _ = conn.execute(
+    tx.execute(
         "UPDATE chat_sessions
          SET plan_mode = 1, permission_mode = 'ask'
          WHERE harness = 'codex' AND permission_mode = 'plan'",
         [],
-    );
-    let _ = conn.execute(
+    )?;
+    tx.execute(
         "UPDATE chat_sessions
          SET plan_mode = 1, permission_mode = 'default'
          WHERE harness = 'opencode' AND permission_mode = 'plan'",
         [],
-    );
+    )?;
     for (harness, old, new) in [
         ("claude-code", "ask", "manual"),
         ("claude-code", "default", "manual"),
@@ -556,36 +557,36 @@ fn normalize_permission_modes(conn: &Connection) -> Result<()> {
         ("opencode", "accept-edits", "default"),
         ("opencode", "acceptEdits", "default"),
     ] {
-        let _ = conn.execute(
+        tx.execute(
             "UPDATE chat_sessions SET permission_mode = ?3
              WHERE harness = ?1 AND permission_mode = ?2",
             params![harness, old, new],
-        );
+        )?;
     }
-    let _ = conn.execute(
+    tx.execute(
         "UPDATE chat_sessions SET permission_mode = 'auto'
          WHERE harness = 'claude-code'
            AND (permission_mode IS NULL OR permission_mode NOT IN
                 ('manual', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'))",
         [],
-    );
-    let _ = conn.execute(
+    )?;
+    tx.execute(
         "UPDATE chat_sessions SET permission_mode = 'approve-for-me'
          WHERE harness = 'codex'
            AND (permission_mode IS NULL OR permission_mode NOT IN
                 ('ask', 'approve-for-me', 'full-access'))",
         [],
-    );
-    let _ = conn.execute(
+    )?;
+    tx.execute(
         "UPDATE chat_sessions SET permission_mode = 'default'
          WHERE harness = 'opencode'
            AND (permission_mode IS NULL OR permission_mode NOT IN
                 ('default', 'auto-approve'))",
         [],
-    );
+    )?;
     // Seed before normalizing preferences: on the first open of an older
     // database the latest session may itself carry a retired mode or Plan.
-    conn.execute(
+    tx.execute(
         "INSERT OR IGNORE INTO ui_state (
              id, onboarding_completed, tour_completed,
              preferred_harness, preferred_model,
@@ -603,21 +604,21 @@ fn normalize_permission_modes(conn: &Connection) -> Result<()> {
     )?;
     // Preferred-agent state never carries Plan for command-activated
     // harnesses: new sessions start in Build/Default until `/plan` is used.
-    let _ = conn.execute(
+    tx.execute(
         "UPDATE ui_state SET preferred_permission_mode = 'ask'
          WHERE preferred_harness = 'codex' AND preferred_permission_mode = 'plan'",
         [],
-    );
-    let _ = conn.execute(
+    )?;
+    tx.execute(
         "UPDATE ui_state SET preferred_permission_mode = 'default'
          WHERE preferred_harness = 'opencode' AND preferred_permission_mode = 'plan'",
         [],
-    );
-    let _ = conn.execute(
+    )?;
+    tx.execute(
         "UPDATE ui_state SET preferred_permission_mode = 'auto'
          WHERE preferred_harness = 'claude-code' AND preferred_permission_mode = 'plan'",
         [],
-    );
+    )?;
     for (harness, old, new) in [
         ("claude-code", "ask", "manual"),
         ("claude-code", "default", "manual"),
@@ -628,31 +629,32 @@ fn normalize_permission_modes(conn: &Connection) -> Result<()> {
         ("opencode", "auto", "default"),
         ("opencode", "bypass", "auto-approve"),
     ] {
-        let _ = conn.execute(
+        tx.execute(
             "UPDATE ui_state SET preferred_permission_mode = ?3
              WHERE preferred_harness = ?1 AND preferred_permission_mode = ?2",
             params![harness, old, new],
-        );
+        )?;
     }
-    let _ = conn.execute(
+    tx.execute(
         "UPDATE ui_state SET preferred_permission_mode = 'auto'
          WHERE preferred_harness = 'claude-code'
            AND preferred_permission_mode NOT IN
                ('manual', 'acceptEdits', 'plan', 'auto', 'bypassPermissions')",
         [],
-    );
-    let _ = conn.execute(
+    )?;
+    tx.execute(
         "UPDATE ui_state SET preferred_permission_mode = 'approve-for-me'
          WHERE preferred_harness = 'codex'
            AND preferred_permission_mode NOT IN ('ask', 'approve-for-me', 'full-access')",
         [],
-    );
-    let _ = conn.execute(
+    )?;
+    tx.execute(
         "UPDATE ui_state SET preferred_permission_mode = 'default'
          WHERE preferred_harness = 'opencode'
            AND preferred_permission_mode NOT IN ('default', 'auto-approve')",
         [],
-    );
+    )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -4179,6 +4181,65 @@ mod tests {
         );
         writer.execute_batch("ROLLBACK").unwrap();
         drop(writer);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn permission_normalization_rolls_back_and_reports_failed_updates() {
+        let dir =
+            std::env::temp_dir().join(format!("orx-permission-rollback-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_at(dir.clone()).unwrap();
+        let mut session = chat_session_fixture("legacy");
+        session.harness = "codex".into();
+        session.permission_mode = Some("plan".into());
+        store.create_chat_session(&session).unwrap();
+        store
+            .conn
+            .execute_batch(
+                "UPDATE ui_state SET preferred_harness='codex', preferred_permission_mode='plan';
+             CREATE TEMP TRIGGER fail_permission_normalization
+             BEFORE UPDATE OF preferred_permission_mode ON ui_state
+             BEGIN SELECT RAISE(ABORT, 'injected permission migration failure'); END;",
+            )
+            .unwrap();
+
+        let error = normalize_permission_modes(&store.conn).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("injected permission migration failure"));
+        let unchanged = store.get_chat_session("legacy").unwrap().unwrap();
+        assert_eq!(unchanged.permission_mode.as_deref(), Some("plan"));
+        assert!(!unchanged.plan_mode);
+        let preference: String = store
+            .conn
+            .query_row(
+                "SELECT preferred_permission_mode FROM ui_state WHERE id=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(preference, "plan");
+        assert!(store.conn.is_autocommit());
+
+        store
+            .conn
+            .execute_batch("DROP TRIGGER fail_permission_normalization")
+            .unwrap();
+        normalize_permission_modes(&store.conn).unwrap();
+        let migrated = store.get_chat_session("legacy").unwrap().unwrap();
+        assert_eq!(migrated.permission_mode.as_deref(), Some("ask"));
+        assert!(migrated.plan_mode);
+        assert_eq!(
+            store
+                .ui_state()
+                .unwrap()
+                .preferred_agent
+                .unwrap()
+                .permission_mode
+                .as_deref(),
+            Some("ask")
+        );
         drop(store);
         std::fs::remove_dir_all(dir).unwrap();
     }
