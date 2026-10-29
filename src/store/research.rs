@@ -13,7 +13,7 @@ use crate::error::{anyhow, Result};
 mod evidence;
 mod files;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskSpec {
     pub id: String,
@@ -33,7 +33,7 @@ pub struct PlanInput {
     pub summary: String,
     pub tasks: Vec<TaskSpec>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Artifact {
     pub path: String,
@@ -48,7 +48,7 @@ pub struct RunContract {
     pub command: String,
     pub options: serde_json::Value,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchTask {
     #[serde(flatten)]
@@ -96,7 +96,7 @@ impl ResearchTask {
         }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchPlan {
     pub version: u32,
@@ -109,7 +109,7 @@ pub struct ResearchPlan {
     pub summary: String,
     pub tasks: Vec<ResearchTask>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HumanDecision {
     pub id: String,
@@ -123,7 +123,7 @@ pub struct HumanDecision {
     pub requested_at: i64,
     pub decided_at: Option<i64>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClaimInput {
     pub text: String,
@@ -134,7 +134,7 @@ pub struct ClaimInput {
     pub line_start: Option<usize>,
     pub line_end: Option<usize>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct EvidenceClaim {
     pub id: String,
@@ -145,7 +145,7 @@ pub struct EvidenceClaim {
     pub excerpt: Option<String>,
     pub created_at: i64,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Study {
     pub id: String,
@@ -162,7 +162,51 @@ pub struct Study {
     pub created_at: i64,
     pub updated_at: i64,
 }
+fn same_json_encoding(left: &serde_json::Value, right: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match (left, right) {
+        (Value::Number(left), Value::Number(right)) => {
+            left == right && left.as_f64().map(f64::to_bits) == right.as_f64().map(f64::to_bits)
+        }
+        (Value::Array(left), Value::Array(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| same_json_encoding(left, right))
+        }
+        (Value::Object(left), Value::Object(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|((left_key, left), (right_key, right))| {
+                        left_key == right_key && same_json_encoding(left, right)
+                    })
+        }
+        _ => left == right,
+    }
+}
+
 impl Study {
+    fn same_document(&self, other: &Self) -> bool {
+        if self != other {
+            return false;
+        }
+        // RunContract.options is the open JSON subtree. Value equality alone
+        // equates -0.0 and 0.0, while approval scopes distinguish their encoding.
+        self.plans
+            .iter()
+            .flat_map(|plan| &plan.tasks)
+            .zip(other.plans.iter().flat_map(|plan| &plan.tasks))
+            .all(
+                |(left, right)| match (&left.run_contract, &right.run_contract) {
+                    (Some(left), Some(right)) => same_json_encoding(&left.options, &right.options),
+                    _ => true, // Structural equality above already checked presence.
+                },
+            )
+    }
+
     pub fn plan(&self) -> Result<&ResearchPlan> {
         self.plans.last().ok_or_else(|| anyhow!("先提交研究计划"))
     }
@@ -537,9 +581,12 @@ impl Store {
         update: impl FnOnce(&mut Study) -> Result<T>,
     ) -> Result<T> {
         let mut study = self.research_study(id)?;
-        let before = serde_json::to_vec(&study)?;
+        let before = study.clone();
         let value = update(&mut study)?;
-        if serde_json::to_vec(&study)? != before {
+        let changed = !study.same_document(&before);
+        // Release the comparison snapshot before allocating the serialized write.
+        drop(before);
+        if changed {
             study.updated_at = now_ms();
             self.research_save(&study)?;
         }
@@ -2883,4 +2930,5 @@ mod tests {
     include!("research_material_tests.rs");
     include!("research_lifecycle_tests.rs");
     include!("research_file_tests.rs");
+    include!("research_aggregate_tests.rs");
 }
