@@ -108,19 +108,18 @@ pub(super) async fn decide(
         .map_err(|error| ApiError::from(anyhow!("research decision task failed: {error}")))?
 }
 
-async fn apply_decision(
-    state: AppState,
+// Return the gate with the prepared wake-up so ending or moving data cannot
+// interleave between the durable decision and chat admission. The blocking
+// worker owns it even if its async waiter is cancelled.
+async fn prepare_decision(
+    lifecycle_gate: tokio::sync::OwnedMutexGuard<()>,
     id: String,
     decision: String,
     req: DecisionReq,
-) -> ApiResult {
-    let gate = state.data_dir_gate.clone().lock_owned().await;
-    reject_if_stopping(&state)?;
-    reject_if_moving(&state)?;
-    let client_turn_id = format!("research-decision-{decision}");
-    let (session, wakeup_prompt) = blocking_task(move || {
-        let _gate = gate;
-        let store = Store::open()?;
+    open_store: impl FnOnce() -> Result<Store> + Send + 'static,
+) -> std::result::Result<(tokio::sync::OwnedMutexGuard<()>, String, Option<String>), ApiError> {
+    blocking_task(move || {
+        let store = open_store()?;
         store
             .research_decide(&id, &decision, &req.scope_hash, req.approved, req.reason)
             .map_err(bad_request)?;
@@ -159,8 +158,22 @@ async fn apply_decision(
                 "研究闸门 {gate} 已由用户批准。前置已完成任务已保留，请立即为下一环节实验任务执行 `orx research prepare-run` 绑定运行契约，或推进剩余未完成步骤；严禁重新调用 `orx research plan` 重置已有进度。"
             ))
         };
-        Ok::<_, ApiError>((study.session_id, prompt))
-    }).await??;
+        Ok::<_, ApiError>((lifecycle_gate, study.session_id, prompt))
+    }).await?
+}
+
+async fn apply_decision(
+    state: AppState,
+    id: String,
+    decision: String,
+    req: DecisionReq,
+) -> ApiResult {
+    let gate = state.data_dir_gate.clone().lock_owned().await;
+    reject_if_stopping(&state)?;
+    reject_if_moving(&state)?;
+    let client_turn_id = format!("research-decision-{decision}");
+    let (_gate, session, wakeup_prompt) =
+        prepare_decision(gate, id, decision, req, Store::open).await?;
     let resume_error = if let Some(prompt) = wakeup_prompt {
         state
             .chat
@@ -184,6 +197,162 @@ async fn apply_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn decision_fixture() -> (std::path::PathBuf, Store, String, String, DecisionReq) {
+        let root = std::env::temp_dir().join(format!("orx-decision-gate-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_at(root.clone()).unwrap();
+        store
+            .create_local_project(&local::model::LocalProject {
+                id: "project".into(),
+                name: "test".into(),
+                slug: "test".into(),
+                github_owner: String::new(),
+                github_repo: String::new(),
+                github_sync_enabled: false,
+                baseline_branch: "main".into(),
+                repo_path: root.to_string_lossy().into_owned(),
+                run_command: None,
+                paper_id: None,
+                created_at: 1,
+                updated_at: 1,
+            })
+            .unwrap();
+        let tx = store.begin().unwrap();
+        tx.execute("INSERT INTO chat_sessions(id,project_id,harness,created_at,updated_at) VALUES('lead','project','codex',1,1)", []).unwrap();
+        tx.commit().unwrap();
+        let study = store.research_create("lead", "team", "test").unwrap();
+        store
+            .research_set_plan(
+                &study.id,
+                serde_json::from_value(json!({
+                    "summary":"one experiment", "tasks":[{"id":"experiment",
+                    "role":"as-experiment-operator", "brief":"run experiment",
+                    "dependsOn":[], "outputs":["result.md"]},
+                    {"id":"review", "role":"as-independent-reviewer", "brief":"review",
+                    "dependsOn":["experiment"], "outputs":["review.md"]},
+                    {"id":"audit", "role":"as-quality-citation-auditor", "brief":"audit",
+                    "dependsOn":["review"], "outputs":["audit.md"]}]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        let study = store.research_study(&study.id).unwrap();
+        let decision = study.decisions.iter().find(|d| d.gate == "G1").unwrap();
+        let request = DecisionReq {
+            scope_hash: decision.scope_hash.clone(),
+            approved: false,
+            reason: "revise".into(),
+        };
+        (root, store, study.id, decision.id.clone(), request)
+    }
+
+    #[tokio::test]
+    async fn decision_wakeup_keeps_end_excluded_until_durable_chat_admission() {
+        for approved in [false, true] {
+            let (root, store, study_id, decision_id, mut request) = decision_fixture();
+            request.approved = approved;
+            let gate = Arc::new(tokio::sync::Mutex::new(()));
+            let (guard, session, prompt) = prepare_decision(
+                gate.clone().lock_owned().await,
+                study_id.clone(),
+                decision_id,
+                request,
+                move || Ok(store),
+            )
+            .await
+            .unwrap();
+            assert!(prompt.is_some());
+            assert_eq!(session, "lead");
+            let store = Store::open_at(root.clone()).unwrap();
+            assert_eq!(
+                store.research_study(&study_id).unwrap().decisions[0].status,
+                if approved { "approved" } else { "rejected" }
+            );
+            // Pause at the real persistence/admission boundary. End takes this same gate.
+            assert!(
+                gate.try_lock().is_err(),
+                "end overtook a prepared automatic wake-up"
+            );
+            store
+                .insert_queued_chat_message(&crate::store::StoredQueuedChatMessage {
+                    id: "wake".into(),
+                    session_id: session,
+                    client_turn_id: "decision".into(),
+                    request_hash: "hash".into(),
+                    payload_json: "{}".into(),
+                    created_at: 1,
+                })
+                .unwrap();
+            drop(guard);
+            let _end_guard = gate.try_lock().unwrap();
+            assert!(store.research_end(&study_id, 1, &[]).is_err());
+            assert_eq!(store.research_study(&study_id).unwrap().status, "active");
+            drop(store);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_decision_releases_gate_without_a_wakeup() {
+        let (root, store, study_id, decision_id, mut request) = decision_fixture();
+        request.scope_hash = "stale".into();
+        let gate = Arc::new(tokio::sync::Mutex::new(()));
+        assert!(prepare_decision(
+            gate.clone().lock_owned().await,
+            study_id.clone(),
+            decision_id,
+            request,
+            move || Ok(store)
+        )
+        .await
+        .is_err());
+        let _guard = gate.try_lock().unwrap();
+        let store = Store::open_at(root.clone()).unwrap();
+        assert_eq!(
+            store.research_study(&study_id).unwrap().decisions[0].status,
+            "pending"
+        );
+        store.research_end(&study_id, 1, &[]).unwrap();
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_decision_waiter_leaves_running_worker_protected() {
+        let gate = Arc::new(tokio::sync::Mutex::new(()));
+        let guard = gate.clone().lock_owned().await;
+        let (entered, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let task = tokio::spawn(prepare_decision(
+            guard,
+            "study".into(),
+            "decision".into(),
+            DecisionReq {
+                scope_hash: "hash".into(),
+                approved: false,
+                reason: String::new(),
+            },
+            move || {
+                let _ = entered.send(());
+                wait.recv_timeout(Duration::from_secs(5))?;
+                Err(anyhow!("injected store open failure"))
+            },
+        ));
+        tokio::time::timeout(Duration::from_secs(5), ready)
+            .await
+            .unwrap()
+            .unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(
+            gate.try_lock().is_err(),
+            "cancelled waiter released its running worker's gate"
+        );
+        release.send(()).unwrap();
+        let _guard = tokio::time::timeout(Duration::from_secs(5), gate.lock())
+            .await
+            .unwrap();
+    }
 
     #[test]
     fn research_decisions_require_same_origin_browser_metadata() {

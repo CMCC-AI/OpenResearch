@@ -42,3 +42,6 @@ research_sessions 登记的专家，遗漏其侧边对话和子会话。
 
 没有 UI 改动，未重建内嵌资源；未运行远端 CI、Windows/Linux 打包、
 平台 PostgreSQL 集成、在线依赖审计或真实模型验收。
+
+后续本进程审批续聊与结束间隙的处理见
+[研究审批受理互斥](research-decision-admission-2026-10-29.md)。
