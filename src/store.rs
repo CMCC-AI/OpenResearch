@@ -1418,12 +1418,18 @@ impl Store {
 
     pub fn prune_run_wakeups(&self) -> Result<()> {
         self.clear_stale_data_dir_move_lease()?;
+        let now = now_ms();
         self.conn.execute(
             "UPDATE chat_run_wakeups
              SET state = 'pending', claim_token = NULL, claimed_at = NULL
              WHERE state = 'claimed' AND claimed_at < ?1
-               AND NOT EXISTS (SELECT 1 FROM data_dir_move_lease WHERE id = 1)",
-            params![now_ms() - RUN_WAKEUP_CLAIM_TTL_MS],
+               AND NOT EXISTS (SELECT 1 FROM data_dir_move_lease WHERE id = 1)
+               AND NOT EXISTS (
+                   SELECT 1 FROM chat_turn_leases l
+                   WHERE l.chat_session_id = chat_run_wakeups.chat_session_id
+                     AND l.heartbeat_at >= ?2
+               )",
+            params![now - RUN_WAKEUP_CLAIM_TTL_MS, now - CHAT_TURN_LEASE_TTL_MS],
         )?;
         self.conn.execute(
             "DELETE FROM chat_run_wakeups
@@ -1573,19 +1579,29 @@ impl Store {
     }
 
     /// Return abandoned claims to their prior state and drop rows whose child
-    /// session is gone. A missing *parent* is not pruned here: the child keeps
-    /// working, and the wake step retires the row on its own.
+    /// session is gone. A live turn lease on the delivery target protects slow
+    /// starts (child) and parent wake-ups (parent) from age-only reclamation.
+    /// A missing *parent* is not pruned here: the child keeps working, and the
+    /// wake step retires the row on its own.
     pub fn prune_chat_spawns(&self) -> Result<()> {
         self.clear_stale_data_dir_move_lease()?;
-        let stale = now_ms() - CHAT_SPAWN_CLAIM_TTL_MS;
+        let now = now_ms();
+        let stale = now - CHAT_SPAWN_CLAIM_TTL_MS;
         self.conn.execute(
             "UPDATE chat_spawns
              SET state = CASE state WHEN 'starting' THEN 'pending' ELSE 'running' END,
                  attempts = attempts + CASE state WHEN 'starting' THEN 1 ELSE 0 END,
                  claim_token = NULL, claimed_at = NULL
              WHERE state IN ('starting', 'waking') AND claimed_at < ?1
-               AND NOT EXISTS (SELECT 1 FROM data_dir_move_lease WHERE id = 1)",
-            params![stale],
+               AND NOT EXISTS (SELECT 1 FROM data_dir_move_lease WHERE id = 1)
+               AND NOT EXISTS (
+                   SELECT 1 FROM chat_turn_leases l
+                   WHERE l.chat_session_id = CASE chat_spawns.state
+                       WHEN 'starting' THEN chat_spawns.session_id
+                       ELSE chat_spawns.parent_session_id END
+                     AND l.heartbeat_at >= ?2
+               )",
+            params![stale, now - CHAT_TURN_LEASE_TTL_MS],
         )?;
         self.conn.execute(
             "DELETE FROM chat_spawns
@@ -5488,6 +5504,180 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn claim_pruning_keeps_live_spawn_targets_and_recovers_abandoned_work() {
+        for phase in [ChatSpawnState::Starting, ChatSpawnState::Waking] {
+            for lease in ["target", "other", "expired", "absent"] {
+                let dir = std::env::temp_dir()
+                    .join(format!("orx-spawn-prune-live-{}", uuid::Uuid::new_v4()));
+                let first = Store::open_at(dir.clone()).unwrap();
+                for id in ["child", "parent"] {
+                    first
+                        .create_chat_session(&chat_session_fixture(id))
+                        .unwrap();
+                }
+                first
+                    .create_chat_spawn(&chat_spawn_fixture("child", "parent"))
+                    .unwrap();
+                let start = first
+                    .claim_chat_spawn("child", ChatSpawnState::Pending, ChatSpawnState::Starting)
+                    .unwrap()
+                    .unwrap();
+                let token = if phase == ChatSpawnState::Waking {
+                    assert!(first
+                        .settle_chat_spawn("child", &start, ChatSpawnState::Running)
+                        .unwrap());
+                    first
+                        .claim_chat_spawn("child", ChatSpawnState::Running, phase)
+                        .unwrap()
+                        .unwrap()
+                } else {
+                    start
+                };
+                first
+                    .conn
+                    .execute(
+                        "UPDATE chat_spawns SET claimed_at=0 WHERE session_id='child'",
+                        [],
+                    )
+                    .unwrap();
+                let second = Store::open_at(dir.clone()).unwrap();
+                let (target, unrelated) = if phase == ChatSpawnState::Starting {
+                    ("child", "parent")
+                } else {
+                    ("parent", "child")
+                };
+                let lease_session = if lease == "other" { unrelated } else { target };
+                if lease != "absent" {
+                    assert!(second.claim_chat_turn(lease_session, "turn-owner").unwrap());
+                    if lease == "expired" {
+                        second.conn.execute("UPDATE chat_turn_leases SET heartbeat_at=0 WHERE chat_session_id=?1", [lease_session]).unwrap();
+                    }
+                }
+                second.prune_chat_spawns().unwrap();
+                if lease == "target" {
+                    let (state, claim, attempts): (String, Option<String>, i64) = second.conn.query_row(
+                        "SELECT state,claim_token,attempts FROM chat_spawns WHERE session_id='child'", [],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+                    assert_eq!(state, phase.as_str(), "live target reclaimed in {phase:?}");
+                    assert_eq!(claim.as_deref(), Some(token.as_str()));
+                    assert_eq!(attempts, 0);
+                    first.release_chat_turn(target, "turn-owner").unwrap();
+                    second.prune_chat_spawns().unwrap();
+                }
+                let recovered = if phase == ChatSpawnState::Starting {
+                    ChatSpawnState::Pending
+                } else {
+                    ChatSpawnState::Running
+                };
+                assert_eq!(
+                    first.list_chat_spawns(recovered).unwrap().len(),
+                    1,
+                    "{phase:?}/{lease}"
+                );
+                assert_eq!(
+                    first.get_chat_spawn("child").unwrap().unwrap().attempts,
+                    i64::from(phase == ChatSpawnState::Starting)
+                );
+                assert!(!first
+                    .settle_chat_spawn("child", &token, ChatSpawnState::Done)
+                    .unwrap());
+                let current = second
+                    .claim_chat_spawn("child", recovered, phase)
+                    .unwrap()
+                    .unwrap();
+                assert!(second
+                    .settle_chat_spawn("child", &current, ChatSpawnState::Running)
+                    .unwrap());
+                drop(second);
+                drop(first);
+                std::fs::remove_dir_all(dir).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn claim_pruning_keeps_live_run_wakeup_targets_and_recovers_abandoned_work() {
+        for lease in ["target", "other", "expired", "absent"] {
+            let dir =
+                std::env::temp_dir().join(format!("orx-run-prune-live-{}", uuid::Uuid::new_v4()));
+            let first = Store::open_at(dir.clone()).unwrap();
+            for id in ["owner", "other"] {
+                first
+                    .create_chat_session(&chat_session_fixture(id))
+                    .unwrap();
+            }
+            first
+                .upsert_run(&run_fixture("run_done", "done", Some("owner")))
+                .unwrap();
+            first.register_run_wakeup("run_done", "owner").unwrap();
+            let token = first
+                .claim_run_wakeup("run_done", "owner")
+                .unwrap()
+                .unwrap();
+            first
+                .conn
+                .execute(
+                    "UPDATE chat_run_wakeups SET claimed_at=0 WHERE run_id='run_done'",
+                    [],
+                )
+                .unwrap();
+            let second = Store::open_at(dir.clone()).unwrap();
+            let lease_session = if lease == "other" { "other" } else { "owner" };
+            if lease != "absent" {
+                assert!(second.claim_chat_turn(lease_session, "turn-owner").unwrap());
+                if lease == "expired" {
+                    second
+                        .conn
+                        .execute(
+                            "UPDATE chat_turn_leases SET heartbeat_at=0 WHERE chat_session_id=?1",
+                            [lease_session],
+                        )
+                        .unwrap();
+                }
+            }
+            second.prune_run_wakeups().unwrap();
+            if lease == "target" {
+                assert_eq!(
+                    second.list_ready_run_wakeups().unwrap()[0].state,
+                    "claimed",
+                    "live run wake-up was reclaimed"
+                );
+                assert!(first
+                    .renew_run_wakeup_claim("run_done", "owner", &token)
+                    .unwrap());
+                // Keep the age expired after proving token ownership, then release the turn.
+                first
+                    .conn
+                    .execute(
+                        "UPDATE chat_run_wakeups SET claimed_at=0 WHERE run_id='run_done'",
+                        [],
+                    )
+                    .unwrap();
+                first.release_chat_turn("owner", "turn-owner").unwrap();
+                second.prune_run_wakeups().unwrap();
+            }
+            assert_eq!(
+                first.list_ready_run_wakeups().unwrap()[0].state,
+                "pending",
+                "{lease}"
+            );
+            assert!(!first
+                .mark_run_wakeup_delivered("run_done", "owner", &token)
+                .unwrap());
+            let current = second
+                .claim_run_wakeup("run_done", "owner")
+                .unwrap()
+                .unwrap();
+            assert!(second
+                .mark_run_wakeup_delivered("run_done", "owner", &current)
+                .unwrap());
+            drop(second);
+            drop(first);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]
