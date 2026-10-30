@@ -1637,7 +1637,8 @@ impl Store {
 
     /// Finish (or hand back) a claimed step. `false` means the claim expired
     /// and someone else reclaimed the row, so the caller's work is NOT recorded
-    /// and must not be treated as done.
+    /// and must not be treated as done. Returning a failed start to pending
+    /// charges one attempt in the same token-guarded update.
     pub fn settle_chat_spawn(
         &self,
         session_id: &str,
@@ -1645,7 +1646,9 @@ impl Store {
         to: ChatSpawnState,
     ) -> Result<bool> {
         let settled = self.conn.execute(
-            "UPDATE chat_spawns SET state = ?3, claim_token = NULL, claimed_at = NULL
+            "UPDATE chat_spawns
+             SET state = ?3, claim_token = NULL, claimed_at = NULL,
+                 attempts = attempts + CASE WHEN state = 'starting' AND ?3 = 'pending' THEN 1 ELSE 0 END
              WHERE session_id = ?1 AND claim_token = ?2",
             params![session_id, token, to.as_str()],
         )?;
@@ -1676,18 +1679,6 @@ impl Store {
             params![chat_session_id, now_ms()],
         )?;
         Ok(())
-    }
-
-    pub fn record_chat_spawn_attempt(&self, chat_session_id: &str) -> Result<i64> {
-        self.conn.execute(
-            "UPDATE chat_spawns SET attempts = attempts + 1 WHERE session_id = ?1",
-            params![chat_session_id],
-        )?;
-        Ok(self.conn.query_row(
-            "SELECT attempts FROM chat_spawns WHERE session_id = ?1",
-            params![chat_session_id],
-            |row| row.get(0),
-        )?)
     }
 
     /// Helpers this parent has in flight, for the fan-out cap.

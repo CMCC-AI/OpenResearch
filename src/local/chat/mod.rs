@@ -10386,6 +10386,13 @@ fn retire_spawn(store: &Store, id: &str, from: ChatSpawnState) -> Result<()> {
     Ok(())
 }
 
+fn settle_spawn_start(store: &Store, id: &str, token: &str, next: ChatSpawnState) -> Result<()> {
+    if !store.settle_chat_spawn(id, token, next)? {
+        return Err(anyhow!("spawn claim expired before startup was recorded"));
+    }
+    Ok(())
+}
+
 async fn start_pending_chat_spawns(
     chat: &Arc<ChatHost>,
     store: Store,
@@ -10465,11 +10472,7 @@ async fn start_pending_chat_spawns(
         };
         let id = spawn.session_id;
         (store, ()) = spawn_store_stage(store, gate.clone(), move |s| {
-            if next == ChatSpawnState::Pending {
-                s.record_chat_spawn_attempt(&id)?;
-            }
-            s.settle_chat_spawn(&id, &token, next)?;
-            Ok(())
+            settle_spawn_start(s, &id, &token, next)
         })
         .await?;
     }
@@ -12946,6 +12949,125 @@ with other project runs using `orx runs p1` and inspect the file located by `orx
             Arc::new(crate::local::codex::CodexHost::new()),
             Arc::new(crate::local::claude::ClaudeHost::new()),
         ))
+    }
+
+    #[test]
+    fn expired_spawn_start_cannot_spend_the_new_owners_retry_budget() {
+        let (store, dir) = temp_store("stale-start");
+        session(&store, "child");
+        spawn_row(&store, "child", "parent", ChatSpawnState::Pending);
+        let old = store
+            .claim_chat_spawn("child", ChatSpawnState::Pending, ChatSpawnState::Starting)
+            .unwrap()
+            .unwrap();
+        let other = Store::open_at(dir.clone()).unwrap();
+        let tx = other.begin().unwrap();
+        tx.execute(
+            "UPDATE chat_spawns SET claimed_at=1 WHERE session_id='child'",
+            [],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        other.prune_chat_spawns().unwrap();
+        let current = other
+            .claim_chat_spawn("child", ChatSpawnState::Pending, ChatSpawnState::Starting)
+            .unwrap()
+            .unwrap();
+        assert_eq!(other.get_chat_spawn("child").unwrap().unwrap().attempts, 1);
+        assert!(
+            settle_spawn_start(&store, "child", &old, ChatSpawnState::Pending).is_err(),
+            "a stale start was treated as settled"
+        );
+        assert_eq!(other.get_chat_spawn("child").unwrap().unwrap().attempts, 1);
+        assert_eq!(
+            other
+                .list_chat_spawns(ChatSpawnState::Starting)
+                .unwrap()
+                .len(),
+            1
+        );
+        settle_spawn_start(&other, "child", &current, ChatSpawnState::Pending).unwrap();
+        assert_eq!(store.get_chat_spawn("child").unwrap().unwrap().attempts, 2);
+        assert_eq!(
+            store
+                .list_chat_spawns(ChatSpawnState::Pending)
+                .unwrap()
+                .len(),
+            1
+        );
+        drop(other);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_spawn_settlement_does_not_commit_a_retry_charge() {
+        let (store, dir) = temp_store("failed-start-settlement");
+        session(&store, "child");
+        spawn_row(&store, "child", "parent", ChatSpawnState::Pending);
+        let token = store
+            .claim_chat_spawn("child", ChatSpawnState::Pending, ChatSpawnState::Starting)
+            .unwrap()
+            .unwrap();
+        let tx = store.begin().unwrap();
+        tx.execute_batch("CREATE TRIGGER fail_spawn_settlement BEFORE UPDATE OF state ON chat_spawns
+            WHEN NEW.state='pending' BEGIN SELECT RAISE(ABORT, 'injected spawn settlement failure'); END;").unwrap();
+        tx.commit().unwrap();
+        let error =
+            settle_spawn_start(&store, "child", &token, ChatSpawnState::Pending).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("injected spawn settlement failure"),
+            "{error:#}"
+        );
+        assert_eq!(
+            store.get_chat_spawn("child").unwrap().unwrap().attempts,
+            0,
+            "settlement failure charged a retry without releasing the claim"
+        );
+        assert_eq!(
+            store
+                .list_chat_spawns(ChatSpawnState::Starting)
+                .unwrap()
+                .len(),
+            1
+        );
+        let tx = store.begin().unwrap();
+        tx.execute_batch("DROP TRIGGER fail_spawn_settlement")
+            .unwrap();
+        tx.commit().unwrap();
+        settle_spawn_start(&store, "child", &token, ChatSpawnState::Pending).unwrap();
+        assert_eq!(store.get_chat_spawn("child").unwrap().unwrap().attempts, 1);
+        let token = store
+            .claim_chat_spawn("child", ChatSpawnState::Pending, ChatSpawnState::Starting)
+            .unwrap()
+            .unwrap();
+        settle_spawn_start(&store, "child", &token, ChatSpawnState::Running).unwrap();
+        assert_eq!(store.get_chat_spawn("child").unwrap().unwrap().attempts, 1);
+        // Retrying a failed parent wake-up must not charge another startup attempt.
+        spawn_row(&store, "notification", "parent", ChatSpawnState::Pending);
+        let token = store
+            .claim_chat_spawn(
+                "notification",
+                ChatSpawnState::Pending,
+                ChatSpawnState::Waking,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(store
+            .settle_chat_spawn("notification", &token, ChatSpawnState::Pending)
+            .unwrap());
+        assert_eq!(
+            store
+                .get_chat_spawn("notification")
+                .unwrap()
+                .unwrap()
+                .attempts,
+            0
+        );
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
