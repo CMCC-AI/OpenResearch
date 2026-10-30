@@ -350,6 +350,7 @@ pub struct RunWakeup {
     pub chat_session_id: String,
     pub state: String,
     pub monitoring_alerted: bool,
+    pub monitoring_delivery_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -902,6 +903,7 @@ impl Store {
                 claimed_at      INTEGER,
                 delivered_at    INTEGER,
                 monitoring_alerted INTEGER NOT NULL DEFAULT 0,
+                monitoring_delivery_id TEXT,
                 PRIMARY KEY(run_id, chat_session_id)
             );
             CREATE INDEX IF NOT EXISTS idx_chat_run_wakeups_requested
@@ -1018,6 +1020,11 @@ impl Store {
             &conn,
             "spawn-claim-origin-v1",
             &["ALTER TABLE chat_spawns ADD COLUMN claim_from_state TEXT"],
+        )?;
+        schema::migrate_columns(
+            &conn,
+            "monitoring-delivery-v1",
+            &["ALTER TABLE chat_run_wakeups ADD COLUMN monitoring_delivery_id TEXT"],
         )?;
         phase("columns");
         conn.execute_batch("CREATE TRIGGER IF NOT EXISTS delete_chat_invocation_identities AFTER DELETE ON chat_sessions BEGIN DELETE FROM native_invocation_identities WHERE session_id = OLD.id; END;")?;
@@ -1477,7 +1484,7 @@ impl Store {
             "SELECT r.id, r.experiment_id, r.project_id, r.status, r.backend_json, r.command,
                     r.created_at, r.updated_at, r.ended_at, r.exit_code,
                     r.commit_sha, r.result_markdown, r.cancel_requested, r.chat_session_id,
-                    r.cancel_reason, w.chat_session_id, w.state, w.monitoring_alerted
+                    r.cancel_reason, w.chat_session_id, w.state, w.monitoring_alerted, w.monitoring_delivery_id
              FROM chat_run_wakeups w
              JOIN runs r ON r.id = w.run_id
              WHERE {filter}"
@@ -1488,6 +1495,7 @@ impl Store {
                 chat_session_id: row.get(15)?,
                 state: row.get(16)?,
                 monitoring_alerted: row.get(17)?,
+                monitoring_delivery_id: row.get(18)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -1508,6 +1516,39 @@ impl Store {
             params![run_id, chat_session_id, alerted],
         )?;
         Ok(changed == 1)
+    }
+
+    /// Keep the batch identity durable until a chat turn accepts its notification.
+    pub fn claim_run_monitoring_delivery(
+        &self,
+        run_id: &str,
+        session: &str,
+        delivery: &str,
+    ) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE chat_run_wakeups SET monitoring_alerted=1, monitoring_delivery_id=?3
+             WHERE run_id=?1 AND chat_session_id=?2 AND state='pending'
+               AND monitoring_alerted=0 AND monitoring_delivery_id IS NULL",
+            params![run_id, session, delivery],
+        )? == 1)
+    }
+
+    pub fn complete_run_monitoring_delivery(&self, session: &str, delivery: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE chat_run_wakeups SET monitoring_alerted=1, monitoring_delivery_id=NULL
+             WHERE chat_session_id=?1 AND monitoring_delivery_id=?2",
+            params![session, delivery],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_run_monitoring_delivery(&self, run: &str, session: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE chat_run_wakeups SET monitoring_alerted=0, monitoring_delivery_id=NULL
+             WHERE run_id=?1 AND chat_session_id=?2",
+            params![run, session],
+        )?;
+        Ok(())
     }
 
     pub fn claim_run_wakeup(&self, run_id: &str, chat_session_id: &str) -> Result<Option<String>> {

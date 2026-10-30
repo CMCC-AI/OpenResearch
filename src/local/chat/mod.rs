@@ -5920,6 +5920,17 @@ impl ChatHost {
         text: String,
         guard: TurnGuard,
     ) -> Result<TurnSubmission> {
+        self.send_hidden_message_with_id(session_id, text, guard, None)
+            .await
+    }
+
+    async fn send_hidden_message_with_id(
+        self: &Arc<Self>,
+        session_id: &str,
+        text: String,
+        guard: TurnGuard,
+        client_turn_id: Option<String>,
+    ) -> Result<TurnSubmission> {
         self.send_message_showing(
             session_id,
             SendTurnRequest {
@@ -5937,7 +5948,7 @@ impl ChatHost {
                 overrides: TurnOverrides::default(),
                 images: TurnAttachments::Uploaded(Vec::new()),
                 admission: TurnAdmission::Preclaimed(guard),
-                client_turn_id: None,
+                client_turn_id,
                 request_hash: None,
             },
         )
@@ -10031,6 +10042,63 @@ fn run_monitoring_text(runs: &[crate::store::StoredRun]) -> String {
     )
 }
 
+struct Notification {
+    session: String,
+    client_turn_id: String,
+    text: String,
+}
+
+fn run_notification_id(run: &str) -> String {
+    format!("orx-run-wakeup-{run}")
+}
+
+fn spawn_notification_id(child: &str, from: ChatSpawnState) -> String {
+    format!("orx-spawn-wakeup-{}-{child}", from.as_str())
+}
+
+/// A durable turn is acceptance, including a recoverable preparing/failed turn.
+/// Replays finish bookkeeping without launching another model turn.
+async fn deliver_notification(
+    chat: &Arc<ChatHost>,
+    store: Store,
+    notification: Notification,
+    mut guard: TurnGuard,
+    gate: WatchGate,
+) -> Result<(Store, bool)> {
+    let session = notification.session.clone();
+    let key = notification.client_turn_id.clone();
+    let (store, existing) = spawn_store_stage(store, gate.clone(), move |s| {
+        Ok(s.get_chat_turn_by_client_id(&session, &key)?.is_some())
+    })
+    .await?;
+    if existing {
+        guard.release().await;
+        return Ok((store, true));
+    }
+    let result = chat
+        .send_hidden_message_with_id(
+            &notification.session,
+            notification.text,
+            guard,
+            Some(notification.client_turn_id.clone()),
+        )
+        .await;
+    // Setup can fail after admission; the receipt remains authoritative.
+    let (store, accepted) = spawn_store_stage(store, gate, move |s| {
+        Ok(
+            s.get_chat_turn_by_client_id(&notification.session, &notification.client_turn_id)?
+                .is_some(),
+        )
+    })
+    .await?;
+    if !accepted {
+        if let Err(error) = result {
+            eprintln!("orx up: notification was not admitted: {error:#}");
+        }
+    }
+    Ok((store, accepted))
+}
+
 fn first_wakeup_per_session(wakeups: Vec<crate::store::RunWakeup>) -> Vec<crate::store::RunWakeup> {
     let mut seen_sessions = HashSet::new();
     wakeups
@@ -10093,27 +10161,26 @@ async fn process_run_wakeups_guarded(
             guard.release().await;
             continue;
         };
-        let started = if let Some(text) = run_wakeup_text(&wakeup.run) {
-            chat.send_hidden_message(&wakeup.chat_session_id, text, guard)
-                .await
+        let accepted;
+        if let Some(text) = run_wakeup_text(&wakeup.run) {
+            (store, accepted) = deliver_notification(
+                chat,
+                store,
+                Notification {
+                    session: wakeup.chat_session_id.clone(),
+                    client_turn_id: run_notification_id(&wakeup.run.id),
+                    text,
+                },
+                guard,
+                gate.clone(),
+            )
+            .await?;
         } else {
             guard.release().await;
-            Ok(TurnSubmission::NotStarted)
-        };
-        let turn_id = match started {
-            Ok(TurnSubmission::Started(turn_id)) => Some(turn_id),
-            outcome => {
-                if let Err(error) = outcome {
-                    if !chat.is_busy(&wakeup.chat_session_id).await {
-                        eprintln!("orx up: run watcher: {error}");
-                    }
-                }
-                None
-            }
-        };
+            accepted = false;
+        }
         (store, ()) = spawn_store_stage(store, gate.clone(), move |s| {
-            if let Some(turn_id) = turn_id {
-                let _ = s.reopen_chat_spawn(&wakeup.chat_session_id, Some(&turn_id));
+            if accepted {
                 if !s.mark_run_wakeup_delivered(&wakeup.run.id, &wakeup.chat_session_id, &token)? {
                     return Err(anyhow!(
                         "run wake-up claim expired before delivery was recorded"
@@ -10140,17 +10207,17 @@ async fn process_run_monitoring_alerts(
         for wakeup in s.list_active_run_wakeups()? {
             let unmonitored = crate::jobs::BackendDescriptor::parse(&wakeup.run.backend_json)
                 .is_ok_and(|d| d.monitoring_error.is_some());
-            if unmonitored && !wakeup.monitoring_alerted {
+            if unmonitored
+                && (!wakeup.monitoring_alerted || wakeup.monitoring_delivery_id.is_some())
+            {
                 by_session
                     .entry(wakeup.chat_session_id.clone())
                     .or_default()
                     .push(wakeup);
-            } else if !unmonitored && wakeup.monitoring_alerted {
-                s.set_run_wakeup_monitoring_alerted(
-                    &wakeup.run.id,
-                    &wakeup.chat_session_id,
-                    false,
-                )?;
+            } else if !unmonitored
+                && (wakeup.monitoring_alerted || wakeup.monitoring_delivery_id.is_some())
+            {
+                s.clear_run_monitoring_delivery(&wakeup.run.id, &wakeup.chat_session_id)?;
             }
         }
         Ok(by_session)
@@ -10167,18 +10234,26 @@ async fn process_run_monitoring_alerts(
             return Ok(());
         }
         let id = session_id.clone();
-        let (next_store, claimed) = spawn_store_stage(store, gate.clone(), move |s| {
-            // No notification is sent until every flag is claimed. Roll back
-            // earlier flags if a later write fails, so unsent alerts can retry.
+        let (next_store, (delivery, claimed)) = spawn_store_stage(store, gate.clone(), move |s| {
+            // Resume one durable batch before grouping any newly arrived alerts.
+            if let Some(delivery) = alerts.iter().find_map(|w| w.monitoring_delivery_id.clone()) {
+                let runs = alerts
+                    .into_iter()
+                    .filter(|w| w.monitoring_delivery_id.as_deref() == Some(&delivery))
+                    .map(|w| w.run)
+                    .collect::<Vec<_>>();
+                return Ok((delivery, runs));
+            }
             let tx = s.begin_immediate()?;
+            let delivery = format!("orx-monitoring-{}", uuid::Uuid::new_v4());
             let mut claimed = Vec::new();
             for wakeup in alerts {
-                if s.set_run_wakeup_monitoring_alerted(&wakeup.run.id, &id, true)? {
+                if s.claim_run_monitoring_delivery(&wakeup.run.id, &id, &delivery)? {
                     claimed.push(wakeup.run);
                 }
             }
             tx.commit()?;
-            Ok(claimed)
+            Ok((delivery, claimed))
         })
         .await?;
         store = next_store;
@@ -10186,24 +10261,33 @@ async fn process_run_monitoring_alerts(
             guard.release().await;
             continue;
         }
-        let started = chat
-            .send_hidden_message(&session_id, run_monitoring_text(&claimed), guard)
-            .await;
-        if !matches!(started, Ok(TurnSubmission::Started(_))) {
-            let id = session_id.clone();
-            (store, ()) = spawn_store_stage(store, gate.clone(), move |s| {
+        let accepted;
+        (store, accepted) = deliver_notification(
+            chat,
+            store,
+            Notification {
+                session: session_id.clone(),
+                client_turn_id: delivery.clone(),
+                text: run_monitoring_text(&claimed),
+            },
+            guard,
+            gate.clone(),
+        )
+        .await?;
+        (store, ()) = spawn_store_stage(store, gate.clone(), move |s| {
+            if accepted {
+                s.complete_run_monitoring_delivery(&session_id, &delivery)?;
+            } else {
+                // Keep the batch ID even if rearming fails; it remains retryable.
+                let tx = s.begin_immediate()?;
                 for run in claimed {
-                    s.set_run_wakeup_monitoring_alerted(&run.id, &id, false)?;
+                    s.set_run_wakeup_monitoring_alerted(&run.id, &session_id, false)?;
                 }
-                Ok(())
-            })
-            .await?;
-            if let Err(error) = started {
-                if !chat.is_busy(&session_id).await {
-                    eprintln!("orx up: run watcher: {error}");
-                }
+                tx.commit()?;
             }
-        }
+            Ok(())
+        })
+        .await?;
     }
     Ok(())
 }
@@ -10533,6 +10617,15 @@ async fn process_chat_spawns_guarded(
         let snapshot = spawn.clone();
         let (next_store, action) = spawn_store_stage(store, gate.clone(), move |s| {
             let result = (|| -> Result<_> {
+                if s.get_chat_turn_by_client_id(
+                    &snapshot.parent_session_id,
+                    &spawn_notification_id(&snapshot.session_id, ChatSpawnState::Running),
+                )?
+                .is_some()
+                {
+                    retire_spawn(s, &snapshot.session_id, ChatSpawnState::Running)?;
+                    return Ok(None);
+                }
                 if s.chat_turn_leased(&snapshot.session_id)?
                     || s.research_session_has_active_runs(&snapshot.session_id)?
                 {
@@ -10657,20 +10750,19 @@ async fn deliver_wake_up(
     let Some(token) = token else {
         return Ok(store);
     };
-    let next = match chat
-        .send_hidden_message(&spawn.parent_session_id, text, guard)
-        .await
-    {
-        Ok(TurnSubmission::Started(_)) => ChatSpawnState::Done,
-        outcome => {
-            if let Err(error) = outcome {
-                if !chat.is_busy(&spawn.parent_session_id).await {
-                    eprintln!("orx up: could not wake a spawned agent's parent: {error}");
-                }
-            }
-            from
-        }
-    };
+    let (store, accepted) = deliver_notification(
+        chat,
+        store,
+        Notification {
+            session: spawn.parent_session_id.clone(),
+            client_turn_id: spawn_notification_id(&spawn.session_id, from),
+            text,
+        },
+        guard,
+        gate.clone(),
+    )
+    .await?;
+    let next = if accepted { ChatSpawnState::Done } else { from };
     let id = spawn.session_id.clone();
     let (store, ()) = spawn_store_stage(store, gate, move |s| {
         if !s.settle_chat_spawn(&id, &token, next)? {
@@ -13441,12 +13533,14 @@ with other project runs using `orx runs p1` and inspect the file located by `orx
                 chat_session_id: "owner".into(),
                 state: "pending".into(),
                 monitoring_alerted: false,
+                monitoring_delivery_id: None,
             },
             crate::store::RunWakeup {
                 run: second,
                 chat_session_id: "owner".into(),
                 state: "pending".into(),
                 monitoring_alerted: false,
+                monitoring_delivery_id: None,
             },
         ]);
 
@@ -13830,6 +13924,7 @@ once it can see a run finish; until then each run keeps its current status."
         drop(store);
         let _ = std::fs::remove_dir_all(dir);
     }
+    include!("notification_recovery_tests.rs");
 }
 
 #[cfg(test)]
