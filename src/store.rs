@@ -915,6 +915,7 @@ impl Store {
                 requested_at      INTEGER NOT NULL,
                 claim_token       TEXT,
                 claimed_at        INTEGER,
+                claim_from_state  TEXT,
                 attempts          INTEGER NOT NULL DEFAULT 0,
                 finished_at       INTEGER
             );
@@ -1012,6 +1013,11 @@ impl Store {
             &conn,
             "persistent-side-chats-v1",
             &["ALTER TABLE chat_sessions ADD COLUMN side_parent_leaf_id TEXT"],
+        )?;
+        schema::migrate_columns(
+            &conn,
+            "spawn-claim-origin-v1",
+            &["ALTER TABLE chat_spawns ADD COLUMN claim_from_state TEXT"],
         )?;
         phase("columns");
         conn.execute_batch("CREATE TRIGGER IF NOT EXISTS delete_chat_invocation_identities AFTER DELETE ON chat_sessions BEGIN DELETE FROM native_invocation_identities WHERE session_id = OLD.id; END;")?;
@@ -1589,9 +1595,9 @@ impl Store {
         let stale = now - CHAT_SPAWN_CLAIM_TTL_MS;
         self.conn.execute(
             "UPDATE chat_spawns
-             SET state = CASE state WHEN 'starting' THEN 'pending' ELSE 'running' END,
+             SET state = CASE WHEN state = 'starting' OR claim_from_state = 'pending' THEN 'pending' ELSE 'running' END,
                  attempts = attempts + CASE state WHEN 'starting' THEN 1 ELSE 0 END,
-                 claim_token = NULL, claimed_at = NULL
+                 claim_token = NULL, claimed_at = NULL, claim_from_state = NULL
              WHERE state IN ('starting', 'waking') AND claimed_at < ?1
                AND NOT EXISTS (SELECT 1 FROM data_dir_move_lease WHERE id = 1)
                AND NOT EXISTS (
@@ -1644,7 +1650,8 @@ impl Store {
     ) -> Result<Option<String>> {
         let token = uuid::Uuid::new_v4().to_string();
         let claimed = self.conn.execute(
-            "UPDATE chat_spawns SET state = ?3, claim_token = ?4, claimed_at = ?5
+            "UPDATE chat_spawns
+             SET state = ?3, claim_token = ?4, claimed_at = ?5, claim_from_state = ?2
              WHERE session_id = ?1 AND state = ?2",
             params![session_id, from.as_str(), to.as_str(), token, now_ms()],
         )?;
@@ -1663,7 +1670,7 @@ impl Store {
     ) -> Result<bool> {
         let settled = self.conn.execute(
             "UPDATE chat_spawns
-             SET state = ?3, claim_token = NULL, claimed_at = NULL,
+             SET state = ?3, claim_token = NULL, claimed_at = NULL, claim_from_state = NULL,
                  attempts = attempts + CASE WHEN state = 'starting' AND ?3 = 'pending' THEN 1 ELSE 0 END
              WHERE session_id = ?1 AND claim_token = ?2",
             params![session_id, token, to.as_str()],
@@ -5504,6 +5511,148 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expired_spawn_wakeups_restore_their_original_delivery_path() {
+        for original in [ChatSpawnState::Pending, ChatSpawnState::Running] {
+            let dir =
+                std::env::temp_dir().join(format!("orx-spawn-origin-{}", uuid::Uuid::new_v4()));
+            let first = Store::open_at(dir.clone()).unwrap();
+            first
+                .create_chat_session(&chat_session_fixture("child"))
+                .unwrap();
+            first
+                .create_chat_spawn(&chat_spawn_fixture("child", "parent"))
+                .unwrap();
+            if original == ChatSpawnState::Running {
+                let token = first
+                    .claim_chat_spawn("child", ChatSpawnState::Pending, ChatSpawnState::Starting)
+                    .unwrap()
+                    .unwrap();
+                assert!(first.settle_chat_spawn("child", &token, original).unwrap());
+            }
+            first
+                .conn
+                .execute(
+                    "UPDATE chat_spawns SET attempts=3 WHERE session_id='child'",
+                    [],
+                )
+                .unwrap();
+            let old = first
+                .claim_chat_spawn("child", original, ChatSpawnState::Waking)
+                .unwrap()
+                .unwrap();
+            first
+                .conn
+                .execute(
+                    "UPDATE chat_spawns SET claimed_at=0 WHERE session_id='child'",
+                    [],
+                )
+                .unwrap();
+            drop(first);
+            // Recovery must preserve the path even after the claiming process is gone.
+            let second = Store::open_at(dir.clone()).unwrap();
+            second.prune_chat_spawns().unwrap();
+            assert_eq!(
+                second.list_chat_spawns(original).unwrap().len(),
+                1,
+                "wake-up recovery lost {original:?} origin"
+            );
+            assert_eq!(second.get_chat_spawn("child").unwrap().unwrap().attempts, 3);
+            assert!(!second
+                .settle_chat_spawn("child", &old, ChatSpawnState::Done)
+                .unwrap());
+            let current = second
+                .claim_chat_spawn("child", original, ChatSpawnState::Waking)
+                .unwrap()
+                .unwrap();
+            assert!(second
+                .settle_chat_spawn("child", &current, original)
+                .unwrap());
+            let origin: Option<String> = second
+                .conn
+                .query_row(
+                    "SELECT claim_from_state FROM chat_spawns WHERE session_id='child'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(origin.is_none());
+            let current = second
+                .claim_chat_spawn("child", original, ChatSpawnState::Waking)
+                .unwrap()
+                .unwrap();
+            assert!(second
+                .settle_chat_spawn("child", &current, ChatSpawnState::Done)
+                .unwrap());
+            let origin: Option<String> = second
+                .conn
+                .query_row(
+                    "SELECT claim_from_state FROM chat_spawns WHERE session_id='child'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(origin.is_none());
+            assert_eq!(second.get_chat_spawn("child").unwrap().unwrap().attempts, 3);
+            drop(second);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn spawn_claim_origin_migrates_old_rows_without_guessing_their_source() {
+        let dir = std::env::temp_dir().join(format!(
+            "orx-spawn-origin-migration-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let store = Store::open_at(dir.clone()).unwrap();
+        store
+            .create_chat_session(&chat_session_fixture("child"))
+            .unwrap();
+        store
+            .create_chat_spawn(&chat_spawn_fixture("child", "parent"))
+            .unwrap();
+        // Recreate a pre-origin row and remove only the new migration's marker.
+        store.conn.execute_batch("ALTER TABLE chat_spawns DROP COLUMN claim_from_state;
+            DELETE FROM product_schema_migrations WHERE name='spawn-claim-origin-v1';
+            UPDATE chat_spawns SET state='waking', claim_token='legacy-token', claimed_at=0, attempts=3;").unwrap();
+        drop(store);
+        for _ in 0..2 {
+            let store = Store::open_at(dir.clone()).unwrap();
+            let (origin, attempts, token): (Option<String>, i64, String) = store.conn.query_row(
+                "SELECT claim_from_state, attempts, claim_token FROM chat_spawns WHERE session_id='child'", [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+            assert!(origin.is_none());
+            assert_eq!(attempts, 3);
+            assert_eq!(token, "legacy-token");
+            assert_eq!(
+                store
+                    .list_chat_spawns(ChatSpawnState::Waking)
+                    .unwrap()
+                    .len(),
+                1
+            );
+            let applied: i64 = store.conn.query_row("SELECT COUNT(*) FROM product_schema_migrations WHERE name='spawn-claim-origin-v1'", [], |row| row.get(0)).unwrap();
+            assert_eq!(applied, 1);
+        }
+        let store = Store::open_at(dir.clone()).unwrap();
+        store.prune_chat_spawns().unwrap();
+        // Historical claims have no reliable origin: preserve their existing fallback.
+        assert_eq!(
+            store
+                .list_chat_spawns(ChatSpawnState::Running)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(store.get_chat_spawn("child").unwrap().unwrap().attempts, 3);
+        assert!(!store
+            .settle_chat_spawn("child", "legacy-token", ChatSpawnState::Done)
+            .unwrap());
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
