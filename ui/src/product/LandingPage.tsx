@@ -5,6 +5,7 @@ import { ArrowRight, ArrowUpRight, ArrowDown, Play, Pause, X, Check, CircleCheck
 import type { LucideIcon } from "lucide-react";
 import { stages, mechanisms, trinity, prompts } from "./landingContent";
 import { ResearchDiagram } from "./LandingResearchDiagram";
+import { BenchmarkComparison } from "./BenchmarkComparison";
 import { landingAsset } from "./landingAssets";
 import { useAuthSession } from "./AuthSession";
 import "./landing.css";
@@ -435,35 +436,7 @@ function Trinity() {
   );
 }
 function Benchmark() {
-  return (
-    <section className="section benchmark-editorial" id="benchmark">
-      <div className="benchmark-intro">
-        <span className="eyebrow">END-TO-END SCIENTIFIC RESEARCH</span>
-        <h2>ResearchClawBench</h2>
-        <p className="benchmark-summary">10 个科学领域，40 个真实科研问题</p>
-        <p className="benchmark-description">
-          从研究规划、代码实现到实验验证，
-          <br />
-          以端到端科研任务检验智能体的综合能力。
-        </p>
-      </div>
-      <span className="benchmark-slash" aria-hidden="true">
-        /
-      </span>
-      <div className="benchmark-achievement">
-        <span className="eyebrow">BENCHMARK ACHIEVEMENT</span>
-        <h3>综合第一</h3>
-        <p className="benchmark-five">
-          <strong>5</strong> 个学科第一
-        </p>
-        <div className="benchmark-subjects">
-          {["天文", "化学", "能源", "信息科学", "物理"].map((x) => (
-            <span key={x}>{x}</span>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
+  return <BenchmarkComparison />;
 }
 function PromptWall({ onPrompt }: { onPrompt: (title: string, body: string) => void }) {
   const ref = useRef<HTMLDivElement>(null);

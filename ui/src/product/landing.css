@@ -1973,159 +1973,6 @@
   white-space: nowrap;
   border: 0;
 }
-.product-landing .benchmark-editorial {
-  display: grid;
-  grid-template-columns: minmax(0, 1.1fr) 115px minmax(0, 0.9fr);
-  gap: 30px;
-  align-items: center;
-  padding-top: 125px;
-  padding-bottom: 35px;
-}
-.product-landing .benchmark-intro h2 {
-  font-size: 35px;
-  letter-spacing: -1.5px;
-  font-weight: 550;
-  line-height: 1.3;
-  margin: 19px 0 24px;
-}
-.product-landing .benchmark-summary {
-  font-size: 18px;
-  letter-spacing: 0.1px;
-  color: var(--landing-palette-142);
-  line-height: 1.7;
-  margin: 0 0 15px;
-}
-.product-landing .benchmark-description {
-  font-size: 13px;
-  line-height: 1.95;
-  color: var(--landing-palette-143);
-  margin: 0;
-}
-.product-landing .benchmark-slash {
-  font-size: clamp(180px, 21vw, 270px);
-  font-family: Arial, sans-serif;
-  font-weight: 200;
-  line-height: 1;
-  color: var(--landing-palette-144);
-  text-align: center;
-  transform: scaleX(0.65);
-  user-select: none;
-}
-.product-landing .benchmark-achievement {
-  padding-left: 10px;
-}
-.product-landing .benchmark-achievement h3 {
-  font-size: 62px;
-  letter-spacing: 2px;
-  line-height: 1.2;
-  margin: 20px 0 18px;
-  font-weight: 550;
-  color: var(--landing-palette-145);
-}
-.product-landing .benchmark-five {
-  font-size: 24px;
-  font-weight: 400;
-  color: var(--landing-palette-146);
-  margin: 0;
-}
-.product-landing .benchmark-five strong {
-  font-weight: 500;
-  color: var(--landing-palette-147);
-}
-.product-landing .benchmark-subjects {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 11px 20px;
-  margin-top: 26px;
-  color: var(--landing-palette-148);
-  font-size: 12px;
-}
-.product-landing .benchmark-subjects span {
-  white-space: nowrap;
-}
-@media (max-width: 1000px) and (min-width: 761px) {
-  .product-landing .benchmark-editorial {
-    grid-template-columns: 1.1fr 70px 1fr;
-    gap: 14px;
-  }
-  .product-landing .benchmark-intro h2 {
-    font-size: 28px;
-  }
-  .product-landing .benchmark-summary {
-    font-size: 15px;
-  }
-  .product-landing .benchmark-achievement h3 {
-    font-size: 49px;
-  }
-  .product-landing .benchmark-subjects {
-    gap: 10px 14px;
-  }
-}
-@media (max-width: 760px) {
-  .product-landing .advantage-art {
-    border-radius: 17px;
-  }
-  .product-landing .trinity-layout {
-    gap: 25px;
-    padding: 0;
-  }
-  .product-landing .trinity-illustration {
-    max-width: 390px;
-  }
-  .product-landing .trinity-art-image {
-    border-radius: 20px;
-  }
-  .product-landing .benchmark-editorial {
-    grid-template-columns: minmax(0, 1.1fr) 27px minmax(0, 1fr);
-    gap: 9px;
-    padding-top: 75px;
-    padding-bottom: 15px;
-  }
-  .product-landing .benchmark-intro .eyebrow,
-  .product-landing .benchmark-achievement .eyebrow {
-    font-size: 7px;
-    letter-spacing: 0.7px;
-    line-height: 1.8;
-  }
-  .product-landing .benchmark-intro h2 {
-    font-size: clamp(15px, 4vw, 23px);
-    letter-spacing: -0.65px;
-    margin: 13px 0 15px;
-  }
-  .product-landing .benchmark-summary {
-    font-size: 12px;
-    line-height: 1.8;
-    margin-bottom: 10px;
-  }
-  .product-landing .benchmark-description {
-    font-size: 10px;
-    line-height: 1.85;
-  }
-  .product-landing .benchmark-description br {
-    display: none;
-  }
-  .product-landing .benchmark-slash {
-    font-size: 150px;
-    transform: scaleX(0.55);
-  }
-  .product-landing .benchmark-achievement {
-    padding-left: 0;
-  }
-  .product-landing .benchmark-achievement h3 {
-    font-size: clamp(28px, 7.5vw, 43px);
-    letter-spacing: 0;
-    margin: 17px 0 12px;
-    white-space: nowrap;
-  }
-  .product-landing .benchmark-five {
-    font-size: 16px;
-  }
-  .product-landing .benchmark-subjects {
-    font-size: 10px;
-    gap: 8px 12px;
-    margin-top: 17px;
-  }
-}
 @media (prefers-reduced-motion: reduce) {
   .product-landing .advantage-art {
     animation: none;
@@ -2140,7 +1987,78 @@
   }
 }
 
+.product-landing .benchmark-comparison { padding-top: 115px; padding-bottom: 45px; }
+.product-landing .benchmark-comparison-top { display: grid; grid-template-columns: .78fr 1.35fr; align-items: center; gap: 65px; }
+.product-landing .benchmark-name { margin: 18px 0 16px; color: var(--landing-palette-145); font-size: 17px; letter-spacing: -.45px; }
+.product-landing .benchmark-copy h2 { margin: 0; color: var(--landing-palette-1); font-size: clamp(27px, 3vw, 38px); font-weight: 550; line-height: 1.55; letter-spacing: -1.2px; }
+.product-landing .benchmark-lead { margin: 21px 0; color: var(--landing-palette-142); font-size: 14px; line-height: 1.95; }
+.product-landing .benchmark-source { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--landing-palette-145); }
+.product-landing .benchmark-chart { margin: 0; min-width: 0; padding: 26px 28px 18px; border-radius: 24px; background: linear-gradient(150deg, var(--landing-palette-130), var(--landing-palette-2)); border: 1px solid var(--landing-palette-26); }
+.product-landing .benchmark-chart h3 { margin: 0 0 8px; font-size: 18px; line-height: 1.5; font-weight: 550; letter-spacing: -.5px; }
+.product-landing .benchmark-chart figcaption p { margin: 0; font-size: 12px; color: var(--landing-palette-127); }
+.product-landing .benchmark-plot { position: relative; margin: 27px 0 0; height: 262px; padding-left: 29px; }
+.product-landing .benchmark-grid { position: absolute; inset: 0 0 42px; display: flex; flex-direction: column; justify-content: space-between; pointer-events: none; }
+.product-landing .benchmark-grid span { display: block; height: 1px; border-top: 1px solid var(--landing-palette-30); color: var(--landing-palette-128); font-size: 9px; padding-top: 4px; }
+.product-landing .benchmark-columns { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); height: 100%; gap: 20px; position: relative; }
+.product-landing .benchmark-column { min-width: 0; display: flex; flex-direction: column; }
+.product-landing .benchmark-bar-space { height: 220px; display: flex; align-items: flex-end; justify-content: center; gap: 4px; }
+.product-landing .benchmark-bar { position: relative; height: var(--bar-height); width: 20px; border-radius: 4px 4px 0 0; border: 0; padding: 0; min-height: 8px; background: linear-gradient(180deg, var(--landing-palette-19), var(--landing-palette-3)); box-shadow: 0 8px 20px var(--landing-palette-25); transition: filter .2s ease; }
+.product-landing .benchmark-bar.product-0, .product-landing .benchmark-swatch.product-0 { background: var(--landing-benchmark-mobile); }
+.product-landing .benchmark-bar.product-1, .product-landing .benchmark-swatch.product-1 { background: var(--landing-benchmark-science); }
+.product-landing .benchmark-bar.product-2, .product-landing .benchmark-swatch.product-2 { background: var(--landing-benchmark-claude); }
+.product-landing .benchmark-bar.product-3, .product-landing .benchmark-swatch.product-3 { background: var(--landing-benchmark-codex); }
+.product-landing .benchmark-bar.product-4, .product-landing .benchmark-swatch.product-4 { background: var(--landing-benchmark-claw); }
+.product-landing .benchmark-column:hover .benchmark-bar { filter: brightness(1.08); }
+.product-landing .benchmark-bar strong { position: absolute; bottom: calc(100% + 11px); left: 50%; transform: translateX(-50%); font-size: clamp(19px, 2vw, 27px); font-weight: 550; letter-spacing: -1.3px; color: var(--landing-palette-145); white-space: nowrap; }
+.product-landing .benchmark-bar strong span { font-size: 13px; margin-left: 2px; letter-spacing: 0; }
+.product-landing .benchmark-product { padding-top: 15px; color: var(--landing-palette-142); font-size: 11px; text-align: center; white-space: nowrap; }
+.product-landing .benchmark-chart-note { margin: 13px 0 0; color: var(--landing-palette-128); font-size: 10px; line-height: 1.7; }
+.product-landing .benchmark-legend { display: flex; flex-wrap: wrap; gap: 7px 13px; margin-top: 14px; }
+.product-landing .benchmark-legend > button { display: inline-flex; gap: 6px; align-items: center; color: var(--landing-palette-142); font-size: 10px; border: 0; padding: 3px 0; background: none; }
+.product-landing .benchmark-legend > button[aria-pressed="false"] { opacity: .35; text-decoration: line-through; }
+.product-landing .benchmark-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.product-landing .benchmark-overall { margin-top: 37px; padding-top: 26px; border-top: 1px solid var(--landing-palette-30); display: grid; grid-template-columns: 1.1fr repeat(4, 1fr); gap: 20px; align-items: center; }
+.product-landing .benchmark-overall-label strong { display: block; font-size: 15px; font-weight: 550; }
+.product-landing .benchmark-overall-label span { display: block; font-size: 10px; color: var(--landing-palette-128); margin-top: 8px; }
+.product-landing .benchmark-metric { padding-left: 20px; border-left: 1px solid var(--landing-palette-30); }
+.product-landing .benchmark-metric > span { display: block; color: var(--landing-palette-142); font-size: 11px; }
+.product-landing .benchmark-metric > strong { display: block; margin-top: 10px; color: var(--landing-palette-145); font-size: 30px; font-weight: 500; letter-spacing: -1px; }
+.product-landing .benchmark-metric small { font-size: 15px; margin-left: 3px; }
+@media (max-width: 1000px) { .product-landing .benchmark-comparison-top { gap: 28px; grid-template-columns: .8fr 1.2fr; } .product-landing .benchmark-chart { padding: 24px 20px 16px; } .product-landing .benchmark-columns { gap: 15px; }  }
+@media (max-width: 760px) {
+  .product-landing .advantage-art { border-radius: 17px; }
+  .product-landing .trinity-layout { gap: 25px; padding: 0; }
+  .product-landing .trinity-illustration { max-width: 390px; }
+  .product-landing .trinity-art-image { border-radius: 20px; }
+  .product-landing .benchmark-comparison { padding-top: 75px; padding-bottom: 20px; }
+  .product-landing .benchmark-comparison-top { grid-template-columns: 1fr; gap: 27px; }
+  .product-landing .benchmark-copy h2 { font-size: 30px; }
+  .product-landing .benchmark-lead { margin: 16px 0; font-size: 13px; }
+  .product-landing .benchmark-chart { padding: 25px 18px 18px; border-radius: 20px; }
+  .product-landing .benchmark-chart h3 { font-size: 16px; }
+  .product-landing .benchmark-columns { gap: 14px; }
+  .product-landing .benchmark-bar strong { font-size: 23px; }
+  .product-landing .benchmark-product { font-size: 10px; }
+  .product-landing .benchmark-columns { gap: 9px; }
+  .product-landing .benchmark-bar { width: 11px; }
+  .product-landing .benchmark-bar-space { gap: 2px; }
+  .product-landing .benchmark-overall { grid-template-columns: repeat(2, 1fr); gap: 23px 15px; }
+  .product-landing .benchmark-overall-label { grid-column: 1 / -1; }
+  .product-landing .benchmark-metric { padding-left: 14px; }
+  .product-landing .benchmark-metric > strong { font-size: 28px; }
+}
+
 .product-landing { color-scheme: light; position: relative; isolation: isolate; line-height: normal; }
 .product-landing .button:disabled, .product-landing .nav-cta:disabled { opacity: .6; cursor: wait; }
 .product-landing section[id] { scroll-margin-top: 100px; }
 .product-landing .site-dialog { margin: auto; }
+
+.product-landing .benchmark-bar { overflow: visible; transition: opacity .2s, filter .2s, box-shadow .2s; }
+.product-landing .benchmark-bar[aria-pressed="true"] { box-shadow: 0 0 0 3px var(--landing-palette-2), 0 0 0 5px var(--landing-palette-145); z-index: 2; }
+.product-landing .benchmark-tooltip { display: none; pointer-events: none; position: absolute; left: 50%; bottom: calc(100% + 9px); transform: translateX(-50%); padding: 9px 11px; border-radius: 8px; background: var(--landing-palette-2); border: 1px solid var(--landing-palette-30); box-shadow: 0 8px 25px var(--landing-palette-13); color: var(--landing-palette-142); font-size: 10px; line-height: 1.5; white-space: nowrap; z-index: 4; }
+.product-landing .benchmark-tooltip strong { display: block; position: static; transform: none; color: var(--landing-palette-1); font-size: 15px; font-weight: 600; letter-spacing: 0; }
+.product-landing .benchmark-bar:hover .benchmark-tooltip, .product-landing .benchmark-bar:focus-visible .benchmark-tooltip { display: block; }
+.product-landing .benchmark-selection { min-height: 63px; margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--landing-palette-30); }
+.product-landing .benchmark-selection > strong { display: flex; align-items: center; gap: 8px; color: var(--landing-palette-142); font-size: 11px; font-weight: 500; }
+.product-landing .benchmark-selection > strong > span { margin-left: auto; color: var(--landing-palette-145); font-size: 16px; }
+.product-landing .benchmark-selection p { margin: 7px 0 0; color: var(--landing-palette-128); font-size: 10px; line-height: 1.7; }

@@ -813,4 +813,9 @@
   --landing-palette-146: #7285a2;
   --landing-palette-147: #3978df;
   --landing-palette-148: #7e91ad;
+  --landing-benchmark-mobile: #3275ed;
+  --landing-benchmark-science: #6f96c9;
+  --landing-benchmark-claude: #93b4dc;
+  --landing-benchmark-codex: #b1c8e3;
+  --landing-benchmark-claw: #d0deef;
 }
