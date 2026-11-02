@@ -2978,6 +2978,7 @@ mod tests {
     include!("research_debt_tests.rs");
     include!("research_evidence_tests.rs");
     include!("research_claim_tests.rs");
+    include!("material_read_event_tests.rs");
     include!("research_delivery_tests.rs");
     include!("research_material_tests.rs");
     include!("research_lifecycle_tests.rs");

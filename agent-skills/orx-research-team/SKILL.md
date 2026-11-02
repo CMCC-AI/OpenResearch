@@ -53,6 +53,18 @@ When a `research-materials` context is present, use `orx materials list` and
 `orx materials read` (or the original files with an appropriate tool). The platform
 registers file identity and parsing status; experts own scientific interpretation.
 Only audit inputs relevant to the task. Never equate `ready` with fully reviewed.
+`orx materials read` now returns `readEventId`. Query receipts with
+`orx materials events --package <package-id> --limit 50` or `--study <study-id>`;
+use `--after <nextAfter>` for the next page, and specify both package and source
+when filtering an SRC ID. Receipts preserve original hash, actual selected lines
+(and PDF page), output-content hash, session/task and bound plan where known.
+`outcome=prepared` means extraction succeeded; `outputState=written` only confirms
+writing to the CLI output stream. Pending/failed output, zero returned lines and
+failed extraction are not evidence of completed reading. These records cannot
+prove model receipt, understanding or independent review, and do not cover
+browser previews, downloads, older CLI versions or external tools. Check
+`inPlanInputs`; out-of-plan material is not silently added to the approved input
+set. Reading receipts do not grant experiment permission or invalidate approvals.
 Record which sources/pages/cells were read, excluded with reasons, or unreadable
 in the task's declared report. Explicit full-review requests require complete
 coverage, not just search hits. Cite package ID, SRC ID, content hash and location.

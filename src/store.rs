@@ -8,6 +8,7 @@
 //! Data dir: `$ORX_DATA_DIR`, else `$XDG_DATA_HOME/openresearch`, else
 //! `~/.local/share/openresearch`.
 
+pub(crate) mod material_reads;
 pub(crate) mod research;
 mod research_metrics;
 mod schema;
@@ -1096,6 +1097,7 @@ impl Store {
         // it again before it can reach a CLI.
         phase("compatibility");
         research::migrate(&conn)?;
+        material_reads::migrate(&conn)?;
         migrate_chat_spawns(&conn)?;
         phase("research-and-spawns");
         Ok(Self {

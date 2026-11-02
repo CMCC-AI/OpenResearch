@@ -1,10 +1,12 @@
 //! Common material reader for every coding-agent harness.
+use crate::store::material_reads::ReadFilter;
 use crate::{
     error::{anyhow, Result},
     local::materials,
     store::Store,
 };
 use clap::{Args, Subcommand};
+use std::io::Write;
 #[derive(Args, Debug)]
 pub struct MaterialsArgs {
     /// Project id for use outside an agent session.
@@ -15,6 +17,21 @@ pub struct MaterialsArgs {
 }
 #[derive(Subcommand, Debug)]
 pub enum MaterialsCommand {
+    /// Query bounded reading receipts; these do not assert model understanding.
+    Events {
+        #[arg(long)]
+        package: Option<String>,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        study: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        after: i64,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
     /// Preview abandoned unsealed uploads; sealed inputs are always retained.
     Gc {
         #[arg(long, default_value_t = 7)]
@@ -45,11 +62,16 @@ pub enum MaterialsCommand {
 }
 pub async fn run(args: MaterialsArgs) -> Result<()> {
     let store = Store::open()?;
-    let session_project = crate::local::chat::launching_chat_session()
-        .map(|id| store.get_chat_session(&id))
-        .transpose()?
-        .flatten()
-        .map(|s| s.project_id);
+    let session = crate::local::chat::launching_chat_session();
+    let session_project = session
+        .as_ref()
+        .map(|id| -> Result<String> {
+            Ok(store
+                .get_chat_session(id)?
+                .ok_or_else(|| anyhow!("agent session not found"))?
+                .project_id)
+        })
+        .transpose()?;
     if let (Some(session), Some(requested)) = (&session_project, &args.project) {
         if session != requested {
             return Err(anyhow!("不能跨项目读取材料"));
@@ -64,6 +86,24 @@ pub async fn run(args: MaterialsArgs) -> Result<()> {
             .ok_or_else(|| anyhow!("project not found"))?;
     }
     let result = match args.command {
+        MaterialsCommand::Events {
+            package,
+            source,
+            session,
+            study,
+            after,
+            limit,
+        } => store.material_read_events(
+            &project,
+            &ReadFilter {
+                package,
+                source,
+                session,
+                study,
+            },
+            after,
+            limit,
+        )?,
         MaterialsCommand::Gc { days, apply } => {
             if apply && crate::local::chat::launching_chat_session().is_some() {
                 return Err(anyhow!(
@@ -93,8 +133,46 @@ pub async fn run(args: MaterialsArgs) -> Result<()> {
             offset,
             limit,
             page,
-        } => materials::read(&package, &project, &source, offset, limit, page).await?,
+        } => {
+            let context = store.material_read_context(&project, session.as_deref(), &package)?;
+            materials::read_recorded(
+                &store,
+                context,
+                materials::ReadRequest {
+                    package,
+                    source,
+                    offset,
+                    limit,
+                    page,
+                },
+            )
+            .await?
+        }
     };
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    write_result(&store, &project, &result, std::io::stdout().lock())
+}
+
+pub(crate) fn write_result(
+    store: &Store,
+    project: &str,
+    result: &serde_json::Value,
+    mut writer: impl Write,
+) -> Result<()> {
+    let output = format!("{}\n", serde_json::to_string_pretty(result)?);
+    let written = writer
+        .write_all(output.as_bytes())
+        .and_then(|_| writer.flush());
+    if let Some(event) = result["readEventId"].as_str() {
+        store.material_read_output(
+            project,
+            event,
+            written
+                .as_ref()
+                .err()
+                .map(|error| error.to_string())
+                .as_deref(),
+        )?;
+    }
+    written?;
     Ok(())
 }
