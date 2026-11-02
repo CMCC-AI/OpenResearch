@@ -576,73 +576,175 @@ pub async fn read(
     limit: usize,
     page: Option<u32>,
 ) -> Result<serde_json::Value> {
-    let package = get(id, project)?;
+    prepare_read_at(&root(), id, project, source)?
+        .read(offset, limit, page)
+        .await
+}
+
+struct PreparedRead {
+    id: String,
+    entry: Entry,
+    original: PathBuf,
+    bytes: Vec<u8>,
+}
+
+fn prepare_read_at(root: &Path, id: &str, project: &str, source: &str) -> Result<PreparedRead> {
+    let package = read_at(root, id, project)?;
+    if !package.ready {
+        return Err(anyhow!("material upload is incomplete"));
+    }
     let entry = package
         .files
-        .iter()
-        .find(|f| f.id == source)
+        .into_iter()
+        .find(|file| file.id == source)
         .ok_or_else(|| anyhow!("unknown source"))?;
-    let original = original(id, project, source)?;
-    let text = match entry.format.as_str() {
-        "text" => fs::read_to_string(&original)?,
-        "notebook" => notebook(&fs::read(&original)?)?,
-        "pdf" => {
-            let page =
-                page.ok_or_else(|| anyhow!("PDF 请指定 --page <页码>，逐页读取并记录覆盖范围"))?;
-            if page == 0 {
-                return Err(anyhow!("page starts at 1"));
-            }
-            let mut command = tokio::process::Command::new("pdftotext");
-            command
-                .args(["-f", &page.to_string(), "-l", &page.to_string(), "-layout"])
-                .arg(&original)
-                .arg("-")
-                .kill_on_drop(true);
-            let out = tokio::time::timeout(std::time::Duration::from_secs(30), command.output()).await.map_err(|_| anyhow!("PDF 解析超时"))?.map_err(|e| anyhow!("PDF 文本解析不可用：{e}。执行端需安装 pdftotext，或用已配置的 PDF/视觉工具读取原件。"))?;
-            if !out.status.success() {
-                return Err(anyhow!(
-                    "PDF 读取失败：{}",
-                    String::from_utf8_lossy(&out.stderr)
-                ));
-            }
-            let text = String::from_utf8(out.stdout)?;
-            if text.trim().is_empty() {
-                return Err(anyhow!(
-                    "本页没有提取到文本；不能视为已读，需要 OCR 或视觉读取"
-                ));
-            }
-            text
+    let (original, bytes) = verified_original_bytes(&dir_at(root, id)?, &entry)?;
+    Ok(PreparedRead {
+        id: id.into(),
+        entry,
+        original,
+        bytes,
+    })
+}
+
+impl PreparedRead {
+    async fn read(
+        &self,
+        offset: usize,
+        limit: usize,
+        page: Option<u32>,
+    ) -> Result<serde_json::Value> {
+        if offset == 0 || limit == 0 || limit > 1000 {
+            return Err(anyhow!("offset 从 1 开始，limit 为 1–1000"));
         }
-        _ => {
+        let text = match self.entry.format.as_str() {
+            "text" => std::borrow::Cow::Borrowed(std::str::from_utf8(&self.bytes)?),
+            "notebook" => std::borrow::Cow::Owned(notebook(&self.bytes)?),
+            "pdf" => {
+                let page = page
+                    .ok_or_else(|| anyhow!("PDF 请指定 --page <页码>，逐页读取并记录覆盖范围"))?;
+                if page == 0 {
+                    return Err(anyhow!("page starts at 1"));
+                }
+                std::borrow::Cow::Owned(
+                    extract_pdf(
+                        tokio::process::Command::new("pdftotext"),
+                        &self.bytes,
+                        page,
+                        std::time::Duration::from_secs(30),
+                    )
+                    .await?,
+                )
+            }
+            _ => {
+                return Err(anyhow!(
+                    "该格式需要专用或视觉读取工具；原件：{}",
+                    self.original.display()
+                ))
+            }
+        };
+        let total_lines = text.lines().count();
+        if offset > total_lines.max(1) {
+            return Err(anyhow!("offset 超出内容范围"));
+        }
+        let mut content = String::new();
+        let mut count = 0;
+        for (i, line) in text.lines().enumerate().skip(offset - 1).take(limit) {
+            let prefix = format!("{}: ", i + 1);
+            let needed = prefix.len() + line.len() + 1;
+            if content.len() + needed > 64 * 1024 {
+                if count == 0 {
+                    return Err(anyhow!("单行超过 64 KiB，请通过原件使用专用解析工具"));
+                }
+                break;
+            }
+            content.push_str(&prefix);
+            content.push_str(line);
+            content.push('\n');
+            count += 1;
+        }
+        let next = offset + count;
+        Ok(
+            serde_json::json!({"packageId":self.id,"source":self.entry.id,"path":self.entry.path,"sha256":self.entry.sha256,"page":page,"offset":offset,"lineCount":count,"totalLines":total_lines,"nextOffset":(next <= total_lines).then_some(next),"content":content,"original":self.original}),
+        )
+    }
+}
+
+/// Feed the verified snapshot to Poppler, never reopen the mutable original path.
+/// All pipes run together; bounded reads and the common deadline also cover input
+/// writes. Dropping the exchange on error/timeout kills the parser process.
+async fn extract_pdf(
+    mut command: tokio::process::Command,
+    bytes: &[u8],
+    page: u32,
+    deadline: std::time::Duration,
+) -> Result<String> {
+    use std::process::Stdio;
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+
+    async fn bounded(reader: impl AsyncRead + Unpin, limit: usize, label: &str) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        reader
+            .take(limit as u64 + 1)
+            .read_to_end(&mut bytes)
+            .await?;
+        if bytes.len() > limit {
+            return Err(anyhow!("{label}超过读取上限，请使用专用解析工具"));
+        }
+        Ok(bytes)
+    }
+    let exchange = async {
+        let mut child = command
+            .args(["-f", &page.to_string(), "-l", &page.to_string(), "-layout", "-", "-"])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .kill_on_drop(true).spawn()
+            .map_err(|e| anyhow!("PDF 文本解析不可用：{e}。执行端需安装 pdftotext，或用已配置的 PDF/视觉工具读取原件。"))?;
+        let mut input = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("PDF 输入通道不可用"))?;
+        let output = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("PDF 输出通道不可用"))?;
+        let errors = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow!("PDF 诊断通道不可用"))?;
+        let send = async {
+            if let Err(error) = input.write_all(bytes).await {
+                // A parser can close stdin early on an invalid PDF; retain its
+                // actual exit status and diagnostics instead of a broken pipe.
+                if error.kind() != std::io::ErrorKind::BrokenPipe {
+                    return Err(error.into());
+                }
+            }
+            drop(input);
+            Ok::<_, crate::error::Error>(())
+        };
+        let (text, errors, status, ()) = tokio::try_join!(
+            bounded(output, 8 * 1024 * 1024, "PDF 单页文本（8 MiB）"),
+            bounded(errors, 64 * 1024, "PDF 诊断（64 KiB）"),
+            async { Ok::<_, crate::error::Error>(child.wait().await?) },
+            send,
+        )?;
+        if !status.success() {
             return Err(anyhow!(
-                "该格式需要专用或视觉读取工具；原件：{}",
-                original.display()
-            ))
+                "PDF 读取失败：{}",
+                String::from_utf8_lossy(&errors)
+            ));
         }
+        let text = String::from_utf8(text)?;
+        if text.trim().is_empty() {
+            return Err(anyhow!(
+                "本页没有提取到文本；不能视为已读，需要 OCR 或视觉读取"
+            ));
+        }
+        Ok(text)
     };
-    if offset == 0 || limit == 0 || limit > 1000 {
-        return Err(anyhow!("offset 从 1 开始，limit 为 1–1000"));
-    }
-    let lines: Vec<_> = text.lines().collect();
-    if offset > lines.len().max(1) {
-        return Err(anyhow!("offset 超出内容范围"));
-    }
-    let mut content = String::new();
-    let mut count = 0;
-    for (i, line) in lines.iter().enumerate().skip(offset - 1).take(limit) {
-        if content.len() + line.len() > 64 * 1024 {
-            if count == 0 {
-                return Err(anyhow!("单行超过 64 KiB，请通过原件使用专用解析工具"));
-            }
-            break;
-        }
-        content.push_str(&format!("{}: {}\n", i + 1, line));
-        count += 1;
-    }
-    let next = offset + count;
-    Ok(
-        serde_json::json!({"packageId":id,"source":source,"path":entry.path,"sha256":entry.sha256,"page":page,"offset":offset,"totalLines":lines.len(),"nextOffset":(next <= lines.len()).then_some(next),"content":content,"original":original}),
-    )
+    tokio::time::timeout(deadline, exchange)
+        .await
+        .map_err(|_| anyhow!("PDF 解析超时"))?
 }
 
 pub fn context_for(ids: &[String], project: &str) -> Result<String> {
@@ -717,6 +819,9 @@ pub fn collect_abandoned(project: &str, days: u32, apply: bool) -> Result<storag
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    include!("materials/read_tests.rs");
+
     #[test]
     fn material_preview_preserves_paths_versions_and_safe_content_types() {
         let root = temp();
