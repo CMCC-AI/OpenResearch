@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { composerStashContent, getComposerStashStore } from "../src/composerStash.ts";
+import { composerStashContent, getComposerStashStore, getResearchSubmissionStore } from "../src/composerStash.ts";
 
 test("an empty composer leaves nothing behind", () => {
   const live = { draft: "", attachments: [], annotations: [] };
@@ -42,4 +42,21 @@ test("route remounts retain composer content while a runtime change clears it", 
   assert.equal(nextRuntime.size, 0);
   first.set("outgoing:session", { draft: "旧运行时退出时保存的内容", attachments: [], annotations: [] });
   assert.equal(nextRuntime.size, 0);
+});
+
+test("only explicit submissions send; restoring drafts and switching runtimes cannot replay them", () => {
+  const draft = { draft: "开始研究", attachments: [], annotations: [], workMode: "team" };
+  getComposerStashStore(20).set("project:new", draft);
+  const submissions = getResearchSubmissionStore(20);
+  assert.equal(submissions.has("project:new"), false);
+  submissions.set("project:new", draft);
+  assert.equal(getResearchSubmissionStore(20).get("project:new"), draft);
+  assert.equal(submissions.has("other:new"), false);
+  submissions.delete("project:new");
+  assert.equal(getResearchSubmissionStore(20).has("project:new"), false);
+  assert.equal(getComposerStashStore(20).get("project:new"), draft);
+  submissions.set("project:new", draft);
+  assert.equal(getResearchSubmissionStore(21).size, 0);
+  submissions.set("old:new", draft);
+  assert.equal(getResearchSubmissionStore(21).size, 0);
 });

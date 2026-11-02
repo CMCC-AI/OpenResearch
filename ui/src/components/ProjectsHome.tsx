@@ -115,6 +115,7 @@ function LiveDot() {
 
 export function ProjectsHome({
   projects,
+  starting = false,
   onOpen,
   onCreated,
   onDeleted,
@@ -124,6 +125,7 @@ export function ProjectsHome({
   onResume,
 }: {
   projects: Project[];
+  starting?: boolean;
   onOpen: (id: string) => void;
   onCreated: (project: Project, githubPublicationError: string | null, draft?: ComposerStash) => void;
   onDeleted: (id: string) => void;
@@ -150,7 +152,7 @@ export function ProjectsHome({
     <div className="home research-home flex-1 min-h-0 overflow-y-auto [scrollbar-gutter:stable_both-edges] bg-canvas">
       <div className="home-inner research-home-inner max-w-294 my-0 mx-auto pt-10 px-7 pb-16 [@media((max-width:_960px))]:px-5 max-sm:px-4">
         {existingProject && <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-background p-3 text-sm"><span>继续研究：{existingProject.name}</span><Button size="small" onClick={() => void navigate({ to: "/projects", search: {} })}>切换为新建项目</Button></div>}
-        <ResearchStartPanel preferredAgent={preferredAgent} projects={projects} activity={activity.data ?? []} project={existingProject} onSelectProject={(id) => void navigate({ to: "/projects", search: id ? { project: id } : {} })} workMode={workMode} onWorkModeChange={setWorkMode} draft={draft} onDraftChange={setDraft} attachments={attachments} onAttachmentsChange={setAttachments} onStart={() => existingProject ? onResume(existingProject, { draft, attachments, annotations: [], workMode }) : setModalOpen(true)} onError={(message) => showAlert(message, "error")} />
+        <ResearchStartPanel starting={starting} preferredAgent={preferredAgent} projects={projects} activity={activity.data ?? []} project={existingProject} onSelectProject={(id) => void navigate({ to: "/projects", search: id ? { project: id } : {} })} workMode={workMode} onWorkModeChange={setWorkMode} draft={draft} onDraftChange={setDraft} attachments={attachments} onAttachmentsChange={setAttachments} onStart={() => existingProject ? onResume(existingProject, { draft, attachments, annotations: [], workMode }) : setModalOpen(true)} onError={(message) => showAlert(message, "error")} />
         <div className="research-home-sections grid grid-cols-[minmax(0,1.05fr)_minmax(0,1.8fr)] gap-8 [@media((max-width:_1200px))]:grid-cols-1">
           <section aria-labelledby="continue-research-title" className="min-w-0">
             <h2 id="continue-research-title" className="product-page-section-title mt-0 mb-5 flex items-center gap-2">继续研究<ChevronRight size={20} className="text-muted" /></h2>

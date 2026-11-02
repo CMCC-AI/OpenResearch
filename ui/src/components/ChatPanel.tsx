@@ -3,15 +3,14 @@ import { useOptionalAuthSession } from "../product/AuthSession";
 import { pendingJournal, pendingOwner, pendingScope, pendingKey, rescopePendingSignature, recoveredSettings, PendingConflictError, beginPendingFlight, hasPendingFlight, subscribePendingFlights, samePendingComposer, type PendingSubmission } from "../pendingSubmissions";
 import { reconcileSubmission } from "../chatSubmission";
 import { MaterialChip } from "./MaterialChip";
-import { resolveStarterPrompts } from "../starterPrompts";
-import { isNewChatLayout, isChatLayoutPending } from "../chatLayout";
+import { isChatLayoutPending } from "../chatLayout";
 import { ChatLoadingShell } from "./ChatLoadingShell";
 import { pendingMaterials, droppedMaterials, prepareMaterialAttachments, validateMaterialFiles } from "../materialUploads";
 import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { createClientTurnId } from "../clientTurnId";
 import { SessionFilterMenu, SessionRow, TitleReveal, TITLE_REVEAL_CLEAR_MS, type SessionFilter } from "./NativeSidebarRows";
 import { ResearchNavigationMore } from "./ResearchNavigation";
-import { ProductSidebar, ProductWordmark } from "../product/ProductNav";
+import { ProductSidebar } from "../product/ProductNav";
 import { isDemoProjectId } from "../api";
 import { WorkModeSwitch, type WorkMode } from "./WorkModeSwitch";
 import { getResearchStudy } from "../api";
@@ -21,7 +20,6 @@ import { ResearchConversationStatus } from "./ResearchConversationStatus";
 import { expertSessionContext, isSidebarSession, mainSessionId } from "../researchSessions";
 import { ExpertConversationHeader } from "./ExpertConversationHeader";
 import { readTranscriptScroll, rememberTranscriptScroll } from "../transcriptScrollMemory";
-import { ComposerProjectPicker } from "./ComposerProjectPicker";
 import { ProjectInfoCard } from "./ProjectInfoCard";
 import { fitSidebarRows, sidebarRowHeight, sidebarClasses, type SidebarRow } from "../sidebarLayout";
 import { useVirtualizer, defaultRangeExtractor, measureElement as measureVirtualElement, type Range as VirtualRange } from "@tanstack/react-virtual";
@@ -47,7 +45,7 @@ import {
   getSkillsQuery,
 } from "../queries/settings";
 import { listChatSessionsQuery, getChatMessagesQuery, listNativeChatsQuery, readSidebarChatPage } from "../queries/chat";
-import { getProjectStarterPromptsQuery, listProjectsQuery, listProjectActivityQuery } from "../queries/projects";
+import { listProjectsQuery, listProjectActivityQuery } from "../queries/projects";
 import { getCodeTreeQuery } from "../queries/files";
 import {
   fileMentionContext,
@@ -107,12 +105,6 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { BrandMark } from "./Wordmark";
-import starterCardBackground from "../assets/workbench/new-chat-card-background.png";
-import starterResearchImage from "../assets/workbench/new-chat-card-research.png";
-import starterLiteratureImage from "../assets/workbench/new-chat-card-literature.png";
-import starterBaselineImage from "../assets/workbench/new-chat-card-baseline.png";
-import starterExperimentImage from "../assets/workbench/new-chat-card-experiment.png";
 import {
   type SidebarChatCursor,
   cancelQueuedMessage,
@@ -165,7 +157,6 @@ import {
   type RuntimeInfo,
   type NativeChat,
   type SkillInfo,
-  type StarterPrompt,
 } from "../api";
 import { getLocale } from "../paraglide/runtime.js";
 import { activePath, forkPositions } from "../transcriptTree";
@@ -196,6 +187,7 @@ import {
 import {
   composerStashContent,
   getComposerStashStore,
+  getResearchSubmissionStore,
   EMPTY_COMPOSER_STASH,
   type ComposerAnnotation,
   type ComposerAttachment,
@@ -4027,23 +4019,6 @@ function inSideChat(target: EventTarget | null): boolean {
 /** Menu label + rail section heading per filter — "Recents" for the default view. */
 // --- panel -------------------------------------------------------------------
 
-// The four starter prompts progress starting point → gap → baseline → experiment.
-const STARTER_ILLUSTRATIONS = [
-  starterResearchImage,
-  starterLiteratureImage,
-  starterBaselineImage,
-  starterExperimentImage,
-];
-// Shown for a blank project when prompts tailored to its researcher aren't available.
-const blankStarterPrompts = (): StarterPrompt[] => [
-  { title: m.chat_panel_starter_blank_1_title(), prompt: m.chat_panel_starter_blank_1_prompt() },
-  { title: m.chat_panel_starter_blank_2_title(), prompt: m.chat_panel_starter_blank_2_prompt() },
-  { title: m.chat_panel_starter_blank_3_title(), prompt: m.chat_panel_starter_blank_3_prompt() },
-  { title: m.chat_panel_starter_blank_4_title(), prompt: m.chat_panel_starter_blank_4_prompt() },
-];
-const STARTER_GRID_CLASS =
-  "new-chat-starter-grid mt-3 grid w-full grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4";
-
 /** Reconcile the settings attached to a selected model without treating the
  * catalog as an allowlist. The picker deliberately accepts free-form ids, so
  * replacing an unlisted id with the catalog's first entry changes both what
@@ -4282,6 +4257,9 @@ export function ChatPanel({
   // the way out, restore on return, so a draft can't bleed into another chat.
   const stashKey = activeId ?? `${projectId}:new`;
   const composerStashRef = useRef(getComposerStashStore(getWorkspaceGeneration()));
+  const researchSubmissions = getResearchSubmissionStore(getWorkspaceGeneration());
+  const homeSubmission = researchSubmissions.get(stashKey);
+  const [startingHomeSubmission, setStartingHomeSubmission] = useState<string | null>(null);
   const composerLiveRef = useRef(EMPTY_COMPOSER_STASH);
   composerLiveRef.current = { draft, attachments, annotations, workMode: researchMode };
   // On offer until the user has sent anything in the demo: a send either adds
@@ -4331,7 +4309,8 @@ export function ChatPanel({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const [state, dispatch, historyQuery] = useChatState(projectId, mainView === "chat" ? activeId : null);
-  const { data: harnesses = EMPTY_HARNESSES } = useQuery(getHarnessesQuery());
+  const harnessesQuery = useQuery(getHarnessesQuery());
+  const { data: harnesses = EMPTY_HARNESSES } = harnessesQuery;
   const [selection, setSelection] = useState<ModelSelection | null>(preferredAgent);
   useEffect(() => setSelection(preferredAgent), [preferredAgent]);
   // Unsent composer tweaks (model/mode/reasoning) for the *open* session — the
@@ -5342,40 +5321,14 @@ export function ChatPanel({
   // Opening a session or returning from settings starts pinned at the latest messages.
   const threadMounted = mainView === "chat" && (messages.length > 0 || busy);
 
-  // Keyed by project so a switch never shows another project's prompts; a
-  // harness or model switch keeps them, and only a failed harness is retried.
-  const starterHarness = composerSelection?.harness ?? null;
-  const starterModel = composerSelection?.model ?? null;
   const historyError = !historyQuery.data ? historyQuery.error : null;
-  const newChatVisible = isNewChatLayout({
-    mainView, embedded, activeId, historyLoaded: Boolean(historyQuery.data),
-    hasMessages: messages.length > 0, busy, sideChat: Boolean(activeSession?.sideParentSessionId || activeSession?.parentSessionId),
-  });
   const layoutPending = isChatLayoutPending({
     mainView, embedded, hasMessages: messages.length > 0, busy, contentLoading, historyLoading,
   });
-  const starterVisible = mainView === "chat" && !embedded && !expertContext && !threadMounted && !contentLoading && !contentError && !historyLoading && !historyError;
-  const starterQuery = useQuery({
-    ...getProjectStarterPromptsQuery(projectId, starterHarness ?? "claude-code", starterModel, getLocale()),
-    enabled: starterVisible && starterHarness !== null,
-    subscribed: starterVisible && starterHarness !== null,
-  });
-  const starterPrompts = resolveStarterPrompts(starterQuery.data, blankStarterPrompts());
-  const starterLoading = starterQuery.isFetching;
+  const homeSubmissionPending = Boolean(homeSubmission) || startingHomeSubmission === projectId;
   // The demo project is the only surface that isn't a user-created project.
   const telemetrySurface: FirstActionSurface =
     projectId === DEMO_PROJECT_ID ? "demo" : "project";
-  const applyStarterPrompt = (prompt: string) => {
-    setDraft(prompt);
-    setSkillMenuDismissed(false);
-    window.requestAnimationFrame(() => {
-      const el = composerRef.current;
-      if (!el) return;
-      el.focus();
-      el.setSelectionRange(prompt.length, prompt.length);
-      setComposerCursor(prompt.length);
-    });
-  };
   // Seeds without taking focus; focus may still belong to the welcome dialog.
   // Declared after the stash-restore effect so `current` below is the scope's
   // just-restored draft.
@@ -5431,15 +5384,15 @@ export function ChatPanel({
   }, [pinTranscriptToBottom]);
 
   /** `queue` (the ⌘/Ctrl+Enter chord) parks the message even on a harness that steers. */
-  async function send({ queue = false, starter }: { queue?: boolean; starter?: string } = {}) {
+  async function send({ queue = false }: { queue?: boolean } = {}) {
     if (pendingLoading || (activeId && pendingStorageScope && hasPendingFlight(pendingKey(pendingStorageScope, activeId)))) return;
     if (activeId && stopRequests.current.has(activeId)) return;
     // Slash tokens stay in the wire form: the server resolves every selected
     // skill and supplies this exact message as their shared request context.
-    const originalText = (starter ?? draft).trim();
-    const replayingPending = starter === undefined && pendingRecovery?.sessionId === activeId
+    const originalText = draft.trim();
+    const replayingPending = pendingRecovery?.sessionId === activeId
       && pendingRecovery.scope === pendingStorageScope && samePendingComposer(composerLiveRef.current, pendingRecovery.composer) ? pendingRecovery : null;
-    const composerCommand = !replayingPending && !pendingQuestion && starter === undefined
+    const composerCommand = !replayingPending && !pendingQuestion
       ? parseComposerCommand(originalText, opts?.planActivation)
       : null;
     if (composerCommand && composerCommand.name !== "plan") {
@@ -5449,13 +5402,11 @@ export function ChatPanel({
       return;
     }
     if (imageInputBlocked) return;
-    if (starter === undefined) {
-      captureUiEvent({
-        name: "first_action",
-        surface: telemetrySurface,
-        action: "typed_prompt",
-      });
-    }
+    captureUiEvent({
+      name: "first_action",
+      surface: telemetrySurface,
+      action: "typed_prompt",
+    });
     if (preparingSend.current || uploadingMaterialsRef.current) return;
     const planRequested = !!composerCommand;
     const toggledPlanMode = !planActive;
@@ -5829,6 +5780,27 @@ export function ChatPanel({
       }
     } finally { endPendingFlight?.(); }
   }
+
+  // The home send button already submitted this content. Wait for the restored
+  // composer and project settings, then use the regular send path (materials,
+  // work mode, slash commands and failed-send recovery included).
+  useEffect(() => {
+    if (!homeSubmission || !activeId || mainView !== "chat" || embedded || readOnly
+      || contentLoading || contentError || historyLoading || historyError || !openSession || pendingLoading || harnessesQuery.isPending) return;
+    if (researchSubmissions.get(stashKey) !== homeSubmission) return;
+    if (draft !== homeSubmission.draft || attachments !== homeSubmission.attachments
+      || annotations.length !== homeSubmission.annotations.length
+      || annotations.some((item, index) => item.id !== homeSubmission.annotations[index].id || item.text !== homeSubmission.annotations[index].text)
+      || researchMode !== (homeSubmission.workMode ?? "normal")) return;
+    if (!activeHarness?.agentReady || !composerSelection || imageInputBlocked) {
+      researchSubmissions.delete(stashKey);
+      setAttachError(harnessesQuery.error?.message ?? m.chat_selected_harness_unavailable());
+      return;
+    }
+    researchSubmissions.delete(stashKey);
+    setStartingHomeSubmission(projectId);
+    void (bashActive ? runShell() : send()).finally(() => setStartingHomeSubmission(null));
+  });
 
   /** Create the session a first message (or `!` command) lands in and open it. */
   async function openNewSession(selection: ModelSelection, planMode: boolean | undefined, objective = draft, mode: ResearchMode | "normal" = researchMode) {
@@ -6462,17 +6434,17 @@ export function ChatPanel({
     );
   }
 
-  if (layoutPending && !contentError && !historyError) {
+  if ((layoutPending || (homeSubmissionPending && !threadMounted)) && !contentError && !historyError) {
     return <>{railOpen && rail}<ChatLoadingShell label={m.chat_panel_loading_conversation()} /></>;
   }
 
   return (
     <>
       {railOpen && rail}
-      <section data-side-chat={embedded || undefined} className={`chat-pane flex-1 min-w-0 flex flex-col bg-background min-h-0 ${newChatVisible ? "new-chat-shell" : embedded ? "" : "mt-5"}`}>
+      <section data-side-chat={embedded || undefined} className={`chat-pane flex-1 min-w-0 flex flex-col bg-background min-h-0 ${embedded ? "" : "mt-5"}`}>
         {/* Header — session title on the left, end-pane view switchers on the
           right, fading into the chat below (sessions live in the rail). */}
-        {(!newChatVisible || expertContext) && <div className={railOpen || embedded ? "contents" : "grid shrink-0 grid-cols-[2rem_minmax(0,1fr)_2rem] mac-titlebar:grid-cols-[6rem_minmax(0,1fr)_6rem] items-center"}>
+        {<div className={railOpen || embedded ? "contents" : "grid shrink-0 grid-cols-[2rem_minmax(0,1fr)_2rem] mac-titlebar:grid-cols-[6rem_minmax(0,1fr)_6rem] items-center"}>
           {railReopen}
           <div className={headerClass}>
           <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -6506,7 +6478,6 @@ export function ChatPanel({
           )}
           </div>
         </div>}
-        {newChatVisible && railReopen && <div className="flex h-10 shrink-0 items-center px-4">{railReopen}</div>}
 
         {contentError ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 p-5 text-subtext" role="alert">
@@ -6543,73 +6514,8 @@ export function ChatPanel({
             <p className="m-0 text-balance">{m.side_chat_empty()}</p>
           </div>
         ) : !threadMounted ? (
-          <div className={`chat-empty ${newChatVisible ? "new-chat-content" : "flex-1 flex flex-col items-center justify-center text-text p-8 text-center [&_h2]:m-0 [&_h2]:text-5xl [&_h2]:font-medium [&_h2]:tracking-[-0.015em] [&_h2]:text-text"}`}>
-            {!newChatVisible && <div className="chat-empty-mark w-10.5 h-10.5 mb-5.5 [&_svg]:block [&_svg]:w-full [&_svg]:h-full">
-              <BrandMark />
-            </div>}
-            <div className={newChatVisible ? "new-chat-intro" : ""}>
-              <div className="flex flex-wrap items-center gap-4">
-                {newChatVisible && <ProductWordmark heading />}
-                <h2 className="product-page-title">{m.chat_panel_what_should_we_research()}</h2>
-              </div>
-              {newChatVisible && <p className="product-page-description">{m.chat_panel_empty_description()}</p>}
-            </div>
-            <div className={newChatVisible ? "new-chat-starters-section" : ""}>
-              {newChatVisible && <h3>{getLocale() === "zh-CN" ? "猜你想问" : m.chat_panel_starter_prompts()}</h3>}
-              {starterLoading && (
-                <LoadingRow className="mt-3" role="status">
-                  <Spinner />
-                  <span>{m.chat_panel_starter_generating()}</span>
-                </LoadingRow>
-              )}
-              {starterPrompts && starterPrompts.length > 0 && (
-                <div className={STARTER_GRID_CLASS} role="group" aria-label={m.chat_panel_starter_prompts()}>
-                  {starterPrompts.map((item, index) => {
-                    const pickStarter = (edit: boolean) => {
-                      captureUiEvent({ name: "project_starter_clicked", slot: index + 1 });
-                      captureUiEvent({
-                        name: "first_action",
-                        surface: telemetrySurface,
-                        action: "starter_click",
-                      });
-                      // Don't auto-send past an unavailable agent or a non-empty composer.
-                      const composerEmpty = !draft.trim() && attachments.length === 0 && annotations.length === 0;
-                      if (edit || !activeHarness?.agentReady || !composerEmpty) applyStarterPrompt(item.prompt);
-                      else void send({ starter: item.prompt });
-                    };
-                    return (
-                      <div key={index} className="new-chat-starter-wrap relative min-w-0">
-                        <button
-                          type="button"
-                          className="new-chat-starter-card"
-                          style={{ backgroundImage: `var(--starter-card-overlay), url(${starterCardBackground})` }}
-                          onClick={() => pickStarter(false)}
-                        >
-                          <span className="new-chat-starter-visual" aria-hidden="true">
-                            <img src={STARTER_ILLUSTRATIONS[index % STARTER_ILLUSTRATIONS.length]} alt="" />
-                          </span>
-                          <span className="new-chat-starter-title">
-                            <span className="truncate">{item.title}</span>
-                            <ArrowUpRight size={16} aria-hidden="true" />
-                          </span>
-                          <span className="new-chat-starter-rule" />
-                          <span className="new-chat-starter-description">{item.prompt}</span>
-                        </button>
-                        <IconButton
-                          size="small"
-                          className="new-chat-starter-edit absolute end-2 top-2 opacity-0 transition-opacity focus-visible:opacity-100"
-                          aria-label={m.chat_panel_starter_edit({ title: item.title })}
-                          title={m.chat_panel_starter_edit({ title: item.title })}
-                          onClick={() => pickStarter(true)}
-                        >
-                          <Pencil size={13} />
-                        </IconButton>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+          <div className="flex min-h-0 flex-1 items-center justify-center p-8 text-sm text-subtext">
+            {readOnly ? "暂无对话记录。" : "暂无消息，可在下方继续对话。"}
           </div>
         ) : (
           <div
@@ -6684,7 +6590,7 @@ export function ChatPanel({
 
         {/* Docked while a plan awaits a decision, so the approval controls never
           scroll away. Actions mirror the (now compact) inline card's wire. */}
-        <div inert={contentLoading || Boolean(contentError) || historyLoading} className={`composer ${newChatVisible ? "new-chat-composer" : "px-3 pb-5 max-w-readable"} shrink-0 relative z-4 bg-background w-full my-0 mx-auto [&_textarea]:border-0 [&_textarea]:bg-none [&_textarea]:bg-transparent [&_textarea]:resize-none [&_textarea]:pt-2.5 [&_textarea]:px-3 [&_textarea]:pb-1 [&_textarea]:text-base [&_textarea]:field-sizing-content [&_textarea]:min-h-18 [&_textarea]:max-h-45`}>
+        <div inert={contentLoading || Boolean(contentError) || historyLoading} className={`composer px-3 pb-5 max-w-readable shrink-0 relative z-4 bg-background w-full my-0 mx-auto [&_textarea]:border-0 [&_textarea]:bg-none [&_textarea]:bg-transparent [&_textarea]:resize-none [&_textarea]:pt-2.5 [&_textarea]:px-3 [&_textarea]:pb-1 [&_textarea]:text-base [&_textarea]:field-sizing-content [&_textarea]:min-h-18 [&_textarea]:max-h-45`}>
           {threadMounted && (
             <IconButton
               className={`absolute bottom-full left-1/2 z-5 mb-6 h-9 w-9 -translate-x-1/2 rounded-full border border-border bg-background shadow-control transition-opacity duration-150 ease-standard ${transcriptAtBottom ? "opacity-0" : "opacity-100"}`}
@@ -6927,7 +6833,7 @@ export function ChatPanel({
                 {settingsError}
               </div>
             )}
-            {(!newChatVisible || conversationStatus) && !embedded && !isDemoProjectId(projectId) && (!activeId || researchState.data) && <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 pt-3 pb-1"><WorkModeSwitch value={currentWorkMode} onChange={setResearchMode} readOnly={Boolean(activeId)} activeWorkflow={researchState.data?.study?.plans.at(-1)?.workflow} />
+            {!embedded && !isDemoProjectId(projectId) && (!activeId || researchState.data) && <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 pt-3 pb-1"><WorkModeSwitch value={currentWorkMode} onChange={setResearchMode} readOnly={Boolean(activeId)} activeWorkflow={researchState.data?.study?.plans.at(-1)?.workflow} />
               {conversationStatus ? <ResearchConversationStatus status={conversationStatus} onOpen={onOpenResearch} /> : stopping && <span role="status" className="text-xs text-subtext">{m.common_stopping()}</span>}
             </div>}
             <div className={`composer-input relative flex overflow-hidden [&_textarea]:flex-1 ${bashActive ? "[&_textarea]:font-mono [&_textarea]:text-sm" : ""}`}>
@@ -7078,7 +6984,7 @@ export function ChatPanel({
                 textareaRef={composerRef}
               />
             </div>
-            {newChatVisible && !conversationStatus && !isDemoProjectId(projectId) && <div className="new-chat-work-mode"><WorkModeSwitch value={currentWorkMode} onChange={setResearchMode} activeWorkflow={researchState.data?.study?.plans.at(-1)?.workflow} /></div>}
+
             <div className="composer-actions flex min-w-0 justify-end items-center gap-2 pt-1.5 px-2 pb-2">
               <div className="option-picker relative inline-flex shrink-0" ref={dataSources.ref}>
                 <IconButton
@@ -7193,20 +7099,6 @@ export function ChatPanel({
                 />
                 <ContextMeter usage={openSession?.contextUsage} />
               </div>
-              {!embedded && !activeId && onNewProject && (
-                <div className={newChatVisible ? "new-chat-project-picker" : ""}>
-                  <ComposerProjectPicker
-                    projects={sidebarProjects}
-                    activity={projectActivity}
-                    projectId={projectId}
-                    projectName={projectName}
-                    onNewProject={onNewProject}
-                    onSelect={(id) => {
-                      if (id !== projectId) void navigate({ to: "/projects/$projectId/tasks/new", params: { projectId: id } });
-                    }}
-                  />
-                </div>
-              )}
               {stopping || (busy && !pendingQuestion) ? (
                 // Stop whenever the turn is busy and typed text has nowhere to
                 // go — actively streaming, or held on a plan/permission card

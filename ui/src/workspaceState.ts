@@ -132,7 +132,8 @@ export function taskLocation(projectId: string, sessionId: string | null, pane?:
     if (casePreview) query.set("preview", "true");
     return `/cases/${encodeURIComponent(caseId)}?${query}`;
   }
-  const path = `/projects/${encodeURIComponent(projectId)}/tasks/${sessionId ? encodeURIComponent(sessionId) : "new"}`;
+  if (!sessionId) return `/projects?${new URLSearchParams({ project: projectId })}`;
+  const path = `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(sessionId)}`;
   return pane ? `${path}?${new URLSearchParams({ pane: JSON.stringify(pane) })}` : path;
 }
 

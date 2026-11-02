@@ -46,6 +46,8 @@ function setup(initialDraft = "") {
     "../materialUploads": {},
     "../components/WorkModeSwitch": { WorkModeSwitch: workModeSwitch },
     "./ProductNav": { ProductWordmark: () => null },
+    "../components/ui": { Spinner: () => null },
+    "./ResearchSuggestions": { ResearchSuggestions: () => null },
     "../components/ui/IconButton": { IconButton: () => null },
     "./researchCapabilities": { quickCapabilities: [] },
     "./FeaturedCases": {},

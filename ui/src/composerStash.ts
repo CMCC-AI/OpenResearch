@@ -48,10 +48,19 @@ export function composerStashContent(
 // Route navigation unmounts the chat; keep drafts in memory until the runtime identity changes.
 let stashGeneration = -1;
 let routeStashes = new Map<string, ComposerStash>();
+let researchSubmissions = new Map<string, ComposerStash>();
 export function getComposerStashStore(generation: number): Map<string, ComposerStash> {
   if (generation !== stashGeneration) {
     routeStashes = new Map();
+    researchSubmissions = new Map();
     stashGeneration = generation;
   }
   return routeStashes;
+}
+
+/** Explicit home submissions are separate from drafts: restoring a draft must
+ * never send it. Consume before sending so remounts and StrictMode cannot replay. */
+export function getResearchSubmissionStore(generation: number): Map<string, ComposerStash> {
+  getComposerStashStore(generation);
+  return researchSubmissions;
 }

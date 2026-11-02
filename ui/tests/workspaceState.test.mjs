@@ -51,8 +51,8 @@ test("every pane variant round-trips through a concrete task URL", () => {
     });
     assert.equal(new URL(location, "http://localhost:9999").pathname, url.pathname);
   }
-  assert.equal(taskLocation("demo", null), "/projects/demo/tasks/new");
-  assert.equal(taskLocation("demo", null, null), "/projects/demo/tasks/new");
+  assert.equal(taskLocation("demo", null), "/projects?project=demo");
+  assert.equal(taskLocation("demo", null, null), "/projects?project=demo");
   assert.deepEqual(parsePane({ kind: "file", path: "paper.tex", source: null, sessionId: null, ref: null, line: null }), { kind: "file", path: "paper.tex" });
   assert.deepEqual(parsePane({ kind: "experiment", experimentId: "exp", view: "overview", runId: null }), { kind: "experiment", experimentId: "exp", view: "overview" });
 });

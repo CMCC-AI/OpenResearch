@@ -23,7 +23,7 @@ export async function globalResumeLocation(client = queryClient): Promise<string
   if (!projects.some((project) => project.id === destination.projectId)) return fallback();
   if (destination.sessionId && !validSessionLocation(location, await client.fetchQuery(listChatSessionsQuery(destination.projectId))))
     return fallback();
-  return location;
+  return destination.kind === "task" && !destination.sessionId ? taskLocation(destination.projectId!, null) : location;
 }
 
 export async function projectResumeLocation(projectId: string, client = queryClient): Promise<string> {
@@ -31,7 +31,10 @@ export async function projectResumeLocation(projectId: string, client = queryCli
   const state = getCachedProjectWorkspace(projectId) ?? loaded;
   const location = safeLocation(state?.lastLocation);
   if (location && parseDestination(location.split("?")[0])?.projectId === projectId
-    && validSessionLocation(location, sessions)) return location;
+    && validSessionLocation(location, sessions)) {
+    const destination = parseDestination(location.split("?")[0])!;
+    return destination.kind === "task" && !destination.sessionId ? taskLocation(projectId, null) : location;
+  }
   const newest = sessions.find((session) => !session.archived && !session.sideParentSessionId);
   const defaults = isDemoProjectId(projectId) ? defaultTaskWorkspace(newest?.id, !(await client.fetchQuery(getUiStateQuery())).tourCompleted) : undefined;
   const task = getTaskWorkspace(state, newest?.id ?? "new");

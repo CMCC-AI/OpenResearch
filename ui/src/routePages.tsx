@@ -4,14 +4,18 @@ import { setScopedQueryData } from "./queries/client";
 import { listProjectsQuery, getUiStateQuery } from "./queries/projects";
 import { isCloudWorkspace } from "./product/CloudWorkspace";
 import { useRouteContext, Link, useNavigate, useSearch, type ErrorComponentProps } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useRuntime } from "./RemoteRuntime";
 
 import { globalResumeLocation, projectResumeLocation } from "./routeResume";
 import { m } from "./paraglide/messages.js";
-import { type Project } from "./api";
-import { getComposerStashStore, type ComposerStash } from "./composerStash";
+import { createChatSession, type Project } from "./api";
+import { getHarnessesQuery } from "./queries/settings";
+import { listChatSessionsQuery } from "./queries/chat";
+import { defaultSelection } from "./components/ModelPicker";
+import { researchModes } from "./research";
+import { getComposerStashStore, getResearchSubmissionStore, type ComposerStash } from "./composerStash";
 import { getWorkspaceGeneration } from "./queries/client";
 import { OfflineBanner } from "./components/OfflineBanner";
 import { WorkspaceConnection } from "./components/WorkspaceConnection";
@@ -67,6 +71,7 @@ export function ResumeGlobal() { return <Resume />; }
 export function ResumeProject({ projectId }: { projectId: string }) { return <Resume projectId={projectId} />; }
 
 export function ProjectsPage() {
+  const { queryClient: client } = useRouteContext({ from: "__root__" });
   const runtime = useRuntime();
   const navigate = useNavigate();
   const start = useSearch({ from: "/projects/" });
@@ -82,10 +87,47 @@ export function ProjectsPage() {
     document.title = "MobileSci";
   }, []);
   const openProject = (projectId: string) => void navigate({ to: "/projects/$projectId", params: { projectId } });
+  const startingRef = useRef(false);
+  const [starting, setStarting] = useState(false);
 
   async function beginResearch(project: Project, draft: ComposerStash) {
-    getComposerStashStore(getWorkspaceGeneration()).set(`${project.id}:new`, draft);
-    await navigate({ to: "/projects/$projectId/tasks/new", params: { projectId: project.id } });
+    if (startingRef.current) return;
+    const generation = getWorkspaceGeneration();
+    if (!draft.draft.trim() && !draft.attachments.length && !draft.annotations.length) return;
+    startingRef.current = true;
+    setStarting(true);
+    try {
+      const [harnesses] = await Promise.all([
+        client.fetchQuery(getHarnessesQuery()),
+        client.fetchQuery(listChatSessionsQuery(project.id)),
+      ]);
+      const selection = defaultSelection(harnesses, state?.preferredAgent ?? null);
+      if (!selection || !harnesses.find((harness) => harness.id === selection.harness)?.agentReady) {
+        throw new Error(m.chat_selected_harness_unavailable());
+      }
+      if (generation !== getWorkspaceGeneration()) return;
+      const mode = draft.workMode ?? "normal";
+      const session = await createChatSession(project.id, selection.harness, {
+        ...selection,
+        autonomy: state?.preferredAutonomy ?? undefined,
+        ...(mode !== "normal" ? { research: { mode, objective: draft.draft.trim() || researchModes[mode] } } : {}),
+      });
+      if (generation !== getWorkspaceGeneration()) return;
+      getComposerStashStore(generation).set(session.id, draft);
+      getResearchSubmissionStore(generation).set(session.id, draft);
+      setScopedQueryData(listChatSessionsQuery(project.id).queryKey, (rows) => [session, ...(rows ?? []).filter((row) => row.id !== session.id)]);
+      getComposerStashStore(generation).delete(`${project.id}:new`);
+      await navigate({ to: "/projects/$projectId/tasks/$sessionId", params: { projectId: project.id, sessionId: session.id } });
+    } catch (error) {
+      if (generation === getWorkspaceGeneration()) {
+        getComposerStashStore(generation).set(`${project.id}:new`, draft);
+        showAlert(error instanceof Error ? error.message : String(error), "error");
+        if (start.project !== project.id) await navigate({ to: "/projects", search: { project: project.id }, replace: true });
+      }
+    } finally {
+      startingRef.current = false;
+      setStarting(false);
+    }
   }
 
   return (
@@ -98,10 +140,11 @@ export function ProjectsPage() {
             <ProjectsHome
               key={start.project ?? "research-home"}
               preferredAgent={state.preferredAgent}
+              starting={starting}
               projects={projects}
               initialDialogOpen={Boolean(start.new)}
               initialProjectId={start.project}
-              onResume={(project, draft) => void beginResearch(project, draft)}
+              onResume={beginResearch}
               onOpen={openProject}
               onCreated={async (project, publicationError, draft) => {
                 if (publicationError) {

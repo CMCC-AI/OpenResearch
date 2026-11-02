@@ -67,7 +67,6 @@ test("real file routes distinguish task/new, task IDs, project index, and settin
     ["/literature", "/literature"],
     ["/projects", "/projects/"],
     ["/projects/p", "/projects/$projectId/"],
-    ["/projects/p/tasks/new", "/projects/$projectId/tasks/new"],
     ["/projects/p/tasks/old", "/projects/$projectId/tasks/$sessionId"],
     ["/settings/settings", "/settings/$tab"],
     ["/settings/compute", "/settings/$tab"],
@@ -82,6 +81,19 @@ test("real file routes distinguish task/new, task IDs, project index, and settin
   for (const path of ["/settings/git", "/settings/environment", "/settings/unknown", "/projects/p/skills", "/projects/p/settings/environment", "/projects/p/settings/unknown", "/projects/p/tasks/%00"]) {
     const invalid = await match(path);
     assert(invalid.state.matches.some((route) => route.status === "notFound" || route.globalNotFound), `${path}: ${JSON.stringify(invalid.state.matches.map(({ status, globalNotFound, routeId }) => ({ status, globalNotFound, routeId })))}`);
+  }
+});
+
+test("retired new-task bookmarks redirect to the unified home with their project", () => {
+  const { Route } = loadModule("routes/projects.$projectId.tasks.new.tsx");
+  for (const projectId of ["p", "研究 空间"]) {
+    assert.throws(() => Route.options.beforeLoad({ params: { projectId } }), (error) => {
+      assert.equal(routing.isRedirect(error), true);
+      assert.equal(error.options.to, "/projects");
+      assert.deepEqual(error.options.search, { project: projectId });
+      assert.equal(error.options.replace, true);
+      return true;
+    });
   }
 });
 
@@ -142,12 +154,13 @@ function resumeApi(lastLocation, sessions = [], projects = [{ id: "p" }], tasks 
 test("global resume preserves settings and archived task links, and falls back to an available project for stale redirects", async () => {
   for (const [location, sessions, expected] of [
     ["/projects/p/settings/storage", [], "/projects/p/settings/storage"],
+    ["/projects/p/tasks/new", [], "/projects?project=p"],
     ["/projects/p/tasks/old", [{ id: "old", projectId: "p", archived: true }], "/projects/p/tasks/old"],
-    ["/projects/p/tasks/deleted", [], "/projects/p/tasks/new"],
-    ["/projects/deleted/tasks/new", [], "/projects/p/tasks/new"],
-    ["/projects/p", [], "/projects/p/tasks/new"],
-    ["//elsewhere.test", [], "/projects/p/tasks/new"],
-    [null, [], "/projects/p/tasks/new"],
+    ["/projects/p/tasks/deleted", [], "/projects?project=p"],
+    ["/projects/deleted/tasks/new", [], "/projects?project=p"],
+    ["/projects/p", [], "/projects?project=p"],
+    ["//elsewhere.test", [], "/projects?project=p"],
+    [null, [], "/projects?project=p"],
   ]) {
     const { globalResumeLocation } = loadModule("routeResume.ts", resumeApi(location, sessions));
     assert.equal(await globalResumeLocation(), expected);
@@ -162,7 +175,7 @@ test("project resume uses API order, keeps remembered pane, and falls back to ne
   ));
   assert.equal(await projectResumeLocation("p"), workspace.taskLocation("p", "latest", pane));
   const empty = loadModule("routeResume.ts", resumeApi("/projects/other/settings/git", [{ id: "archived", archived: true }]));
-  assert.equal(await empty.projectResumeLocation("p"), "/projects/p/tasks/new");
+  assert.equal(await empty.projectResumeLocation("p"), "/projects?project=p");
 });
 
 test("resume uses the current database response and current queued preference; failed reads never become defaults", async () => {
@@ -171,7 +184,7 @@ test("resume uses the current database response and current queued preference; f
   const current = loadModule("routeResume.ts", api, { lastLocation: "/projects/p/skills" });
   assert.equal(await current.globalResumeLocation(), saved);
   const otherDatabase = loadModule("routeResume.ts", resumeApi(saved, [], [{ id: "other" }]));
-  assert.equal(await otherDatabase.globalResumeLocation(), "/projects/other/tasks/new");
+  assert.equal(await otherDatabase.globalResumeLocation(), "/projects?project=other");
   const failed = loadModule("routeResume.ts", {
     ...api,
     getUiState: async () => { throw new Error("offline"); },
@@ -234,7 +247,7 @@ for (const projectId of [undefined, "p"]) {
         cleanup();
         const finish = setup();
         await new Promise(resolve => setImmediate(resolve));
-        assert.equal(navigated, "/projects/p/tasks/new");
+        assert.equal(navigated, "/projects?project=p");
         finish();
       } else assert.equal(navigated, undefined);
       client.clear();

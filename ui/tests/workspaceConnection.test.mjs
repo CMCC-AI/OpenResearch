@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import React from "react";
 import ts from "typescript";
+import { getComposerStashStore, getResearchSubmissionStore } from "../src/composerStash.ts";
 
 const require = createRequire(import.meta.url);
 const messages = { m: new Proxy({}, { get: (_, name) => () => String(name) }) };
@@ -77,22 +78,24 @@ for (const corner of [true, false]) {
 
 for (const kind of ["local", "ssh"]) {
   for (const scenario of ["loading", "error", "onboarding", "projects"]) {
-    test(`${kind} project home connection control during ${scenario}`, () => {
+    test(`${kind} project home connection control during ${scenario}`, async () => {
       const runtime = { kind, version: "test" };
       const { ProjectsPage } = load("routePages.tsx", {
         react: hooks().react,
-        "./queries/client": {},
+        "./queries/client": { getWorkspaceGeneration: () => 10 },
         "./api": {},
         "./queries/settings": {},
+        "./queries/chat": {},
+        "./research": {},
         "./components/ModelPicker": {},
-        "./composerStash": {},
+        "./composerStash": { getComposerStashStore, getResearchSubmissionStore },
         "@tanstack/react-query": { useQuery: ({ kind }) => ({
           data: scenario === "loading" || scenario === "error" ? undefined
             : kind === "projects" ? (scenario === "projects" ? [{ id: "p" }] : []) : { onboardingCompleted: scenario !== "onboarding" },
           error: scenario === "error" ? new Error("offline") : null,
         }) },
         "./queries/projects": { listProjectsQuery: () => ({ kind: "projects" }), getUiStateQuery: () => ({ kind: "state" }) },
-        "@tanstack/react-router": { useNavigate: () => () => {}, useSearch: () => ({}) },
+        "@tanstack/react-router": { useRouteContext: () => ({ queryClient: {} }), useNavigate: () => () => {}, useSearch: () => ({}) },
         "./RemoteRuntime": { useRuntime: () => runtime },
         "./product/CloudWorkspace": { isCloudWorkspace: () => false },
         "./product/ProductNav": { PlatformFrame: "PlatformFrame" },
@@ -106,7 +109,8 @@ for (const kind of ["local", "ssh"]) {
         "./components/DesktopAppBanner": { DesktopAppBanner: "DesktopAppBanner" },
         "./components/ui": {},
       });
-      const connection = nodes(ProjectsPage()).find((node) => node.type === "WorkspaceConnection");
+      const page = nodes(ProjectsPage());
+      const connection = page.find((node) => node.type === "WorkspaceConnection");
       if (kind === "local") {
         assert.equal(connection, undefined);
         return;
@@ -168,20 +172,30 @@ for (const outcome of ["success", "failure", "popup-blocked"]) {
   });
 }
 
-for (const content of ["objective", "attachments", "empty", "missing"]) for (const workMode of ["normal", "team"]) test(`project creation defers research until sending: ${content}/${workMode}`, async () => {
+for (const content of ["objective", "attachments", "empty", "missing"]) for (const workMode of ["normal", "team"]) test(`home submits directly to a real session: ${content}/${workMode}`, async () => {
   const stashes = new Map();
+  const submissions = new Map();
   const navigations = [];
   const calls = [];
+  const alerts = [];
+  let createFailure = false;
+  let harnessReady = true;
+  const session = { id: "session", projectId: "p", harness: "opencode", model: "configured-model" };
   const { ProjectsPage } = load("routePages.tsx", {
     react: hooks().react,
-    "./queries/client": { getWorkspaceGeneration: () => 7, queryClient: {} },
-    "./api": { createChatSession: async (...args) => { calls.push(args); assert.fail("project creation must not create a session"); } },
-    "./queries/settings": {},
-    "./components/ModelPicker": {},
-    "./composerStash": { getComposerStashStore: () => stashes },
+    "./queries/client": { getWorkspaceGeneration: () => 7, setScopedQueryData: () => {} },
+    "./api": { createChatSession: async (...args) => { calls.push(args); if (createFailure) throw new Error("create failed"); return session; } },
+    "./research": { researchModes: { team: "团队研究" } },
+    "./queries/settings": { getHarnessesQuery: () => ({ kind: "harnesses" }) },
+    "./queries/chat": { listChatSessionsQuery: () => ({ queryKey: ["sessions"] }) },
+    "./components/ModelPicker": { defaultSelection: (_, preferred) => preferred },
+    "./composerStash": { getComposerStashStore: () => stashes, getResearchSubmissionStore: () => submissions },
     "@tanstack/react-query": { useQuery: ({ kind }) => ({ data: kind === "projects" ? [{ id: "p", name: "研究项目" }] : { preferredAgent: { harness: "opencode", model: "configured-model" }, preferredAutonomy: "copilot" } }) },
     "./queries/projects": { listProjectsQuery: () => ({ kind: "projects" }), getUiStateQuery: () => ({ kind: "state" }) },
-    "@tanstack/react-router": { useNavigate: () => async (options) => navigations.push(options), useSearch: () => ({ project: "p" }) },
+    "@tanstack/react-router": {
+      useRouteContext: () => ({ queryClient: { fetchQuery: async () => [{ id: "opencode", agentReady: harnessReady }] } }),
+      useNavigate: () => async (options) => navigations.push(options), useSearch: () => ({ project: "p" }),
+    },
     "./RemoteRuntime": { useRuntime: () => ({ kind: "local" }) },
     "./product/CloudWorkspace": { isCloudWorkspace: () => false },
     "./product/ProductNav": { PlatformFrame: "PlatformFrame" },
@@ -190,7 +204,7 @@ for (const content of ["objective", "attachments", "empty", "missing"]) for (con
     "./components/OfflineBanner": { OfflineBanner: "OfflineBanner" },
     "./components/WorkspaceConnection": {},
     "./components/UpdateBanner": { UpdateBanner: "UpdateBanner", useUpdateStatus: () => ({}) },
-    "./components/ui": { showAlert: () => assert.fail("unexpected creation failure") },
+    "./components/ui": { showAlert: (message) => alerts.push(message) },
   });
   const home = nodes(ProjectsPage()).find((node) => node.type === "ProjectsHome");
   const draft = content === "missing" ? undefined : {
@@ -200,12 +214,37 @@ for (const content of ["objective", "attachments", "empty", "missing"]) for (con
     annotations: [],
   };
   await home.props.onCreated({ id: "p" }, null, draft);
-  assert.equal(calls.length, 0);
   const hasContent = content === "objective" || content === "attachments";
-  assert.deepEqual(stashes.get("p:new"), hasContent ? draft : undefined);
-  assert.deepEqual(navigations[0], {
-    to: hasContent ? "/projects/$projectId/tasks/new" : "/projects/$projectId",
-    params: { projectId: "p" },
-  });
-  assert.equal(home.props.initialProjectId, "p");
+  assert.equal(calls.length, hasContent ? 1 : 0);
+  if (hasContent) {
+    assert.equal(calls[0][0], "p");
+    assert.equal(calls[0][1], "opencode");
+    assert.equal(calls[0][2].model, "configured-model");
+    assert.equal(calls[0][2].autonomy, "copilot");
+    assert.deepEqual(calls[0][2].research, workMode === "team" ? { mode: "team", objective: draft.draft.trim() || "团队研究" } : undefined);
+  }
+  assert.equal(stashes.get("session"), hasContent ? draft : undefined);
+  assert.equal(submissions.get("session"), hasContent ? draft : undefined);
+  assert.deepEqual(navigations[0], hasContent ? {
+    to: "/projects/$projectId/tasks/$sessionId", params: { projectId: "p", sessionId: "session" },
+  } : { to: "/projects/$projectId", params: { projectId: "p" } });
+  if (hasContent) {
+    submissions.clear();
+    const count = calls.length;
+    await Promise.all([home.props.onResume({ id: "p" }, draft), home.props.onResume({ id: "p" }, draft)]);
+    assert.equal(calls.length, count + 1, "double clicks must not create two sessions");
+    assert.equal(submissions.get("session"), draft, "existing project submissions use the same direct session flow");
+    submissions.clear();
+    const navigationCount = navigations.length;
+    createFailure = true;
+    await home.props.onResume({ id: "p" }, draft);
+    assert.equal(stashes.get("p:new"), draft, "creation failures preserve the home draft");
+    assert.equal(submissions.size, 0);
+    assert.equal(navigations.length, navigationCount, "failures must not navigate to the retired page");
+    assert.deepEqual(alerts, ["create failed"]);
+    harnessReady = false;
+    const attempts = calls.length;
+    await home.props.onResume({ id: "p" }, draft);
+    assert.equal(calls.length, attempts, "unavailable harnesses stay on the home without creating a session");
+  }
 });
