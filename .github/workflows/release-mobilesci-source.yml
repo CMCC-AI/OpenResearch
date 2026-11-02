@@ -2,7 +2,7 @@ name: MobileSci source release
 
 on:
   push:
-    branches: ['codex/release-mobilesci-*']
+    branches: ['release/mobilesci-*']
   workflow_dispatch:
 
 permissions:
@@ -31,7 +31,7 @@ jobs:
           import { readFileSync } from 'node:fs';
           import assert from 'node:assert/strict';
           const { productVersion } = JSON.parse(readFileSync('product-upstream.json', 'utf8'));
-          assert.equal(process.env.BRANCH, `codex/release-mobilesci-${productVersion}`);
+          assert.equal(process.env.BRANCH, `release/mobilesci-${productVersion}`);
           assert.ok(readFileSync(`release-notes/v${productVersion}.md`, 'utf8').trim());
           NODE
 

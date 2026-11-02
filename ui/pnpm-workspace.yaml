@@ -6,3 +6,4 @@ overrides:
   "browserslist@>=4.0.0 <4.28.7": "4.28.7"
   "source-map-js@>=1.0.0 <1.2.2": "1.2.2"
   "baseline-browser-mapping@>=2.0.0 <2.11.0": "2.11.0"
+  "seroval@>=1.0.0 <1.6.11": "1.6.11"

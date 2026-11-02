@@ -70,7 +70,8 @@ export interface ImageCandidate {
 export function citedFilePath(path: string, resolveFilePath?: (path: string) => string | null): string | null {
   if (resolveFilePath) return resolveFilePath(path);
   try {
-    return decodeURI(path);
+    const decoded = decodeURIComponent(path);
+    return decoded.includes("\0") ? null : decoded;
   } catch {
     return null;
   }

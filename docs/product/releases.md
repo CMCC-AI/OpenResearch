@@ -1,10 +1,10 @@
 # MobileSci 版本发布
 
-本轮版本确定为 `0.2.22-mobilesci.1`，范围见 [发布说明](../../release-notes/v0.2.22-mobilesci.1.md)。冻结当前已完成改动，steering 持久回执等剩余工作在发布完成后继续。
+本轮产品版本为 `0.2.23-mobilesci.1`，范围见[发布说明](../../release-notes/v0.2.23-mobilesci.1.md)，官方提交处理见[回移台账](../ai-for-science/upstream-v0.2.23-backports.md)。上一源码发行 `0.2.22-mobilesci.1` 的标签与附件保持不变。
 
 ## 源码版本
 
-`MobileSci source release` 工作流从 `codex/release-mobilesci-<版本>` 分支的固定提交发布。版本须与 Cargo.toml、Cargo.lock、product-upstream.json 一致，并有同名发布说明。
+`MobileSci source release` 工作流从 `release/mobilesci-<版本>` 分支的固定提交发布。版本须与 Cargo.toml、Cargo.lock、product-upstream.json 一致，并有同名发布说明。
 
 流程依次为：候选校验 → 调用完整 CI → 生成源码归档及校验清单 → 创建 Git 标签 → 发布 GitHub Release。CI 失败时不创建新标签或 Release；修正发布候选后须重新通过 CI。已存在的标签不得移到其他提交。
 
@@ -14,9 +14,10 @@
 
 ## 本轮范围
 
-- 材料目录、只读预览及工作区固定入口。
-- 模型目录就绪、设置选择保留、发送前历史取消处理及独立本地错误。
-- 普通 turn／队列的请求归属查询、未知结果保护及重试身份保持。
-- 已完成的研究任务继承、证据扫描、存储调度与执行环境改进。
+- 聊天文件引用及 OpenAI 引用标记显示。
+- 有界 CSV/TSV 预览筛选、排序和虚拟行，复用既有共享阅读器。
+- Agent 探测、调用方标识、Git Bash、远端路径和 macOS 打包维护。
+- 汇总上一源码发布后的 steering、pending 恢复、材料输入固定及研究生命周期可靠性修补。
+- 源码清单同步上游祖先与回移目标，官方更新继续禁用。
 
-剩余工作及验收边界见 [分批实施记录](../ai-for-science/upstream-backport-plan-2026-10-28.md)。发布说明不把未完成能力或未执行的部署验收写成已完成。
+研究引用闭包、阅读追溯、指标和容量治理为后续独立批次。源码实现、本地验证、远端 CI 与生产部署分别记录，不把未执行验收写成已完成。

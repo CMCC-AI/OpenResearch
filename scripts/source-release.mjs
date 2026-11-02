@@ -43,7 +43,13 @@ export async function prepareSourceRelease(root, output, revision) {
     await pipeline(createReadStream(tar), createGzip({ level: 9 }), createWriteStream(resolve(output, tgz), { flags: 'wx' }))
   } finally { if (ownedTar) await rm(tar, { force: true }) }
   await archive('zip', resolve(output, zip))
-  const manifest = { version, tag: `v${version}`, revision, format: 'source', artifacts: [tgz, zip] }
+  const manifest = {
+    version, tag: `v${version}`, revision, format: 'source',
+    upstreamBase: { repository: metadata.repository, tag: metadata.tag, commit: metadata.commit },
+    backportTarget: metadata.backportTarget ?? null,
+    backportLedger: metadata.backportLedger ?? null,
+    artifacts: [tgz, zip],
+  }
   await writeFile(resolve(output, 'source-release.json'), `${JSON.stringify(manifest, null, 2)}\n`, { flag: 'wx' })
   const sums = []
   for (const name of [tgz, zip, 'source-release.json']) {

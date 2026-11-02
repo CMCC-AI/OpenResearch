@@ -12,6 +12,7 @@ overrides:
   browserslist@>=4.0.0 <4.28.7: 4.28.7
   source-map-js@>=1.0.0 <1.2.2: 1.2.2
   baseline-browser-mapping@>=2.0.0 <2.11.0: 2.11.0
+  seroval@>=1.0.0 <1.6.11: 1.6.11
 
 importers:
 
@@ -1624,10 +1625,10 @@ packages:
     resolution: {integrity: sha512-R0f1U9hmn38+dFMz6b6ab8lwucmw4AtiY7St+JPWudy1dm+Bs3g884nyrsH9Cy6rKpZKLYayXuMda9GZ/fl8JQ==}
     engines: {node: '>=10'}
     peerDependencies:
-      seroval: ^1.0
+      seroval: 1.6.11
 
-  seroval@1.6.4:
-    resolution: {integrity: sha512-LErWMNS2RRFdu2RMA5u/PA59/IWs0XsikyEXGQ2/36iEWFrdG0ABmg17E17cikrv76891kOAMq3TkTFXpwAHXw==}
+  seroval@1.6.11:
+    resolution: {integrity: sha512-hpb6XnMCGN/A+79Uf8V7/iTGkyyyazNn5X0CoCAp7Uy9vT3RT8jZ9GLcnxGoVjg3P8AArbe4ZVHq6C8oT2a0kA==}
     engines: {node: '>=10'}
 
   shallow-equal@3.1.0:
@@ -2407,8 +2408,8 @@ snapshots:
     dependencies:
       '@tanstack/history': 1.162.1
       cookie-es: 3.1.1
-      seroval: 1.6.4
-      seroval-plugins: 1.6.4(seroval@1.6.4)
+      seroval: 1.6.11
+      seroval-plugins: 1.6.4(seroval@1.6.11)
 
   '@tanstack/router-generator@1.167.33':
     dependencies:
@@ -3536,11 +3537,11 @@ snapshots:
 
   semver@6.3.1: {}
 
-  seroval-plugins@1.6.4(seroval@1.6.4):
+  seroval-plugins@1.6.4(seroval@1.6.11):
     dependencies:
-      seroval: 1.6.4
+      seroval: 1.6.11
 
-  seroval@1.6.4: {}
+  seroval@1.6.11: {}
 
   shallow-equal@3.1.0: {}
 

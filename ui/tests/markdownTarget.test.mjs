@@ -69,6 +69,13 @@ test("re-resolved markdown paths are decoded only once", () => {
   assert.equal(docLink(encodeMarkdownPath(figure.path)), "docs/figures/chart#1.png");
 });
 
+test("chat file fallback decodes reserved characters once and rejects NUL", () => {
+  assert.equal(citedFilePath("chart%231.png"), "chart#1.png");
+  assert.equal(citedFilePath("table%3F1.csv"), "table?1.csv");
+  assert.equal(citedFilePath("report%2523.md"), "report%23.md");
+  for (const path of ["null%00.txt", "null\0.txt", "%E0%A4%A"]) assert.equal(citedFilePath(path), null);
+});
+
 test("document assets resolve relative to the decoded document path once", () => {
   const asset = (path, src) => documentAssetTarget(path, src, true);
   assert.deepEqual(asset("my figs/plot.html", "chart%231.png#x"), { path: "my figs/chart#1.png", query: "", hash: "#x" });

@@ -18,7 +18,11 @@ async function fixture(t) {
   const version = '0.2.22-mobilesci.1'
   await writeFile(join(root, 'Cargo.toml'), `[package]\nname = "openresearch-cli"\nversion = "${version}"\n`)
   await writeFile(join(root, 'Cargo.lock'), `[[package]]\nname = "openresearch-cli"\nversion = "${version}"\n`)
-  await writeFile(join(root, 'product-upstream.json'), JSON.stringify({ tag: 'v0.2.19', version: '0.2.19', productVersion: version }))
+  await writeFile(join(root, 'product-upstream.json'), JSON.stringify({
+    repository: 'https://github.com/alphaXiv/OpenResearch', tag: 'v0.2.19', commit: '1'.repeat(40), version: '0.2.19', productVersion: version,
+    backportTarget: { tag: 'v0.2.22', commit: '2'.repeat(40), status: 'partial' },
+    backportLedger: 'docs/backports.md',
+  }))
   await writeFile(join(root, `release-notes/v${version}.md`), '# Release\n材料阅读与可靠投递\n')
   git('add', '.')
   git('-c', 'user.name=Release Test', '-c', 'user.email=release-test@example.invalid', 'commit', '-qm', 'fixture')
@@ -32,6 +36,9 @@ test('source archives and checksums bind the exact clean revision and are reprod
   await prepareSourceRelease(root, second, revision)
   assert.equal(manifest.revision, revision)
   assert.equal(manifest.tag, `v${version}`)
+  assert.deepEqual(manifest.upstreamBase, { repository: 'https://github.com/alphaXiv/OpenResearch', tag: 'v0.2.19', commit: '1'.repeat(40) })
+  assert.deepEqual(manifest.backportTarget, { tag: 'v0.2.22', commit: '2'.repeat(40), status: 'partial' })
+  assert.equal(manifest.backportLedger, 'docs/backports.md')
   for (const name of [...manifest.artifacts, 'source-release.json', 'SHA256SUMS']) {
     assert.deepEqual(await readFile(join(first, name)), await readFile(join(second, name)))
   }
