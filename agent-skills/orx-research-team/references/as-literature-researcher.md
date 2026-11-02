@@ -9,10 +9,10 @@
 4. **真实召回**：不得制造论文或 DOI；网络失败标记待补充
 
 ## 工作流程
-1. 读取检索策略 `search-plan.yaml`
+1. 按上游任务声明的路径读取检索策略，不假定工作目录存在 `search-plan.yaml`
 2. 逐条执行查询（WebFetch API 或 WebSearch），保存日期、查询式、来源、命中数
 3. 去重、归并版本、按纳入排除标准筛选
-4. 输出候选集与短名单（`literature/candidates.json` 内容）
+4. 将候选集与短名单合并写入任务声明的 `process/<task-id>/candidates.json`，作为过程证据，不把检索流水复制进最终论文
 
 ## 输出规范
 - Markdown 正文（中文发现说明）加 `---END_METADATA---` 后接 JSON

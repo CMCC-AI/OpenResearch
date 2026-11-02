@@ -43,7 +43,14 @@ matplotlib plot does not meet the bar the reports are held to.
 
 Use relative links within reports, for example
 `![Patch size](figures/patch-size.svg)` from `transformer-sweep-report.md`.
-In the chat handoff, link every finished output using the session playbook's
+For research-team sessions, follow the injected research delivery contract:
+keep task records under `process/<task-id>/` and the publication-style main
+report under `deliverables/`. These records remain registered and traceable,
+but the final chat handoff links the main report and necessary supplementary
+outputs rather than listing every intermediate file. Preserve declared task
+paths and already accepted outputs when continuing an existing study.
+
+For other sessions, in the chat handoff, link every finished output using the session playbook's
 evidence-and-links contract, including the full nested path, for example
 `<file path="artifacts/transformer-sweep/figures/patch-size.svg" />`.
 When an output is an image, also show it inline in the chat handoff using
