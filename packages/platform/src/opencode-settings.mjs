@@ -24,7 +24,7 @@ const field = (value, max = 2048) => {
 // Only the configured server path is writable. Never accept a filesystem path from a browser.
 export function opencodeSettings(file, apiUrl = "") {
   let pending = Promise.resolve();
-  async function api(path, method = "GET", body) {
+  async function api(path, method = "GET", body, timeout = 20000) {
     try {
       const response = await fetch(
         new URL(path, `${apiUrl.replace(/\/$/, "")}/`),
@@ -32,7 +32,7 @@ export function opencodeSettings(file, apiUrl = "") {
           method,
           headers: { "content-type": "application/json" },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-          signal: AbortSignal.timeout(20000),
+          signal: AbortSignal.timeout(timeout),
         },
       );
       // Never forward upstream errors: they may contain configuration or credentials.
@@ -41,9 +41,11 @@ export function opencodeSettings(file, apiUrl = "") {
         502,
         "OpenCode 配置服务拒绝请求，请检查服务状态和版本",
       );
-      return await response.json();
+      return response.status === 204 ? null : await response.json();
     } catch (error) {
       if (error instanceof HttpError) throw error;
+      if (["TimeoutError", "AbortError"].includes(error.name))
+        throw new HttpError(504, "模型验证超时，请检查服务状态后重试");
       throw new HttpError(502, "无法连接 OpenCode 配置服务，请联系管理员");
     }
   }
@@ -73,7 +75,7 @@ export function opencodeSettings(file, apiUrl = "") {
     const slash = model.indexOf("/");
     const providerId = slash > 0 ? model.slice(0, slash) : "openresearch";
     const provider = config.provider?.[providerId];
-    const providers = apiUrl ? catalogProviders(config, catalog) : [];
+    const providers = catalogProviders(config, catalog);
     const preset = providers.find((item) => item.id === providerId);
     return {
       enabled: true,
@@ -85,7 +87,8 @@ export function opencodeSettings(file, apiUrl = "") {
           : preset?.baseUrl || "",
       modelId: slash > 0 ? model.slice(slash + 1) : "",
       hasApiKey: !!provider?.options?.apiKey,
-      ...(apiUrl ? { backend: "opencode", providers } : {}),
+      providers,
+      ...(apiUrl ? { backend: "opencode" } : {}),
     };
   }
   function catalogProviders(config, catalog) {
@@ -132,8 +135,9 @@ export function opencodeSettings(file, apiUrl = "") {
                   : "",
             hasApiKey: !!configured?.options?.apiKey,
             connected:
-              !!configured?.options?.apiKey ||
-              (catalog.connected || []).includes(provider.id),
+              !(config.disabled_providers || []).includes(provider.id) &&
+              (!!configured?.options?.apiKey ||
+                (catalog.connected || []).includes(provider.id)),
             models: Object.keys({ ...provider.models, ...configured?.models }),
           },
         ];
@@ -143,11 +147,175 @@ export function opencodeSettings(file, apiUrl = "") {
           Number(b.connected) - Number(a.connected) || a.id.localeCompare(b.id),
       );
   }
+  async function persist(next, audit) {
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    try {
+      // The directory is mounted read-only into executors. Renaming there makes
+      // updates atomic and visible without exposing partially written credentials.
+      await writeFile(temporary, JSON.stringify(next, null, 2) + "\n", {
+        mode: 0o644,
+        flag: "wx",
+      });
+      await audit();
+      await rename(temporary, file);
+    } catch {
+      throw new HttpError(500, "保存失败，请检查服务器配置目录权限后重试");
+    } finally {
+      await unlink(temporary).catch(() => {});
+    }
+  }
+  function validateProviderId(value) {
+    const id = field(value, 100);
+    check(
+      /^[a-zA-Z0-9_-]+$/.test(id) &&
+        !["__proto__", "constructor", "prototype"].includes(id),
+      400,
+      "供应商 ID 仅支持字母、数字、下划线和连字符",
+    );
+    return id;
+  }
   return {
     async read() {
       if (!file && !apiUrl) return { enabled: false };
       const config = await load();
       return summary(config, apiUrl ? await api("provider") : {});
+    },
+    verify(data, audit = async () => {}) {
+      const operation = pending.then(async () => {
+        check(apiUrl, 503, "模型验证需要启用 OpenCode 配置服务");
+        const providerId = validateProviderId(data.providerId);
+        const modelId = field(data.modelId, 256);
+        check(modelId, 400, "请选择已保存的模型");
+        const config = await load();
+        const catalog = await api("provider");
+        const provider = catalogProviders(config, catalog).find(
+          (p) => p.id === providerId,
+        );
+        check(
+          provider?.connected && provider.models.includes(modelId),
+          400,
+          "请先保存并启用该供应商和模型，再进行验证",
+        );
+        await audit();
+        const started = Date.now();
+        let session;
+        try {
+          session = await api("session", "POST", {
+            title: "模型接入验证",
+            permission: [{ permission: "*", pattern: "*", action: "deny" }],
+          });
+          check(
+            typeof session?.id === "string" &&
+              /^ses[a-zA-Z0-9_-]+$/.test(session.id),
+            502,
+            "模型验证会话创建失败",
+          );
+          const result = await api(
+            `session/${session.id}/message`,
+            "POST",
+            {
+              model: { providerID: providerId, modelID: modelId },
+              system:
+                "This is a model connectivity check. Reply only OK. Do not use tools.",
+              parts: [{ type: "text", text: "Reply only OK." }],
+            },
+            60000,
+          );
+          const error = result?.info?.error;
+          const status = error?.data?.statusCode;
+          let message = "模型未返回有效文本，请检查模型能力和服务配置";
+          let code = "invalid_response";
+          if (error) {
+            code = "upstream_error";
+            message = "模型调用失败，请检查供应商状态、接口类型和模型配置";
+            if (
+              status === 401 ||
+              status === 403 ||
+              error.name === "ProviderAuthError"
+            ) {
+              code = "authentication_failed";
+              message =
+                "鉴权失败：请检查密钥是否有效，以及是否属于当前供应商接口";
+            } else if (status === 404) {
+              code = "model_not_found";
+              message = "模型或接口不存在：请核对模型 ID 与 Base URL";
+            } else if (status === 429) {
+              code = "rate_limited";
+              message = "请求受限：请检查余额、额度或频率限制";
+            }
+          } else if (
+            result?.parts?.some(
+              (part) => part.type === "text" && part.text?.trim(),
+            )
+          ) {
+            return {
+              ok: true,
+              providerId,
+              modelId,
+              checkedAt: new Date().toISOString(),
+              durationMs: Date.now() - started,
+              message: "模型调用验证成功",
+            };
+          }
+          return {
+            ok: false,
+            providerId,
+            modelId,
+            checkedAt: new Date().toISOString(),
+            durationMs: Date.now() - started,
+            code,
+            message,
+          };
+        } finally {
+          if (session?.id && /^ses[a-zA-Z0-9_-]+$/.test(session.id)) {
+            await api(`session/${session.id}/abort`, "POST").catch(() => {});
+            await api(`session/${session.id}`, "DELETE").catch(() => {});
+          }
+        }
+      });
+      pending = operation.catch(() => {});
+      return operation;
+    },
+    disconnect(data, audit = async () => {}) {
+      const operation = pending.then(async () => {
+        const providerId = validateProviderId(data.providerId);
+        const config = await load();
+        const existing = config.provider?.[providerId] || {};
+        // Global PATCH merges objects: explicitly clear the key and disable the
+        // provider so environment credentials and executor auth seeds cannot reconnect it.
+        const next = {
+          ...config,
+          provider: {
+            ...config.provider,
+            [providerId]: {
+              ...existing,
+              options: { ...existing.options, apiKey: "" },
+            },
+          },
+          disabled_providers: [
+            ...new Set([...(config.disabled_providers || []), providerId]),
+          ],
+          ...(Array.isArray(config.enabled_providers)
+            ? {
+                enabled_providers: config.enabled_providers.filter(
+                  (id) => id !== providerId,
+                ),
+              }
+            : {}),
+        };
+        for (const key of ["model", "small_model"])
+          if (config[key]?.startsWith(`${providerId}/`)) next[key] = "";
+        if (apiUrl) {
+          await audit();
+          await api("global/config", "PATCH", next);
+          await api(`auth/${encodeURIComponent(providerId)}`, "DELETE");
+          return summary(await load(), await api("provider"));
+        }
+        await persist(next, audit);
+        return summary(next);
+      });
+      pending = operation.catch(() => {});
+      return operation;
     },
     save(data, audit = async () => {}) {
       const operation = pending.then(async () => {
@@ -262,21 +430,7 @@ export function opencodeSettings(file, apiUrl = "") {
           const saved = await api("global/config", "PATCH", next);
           return summary(saved, catalog);
         }
-        const temporary = `${file}.${randomUUID()}.tmp`;
-        try {
-          // The directory is mounted read-only into executors. Renaming there makes
-          // updates atomic and visible without exposing partially written credentials.
-          await writeFile(temporary, JSON.stringify(next, null, 2) + "\n", {
-            mode: 0o644,
-            flag: "wx",
-          });
-          await audit();
-          await rename(temporary, file);
-        } catch {
-          throw new HttpError(500, "保存失败，请检查服务器配置目录权限后重试");
-        } finally {
-          await unlink(temporary).catch(() => {});
-        }
+        await persist(next, audit);
         return summary(next);
       });
       pending = operation.catch(() => {});

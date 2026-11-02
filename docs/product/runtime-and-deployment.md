@@ -62,3 +62,11 @@ OpenCode、Claude 和 Codex 共用闲置策略。有效内存不超过 8 GiB 时
 3. `enable-personal-spaces.py`、`enable-opencode-admin.py` 和 `migrate-deployment.py` 是明确目标的一次性迁移工具；两个 `fix-*` 工具用于存量上传和静态资源修复，不能替代完整发布。使用范围及验收见[材料约定](../ai-for-science/material-inputs.md)和[兼容审计](compatibility-audit-2026-10-21.md)。
 4. 迁移工具的配置规则同时用于待启动容器和持久化 Compose，避免一次重启正常、下次重建回到旧配置。
 5. 历史研究模式、附件、案例和目录继续读取；清理旧数据或协议另行安排经过验证的迁移，本轮入口和文档统一不改变已有研究。
+
+### 模型接入的断开与验证
+
+系统管理的“OpenCode 模型接入”中，“已配置”仅表示存在供应商凭据，并非调用已验证。“验证已保存模型”通过内部 OpenCode 服务的实际配置与认证链路发送最小文本请求，显示供应商、模型、验证时间与耗时。验证可能产生少量费用；测试会话禁止工具调用，结束后中止并删除。验证失败只返回脱敏的鉴权、模型不存在、限流或通用错误，不转发上游原文。修改表单后需先保存再验证；结果仅表示该模型在验证时可用，不是持续健康监控。旧文件配置模式需先启用 `OPENCODE_ADMIN_URL` 才能验证。
+
+“断开此供应商”清空共享配置中的 API Key、通过官方认证 API 删除配置服务中的登录凭据，并将供应商加入 `disabled_providers`，防止执行器环境变量或历史认证 seed 再次启用它；指向它的默认模型及小模型同时清空。此操作不撤销供应商平台签发的密钥，且不会中断正在使用旧配置的会话。重新填写密钥并保存会解除禁用；新启动的 OpenCode 进程读取新配置。其他供应商保持原配置。
+
+2026-11-02 服务器接入验收：`moonshotai-cn/kimi-k2.6` 与 `research-relay/deepseek-v4-flash-0731` 均通过实际 OpenCode 调用，默认使用后者。Kimi 密钥在 Coding 接口返回 401，在 Moonshot 中国接口可用；中转站不提供 `deepseekv4-flash`，必须使用目录中的精确 ID。该服务器的 WireGuard `~.` DNS 路由导致 Kimi 解析超时，已通过 `mobilesci-kimi-dns.service` 仅将 `moonshot.cn` 交由 eth0 原有云 DNS 解析；未改动 VPN 默认路由。平台增量镜像及 Compose、模型配置、静态资源回滚备份保存在服务器 `/opt/mobilesci/patches/model-access-20261102/`，其中模型配置备份含凭据，禁止公开。

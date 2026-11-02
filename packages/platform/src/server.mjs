@@ -411,12 +411,27 @@ export async function createPlatform(
       check(["GET", "POST"].includes(req.method), 405);
       if (req.method === "GET") return json(res, await modelSettings.read());
       const settings = await input(req);
-      const saved = await modelSettings.save(settings, async () => {
+      check(
+        settings.action === undefined ||
+          ["disconnect", "verify"].includes(settings.action),
+        400,
+        "不支持的模型配置操作",
+      );
+      const disconnect = settings.action === "disconnect";
+      const verify = settings.action === "verify";
+      if (verify) await limit(`model-verify:${s.user_id}`, 6, 60);
+      const saved = await modelSettings[
+        verify ? "verify" : disconnect ? "disconnect" : "save"
+      ](settings, async () => {
         await audit(
           pool,
           s.user_id,
           null,
-          "opencode.config.update",
+          verify
+            ? "opencode.model.verify"
+            : disconnect
+              ? "opencode.provider.disconnect"
+              : "opencode.config.update",
           settings.providerId,
         );
       });
