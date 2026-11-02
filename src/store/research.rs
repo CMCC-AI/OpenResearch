@@ -1478,11 +1478,32 @@ impl Store {
                 return Err(anyhow!("产物变化，需要重新审查: {}", artifact.path));
             }
         }
+        // Delivery cites the current task attempts and every explicit claim
+        // reference. Past plans/attempts remain in research_runs for lifecycle
+        // protection and accounting; their uncited logs are not deliverables.
+        let delivery_ids: HashSet<&str> = plan
+            .tasks
+            .iter()
+            .flat_map(|task| task.run_ids.iter().map(String::as_str))
+            .chain(
+                study
+                    .claims
+                    .iter()
+                    .filter_map(|claim| claim.input.run_id.as_deref()),
+            )
+            .collect();
+        let runs = self.research_runs(study)?;
+        if runs
+            .iter()
+            .any(|run| !crate::local::is_terminal(&run.status))
+        {
+            return Err(anyhow!("仍有未结束的运行"));
+        }
         let mut provenance = Vec::new();
-        for run in self.research_runs(study)? {
-            if !crate::local::is_terminal(&run.status) {
-                return Err(anyhow!("仍有未结束的运行"));
-            }
+        for run in runs
+            .into_iter()
+            .filter(|run| delivery_ids.contains(run.id.as_str()))
+        {
             let mut log = files::FileSource::open(&self.research_log_path(&run.id)?, "实验日志")?;
             let log_hash = log.hash()?;
             for claim in &study.claims {
@@ -2941,6 +2962,7 @@ mod tests {
 
     include!("research_debt_tests.rs");
     include!("research_evidence_tests.rs");
+    include!("research_delivery_tests.rs");
     include!("research_material_tests.rs");
     include!("research_lifecycle_tests.rs");
     include!("research_file_tests.rs");
