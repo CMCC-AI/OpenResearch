@@ -187,23 +187,33 @@ impl Store {
 
     pub(super) fn research_commit_claim(&self, id: &str, prepared: PreparedClaim) -> Result<()> {
         self.research_update(id, |study| {
-            study.ensure_active()?;
-            if prepared.study_id != study.id || prepared.project_id != study.project_id {
-                return Err(anyhow!("研究归属已变化，请重新登记证据"));
-            }
-            if let Some(expected) = &prepared.run {
-                let current = self
-                    .get_run(&expected.id)?
-                    .ok_or_else(|| anyhow!("Run 不存在"))?;
-                if RunSource::from(&current) != *expected {
-                    return Err(anyhow!("Run 记录已变化，请重新登记证据"));
-                }
-            }
-            if let Some(log) = &prepared.log {
-                log.check_unchanged()?;
-            }
-            study.claims.push(prepared.claim);
-            Ok(())
+            self.research_apply_prepared_claim(study, prepared)
+                .map(|_| ())
         })
+    }
+
+    pub(super) fn research_apply_prepared_claim(
+        &self,
+        study: &mut Study,
+        prepared: PreparedClaim,
+    ) -> Result<String> {
+        study.ensure_active()?;
+        if prepared.study_id != study.id || prepared.project_id != study.project_id {
+            return Err(anyhow!("研究归属已变化，请重新登记证据"));
+        }
+        if let Some(expected) = &prepared.run {
+            let current = self
+                .get_run(&expected.id)?
+                .ok_or_else(|| anyhow!("Run 不存在"))?;
+            if RunSource::from(&current) != *expected {
+                return Err(anyhow!("Run 记录已变化，请重新登记证据"));
+            }
+        }
+        if let Some(log) = &prepared.log {
+            log.check_unchanged()?;
+        }
+        let id = prepared.claim.id.clone();
+        study.claims.push(prepared.claim);
+        Ok(id)
     }
 }

@@ -28,7 +28,18 @@ export interface ResearchStudy {
   plans: { version: number; workflow?: PresetWorkflowMode | null; summary: string; tasks: ResearchTask[] }[];
   decisions: ResearchDecision[];
   deliveryError?: string | null;
+  claimRevision?: number;
+  activeClaimIds?: string[];
+  claimChanges?: ResearchClaimChange[];
+  evidenceReviewRequired?: boolean;
+  staleReviewTaskIds?: string[];
   claims: { id: string; text: string; support: string; source: string; location?: string; runId?: string; excerpt?: string }[];
+}
+export interface ResearchClaimChange {
+  claimId: string; action: "withdrawn" | "replaced"; reason: string;
+  actorSessionId: string; planVersion: number; revision: number;
+  replacementId: string | null; claimHash: string; replacementHash: string | null;
+  requestHash: string; changedAt: number;
 }
 export interface ResearchMetrics {
   activeDurationMs: number | null;
@@ -118,6 +129,7 @@ export function researchWorkflow(study: ResearchStudy) {
     else if (stage.id === "intake" && tasks.length === 0) state = "running";
     else if (stage.id === "intake" && members.length === 0 && study.plans.length > 0) state = "completed";
     else if (members.length === 0 && stage.gates.length === 0 && study.plans.length > 0) state = "optional";
+    if (study.evidenceReviewRequired && ["review", "delivery"].includes(stage.id)) state = "blocked";
     if (study.status === "stopped" && state !== "completed" && state !== "optional") state = "stopped";
     return { ...stage, state, tasks: members, decisions: gates };
   });
@@ -130,6 +142,7 @@ export function researchAttention(study: ResearchStudy) {
   if (rejected.length) return `${[...new Set(rejected.map((decision) => decision.gate))].join(" / ")} 已拒绝 · 等待调整计划`;
   const pending = decisions.filter((decision) => decision.status === "pending");
   if (pending.length) return `等待你确认 ${[...new Set(pending.map((decision) => decision.gate))].join(" / ")}`;
+  if (study.evidenceReviewRequired) return "证据已修订 · 等待重新审查与交付确认";
   const tasks = study.plans.at(-1)?.tasks ?? [];
   const failed = tasks.filter((task) => ["failed", "cancelled"].includes(task.state));
   if (failed.length) return `${failed.length} 个任务需处理`;
@@ -142,6 +155,7 @@ export function researchAttention(study: ResearchStudy) {
 }
 
 export function researchTaskStatus(study: ResearchStudy, task: ResearchTask): { state: WorkflowState; label: string } {
+  if (study.staleReviewTaskIds?.includes(task.id) && task.state === "completed") return { state: "blocked", label: "证据已修订 · 等待重新审查" };
   if (task.state === "completed") return { state: "completed", label: "产物已验收" };
   if (study.status === "stopped") return { state: "stopped", label: "已停止" };
   if (task.state === "running") return { state: "running", label: "执行中 / 待验收" };

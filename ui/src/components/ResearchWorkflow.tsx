@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { ArrowRight, CheckCircle2, Circle, CircleDot, GitBranch, ShieldCheck, Users, X } from "lucide-react";
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { consultationCoverage, researchWorkflowMode, expertRoles, researchAttention, currentDecisions, researchDagLayout, researchModes, researchProgress, researchTaskStatus, researchWorkflow, workflowStateNames, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
+import { ResearchEvidence } from "./ResearchEvidence";
 import { ResearchModulePreview } from "./ResearchModulePreview";
 import { ResearchJourneyIntro } from "./ResearchJourneyIntro";
 import { useDialogFocus } from "./useDialogFocus";
@@ -119,7 +120,7 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
             {selectedTask ? <TaskDetails study={study} task={selectedTask} runs={runs} onOpenSession={onOpenSession ? (id) => { onClose(); onOpenSession(id); } : undefined} /> : null}
           </>}
         </section>
-        {study.claims.length > 0 && <details className="rounded-lg border border-border p-3"><summary className="cursor-pointer text-sm font-medium">证据声明（{study.claims.length}）</summary>{study.claims.map((claim) => <div key={claim.id} className="mt-2 border-t border-border py-2 text-sm"><p>{claim.text}</p><p className="text-xs text-subtext">{claim.support === "experiment" ? "实验关联证据" : claim.support === "paper" ? "论文原文声明" : "推测"} · {claim.source} {claim.location}</p>{claim.excerpt && <pre className="mt-1 whitespace-pre-wrap text-xs">{claim.excerpt}</pre>}</div>)}</details>}
+        <ResearchEvidence study={study} />
         </>}
         {layer === "execution" && study.plans.at(-1)?.summary && <details className="text-sm"><summary className="cursor-pointer text-subtext">查看研究计划说明</summary><p className="mt-2 whitespace-pre-wrap">{study.plans.at(-1)?.summary}</p></details>}
       </div>

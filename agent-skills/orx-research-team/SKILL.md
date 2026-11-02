@@ -134,6 +134,21 @@ decision in terms of what the user is agreeing to, then register the native plan
    source explanation; the platform records commit and log hash. Claim string
    fields together must fit within 64 KiB; research JSON request files within 256 KiB.
    Review negative and inconclusive results without inventing support.
+   To correct a registered statement, only the lead may use
+   `orx research amend-claim <claim-id> --file <path>`. Read current status first;
+   `version` is the latest plan version (0 before a plan), and `revision` is
+   `claimRevision` (0 when absent). Withdraw with
+   `{"action":"withdraw","version":1,"revision":0,"reason":"..."}`;
+   replace with the same required fields, `"action":"replace"`, and
+   `"replacement":{...}` containing a complete ClaimInput. Reasons are mandatory
+   (max 4 KiB). Original statements and receipts remain in history; use
+   `activeClaimIds` for current evidence and `claimChanges` for audit. Never silently
+   treat a historical statement as current. An identical retry returns the same
+   receipt; a stale plan/revision or an already revised statement with a different
+   request is rejected. After any amendment, revise the plan with independent
+   reviewer AND citation auditor tasks (also for proposal/legacy modes), complete
+   fresh reviews, and request human delivery confirmation again. Previous delivery
+   approval is superseded; amendments do not authorize experiments.
 9. W1–W3, legacy full studies and independent reviews need separate `as-independent-reviewer`
    and `as-quality-citation-auditor` tasks. Reviewers receive artifacts and
    evidence, not a copied author conversation. They must report blocking issues

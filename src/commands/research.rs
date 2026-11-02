@@ -1,7 +1,7 @@
 //! Native CLI for research orchestration. Deliberately no approval command.
 use crate::error::{anyhow, Result};
 use crate::store::{
-    research::{ClaimInput, PlanInput},
+    research::{ClaimAmendmentInput, ClaimInput, PlanInput},
     Store,
 };
 use clap::{Args, Subcommand};
@@ -42,6 +42,12 @@ pub enum ResearchCommand {
         #[arg(long)]
         file: String,
     },
+    /// Explicitly withdraw or replace a claim; original evidence stays in history.
+    AmendClaim {
+        claim: String,
+        #[arg(long)]
+        file: String,
+    },
     Package,
 }
 #[derive(Deserialize)]
@@ -77,7 +83,10 @@ pub async fn run(args: ResearchArgs) -> Result<()> {
     let lead = study.session_id == session;
     match args.command {
         ResearchCommand::Status => {
-            println!("{}", serde_json::to_string_pretty(&study)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&store.research_study_view(&study)?)?
+            );
         }
         ResearchCommand::Roles => unreachable!(),
         ResearchCommand::Plan { file } => {
@@ -160,6 +169,17 @@ pub async fn run(args: ResearchArgs) -> Result<()> {
             store.research_add_claim(&study.id, read::<ClaimInput>(&file)?)?;
             println!("证据声明已登记；科学有效性仍需独立审查。");
         }
+        ResearchCommand::AmendClaim { claim, file } => {
+            require_lead(lead)?;
+            let receipt = store.research_amend_claim(
+                &study.id,
+                &session,
+                &claim,
+                read::<ClaimAmendmentInput>(&file)?,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&receipt)?);
+            eprintln!("声明修订已登记；请修订计划并重新完成独立审查与交付确认。");
+        }
         ResearchCommand::Package => {
             require_lead(lead)?;
             store.research_update(&study.id, |study| {
@@ -188,6 +208,28 @@ fn require_lead(lead: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn research_amendment_cli_requires_target_and_file_without_approval_verb() {
+        use clap::Parser;
+        assert!(crate::Cli::try_parse_from([
+            "orx",
+            "research",
+            "amend-claim",
+            "claim-id",
+            "--file",
+            "request.json"
+        ])
+        .is_ok());
+        for args in [
+            vec!["orx", "research", "amend-claim", "--file", "request.json"],
+            vec!["orx", "research", "amend-claim", "claim-id"],
+            vec!["orx", "research", "approve"],
+        ] {
+            assert!(crate::Cli::try_parse_from(args).is_err());
+        }
+        assert!(require_lead(false).is_err());
+    }
 
     #[test]
     fn research_request_reader_stops_at_size_limit_and_accepts_boundary() {

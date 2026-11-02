@@ -10,7 +10,9 @@ use sha2::{Digest, Sha256};
 use super::{now_ms, Store, StoredRun};
 use crate::error::{anyhow, Result};
 
+mod claims;
 mod evidence;
+pub use claims::ClaimAmendmentInput;
 mod files;
 
 /// The same membership drives accounting and lifecycle protection: the lead,
@@ -168,6 +170,8 @@ pub struct Study {
     pub plans: Vec<ResearchPlan>,
     pub decisions: Vec<HumanDecision>,
     pub claims: Vec<EvidenceClaim>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_error: Option<String>,
     pub created_at: i64,
@@ -550,6 +554,7 @@ pub(super) fn migrate(conn: &rusqlite::Connection) -> Result<()> {
         DELETE FROM research_sessions WHERE study_id IN (SELECT id FROM research_studies WHERE project_id=OLD.id);
         DELETE FROM research_experiments WHERE study_id IN (SELECT id FROM research_studies WHERE project_id=OLD.id);
         DELETE FROM research_studies WHERE project_id=OLD.id; END;")?;
+    claims::migrate(conn)?;
     conn.execute_batch(&format!(
         "CREATE INDEX IF NOT EXISTS idx_research_studies_active ON research_studies(id) WHERE {ACTIVE_STUDY_FILTER}"
     ))?;
@@ -642,6 +647,7 @@ impl Store {
             plans: vec![],
             decisions: vec![],
             claims: vec![],
+            claim_revision: None,
             delivery_error: None,
             created_at: now_ms(),
             updated_at: now_ms(),
@@ -692,6 +698,9 @@ impl Store {
         self.research_update(id, |study| {
             study.ensure_active()?;
             validate_plan(&input, &study.mode)?;
+            if study.claim_revision.is_some() {
+                claims::require_review_roles(input.tasks.iter().map(|task| task.role.as_str()))?;
+            }
             if self.count_live_chat_spawns(&study.session_id)? > 0
                 || self
                     .research_runs(study)?
@@ -713,7 +722,7 @@ impl Store {
             let same_workflow =
                 input.workflow.as_deref().unwrap_or(&study.mode) == study.workflow_mode();
             let root = self.research_root(study).ok();
-            let evidence_digest = digest(&serde_json::to_vec(&study.claims)?);
+            let evidence_digest = self.research_evidence(study)?.digest()?;
             let prev_tasks: std::collections::HashMap<String, ResearchTask> = study
                 .plans
                 .last()
@@ -881,7 +890,7 @@ impl Store {
                 Err(error) => return Err(error),
             }
         }
-        let evidence_digest = digest(&serde_json::to_vec(&study.claims)?);
+        let evidence_digest = self.research_evidence(&study)?.digest()?;
         let task = study.task_mut(task_id)?;
         task.output_baseline = Some(baseline);
         task.summary = None;
@@ -1462,7 +1471,11 @@ impl Store {
         if plan.tasks.iter().any(|t| t.state != "completed") {
             return Err(anyhow!("全部计划任务必须通过验收后才能申请交付确认"));
         }
-        let evidence_digest = digest(&serde_json::to_vec(&study.claims)?);
+        let evidence = self.research_evidence(study)?;
+        let evidence_digest = evidence.digest()?;
+        if !evidence.changes.is_empty() {
+            claims::require_review_roles(plan.tasks.iter().map(|task| task.spec.role.as_str()))?;
+        }
         for task in &plan.tasks {
             if matches!(
                 task.spec.role.as_str(),
@@ -1486,7 +1499,7 @@ impl Store {
             .iter()
             .flat_map(|task| task.run_ids.iter().map(String::as_str))
             .chain(
-                study
+                evidence
                     .claims
                     .iter()
                     .filter_map(|claim| claim.input.run_id.as_deref()),
@@ -1506,7 +1519,7 @@ impl Store {
         {
             let mut log = files::FileSource::open(&self.research_log_path(&run.id)?, "实验日志")?;
             let log_hash = log.hash()?;
-            for claim in &study.claims {
+            for claim in &evidence.claims {
                 if claim.input.support == "experiment"
                     && claim.input.run_id.as_deref() == Some(&run.id)
                     && claim.log_sha256.as_ref() != Some(&log_hash)
@@ -1518,9 +1531,11 @@ impl Store {
             provenance.push(serde_json::json!({"id":run.id,"commit":run.commit_sha,"status":run.status,"logHash":log_hash,"sourceHash":backend.source_digest}));
         }
         provenance.sort_by_key(|r| r["id"].as_str().unwrap_or_default().to_string());
-        Ok(serde_json::to_string(
-            &serde_json::json!({"plan":plan,"claims":study.claims,"runs":provenance}),
-        )?)
+        let mut scope = serde_json::json!({"plan":plan,"claims":evidence.claims,"runs":provenance});
+        if !evidence.changes.is_empty() {
+            scope["claimChanges"] = serde_json::to_value(&evidence.changes)?;
+        }
+        Ok(serde_json::to_string(&scope)?)
     }
     pub fn research_decide(
         &self,
@@ -2962,6 +2977,7 @@ mod tests {
 
     include!("research_debt_tests.rs");
     include!("research_evidence_tests.rs");
+    include!("research_claim_tests.rs");
     include!("research_delivery_tests.rs");
     include!("research_material_tests.rs");
     include!("research_lifecycle_tests.rs");

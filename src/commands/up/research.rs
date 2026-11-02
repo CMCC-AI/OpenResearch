@@ -23,7 +23,11 @@ pub(super) async fn session(State(state): State<AppState>, Path(id): Path<String
             .as_ref()
             .map(|study| store.research_metrics(study, &busy, crate::store::now_ms()))
             .transpose()?;
-        Ok(Json(json!({"study":study,"runs":runs,"metrics":metrics})))
+        let view = study
+            .as_ref()
+            .map(|study| store.research_study_view(study))
+            .transpose()?;
+        Ok(Json(json!({"study":view,"runs":runs,"metrics":metrics})))
     })
     .await
 }

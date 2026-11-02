@@ -221,7 +221,8 @@ pub fn turn_context(store: &Store, session: &str) -> Result<Option<String>> {
     } else {
         String::new()
     };
-    let instruction = format!("{instruction}\n{workflow}{progress}");
+    let amendments = study.claim_revision.map(|revision| format!("\n当前声明修订版本 r{revision}。用 orx research status 查看 activeClaimIds 与 claimChanges；已撤回/替代声明只供历史审计，不能继续作为当前证据。声明变更后须修订计划并重新独立审查，不得沿用旧交付批准。\n")).unwrap_or_default();
+    let instruction = format!("{instruction}\n{workflow}{progress}{amendments}");
     Ok(Some(format!("\n<research-study>\nStudy: {}\nMode: {}\nObjective: {}\nartifactRoot: {}\ncodeRoot: 当前会话独立 Git worktree\n{}\n{}\n当前计划与决策用 orx research status 查询。\n</research-study>",study.id,study.mode,study.objective,root.display(),instruction,GUIDE)))
 }
 pub fn run_contract(store: &Store, args: &crate::ExpRunArgs) -> Result<RunContract> {
