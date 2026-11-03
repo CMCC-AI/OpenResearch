@@ -131,9 +131,57 @@ pub(super) async fn preview(
         .into_response())
 }
 
+fn citation_permits() -> &'static Arc<tokio::sync::Semaphore> {
+    static LIMIT: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(2)))
+}
+
+pub(super) async fn citation_preview(
+    Path((id, source, event)): Path<(String, String, String)>,
+) -> std::result::Result<Response, ApiError> {
+    let permit = citation_permits()
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            ApiError(
+                StatusCode::TOO_MANY_REQUESTS,
+                "引用原文读取繁忙，请稍后重试。".into(),
+            )
+        })?;
+    // Keep the permit inside the blocking task too: cancelled clients must not
+    // open an unbounded stream of orphaned snapshot preparations.
+    let (prepared, _permit) = blocking_task(move || -> std::result::Result<_, ApiError> {
+        let package = material::inspect(&id).map_err(bad_request)?;
+        let store = Store::open()?;
+        store
+            .get_local_project(&package.project_id)?
+            .ok_or_else(|| not_found("project"))?;
+        let citation = store
+            .material_citation(&package.project_id, &event)
+            .map_err(bad_request)?;
+        if citation.package_id != id || citation.source != source {
+            return Err(bad_request("引用回执与所请求的材料来源不一致"));
+        }
+        let prepared = material::prepare_citation_preview(&package.project_id, citation)
+            .map_err(bad_request)?;
+        Ok((prepared, permit))
+    })
+    .await??;
+    let value = prepared.read().await.map_err(bad_request)?;
+    Ok((
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        Json(value),
+    )
+        .into_response())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("materials/citation_tests.rs");
 
     #[test]
     fn material_preview_http_checks_scope_hash_and_safe_headers() {

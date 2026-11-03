@@ -10,7 +10,8 @@ import { researchAttention, researchTaskStatus, researchWorkflow } from "../src/
 const source = readFileSync(new URL("../src/components/ResearchEvidence.tsx", import.meta.url), "utf8");
 const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 const exports = {};
-new Function("require", "exports", code)(createRequire(import.meta.url), exports);
+const realRequire = createRequire(import.meta.url);
+new Function("require", "exports", code)(id => id === "./MaterialCitationSource" ? { MaterialCitationSource: ({ citation }) => React.createElement("button", null, `查看原文选区：${citation.path}`) } : id === "../readOnlyApi" ? { getReadOnlyApi: () => null } : realRequire(id), exports);
 const claim = id => ({ id, text: `statement-${id}`, support: "inference", source: "hypothesis" });
 const study = { status: "active", mode: "team", claims: [claim("old"), claim("new")], decisions: [], plans: [] };
 const render = value => renderToStaticMarkup(React.createElement(exports.ResearchEvidence, { study: value }));
@@ -45,4 +46,14 @@ test("stale accepted reviews no longer present the current evidence as reviewed"
   assert.equal(researchTaskStatus({ ...amended, staleReviewTaskIds: [] }, task).state, "completed");
   assert.equal(researchWorkflow(amended).find(stage => stage.id === "review").state, "blocked");
   assert.equal(researchWorkflow(amended).find(stage => stage.id === "delivery").state, "blocked");
+});
+
+
+test("canonical sources stay accessible for current and retired statements without inventing legacy links", () => {
+  const value = { ...study, activeClaimIds: ["new"], claimChanges: [{ claimId: "old", action: "withdrawn", reason: "retired" }], claims: study.claims.map(c => ({ ...c, materialCitation: { readEventId: c.id, path: `资料/${c.id}.txt` } })) };
+  const [current, history] = render(value).split("历史声明（1）");
+  assert.match(current, /查看原文选区：资料\/new.txt/);
+  assert.doesNotMatch(current, /查看原文选区：资料\/old.txt/);
+  assert.match(history, /查看原文选区：资料\/old.txt/);
+  assert.doesNotMatch(render(study), /查看原文选区/);
 });

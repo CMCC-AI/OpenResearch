@@ -1,3 +1,4 @@
+import type { MaterialCitation } from "./materialCitation";
 import presets from "./researchWorkflows.json" with { type: "json" };
 
 export type PresetWorkflowMode = keyof typeof presets;
@@ -33,7 +34,7 @@ export interface ResearchStudy {
   claimChanges?: ResearchClaimChange[];
   evidenceReviewRequired?: boolean;
   staleReviewTaskIds?: string[];
-  claims: { id: string; text: string; support: string; source: string; location?: string; runId?: string; excerpt?: string }[];
+  claims: { id: string; text: string; support: string; source: string; location?: string; runId?: string; excerpt?: string; materialCitation?: MaterialCitation }[];
 }
 export interface ResearchClaimChange {
   claimId: string; action: "withdrawn" | "replaced"; reason: string;

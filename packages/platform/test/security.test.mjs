@@ -42,6 +42,10 @@ test("private space gateway blocks machine administration and path confusion", (
       assert.equal(permitted(method, path), false);
   assert.equal(permitted("POST", "/api/chat/sessions/x/message"), true);
   assert.equal(permitted("GET", "/api/events"), true);
+  assert.equal(
+    permitted("GET", "/api/materials/package/SRC-0001/citations/event"),
+    true,
+  );
 });
 test("passwords salted and verified using bounded scrypt", async () => {
   const password = "a strong test password";

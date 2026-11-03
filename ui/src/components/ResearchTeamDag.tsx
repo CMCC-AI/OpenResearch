@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, useNodesState, useReactFlow, type Edge, type Node, type NodeProps } from "@xyflow/react";
 import { CircleDot, X } from "lucide-react";
 import { currentDecisions, expertRoles, researchAttention, researchProgress, researchTeamGraph, researchDuration, type ResearchMetrics, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
+import { ResearchEvidence } from "./ResearchEvidence";
 import { TaskDetails, workflowTone } from "./ResearchWorkflow";
 import { Button, IconButton } from "./ui";
 import { useDialogFocus } from "./useDialogFocus";
@@ -49,7 +50,7 @@ export function ResearchTeamDagDialog({ study, runs, metrics, onClose, confirmat
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
   useDialogFocus(ref, onClose);
-  const [view, setView] = useState<"overview" | "tasks" | "confirmation">("overview");
+  const [view, setView] = useState<"overview" | "tasks" | "confirmation" | "evidence">("overview");
   const actual = view === "tasks";
   const [selected, setSelected] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now);
@@ -77,7 +78,7 @@ export function ResearchTeamDagDialog({ study, runs, metrics, onClose, confirmat
   const artifacts = new Set(tasks.flatMap((task) => task.artifacts.map((artifact) => artifact.path))).size;
   const content = <div ref={embedded ? undefined : ref} role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-labelledby={titleId} tabIndex={-1} className={`research-team flex h-full min-h-0 w-full flex-col overflow-x-hidden overflow-y-auto bg-background text-text ${embedded ? "" : "max-h-full max-w-6xl rounded-xl border border-border shadow-elevated"}`} onClick={(event) => event.stopPropagation()}>
       <header className="research-team-header flex shrink-0 flex-wrap items-center gap-x-6 gap-y-3 border-b border-border">
-        <div className="min-w-0"><h2 id={titleId} className="flex items-center gap-2 text-base font-normal"><span className="research-team-icon flex shrink-0 items-center justify-center"><img src={appHref("/research-team/team.svg")} alt="" width={22} height={22} /></span>科研专家团 · {view === "confirmation" ? "人工确认" : "DAG 全景"}</h2><p role="status" className="research-team-attention text-xs">{study ? researchAttention(study) : "尚未开始研究"}</p></div>
+        <div className="min-w-0"><h2 id={titleId} className="flex items-center gap-2 text-base font-normal"><span className="research-team-icon flex shrink-0 items-center justify-center"><img src={appHref("/research-team/team.svg")} alt="" width={22} height={22} /></span>科研专家团 · {view === "confirmation" ? "人工确认" : view === "evidence" ? "证据与来源" : "DAG 全景"}</h2><p role="status" className="research-team-attention text-xs">{study ? researchAttention(study) : "尚未开始研究"}</p></div>
         <dl className="research-team-stats grid min-w-0 flex-1 gap-2">{[
           { label: "研究时长", value: !study ? "0分00秒" : !metrics ? "暂不可用" : metrics.activeDurationMs == null ? "未记录" : researchDuration(metrics, metrics.measuredAt + Math.max(0, now - metricClock.current.receivedAt)), description: !study ? "尚未开始研究" : !metrics ? "服务尚未返回统计数据，更新服务后重试。" : metrics.activeDurationMs == null ? "历史对话缺少计时记录；后续执行将记录有效研究时长。" : metrics.activeDurationComplete === false ? "仅包含已记录的有效执行时长，历史缺失部分未计入；并行执行不重复累计。" : "累计有效执行时长，排除等待确认的时间；并行执行不重复累计。", tone: "duration" },
           { label: "Token消耗", value: !study ? "0" : !metrics ? "暂不可用" : metrics.tokenCount == null ? "未上报" : `${metrics.tokenCountComplete ? "" : "≥"}${fmtTokens(metrics.tokenCount)}`, description: !study ? "尚未开始研究" : !metrics ? "服务尚未返回统计数据，更新服务后重试。" : metrics.tokenCount == null ? "智能体尚未上报 Token 用量。" : metrics.tokenCountComplete ? "主对话及专家子对话累计上报的输入与输出 Token。" : "仅包含已上报用量，尚未上报的部分未计入。", tone: "tokens" },
@@ -90,9 +91,10 @@ export function ResearchTeamDagDialog({ study, runs, metrics, onClose, confirmat
         <div className="flex flex-wrap gap-1" role="group" aria-label="专家团页面">{[
           { label: "专家团全景", active: view === "overview", select: () => setView("overview") },
           { label: "本次任务依赖", active: actual, select: () => setView("tasks") },
+          { label: "证据与来源", active: view === "evidence", select: () => setView("evidence") },
         ].map((tab) => <Button key={tab.label} variant="ghost" size="small" className="research-team-tab" active={tab.active} aria-pressed={tab.active} onClick={() => { tab.select(); setSelected(null); }}>{tab.label}</Button>)}<Button size="small" variant="ghost" className="research-team-tab" active={view === "confirmation"} aria-pressed={view === "confirmation"} onClick={() => { setView("confirmation"); setSelected(null); }}>人工确认{pending.length > 0 && <span className="ms-1 text-accent-amber">{pending.length}</span>}</Button></div>
       </div>
-      {view === "confirmation" ? <section aria-label="人工确认" className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto border-y border-border p-4">{confirmationContent}</section> : <>
+      {view === "evidence" ? <section aria-label="研究证据与原文来源" className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto border-y border-border p-4">{study?.claims.length ? <ResearchEvidence key={study.id} study={study} /> : <p className="text-sm text-subtext">尚未登记证据声明。</p>}</section> : view === "confirmation" ? <section aria-label="人工确认" className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto border-y border-border p-4">{confirmationContent}</section> : <>
       <div className="research-team-canvas relative min-h-32 flex-1 border-y border-border" aria-label="科研专家团纵向 DAG">
         {actual && !tasks.length ? <p className="p-8 text-center text-sm text-subtext">暂无任务计划</p> : <ExpertGraph key={`${study?.id ?? "preview"}-${study?.plans.at(-1)?.version ?? 0}-${actual}`} nodes={expertNodes} edges={expertEdges} currentIds={expertCurrentIds} onSelect={setSelected} />}
       </div>

@@ -157,8 +157,9 @@ decision in terms of what the user is agreeing to, then register the native plan
    Use `orx materials locate <readEventId>` to recheck the original and output
    hashes and return the same selection; it creates a fresh reading receipt and
    preserves the original ID as locatedReadEventId. Failure or changed extraction
-   must be reported, not silently matched to other text. Browser jump controls and
-   delivery source-file packaging are not implemented by this CLI capability.
+   must be reported, not silently matched to other text. The browser evidence page
+   also offers read-only selection viewing without creating agent reading receipts.
+   Delivery source-file packaging remains future work.
    Review negative and inconclusive results without inventing support.
    To correct a registered statement, only the lead may use
    `orx research amend-claim <claim-id> --file <path>`. Read current status first;

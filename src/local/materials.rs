@@ -2,7 +2,7 @@
 //! Derived text is a convenience view; registration does not assert expert review.
 mod reading;
 mod storage;
-pub use reading::{locate, read_recorded, ReadRequest};
+pub use reading::{locate, prepare_citation_preview, read_recorded, ReadRequest};
 
 use crate::error::{anyhow, Result};
 use serde::{Deserialize, Serialize};

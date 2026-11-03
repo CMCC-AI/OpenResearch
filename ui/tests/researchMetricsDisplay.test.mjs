@@ -18,6 +18,7 @@ const mocks = {
   "../flowNodes": { reconcileFlowNodes },
   "@xyflow/react": { useNodesState: (nodes) => [nodes, () => {}, () => {}], ReactFlow: () => null, MarkerType: { ArrowClosed: "arrowclosed" } },
   "./ResearchWorkflow": {},
+  "./ResearchEvidence": { ResearchEvidence: () => null },
   "./ui": { Button: "button", IconButton: "button" },
   "./useDialogFocus": { useDialogFocus() {} },
   "./ResearchTeamDag.css": {},
@@ -48,4 +49,15 @@ test("measured and partial values remain visible while an unstarted study shows 
   assert.match(partial, /≥12345/);
   assert.match(stats(undefined, null), /0分00秒/);
   assert.doesNotMatch(stats(undefined, null), /暂不可用|未记录|未上报/);
+});
+
+
+test("the active DAG page exposes the evidence view and renders persisted claims there", () => {
+  const evidenceMocks = { ...mocks, react: { ...React, useId: () => "dag", useRef: value => ({ current: value }), useEffect() {}, useMemo: fn => fn(), useState: initial => [initial === "overview" ? "evidence" : typeof initial === "function" ? initial() : initial, () => {}] }, "./ResearchEvidence": { ResearchEvidence: ({ study }) => React.createElement("div", null, `persisted-claim:${study.claims[0].id}`) } };
+  const view = {};
+  new Function("require", "exports", code)(id => id in evidenceMocks ? evidenceMocks[id] : require(id), view);
+  const html = renderToStaticMarkup(React.createElement(view.ResearchTeamDagDialog, { embedded: true, study: { ...study, claims: [{ id: "claim-with-source" }] }, metrics: measured, runs: [], onClose() {} }));
+  assert.match(html, /研究证据与原文来源/); assert.match(html, /persisted-claim:claim-with-source/);
+  assert.match(html, /aria-pressed="true"[^>]*>证据与来源/);
+  assert.doesNotMatch(html, /aria-label="科研专家团纵向 DAG"/);
 });

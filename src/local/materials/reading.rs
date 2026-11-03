@@ -79,20 +79,7 @@ async fn read_expected_at(
     };
     let result = result.and_then(|result| {
         if let Some(expected) = expected {
-            let content = result["content"]
-                .as_str()
-                .ok_or_else(|| anyhow!("读取结果缺少正文"))?;
-            if receipt.format != expected.format
-                || result["path"] != expected.path
-                || result["sha256"] != expected.sha256
-                || result["lineCount"] != expected.line_count
-                || content.len() != expected.content_bytes
-                || format!("{:x}", Sha256::digest(content.as_bytes())) != expected.content_sha256
-            {
-                return Err(anyhow!(
-                    "当前原文或解析结果与引用回执不一致，不能返回旧引用选区"
-                ));
-            }
+            verify_citation(expected, &receipt.format, &result)?;
         }
         Ok(result)
     });
@@ -139,6 +126,87 @@ pub async fn locate(
     let mut result = read_expected_at(store, context, request, &root(), Some(&citation)).await?;
     result["locatedReadEventId"] = event.into();
     Ok(result)
+}
+
+fn verify_citation(
+    expected: &crate::store::material_reads::MaterialCitation,
+    format: &str,
+    result: &serde_json::Value,
+) -> Result<()> {
+    let content = result["content"]
+        .as_str()
+        .ok_or_else(|| anyhow!("读取结果缺少正文"))?;
+    if format != expected.format
+        || result["path"] != expected.path
+        || result["sha256"] != expected.sha256
+        || result["packageId"] != expected.package_id
+        || result["source"] != expected.source
+        || result["offset"] != expected.offset
+        || result["page"] != serde_json::to_value(expected.page)?
+        || result["lineCount"] != expected.line_count
+        || content.len() != expected.content_bytes
+        || format!("{:x}", Sha256::digest(content.as_bytes())) != expected.content_sha256
+    {
+        return Err(anyhow!(
+            "当前原文或解析结果与引用回执不一致，不能返回旧引用选区"
+        ));
+    }
+    Ok(())
+}
+
+/// Browser-only replay: the owned verified snapshot can cross a blocking-task
+/// boundary. It never creates or confirms an agent reading receipt.
+pub struct CitationPreview {
+    prepared: PreparedRead,
+    citation: crate::store::material_reads::MaterialCitation,
+}
+
+pub fn prepare_citation_preview(
+    project: &str,
+    citation: crate::store::material_reads::MaterialCitation,
+) -> Result<CitationPreview> {
+    prepare_citation_preview_at(&root(), project, citation)
+}
+
+fn prepare_citation_preview_at(
+    root: &Path,
+    project: &str,
+    citation: crate::store::material_reads::MaterialCitation,
+) -> Result<CitationPreview> {
+    let package = read_at(root, &citation.package_id, project)?;
+    if !package.ready {
+        return Err(anyhow!("材料尚未封存"));
+    }
+    let entry = package
+        .files
+        .into_iter()
+        .find(|entry| entry.id == citation.source)
+        .ok_or_else(|| anyhow!("引用来源不存在"))?;
+    if entry.path != citation.path
+        || entry.format != citation.format
+        || entry.sha256 != citation.sha256
+    {
+        return Err(anyhow!("材料登记信息与引用回执不一致"));
+    }
+    Ok(CitationPreview {
+        prepared: prepare_entry_at(root, &citation.package_id, entry)?,
+        citation,
+    })
+}
+
+impl CitationPreview {
+    pub async fn read(self) -> Result<serde_json::Value> {
+        let result = self
+            .prepared
+            .read(
+                self.citation.offset,
+                self.citation.line_count,
+                self.citation.page,
+            )
+            .await?;
+        verify_citation(&self.citation, &self.prepared.entry.format, &result)?;
+        Ok(serde_json::json!({"citation":self.citation,"content":result["content"]}))
+    }
 }
 
 #[cfg(test)]
