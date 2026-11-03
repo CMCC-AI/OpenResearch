@@ -27,6 +27,16 @@ async fn read_recorded_at(
     request: ReadRequest,
     root: &Path,
 ) -> Result<serde_json::Value> {
+    read_expected_at(store, context, request, root, None).await
+}
+
+async fn read_expected_at(
+    store: &Store,
+    context: ReadContext,
+    request: ReadRequest,
+    root: &Path,
+    expected: Option<&crate::store::material_reads::MaterialCitation>,
+) -> Result<serde_json::Value> {
     if context.package_id != request.package {
         return Err(anyhow!("读取上下文与材料包不一致"));
     }
@@ -67,6 +77,25 @@ async fn read_recorded_at(
         }
         Err(error) => Err(error),
     };
+    let result = result.and_then(|result| {
+        if let Some(expected) = expected {
+            let content = result["content"]
+                .as_str()
+                .ok_or_else(|| anyhow!("读取结果缺少正文"))?;
+            if receipt.format != expected.format
+                || result["path"] != expected.path
+                || result["sha256"] != expected.sha256
+                || result["lineCount"] != expected.line_count
+                || content.len() != expected.content_bytes
+                || format!("{:x}", Sha256::digest(content.as_bytes())) != expected.content_sha256
+            {
+                return Err(anyhow!(
+                    "当前原文或解析结果与引用回执不一致，不能返回旧引用选区"
+                ));
+            }
+        }
+        Ok(result)
+    });
     receipt.recorded_at = crate::store::now_ms();
     match result {
         Ok(mut result) => {
@@ -90,6 +119,26 @@ async fn read_recorded_at(
             Err(error.context(message))
         }
     }
+}
+
+pub async fn locate(
+    store: &Store,
+    project: &str,
+    session: Option<&str>,
+    event: &str,
+) -> Result<serde_json::Value> {
+    let citation = store.material_citation(project, event)?;
+    let context = store.material_read_context(project, session, &citation.package_id)?;
+    let request = ReadRequest {
+        package: citation.package_id.clone(),
+        source: citation.source.clone(),
+        offset: citation.offset,
+        limit: citation.line_count,
+        page: citation.page,
+    };
+    let mut result = read_expected_at(store, context, request, &root(), Some(&citation)).await?;
+    result["locatedReadEventId"] = event.into();
+    Ok(result)
 }
 
 #[cfg(test)]

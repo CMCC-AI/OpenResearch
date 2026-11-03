@@ -232,3 +232,102 @@ impl Store {
         )
     }
 }
+
+/// Canonical provenance resolved from an immutable, confirmed reading receipt.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaterialCitation {
+    pub read_event_id: String,
+    pub package_id: String,
+    pub source: String,
+    pub path: String,
+    pub sha256: String,
+    pub format: String,
+    pub page: Option<u32>,
+    pub offset: usize,
+    pub line_count: usize,
+    pub content_bytes: usize,
+    pub content_sha256: String,
+    pub reader_session_id: Option<String>,
+    pub reader_study_id: Option<String>,
+    pub reader_plan_version: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Selection {
+    page: Option<u32>,
+    offset: usize,
+    line_count: usize,
+    total_lines: usize,
+    next_offset: Option<usize>,
+    content_bytes: usize,
+    content_sha256: String,
+}
+
+impl Store {
+    pub fn material_citation(&self, project: &str, event: &str) -> Result<MaterialCitation> {
+        let (body,state): (String,String) = self.conn.query_row(
+            "SELECT receipt,output_state FROM material_read_events WHERE project_id=?1 AND id=?2",
+            params![project,event], |r| Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or_else(|| anyhow!("读取回执不存在或不属于当前项目"))?;
+        let receipt: ReadReceipt = serde_json::from_str(&body)?;
+        if state != "written"
+            || receipt.outcome != "prepared"
+            || !receipt.verified
+            || receipt.error.is_some()
+        {
+            return Err(anyhow!("引用需要已核验且输出确认成功的读取回执"));
+        }
+        let selection: Selection = serde_json::from_value(
+            receipt
+                .selection
+                .ok_or_else(|| anyhow!("读取回执没有选区"))?,
+        )?;
+        let hash = |s: &str| {
+            s.len() == 64
+                && s.bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        };
+        let end = selection
+            .offset
+            .checked_add(selection.line_count)
+            .ok_or_else(|| anyhow!("选区范围溢出"))?;
+        if uuid::Uuid::parse_str(&receipt.package_id).is_err()
+            || receipt.context.project_id != project
+            || receipt.context.package_id != receipt.package_id
+            || selection.line_count == 0
+            || selection.line_count > receipt.requested_limit
+            || receipt.requested_limit > 1000
+            || selection.offset == 0
+            || selection.offset != receipt.requested_offset
+            || end - 1 > selection.total_lines
+            || selection.next_offset != (end <= selection.total_lines).then_some(end)
+            || selection.content_bytes == 0
+            || selection.content_bytes > 64 * 1024
+            || !hash(&selection.content_sha256)
+            || !hash(&receipt.sha256)
+            || !matches!(receipt.format.as_str(), "text" | "notebook" | "pdf")
+            || selection.page != receipt.requested_page
+            || (receipt.format == "pdf" && selection.page.is_none_or(|page| page == 0))
+            || (receipt.format != "pdf" && selection.page.is_some())
+        {
+            return Err(anyhow!("读取回执选区为空或来源信息不一致"));
+        }
+        Ok(MaterialCitation {
+            read_event_id: event.into(),
+            package_id: receipt.package_id,
+            source: receipt.source,
+            path: receipt.path,
+            sha256: receipt.sha256,
+            format: receipt.format,
+            page: selection.page,
+            offset: selection.offset,
+            line_count: selection.line_count,
+            content_bytes: selection.content_bytes,
+            content_sha256: selection.content_sha256,
+            reader_session_id: receipt.context.session_id,
+            reader_study_id: receipt.context.study_id,
+            reader_plan_version: receipt.context.plan_version,
+        })
+    }
+}

@@ -222,7 +222,13 @@ pub fn turn_context(store: &Store, session: &str) -> Result<Option<String>> {
         String::new()
     };
     let amendments = study.claim_revision.map(|revision| format!("\n当前声明修订版本 r{revision}。用 orx research status 查看 activeClaimIds 与 claimChanges；已撤回/替代声明只供历史审计，不能继续作为当前证据。声明变更后须修订计划并重新独立审查，不得沿用旧交付批准。\n")).unwrap_or_default();
-    let instruction = format!("{instruction}\n{workflow}{progress}{amendments}");
+    let material_citations = if study.material_citation_revision.is_some() {
+        "\n材料声明通过 materialReadId 关联读取回执；research status 的 materialCitation 提供规范来源。用 orx materials locate <readEventId> 重新核验并定位原文。关联不证明本任务已理解或结论已通过审查；不得复用旧交付批准。\n"
+    } else {
+        ""
+    };
+    let instruction =
+        format!("{instruction}\n{workflow}{progress}{amendments}{material_citations}");
     Ok(Some(format!("\n<research-study>\nStudy: {}\nMode: {}\nObjective: {}\nartifactRoot: {}\ncodeRoot: 当前会话独立 Git worktree\n{}\n{}\n当前计划与决策用 orx research status 查询。\n</research-study>",study.id,study.mode,study.objective,root.display(),instruction,GUIDE)))
 }
 pub fn run_contract(store: &Store, args: &crate::ExpRunArgs) -> Result<RunContract> {

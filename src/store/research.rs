@@ -12,6 +12,7 @@ use crate::error::{anyhow, Result};
 
 mod claims;
 mod evidence;
+mod material_citations;
 pub use claims::ClaimAmendmentInput;
 mod files;
 
@@ -146,6 +147,8 @@ pub struct ClaimInput {
     pub run_id: Option<String>,
     pub line_start: Option<usize>,
     pub line_end: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material_read_id: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -153,6 +156,8 @@ pub struct EvidenceClaim {
     pub id: String,
     #[serde(flatten)]
     pub input: ClaimInput,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material_citation: Option<super::material_reads::MaterialCitation>,
     pub commit_sha: Option<String>,
     pub log_sha256: Option<String>,
     pub excerpt: Option<String>,
@@ -172,6 +177,8 @@ pub struct Study {
     pub claims: Vec<EvidenceClaim>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material_citation_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_error: Option<String>,
     pub created_at: i64,
@@ -555,6 +562,7 @@ pub(super) fn migrate(conn: &rusqlite::Connection) -> Result<()> {
         DELETE FROM research_experiments WHERE study_id IN (SELECT id FROM research_studies WHERE project_id=OLD.id);
         DELETE FROM research_studies WHERE project_id=OLD.id; END;")?;
     claims::migrate(conn)?;
+    material_citations::migrate(conn)?;
     conn.execute_batch(&format!(
         "CREATE INDEX IF NOT EXISTS idx_research_studies_active ON research_studies(id) WHERE {ACTIVE_STUDY_FILTER}"
     ))?;
@@ -648,6 +656,7 @@ impl Store {
             decisions: vec![],
             claims: vec![],
             claim_revision: None,
+            material_citation_revision: None,
             delivery_error: None,
             created_at: now_ms(),
             updated_at: now_ms(),
@@ -1473,6 +1482,9 @@ impl Store {
         }
         let evidence = self.research_evidence(study)?;
         let evidence_digest = evidence.digest()?;
+        for claim in &evidence.claims {
+            self.research_validate_material_claim(study, claim)?;
+        }
         if !evidence.changes.is_empty() {
             claims::require_review_roles(plan.tasks.iter().map(|task| task.spec.role.as_str()))?;
         }
@@ -1988,6 +2000,7 @@ mod tests {
                     run_id: None,
                     line_start: None,
                     line_end: None,
+                    material_read_id: None,
                 },
             )
             .unwrap();
@@ -2109,7 +2122,8 @@ mod tests {
                     location: None,
                     run_id: Some("missing".into()),
                     line_start: Some(1),
-                    line_end: Some(1)
+                    line_end: Some(1),
+                    material_read_id: None,
                 }
             )
             .is_err());
@@ -2979,6 +2993,7 @@ mod tests {
     include!("research_evidence_tests.rs");
     include!("research_claim_tests.rs");
     include!("material_read_event_tests.rs");
+    include!("research_material_citation_tests.rs");
     include!("research_delivery_tests.rs");
     include!("research_material_tests.rs");
     include!("research_lifecycle_tests.rs");

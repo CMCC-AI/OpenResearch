@@ -17,6 +17,8 @@ pub struct MaterialsArgs {
 }
 #[derive(Subcommand, Debug)]
 pub enum MaterialsCommand {
+    /// Locate a confirmed selection; verify its original and returned-content hashes.
+    Locate { event: String },
     /// Query bounded reading receipts; these do not assert model understanding.
     Events {
         #[arg(long)]
@@ -86,6 +88,9 @@ pub async fn run(args: MaterialsArgs) -> Result<()> {
             .ok_or_else(|| anyhow!("project not found"))?;
     }
     let result = match args.command {
+        MaterialsCommand::Locate { event } => {
+            materials::locate(&store, &project, session.as_deref(), &event).await?
+        }
         MaterialsCommand::Events {
             package,
             source,

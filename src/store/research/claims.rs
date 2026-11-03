@@ -170,13 +170,14 @@ impl Store {
     pub fn research_study_view(&self, study: &Study) -> Result<serde_json::Value> {
         let evidence = self.research_evidence(study)?;
         let mut value = serde_json::to_value(study)?;
-        if !evidence.changes.is_empty() {
+        if !evidence.changes.is_empty() || study.material_citation_revision.is_some() {
             let evidence_digest = evidence.digest()?;
             let needs_review = study.plans.last().is_none_or(|plan| {
                 ["as-independent-reviewer", "as-quality-citation-auditor"]
                     .iter()
                     .any(|role| {
-                        !plan.tasks.iter().any(|task| task.spec.role == *role)
+                        (!evidence.changes.is_empty()
+                            && !plan.tasks.iter().any(|task| task.spec.role == *role))
                             || plan
                                 .tasks
                                 .iter()

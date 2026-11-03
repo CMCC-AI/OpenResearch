@@ -14,6 +14,7 @@ pub(super) struct PreparedClaim {
     claim: EvidenceClaim,
     run: Option<RunSource>,
     log: Option<FileSource>,
+    material: Option<FileSource>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -110,14 +111,28 @@ impl Store {
         input: ClaimInput,
         read_log: impl FnOnce(&mut dyn Read, usize, usize) -> Result<(String, String)>,
     ) -> Result<PreparedClaim> {
+        self.research_prepare_claim_with_root(id, input, &crate::local::materials::root(), read_log)
+    }
+
+    pub(super) fn research_prepare_claim_with_root(
+        &self,
+        id: &str,
+        input: ClaimInput,
+        material_root: &std::path::Path,
+        read_log: impl FnOnce(&mut dyn Read, usize, usize) -> Result<(String, String)>,
+    ) -> Result<PreparedClaim> {
         let input_bytes = [&input.text, &input.support, &input.source]
             .into_iter()
             .map(|s| s.len())
             .chain(
-                [input.location.as_ref(), input.run_id.as_ref()]
-                    .into_iter()
-                    .flatten()
-                    .map(|s| s.len()),
+                [
+                    input.location.as_ref(),
+                    input.run_id.as_ref(),
+                    input.material_read_id.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                .map(|s| s.len()),
             )
             .fold(0usize, usize::saturating_add);
         if input_bytes > MAX_CLAIM_INPUT_BYTES {
@@ -134,6 +149,7 @@ impl Store {
         let mut claim = EvidenceClaim {
             id: uuid::Uuid::new_v4().to_string(),
             input,
+            material_citation: None,
             commit_sha: None,
             log_sha256: None,
             excerpt: None,
@@ -176,12 +192,14 @@ impl Store {
             }
             (None, None)
         };
+        let material = self.research_prepare_material_claim(&study, &mut claim, material_root)?;
         Ok(PreparedClaim {
             study_id: study.id,
             project_id: study.project_id,
             claim,
             run,
             log,
+            material,
         })
     }
 
@@ -211,6 +229,22 @@ impl Store {
         }
         if let Some(log) = &prepared.log {
             log.check_unchanged()?;
+        }
+        self.research_validate_material_claim(study, &prepared.claim)?;
+        if let Some(material) = &prepared.material {
+            material.check_unchanged()?;
+            study.supersede_gate(crate::local::research::delivery_gate(study.workflow_mode()))?;
+            study.delivery_error = None;
+            let count = study
+                .claims
+                .iter()
+                .filter(|claim| claim.material_citation.is_some())
+                .count() as u64;
+            study.material_citation_revision = Some(
+                count
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("材料引用版本已达上限"))?,
+            );
         }
         let id = prepared.claim.id.clone();
         study.claims.push(prepared.claim);

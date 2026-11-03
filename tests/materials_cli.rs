@@ -145,3 +145,239 @@ fn material_cli_unknown_agent_cannot_fall_back_to_explicit_project() {
     }
     assert_eq!(sandbox.events()["events"], json!([]));
 }
+
+#[test]
+fn material_cli_locate_verifies_original_selection_and_creates_a_fresh_read_receipt() {
+    let sandbox = Sandbox::new();
+    let output = sandbox.run(&[
+        "materials",
+        "--project",
+        "project",
+        "read",
+        &sandbox.package,
+        "SRC-0001",
+        "--offset",
+        "2",
+        "--limit",
+        "1",
+    ]);
+    assert!(output.status.success());
+    let first: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let event = first["readEventId"].as_str().unwrap();
+    let output = sandbox.run(&["materials", "--project", "project", "locate", event]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let located: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(located["content"], first["content"]);
+    assert_eq!(located["locatedReadEventId"], event);
+    assert_ne!(located["readEventId"], first["readEventId"]);
+    let events = sandbox.events();
+    assert_eq!(events["events"].as_array().unwrap().len(), 2);
+    assert_eq!(events["events"][0]["outputState"], "written");
+    assert_eq!(events["events"][1]["outputState"], "written");
+    std::fs::write(
+        sandbox
+            .root
+            .join("data/materials")
+            .join(&sandbox.package)
+            .join("originals/notes.txt"),
+        "changed",
+    )
+    .unwrap();
+    let failed = sandbox.run(&["materials", "--project", "project", "locate", event]);
+    assert!(!failed.status.success());
+    assert!(failed.stdout.is_empty());
+    assert_eq!(
+        sandbox.events()["events"][2]["receipt"]["outcome"],
+        "failed"
+    );
+}
+
+#[test]
+fn material_cli_claim_resolves_canonical_provenance_and_locates_it_after_restart() {
+    let sandbox = Sandbox::new();
+    let study = json!({"id":"study","projectId":"project","sessionId":"reader","mode":"team","objective":"trace sources","status":"active","plans":[{"version":1,"materialIds":[sandbox.package],"summary":"input snapshot","tasks":[]}],"decisions":[],"claims":[],"createdAt":1,"updatedAt":1});
+    let conn = rusqlite::Connection::open(sandbox.root.join("data/orx.db")).unwrap();
+    conn.execute("INSERT INTO research_studies(id,project_id,session_id,document) VALUES('study','project','reader',?1)",[study.to_string()]).unwrap();
+    let output = sandbox
+        .command()
+        .env("ORX_CHAT_SESSION_ID", "reader")
+        .args([
+            "materials",
+            "read",
+            &sandbox.package,
+            "SRC-0001",
+            "--offset",
+            "2",
+            "--limit",
+            "1",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let read: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let request = json!({"text":"source observation","support":"paper","source":"registered notes","location":"line 2","materialReadId":read["readEventId"]});
+    let request_path = sandbox.root.join("claim.json");
+    std::fs::write(&request_path, request.to_string()).unwrap();
+    let output = sandbox
+        .command()
+        .env("ORX_CHAT_SESSION_ID", "reader")
+        .args([
+            "research",
+            "claim",
+            "--file",
+            request_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status = sandbox
+        .command()
+        .env("ORX_CHAT_SESSION_ID", "reader")
+        .args(["research", "status"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let study: Value = serde_json::from_slice(&status.stdout).unwrap();
+    let citation = &study["claims"][0]["materialCitation"];
+    assert_eq!(citation["readEventId"], read["readEventId"]);
+    assert_eq!(citation["offset"], 2);
+    assert_eq!(citation["readerSessionId"], "reader");
+    assert_eq!(citation["packageId"], sandbox.package);
+    assert_eq!(study["materialCitationRevision"], 1);
+    let replacement = json!({"action":"replace","version":1,"revision":0,"reason":"tighten the interpretation","replacement":{"text":"qualified source observation","support":"paper","source":"registered notes","location":"line 2","materialReadId":read["readEventId"]}});
+    std::fs::write(&request_path, replacement.to_string()).unwrap();
+    let claim_id = study["claims"][0]["id"].as_str().unwrap();
+    let amend = || {
+        sandbox
+            .command()
+            .env("ORX_CHAT_SESSION_ID", "reader")
+            .args([
+                "research",
+                "amend-claim",
+                claim_id,
+                "--file",
+                request_path.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap()
+    };
+    let amended = amend();
+    assert!(
+        amended.status.success(),
+        "{}",
+        String::from_utf8_lossy(&amended.stderr)
+    );
+    let first_receipt: Value = serde_json::from_slice(&amended.stdout).unwrap();
+    let retried = amend();
+    assert!(retried.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&retried.stdout).unwrap(),
+        first_receipt
+    );
+    let status = sandbox
+        .command()
+        .env("ORX_CHAT_SESSION_ID", "reader")
+        .args(["research", "status"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let amended: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(amended["claims"].as_array().unwrap().len(), 2);
+    assert_eq!(amended["materialCitationRevision"], 2);
+    assert_eq!(amended["claimRevision"], 1);
+    assert_eq!(
+        amended["activeClaimIds"],
+        json!([first_receipt["replacementId"]])
+    );
+    assert_eq!(amended["claims"][0]["materialCitation"], *citation);
+    let located = sandbox.run(&[
+        "materials",
+        "--project",
+        "project",
+        "locate",
+        citation["readEventId"].as_str().unwrap(),
+    ]);
+    assert!(located.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&located.stdout).unwrap()["content"],
+        read["content"]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn material_cli_pdf_locator_rejects_changed_extractor_layout() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::new();
+    let dir = sandbox.root.join("data/materials").join(&sandbox.package);
+    let body = b"%PDF-synthetic-source";
+    std::fs::write(dir.join("originals/paper.pdf"), body).unwrap();
+    let manifest = json!({"id":sandbox.package,"projectId":"project","createdAt":1,"ready":true,"files":[{"id":"SRC-0001","path":"paper.pdf","size":body.len(),"sha256":format!("{:x}",Sha256::digest(body)),"format":"pdf","status":"ready","note":null}]});
+    std::fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
+    let bin = sandbox.root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let parser = bin.join("pdftotext");
+    std::fs::write(
+        &parser,
+        "#!/bin/sh\ncat >/dev/null\nprintf 'first layout\\n'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&parser, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    let output = sandbox
+        .command()
+        .env("PATH", &path)
+        .args([
+            "materials",
+            "--project",
+            "project",
+            "read",
+            &sandbox.package,
+            "SRC-0001",
+            "--page",
+            "1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let read: Value = serde_json::from_slice(&output.stdout).unwrap();
+    std::fs::write(
+        &parser,
+        "#!/bin/sh\ncat >/dev/null\nprintf 'second layout\\n'\n",
+    )
+    .unwrap();
+    let located = sandbox
+        .command()
+        .env("PATH", path)
+        .args([
+            "materials",
+            "--project",
+            "project",
+            "locate",
+            read["readEventId"].as_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!located.status.success());
+    assert!(located.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&located.stderr).contains("解析结果与引用回执不一致"));
+    let events = sandbox.events();
+    assert_eq!(events["events"][0]["outputState"], "written");
+    assert_eq!(events["events"][1]["receipt"]["outcome"], "failed");
+    assert!(events["events"][1]["receipt"]["selection"].is_null());
+}

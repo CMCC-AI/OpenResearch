@@ -12,6 +12,7 @@ fn evidence_fixture() -> (TestDir, Store, Study, ClaimInput) {
         run_id: Some("evidence-run".into()),
         line_start: Some(2),
         line_end: Some(2),
+        material_read_id: None,
     };
     (dir, store, study, input)
 }
@@ -19,7 +20,13 @@ fn evidence_fixture() -> (TestDir, Store, Study, ClaimInput) {
 #[test]
 fn package_distinguishes_run_references_from_experiment_log_evidence() {
     let (_dir, store, study, input) = evidence_fixture();
-    store.conn.execute("UPDATE runs SET backend_json='{\"kind\":\"local\"}' WHERE id='evidence-run'", []).unwrap();
+    store
+        .conn
+        .execute(
+            "UPDATE runs SET backend_json='{\"kind\":\"local\"}' WHERE id='evidence-run'",
+            [],
+        )
+        .unwrap();
     store.research_add_claim(&study.id, input.clone()).unwrap();
     let mut inference = input;
     inference.support = "inference".into();
@@ -35,16 +42,44 @@ fn package_distinguishes_run_references_from_experiment_log_evidence() {
     assert!(saved.claims[1].log_sha256.is_none());
     assert!(store.research_package_scope(&saved).is_ok());
     crate::commands::research_dispatch::reconcile_active_studies(&store).unwrap();
-    assert!(store.research_study(&study.id).unwrap().decisions.iter().any(|d| d.gate == "G4" && d.status == "pending"));
-    std::fs::write(store.research_log_path("evidence-run").unwrap(), b"changed\n").unwrap();
-    assert!(store.research_package_scope(&saved).unwrap_err().to_string().contains("证据日志已变化"));
+    assert!(store
+        .research_study(&study.id)
+        .unwrap()
+        .decisions
+        .iter()
+        .any(|d| d.gate == "G4" && d.status == "pending"));
+    std::fs::write(
+        store.research_log_path("evidence-run").unwrap(),
+        b"changed\n",
+    )
+    .unwrap();
+    assert!(store
+        .research_package_scope(&saved)
+        .unwrap_err()
+        .to_string()
+        .contains("证据日志已变化"));
     crate::commands::research_dispatch::reconcile_active_studies(&store).unwrap();
     let blocked = store.research_study(&study.id).unwrap();
-    assert!(blocked.delivery_error.as_deref().unwrap().contains("证据日志已变化"));
-    assert!(!blocked.decisions.iter().any(|d| d.gate == "G4" && d.status == "pending"));
-    std::fs::write(store.research_log_path("evidence-run").unwrap(), b"first\r\nresult\r\nlast\n").unwrap();
+    assert!(blocked
+        .delivery_error
+        .as_deref()
+        .unwrap()
+        .contains("证据日志已变化"));
+    assert!(!blocked
+        .decisions
+        .iter()
+        .any(|d| d.gate == "G4" && d.status == "pending"));
+    std::fs::write(
+        store.research_log_path("evidence-run").unwrap(),
+        b"first\r\nresult\r\nlast\n",
+    )
+    .unwrap();
     crate::commands::research_dispatch::reconcile_active_studies(&store).unwrap();
-    assert!(store.research_study(&study.id).unwrap().delivery_error.is_none());
+    assert!(store
+        .research_study(&study.id)
+        .unwrap()
+        .delivery_error
+        .is_none());
 }
 
 #[test]
@@ -145,6 +180,7 @@ fn evidence_capture_allows_concurrent_writes_and_preserves_new_claims() {
                     run_id: None,
                     line_start: None,
                     line_end: None,
+                    material_read_id: None,
                 },
             )?;
             evidence::scan_log(reader, start, end)

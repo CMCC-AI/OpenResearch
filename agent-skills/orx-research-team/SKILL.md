@@ -145,6 +145,20 @@ decision in terms of what the user is agreeing to, then register the native plan
    range (at most 201 lines and 64 KiB of raw/decoded excerpt), and nonempty
    source explanation; the platform records commit and log hash. Claim string
    fields together must fit within 64 KiB; research JSON request files within 256 KiB.
+   Optionally include `"materialReadId":"<readEventId>"` to bind a registered
+   material selection. The receipt must be project-scoped, verified, written and
+   nonempty; its package must belong to the current plan's fixed materialIds.
+   The server generates materialCitation with original/returned hashes, exact
+   selected page/lines and actual reader identity. Do not submit or invent that
+   canonical object. Reusing another session's receipt does not prove this task
+   read or understood it. Keep source explanation and paper location; experiment
+   claims still require Run/log evidence. New material citations invalidate old
+   delivery approval and existing reviewers must review the new evidence digest.
+   Use `orx materials locate <readEventId>` to recheck the original and output
+   hashes and return the same selection; it creates a fresh reading receipt and
+   preserves the original ID as locatedReadEventId. Failure or changed extraction
+   must be reported, not silently matched to other text. Browser jump controls and
+   delivery source-file packaging are not implemented by this CLI capability.
    Review negative and inconclusive results without inventing support.
    To correct a registered statement, only the lead may use
    `orx research amend-claim <claim-id> --file <path>`. Read current status first;
