@@ -1,6 +1,37 @@
 //! Browser-facing research views and human decisions. Agent CLI has no approve verb.
 use super::*;
 
+/// Only an already-approved immutable snapshot is downloadable; GET never
+/// prepares new evidence or changes human confirmation state.
+pub(super) async fn package(Path(id): Path<String>) -> std::result::Result<Response, ApiError> {
+    let (file, snapshot) = blocking_task(move || {
+        Store::open()?
+            .research_download_package(&id)
+            .map_err(bad_request)
+    })
+    .await??;
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, "application/zip".parse().unwrap());
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        format!(
+            "attachment; filename=\"research-{}.zip\"",
+            &snapshot.scope_hash[..16]
+        )
+        .parse()
+        .map_err(bad_request)?,
+    );
+    headers.insert(header::CONTENT_LENGTH, snapshot.archive.bytes.into());
+    headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
+    headers.insert(
+        "x-content-sha256",
+        snapshot.archive.sha256.parse().map_err(bad_request)?,
+    );
+    let stream = tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(file));
+    Ok((headers, axum::body::Body::from_stream(stream)).into_response())
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct NewResearch {
@@ -201,6 +232,7 @@ async fn apply_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("research_package_tests.rs");
 
     fn decision_fixture() -> (std::path::PathBuf, Store, String, String, DecisionReq) {
         let root = std::env::temp_dir().join(format!("orx-decision-gate-{}", uuid::Uuid::new_v4()));

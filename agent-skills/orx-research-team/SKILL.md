@@ -196,8 +196,13 @@ decision in terms of what the user is agreeing to, then register the native plan
 10. `orx research package` requests G4 (G3 for W4 plan delivery) after tasks and registered outputs pass
     validation (the platform also requests it automatically when all planned tasks complete). Explain limitations and unresolved claims before approval.
     The user reviews the requested confirmation in the human-confirmation page.
-    Files are viewed and downloaded from the artifacts page; confirmation does not create a ZIP
-    or authorize external publication.
+    Preparation seals a bounded ZIP containing current artifacts, selected Run logs, and originals
+    referenced by active canonical material citations, with read receipts and a hash manifest.
+    Approval revalidates the prepared inputs. Only after human confirmation can the user download
+    the sealed package from the research-team view, or the lead stream it with
+    `orx research export > research.zip`. Draft/unapproved packages cannot be exported.
+    Exporting the approved snapshot does not re-read mutable originals or register an Agent read.
+    Confirmation does not authorize external publication or additional experiments.
 
 For non-experimental work G2 and run-launch G3 are not triggered. W4 still
 requires G3 confirmation of its completed Experiment Plan. Only W2 (and legacy

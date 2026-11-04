@@ -49,6 +49,8 @@ pub enum ResearchCommand {
         file: String,
     },
     Package,
+    /// Stream the approved immutable research ZIP to stdout.
+    Export,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -180,18 +182,19 @@ pub async fn run(args: ResearchArgs) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&receipt)?);
             eprintln!("声明修订已登记；请修订计划并重新完成独立审查与交付确认。");
         }
+        ResearchCommand::Export => {
+            require_lead(lead)?;
+            let (mut archive, snapshot) = store.research_download_package(&study.id)?;
+            let written = std::io::copy(&mut archive, &mut std::io::stdout().lock())?;
+            if written != snapshot.archive.bytes {
+                return Err(anyhow!("导出未完成，不能使用该研究包"));
+            }
+        }
         ResearchCommand::Package => {
             require_lead(lead)?;
-            store.research_update(&study.id, |study| {
-                study.ensure_active()?;
-                let scope = store.research_package_scope(study)?;
-                study.request_gate(
-                    crate::local::research::delivery_gate(study.workflow_mode()),
-                    scope,
-                )
-            })?;
+            store.research_request_package(&study.id)?;
             println!(
-                "已申请 {} 人工确认；用户可在人工确认页面查看内容，并在产物页面查看和下载文件。",
+                "已封存研究包并申请 {} 人工确认；确认后可在科研专家团下载，或运行 orx research export 导出 ZIP。",
                 crate::local::research::delivery_gate(study.workflow_mode())
             );
         }

@@ -42,6 +42,7 @@ test("private space gateway blocks machine administration and path confusion", (
       assert.equal(permitted(method, path), false);
   assert.equal(permitted("POST", "/api/chat/sessions/x/message"), true);
   assert.equal(permitted("GET", "/api/events"), true);
+  assert.equal(permitted("GET", "/api/research/studies/study/package"), true);
   assert.equal(
     permitted("GET", "/api/materials/package/SRC-0001/citations/event"),
     true,

@@ -11,6 +11,8 @@ use super::{now_ms, Store, StoredRun};
 use crate::error::{anyhow, Result};
 
 mod claims;
+mod delivery;
+pub use delivery::{DeliverySnapshot, PreparedDelivery};
 mod evidence;
 mod material_citations;
 pub use claims::ClaimAmendmentInput;
@@ -181,6 +183,8 @@ pub struct Study {
     pub material_citation_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_snapshot: Option<DeliverySnapshot>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -563,6 +567,7 @@ pub(super) fn migrate(conn: &rusqlite::Connection) -> Result<()> {
         DELETE FROM research_studies WHERE project_id=OLD.id; END;")?;
     claims::migrate(conn)?;
     material_citations::migrate(conn)?;
+    delivery::migrate(conn)?;
     conn.execute_batch(&format!(
         "CREATE INDEX IF NOT EXISTS idx_research_studies_active ON research_studies(id) WHERE {ACTIVE_STUDY_FILTER}"
     ))?;
@@ -658,6 +663,7 @@ impl Store {
             claim_revision: None,
             material_citation_revision: None,
             delivery_error: None,
+            delivery_snapshot: None,
             created_at: now_ms(),
             updated_at: now_ms(),
         };
@@ -1475,6 +1481,7 @@ impl Store {
             Ok(())
         })
     }
+    #[cfg(test)]
     pub fn research_package_scope(&self, study: &Study) -> Result<String> {
         let plan = study.plan()?;
         if plan.tasks.iter().any(|t| t.state != "completed") {
@@ -1557,6 +1564,31 @@ impl Store {
         approved: bool,
         reason: String,
     ) -> Result<()> {
+        let initial = self.research_study(id)?;
+        let is_delivery = initial
+            .decisions
+            .iter()
+            .find(|d| d.id == decision)
+            .is_some_and(|d| {
+                d.gate == crate::local::research::delivery_gate(initial.workflow_mode())
+            });
+        let prepared = if approved && is_delivery {
+            Some(self.research_prepare_delivery(&initial)?)
+        } else {
+            None
+        };
+        self.research_commit_decision(id, decision, hash, approved, reason, prepared)
+    }
+
+    pub(super) fn research_commit_decision(
+        &self,
+        id: &str,
+        decision: &str,
+        hash: &str,
+        approved: bool,
+        reason: String,
+        prepared: Option<PreparedDelivery>,
+    ) -> Result<()> {
         self.research_update(id, |study| {
             study.ensure_active()?;
             let version = study.plan()?.version;
@@ -1567,10 +1599,13 @@ impl Store {
                 .ok_or_else(|| anyhow!("闸门不存在"))?
                 .gate
                 .clone();
-            if gate == crate::local::research::delivery_gate(study.workflow_mode()) {
+            if approved && gate == crate::local::research::delivery_gate(study.workflow_mode()) {
                 study.require_gate("G1", &study.plan_scope()?)?;
-                let scope = self.research_package_scope(study)?;
-                if digest(scope.as_bytes()) != hash {
+                let prepared = prepared
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("交付流程已变化，请刷新后确认"))?;
+                self.research_apply_delivery(study, prepared)?;
+                if digest(prepared.scope.as_bytes()) != hash {
                     return Err(anyhow!("交付内容已变化，请重新申请确认"));
                 }
             }
@@ -2995,6 +3030,7 @@ mod tests {
     include!("material_read_event_tests.rs");
     include!("research_material_citation_tests.rs");
     include!("research_delivery_tests.rs");
+    include!("research_delivery_snapshot_tests.rs");
     include!("research_material_tests.rs");
     include!("research_lifecycle_tests.rs");
     include!("research_file_tests.rs");

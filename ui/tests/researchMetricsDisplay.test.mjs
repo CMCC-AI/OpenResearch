@@ -19,7 +19,8 @@ const mocks = {
   "@xyflow/react": { useNodesState: (nodes) => [nodes, () => {}, () => {}], ReactFlow: () => null, MarkerType: { ArrowClosed: "arrowclosed" } },
   "./ResearchWorkflow": {},
   "./ResearchEvidence": { ResearchEvidence: () => null },
-  "./ui": { Button: "button", IconButton: "button" },
+  "./ui": { Button: "button", ButtonLink: "a", IconButton: "button" },
+  "../readOnlyApi": { getReadOnlyApi: () => null, projectAssetUrl: url => url },
   "./useDialogFocus": { useDialogFocus() {} },
   "./ResearchTeamDag.css": {},
 };
@@ -60,4 +61,20 @@ test("the active DAG page exposes the evidence view and renders persisted claims
   assert.match(html, /研究证据与原文来源/); assert.match(html, /persisted-claim:claim-with-source/);
   assert.match(html, /aria-pressed="true"[^>]*>证据与来源/);
   assert.doesNotMatch(html, /aria-label="科研专家团纵向 DAG"/);
+});
+
+
+test("the active DAG offers only confirmed private packages without active runs", () => {
+  const current = { ...study, plans: [{ version: 1, tasks: [] }], deliverySnapshot: { scopeHash: "scope" }, decisions: [{ id: "gate", gate: "G4", version: 1, status: "approved", scopeHash: "scope" }] };
+  function render(currentStudy, runs = [], readonly = false) {
+    const view = {};
+    const isolated = { ...mocks, "../readOnlyApi": { getReadOnlyApi: () => readonly ? {} : null, projectAssetUrl: url => url } };
+    new Function("require", "exports", code)(id => id in isolated ? isolated[id] : require(id), view);
+    return renderToStaticMarkup(React.createElement(view.ResearchTeamDagDialog, { embedded: true, study: currentStudy, metrics: measured, runs, onClose() {} }));
+  }
+  assert.match(render(current), /href="\/api\/research\/studies\/study\/package"[^>]*download=""/);
+  assert.match(render({ ...current, status: "stopped" }), /下载已确认研究包/);
+  assert.doesNotMatch(render(current, [{ id: "old", status: "running" }]), /下载已确认研究包/);
+  assert.doesNotMatch(render(current, [], true), /下载已确认研究包/);
+  assert.doesNotMatch(render({ ...current, decisions: [{ ...current.decisions[0], status: "pending" }] }), /下载已确认研究包/);
 });

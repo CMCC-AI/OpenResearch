@@ -1,6 +1,6 @@
 //! Stable, bounded reads shared by research artifacts and evidence logs.
 use std::fs::{File, Metadata};
-use std::io::{Read, Take};
+use std::io::{Read, Seek, Take};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -64,6 +64,12 @@ impl FileSource {
             return Err(anyhow!("{}读取期间发生变化，请重新校验", self.kind));
         }
         Ok(())
+    }
+
+    pub(super) fn into_file(mut self) -> Result<File> {
+        self.check_unchanged()?;
+        self.file.rewind()?;
+        Ok(self.file)
     }
 
     pub(super) fn hash(&mut self) -> Result<String> {

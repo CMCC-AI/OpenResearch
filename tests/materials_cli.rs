@@ -381,3 +381,114 @@ fn material_cli_pdf_locator_rejects_changed_extractor_layout() {
     assert_eq!(events["events"][1]["receipt"]["outcome"], "failed");
     assert!(events["events"][1]["receipt"]["selection"].is_null());
 }
+
+#[test]
+fn research_cli_exports_only_the_confirmed_zip_and_denies_non_lead_sessions() {
+    use std::io::Read;
+    let sandbox = Sandbox::new();
+    let db = rusqlite::Connection::open(sandbox.root.join("data/orx.db")).unwrap();
+    let study = json!({"id":"export-study","projectId":"project","sessionId":"reader","mode":"team","objective":"package outputs","status":"active","plans":[],"decisions":[],"claims":[],"createdAt":1,"updatedAt":1});
+    db.execute("INSERT INTO research_studies(id,project_id,session_id,document) VALUES('export-study','project','reader',?1)",[study.to_string()]).unwrap();
+    let plan = json!({"summary":"review the outputs","tasks":[{"id":"design","role":"as-experiment-designer","brief":"write design","dependsOn":[],"outputs":["design.md"]},{"id":"review","role":"as-independent-reviewer","brief":"review design","dependsOn":["design"],"outputs":["review.md"]},{"id":"audit","role":"as-quality-citation-auditor","brief":"audit design","dependsOn":["review"],"outputs":["audit.md"]}]});
+    let request = sandbox.root.join("plan.json");
+    std::fs::write(&request, plan.to_string()).unwrap();
+    let output = sandbox
+        .command()
+        .env("ORX_CHAT_SESSION_ID", "reader")
+        .args(["research", "plan", "--file", request.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let raw: String = db
+        .query_row(
+            "SELECT document FROM research_studies WHERE id='export-study'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut study: Value = serde_json::from_str(&raw).unwrap();
+    study["decisions"][0]["status"] = "approved".into();
+    study["decisions"][0]["approver"] = "isolated-test-user".into();
+    let root = sandbox.root.join("data/files/p/research/export-study");
+    std::fs::create_dir_all(&root).unwrap();
+    for task in study["plans"][0]["tasks"].as_array_mut().unwrap() {
+        let id = task["id"].as_str().unwrap().to_string();
+        let body = format!("checked {id}\n");
+        let path = format!("{id}.md");
+        std::fs::write(root.join(&path), &body).unwrap();
+        task["state"] = "completed".into();
+        task["sessionId"] = id.into();
+        task["summary"] = "checked".into();
+        task["artifacts"] = json!([{"path":path,"sha256":format!("{:x}",Sha256::digest(body.as_bytes())),"bytes":body.len()}]);
+        task["evidenceDigest"] = format!("{:x}", Sha256::digest(b"[]")).into();
+    }
+    db.execute(
+        "UPDATE research_studies SET document=?1 WHERE id='export-study'",
+        [study.to_string()],
+    )
+    .unwrap();
+    let package = sandbox
+        .command()
+        .env("ORX_CHAT_SESSION_ID", "reader")
+        .args(["research", "package"])
+        .output()
+        .unwrap();
+    assert!(
+        package.status.success(),
+        "{}",
+        String::from_utf8_lossy(&package.stderr)
+    );
+    let denied = sandbox
+        .command()
+        .env("ORX_CHAT_SESSION_ID", "reader")
+        .args(["research", "export"])
+        .output()
+        .unwrap();
+    assert!(!denied.status.success());
+    assert!(denied.stdout.is_empty());
+    db.execute("UPDATE research_studies SET document=json_set(document,'$.decisions[#-1].status','approved','$.decisions[#-1].approver','isolated-test-user') WHERE id='export-study'",[]).unwrap();
+    let export = sandbox
+        .command()
+        .env("ORX_CHAT_SESSION_ID", "reader")
+        .args(["research", "export"])
+        .output()
+        .unwrap();
+    assert!(
+        export.status.success(),
+        "{}",
+        String::from_utf8_lossy(&export.stderr)
+    );
+    assert!(export.stdout.starts_with(b"PK"));
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&export.stdout)).unwrap();
+    let mut artifact = String::new();
+    zip.by_name("artifacts/design.md")
+        .unwrap()
+        .read_to_string(&mut artifact)
+        .unwrap();
+    assert_eq!(artifact, "checked design\n");
+    let raw: String = db
+        .query_row(
+            "SELECT document FROM research_studies WHERE id='export-study'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let saved: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(
+        saved["deliverySnapshot"]["archive"]["sha256"],
+        format!("{:x}", Sha256::digest(&export.stdout))
+    );
+    db.execute("INSERT INTO chat_sessions(id,project_id,harness,created_at,updated_at,parent_session_id) VALUES('expert','project','codex',1,1,'reader')",[]).unwrap();
+    let denied = sandbox
+        .command()
+        .env("ORX_CHAT_SESSION_ID", "expert")
+        .args(["research", "export"])
+        .output()
+        .unwrap();
+    assert!(!denied.status.success());
+    assert!(denied.stdout.is_empty());
+}

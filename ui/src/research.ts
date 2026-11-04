@@ -29,6 +29,7 @@ export interface ResearchStudy {
   plans: { version: number; workflow?: PresetWorkflowMode | null; summary: string; tasks: ResearchTask[] }[];
   decisions: ResearchDecision[];
   deliveryError?: string | null;
+  deliverySnapshot?: { scopeHash: string; identityHash: string; archive: { formatVersion: number; sha256: string; bytes: number; manifestSha256: string } };
   claimRevision?: number;
   activeClaimIds?: string[];
   claimChanges?: ResearchClaimChange[];
@@ -340,4 +341,11 @@ export function researchTeamGraph(study: ResearchStudy | null, actual = false) {
     }),
     edges: tasks.flatMap((task) => task.dependsOn.map((source) => ({ source, target: task.id }))),
   };
+}
+
+/** Only the current confirmed scope may expose its prepared archive. */
+export function researchPackageUrl(study: ResearchStudy): string | null {
+  const snapshot = study.deliverySnapshot;
+  if (!snapshot || !currentDecisions(study).some(decision => decision.gate === deliveryGate(researchWorkflowMode(study)) && decision.status === "approved" && decision.scopeHash === snapshot.scopeHash)) return null;
+  return `/api/research/studies/${encodeURIComponent(study.id)}/package`;
 }

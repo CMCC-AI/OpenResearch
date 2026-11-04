@@ -257,18 +257,28 @@ fn persist_package_check(
     store: &Store,
     study_id: &str,
     version: u32,
+    identity: &str,
     gate: &str,
-    outcome: std::result::Result<String, String>,
+    outcome: std::result::Result<crate::store::research::PreparedDelivery, String>,
 ) -> Result<bool> {
     store.research_update(study_id, |study| {
-        if study.status != "active" || study.plan()?.version != version {
+        if study.status != "active"
+            || study.plan()?.version != version
+            || store.research_delivery_identity(study)? != identity
+        {
             return Ok(false);
         }
         match outcome {
-            Ok(scope) => {
-                study.delivery_error = None;
-                study.request_gate(gate, scope)?;
-            }
+            Ok(prepared) => match store.research_apply_delivery(study, &prepared) {
+                Ok(()) => {
+                    study.delivery_error = None;
+                    study.request_gate(gate, prepared.scope)?;
+                }
+                Err(error) => {
+                    study.delivery_error = Some(error.to_string());
+                    study.supersede_gate(gate)?;
+                }
+            },
             Err(error) => {
                 study.delivery_error = Some(error);
                 study.supersede_gate(gate)?;
@@ -306,10 +316,11 @@ pub(crate) fn reconcile_active_studies_with_checks(
                 continue;
             }
             let gate = crate::local::research::delivery_gate(updated.workflow_mode()).to_string();
+            let identity = store.research_delivery_identity(&updated)?;
             let outcome = store
-                .research_package_scope(&updated)
+                .research_prepare_delivery(&updated)
                 .map_err(|error| error.to_string());
-            if persist_package_check(store, &updated.id, version, &gate, outcome)? {
+            if persist_package_check(store, &updated.id, version, &identity, &gate, outcome)? {
                 checks.insert(updated.id.clone(), (version, std::time::Instant::now()));
             }
         }
@@ -433,18 +444,22 @@ pub(crate) fn on_research_spawn_finished(
         .is_ok_and(|p| !p.tasks.is_empty() && p.tasks.iter().all(|t| t.state == "completed"))
     {
         let gate = crate::local::research::delivery_gate(study.workflow_mode()).to_string();
+        let identity = store.research_delivery_identity(&study)?;
         let outcome = store
-            .research_package_scope(&study)
+            .research_prepare_delivery(&study)
             .map_err(|error| error.to_string());
         valid_package_hash = outcome
             .as_ref()
             .ok()
-            .map(|scope| crate::store::research::digest(scope.as_bytes()));
-        package_error = outcome.as_ref().err().cloned();
-        if !persist_package_check(store, &study_id, version, &gate, outcome)? {
+            .map(|prepared| crate::store::research::digest(prepared.scope.as_bytes()));
+        if !persist_package_check(store, &study_id, version, &identity, &gate, outcome)? {
             return Ok(Some(ResearchWakeAction::RetireSilently));
         }
         study = store.research_study(&study_id)?;
+        package_error = study.delivery_error.clone();
+        if package_error.is_some() {
+            valid_package_hash = None;
+        }
     }
     if study.status != "active" || study.plan()?.version != version {
         return Ok(Some(ResearchWakeAction::RetireSilently));
