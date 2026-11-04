@@ -43,7 +43,7 @@
 
 临时目录 `/tmp/opencode` 曾被构建时的 root 进程创建为 `0755`，使 UID 1000 的 Agent 无法写入。镜像在 root 安装完成后执行 `orx-prepare-executor`，将该目录及已有构建缓存归属设为 `1000:1000`，目录权限设为 `0700`；运行进程仍为非 root。其他临时脚本优先放在 worktree 或 `mktemp -d` 创建的目录。
 
-每次镜像构建以 UID 1000 执行 `orx-check-executor-tools`，检查预装库导入、临时脚本写入、Python venv/pip 和 uv 离线建环境。部署后也可运行：
+每次镜像构建以 UID 1000 执行 `orx-check-executor-tools`，检查预装库导入、临时脚本写入、Python venv/pip 和 uv 离线建环境，并以合成 PDF 验证真实 Poppler 的分页、越界页、损坏/图片页及失败恢复。部署后也可运行：
 
 ```bash
 docker exec --user 1000:1000 <执行器容器名> orx-check-executor-tools

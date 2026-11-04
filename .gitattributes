@@ -10,3 +10,6 @@
 # be treated as text and normalized.
 *.pt binary
 *.pkl binary
+
+# PDF byte offsets and hashes must survive Windows checkouts unchanged.
+tests/fixtures/materials/*.pdf binary

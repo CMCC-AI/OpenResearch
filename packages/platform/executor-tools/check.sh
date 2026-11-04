@@ -8,6 +8,7 @@ done
 python3 -m pip --version
 uv --version
 python3 -c 'import numpy, pandas, scipy, matplotlib, openpyxl, requests, bs4, lxml, PIL, docx, shapefile, shapely, PyPDF2'
+python3 /usr/local/libexec/orx/check-pdf.py
 scratch=$(mktemp -d /tmp/opencode/runtime-check.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT HUP INT TERM
 printf 'print("executor write check passed")\n' > "$scratch/check.py"

@@ -17,4 +17,6 @@ DEBIAN_FRONTEND=noninteractive apt-get \
 install -m 755 "$bundle/bin/uv" "$bundle/bin/uvx" /usr/local/bin/
 install -m 755 "$bundle/prepare.sh" /usr/local/bin/orx-prepare-executor
 install -m 755 "$bundle/check.sh" /usr/local/bin/orx-check-executor-tools
+mkdir -p /usr/local/libexec/orx
+install -m 644 "$bundle/pdf-check.py" /usr/local/libexec/orx/check-pdf.py
 orx-prepare-executor

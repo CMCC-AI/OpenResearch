@@ -492,3 +492,140 @@ fn research_cli_exports_only_the_confirmed_zip_and_denies_non_lead_sessions() {
     assert!(!denied.status.success());
     assert!(denied.stdout.is_empty());
 }
+
+/// The mandatory Linux CI gate uses installed Poppler. Other hosts may run this
+/// with a real pdftotext in PATH; a missing tool is never a successful read.
+#[test]
+fn material_cli_real_pdf_pages_failures_and_parser_recovery_preserve_receipts() {
+    let version = match Command::new("pdftotext").arg("-v").output() {
+        Ok(version) => version,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            assert_ne!(
+                std::env::var("ORX_REQUIRE_REAL_PDF").as_deref(),
+                Ok("1"),
+                "mandatory real Poppler gate has no pdftotext"
+            );
+            eprintln!("real PDF acceptance not run: pdftotext unavailable; set ORX_REQUIRE_REAL_PDF=1 to require it");
+            return;
+        }
+        Err(error) => panic!("cannot execute real Poppler: {error}"),
+    };
+    assert!(
+        version.status.success(),
+        "{}",
+        String::from_utf8_lossy(&version.stderr)
+    );
+    eprintln!("{}", String::from_utf8_lossy(&version.stderr));
+    let sandbox = Sandbox::new();
+    let dir = sandbox.root.join("data/materials").join(&sandbox.package);
+    let files = [
+        (
+            "SRC-0001",
+            "normal.pdf",
+            include_bytes!("fixtures/materials/normal.pdf").as_slice(),
+        ),
+        (
+            "SRC-0002",
+            "image-only.pdf",
+            include_bytes!("fixtures/materials/image-only.pdf").as_slice(),
+        ),
+        (
+            "SRC-0003",
+            "broken.pdf",
+            include_bytes!("fixtures/materials/broken.pdf").as_slice(),
+        ),
+    ];
+    let entries: Vec<_> = files.iter().map(|(id,path,bytes)| {
+        std::fs::write(dir.join("originals").join(path), bytes).unwrap();
+        json!({"id":id,"path":path,"size":bytes.len(),"sha256":format!("{:x}",Sha256::digest(bytes)),"format":"pdf","status":"needs-tool","note":null})
+    }).collect();
+    std::fs::write(dir.join("manifest.json"), json!({"id":sandbox.package,"projectId":"project","createdAt":1,"ready":true,"files":entries}).to_string()).unwrap();
+    let read = |source: &str, page: &str, path: Option<&std::path::Path>| {
+        let mut command = sandbox.command();
+        command.env("ORX_CHAT_SESSION_ID", "reader");
+        if let Some(path) = path {
+            command.env("PATH", path);
+        }
+        command
+            .args([
+                "materials",
+                "read",
+                &sandbox.package,
+                source,
+                "--page",
+                page,
+                "--limit",
+                "1",
+            ])
+            .output()
+            .unwrap()
+    };
+    let first = read("SRC-0001", "1", None);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first: Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(first["page"], 1);
+    assert_eq!(first["content"], "1: First page alpha\n");
+    let second = read("SRC-0001", "2", None);
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second: Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_eq!(second["content"], "1: Second page gamma\n");
+    for (source, page, message) in [
+        ("SRC-0001", "3", "PDF 读取失败"),
+        ("SRC-0002", "1", "OCR"),
+        ("SRC-0003", "1", "PDF 读取失败"),
+    ] {
+        let output = read(source, page, None);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(message));
+    }
+    let empty_path = sandbox.root.join("no-parser");
+    std::fs::create_dir(&empty_path).unwrap();
+    let missing = read("SRC-0001", "2", Some(&empty_path));
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("执行端需安装 pdftotext"));
+    let located = sandbox.run(&[
+        "materials",
+        "--project",
+        "project",
+        "locate",
+        second["readEventId"].as_str().unwrap(),
+    ]);
+    assert!(
+        located.status.success(),
+        "{}",
+        String::from_utf8_lossy(&located.stderr)
+    );
+    let located: Value = serde_json::from_slice(&located.stdout).unwrap();
+    assert_eq!(located["content"], second["content"]);
+    assert_ne!(located["readEventId"], second["readEventId"]);
+    let events = sandbox.events();
+    let events = events["events"].as_array().unwrap();
+    assert_eq!(events.len(), 7);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e["outputState"] == "written")
+            .count(),
+        3
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e["receipt"]["outcome"] == "failed")
+            .count(),
+        4
+    );
+    assert!(events
+        .iter()
+        .filter(|e| e["receipt"]["outcome"] == "failed")
+        .all(|e| e["outputState"] != "written"));
+}

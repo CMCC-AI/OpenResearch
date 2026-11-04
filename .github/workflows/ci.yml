@@ -180,7 +180,13 @@ jobs:
           test "$(target/release/orx --no-telemetry version --build-channel)" = "development"
 
       - name: Test
-        run: cargo test --locked
+        env:
+          ORX_REQUIRE_REAL_PDF: '1'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils
+          pdftotext -v
+          cargo test --locked
 
   # The Linux desktop app: a glibc build with the `desktop` feature, packaged as
   # an AppImage on the oldest Ubuntu it supports and launched under a virtual
@@ -241,6 +247,29 @@ jobs:
           name: openresearch-linux-${{ matrix.arch }}-appimage
           path: app-dist/OpenResearch-${{ matrix.arch }}.AppImage
           if-no-files-found: error
+
+  macos-cli:
+    name: macOS build, test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install real PDF parser
+        run: |
+          brew list poppler >/dev/null 2>&1 || brew install poppler
+          pdftotext -v
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Build
+        run: cargo build --locked
+      - name: Test
+        env:
+          ORX_REQUIRE_REAL_PDF: '1'
+        run: cargo test --locked
 
   # Only what differs by platform: the checks above are platform-independent,
   # and ui/dist is committed, so no Node here.
