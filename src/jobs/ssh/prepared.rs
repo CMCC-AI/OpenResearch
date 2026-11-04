@@ -622,7 +622,8 @@ mod tests {
     async fn configured_routes_have_distinct_identities_and_remain_pinned_after_edits() {
         let temp = crate::local::git::TemporaryDirectory::new("orx-route").unwrap();
         let config = temp.path().join("config with spaces");
-        let original = "Host direct equivalent gpu+cluster command-a command-b jump-a jump-b\n HostName example.invalid\n User alice\n Port 2222\n IdentityFile \"/tmp/key with spaces\"\nHost command-a\n ProxyCommand printf a\nHost command-b\n ProxyCommand printf b\nHost jump-a\n ProxyJump gateway-a\nHost jump-b\n ProxyJump gateway-b\nHost gateway-a\n HostName first.invalid\nHost gateway-b\n HostName second.invalid\n";
+        // Exercise native OpenSSH routing without depending on DNS for the fixture hosts.
+        let original = "Host direct equivalent gpu+cluster command-a command-b jump-a jump-b\n HostName 127.0.0.1\n User alice\n Port 2222\n IdentityFile \"/tmp/key with spaces\"\nHost command-a\n ProxyCommand printf a\nHost command-b\n ProxyCommand printf b\nHost jump-a\n ProxyJump gateway-a\nHost jump-b\n ProxyJump gateway-b\nHost gateway-a\n HostName 127.0.0.2\nHost gateway-b\n HostName 127.0.0.3\n";
         std::fs::write(&config, original).unwrap();
         let direct = resolve("direct", Some(&config)).await.unwrap();
         let equivalent = resolve("equivalent", Some(&config)).await.unwrap();
@@ -651,7 +652,7 @@ mod tests {
         std::fs::write(
             &config,
             original
-                .replace("first.invalid", "changed.invalid")
+                .replace("127.0.0.2", "127.0.0.4")
                 .replace("printf a", "printf changed"),
         )
         .unwrap();
@@ -686,7 +687,7 @@ mod tests {
         assert!(value(&pinned, "proxycommand").unwrap().contains("printf a"));
         for (connection, dest, field, expected) in [
             (&command_a, "command-a", "proxycommand", "printf a"),
-            (&jump_a, "gateway-a", "hostname", "first.invalid"),
+            (&jump_a, "gateway-a", "hostname", "127.0.0.2"),
         ] {
             let result = query(vec![
                 "-F".into(),

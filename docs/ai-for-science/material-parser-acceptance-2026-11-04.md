@@ -34,3 +34,15 @@
 修正后默认测试明确报告该外部工具测试未运行，由已安装 Poppler 的 Linux/macOS 独立强制门禁承担真实验收；Windows 的 PDF 执行端仍列未验收。探测失败输出状态、stdout、stderr，便于以后定位不兼容工具。修正不改变生产解析、平台权限或发布的完整 CI 要求，必须对新候选重新验收。
 
 本地修正验证：普通材料 CLI 回归 6 项通过、真实 PDF 1 项明确 ignored；独立真实门禁显式执行该 1 项并通过（Poppler 22.12.0）。缺少工具及测试列表为空的负向检查均失败，未执行意外测试；clippy、格式和版本/发行回归通过。日志：`/tmp/mobilesci-pdf-boundary-{real,default,missing,empty-list,clippy,release-tests}.log`。
+
+
+## macOS 全量回归稳定性修正
+
+修正候选 `6c65fc16` 的 [CI 41754372242](https://github.com/CMCC-AI/OpenResearch/actions/runs/41754372242) 已通过 Windows、Linux、平台和执行器门禁，但 macOS 全量测试两次出现 SSH 配置探测超时，第二次还出现 consent 重试的即时文件断言失败，因此未发布。SSH 定向本地复核通过（0.23 秒），不能据此覆盖 CI 的失败。
+
+本批进一步修正测试条件：原生 OpenSSH 路由夹具使用不同数值地址，保留路由区分、配置修改后快照固定、路径和代理断言；consent 测试有界等待本地服务器确认及文件移除，不再要求在生产 CLI 的短刷新窗口内必然完成。生产 SSH 的 10 秒超时、遥测发送/刷新策略与权限均不变化。
+
+macOS CI 的全量测试采用 `--test-threads=1`，减少全局状态和原生进程探测的资源争用；内部显式并发测试仍运行自己的并发工作与断言，真实 PDF 仍由独立强制门禁执行。串行是测试运行策略，不意味着全局测试状态已经完成进程隔离；后续仍需逐项评估隔离改造及运行耗时。
+
+
+上述稳定性修正的本地完整串行回归通过：1,449 项单元测试、24 项普通 CLI 集成测试；13 项既有单元忽略及 1 项外部 PDF 测试在默认套件中明确列出。独立 PDF 门禁另行通过该 1 项真实解析测试，合计 25 项 CLI 验收；全目标 clippy 零警告，格式及 6 项版本/发行测试通过。日志：`/tmp/mobilesci-macos-stability-{full,clippy,real-pdf,release}.log`。

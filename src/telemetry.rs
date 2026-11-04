@@ -2093,10 +2093,19 @@ mod tests {
             .await
             .unwrap();
         flush_pending().await;
+        // The production flush window is deliberately brief. Under CI load it
+        // can return before a valid local send finishes; test eventual delivery
+        // of consent, rather than requiring it to beat that latency budget.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            server.await.unwrap();
+            while consent_path.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("consent retry must receive acknowledgement and clear its outbox file");
         assert!(!consent_path.exists());
         assert!(product_path.exists());
-
-        server.await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
