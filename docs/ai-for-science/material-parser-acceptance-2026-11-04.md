@@ -16,13 +16,13 @@
 
 专用验收镜像从已有本地运行镜像和离线 deb 包重装更新后的工具脚本，构建期间禁网，非 root 全套工具/PDF 自检通过。没有替换现有私人空间、升级生产镜像或调用真实模型。构建后本机曾出现 ENOSPC，编译中断；清理项目生成的 orx 增量缓存后恢复约 10 GiB 可用空间；Docker API 曾不可用，使用官方停止/启动流程恢复，原有服务均恢复运行，临时验收镜像已删除。恢复后重新验收，失败记录不计作通过。
 
-最终本地检查：全目标 clippy 零警告，全部 7 项材料 CLI 测试通过且真实 Poppler 强制启用，46 项部署脚本测试及 6 项版本/源码发行证据测试通过，Rust/Windows launcher 格式与 diff 检查通过。UI 源码未变化，沿用已重建的 ui/dist；发行 CI 仍会复查构建一致性。
+最终本地检查：全目标 clippy 零警告，6 项普通材料 CLI 测试及 1 项独立真实 Poppler 验收通过，46 项部署脚本测试及 6 项版本/源码发行证据测试通过，Rust/Windows launcher 格式与 diff 检查通过。UI 源码未变化，沿用已重建的 ui/dist；发行 CI 仍会复查构建一致性。
 
 本地日志：`/tmp/mobilesci-real-pdf-{cli,image-build}.log`、`/tmp/mobilesci-parser-{clippy,all-cli,deploy-tests,release-tests}.log`。最终发行状态及候选 CI 必须按实际 GitHub 结果记录，不能从测试计划推断。
 
 ## 未完成与下一步
 
-- P1：同一 `.3` 候选的完整发行门禁、不可变源码资产及发布状态核验；实际部署和既有私人执行器替换另行验收。
+- P1：`.3` 源码发行与资产核验已完成；实际部署、升级恢复和既有私人执行器替换仍待验收。
 - P2：解析器精确身份及版本追溯、复杂版面/加密/多语言/OCR 样本、任务阅读覆盖汇总和科学指标来源。当前合成夹具不证明这些能力。
 - P2：交付缓存总占用统计、清理预览及受保护回收，保留当前输入/引用/审批/活动运行与失败恢复边界。
 
@@ -46,3 +46,8 @@ macOS CI 的全量测试采用 `--test-threads=1`，减少全局状态和原生�
 
 
 上述稳定性修正的本地完整串行回归通过：1,449 项单元测试、24 项普通 CLI 集成测试；13 项既有单元忽略及 1 项外部 PDF 测试在默认套件中明确列出。独立 PDF 门禁另行通过该 1 项真实解析测试，合计 25 项 CLI 验收；全目标 clippy 零警告，格式及 6 项版本/发行测试通过。日志：`/tmp/mobilesci-macos-stability-{full,clippy,real-pdf,release}.log`。
+
+
+## 最终发布状态
+
+[`.3` 源码](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.3) 已发布，标签/清单提交 `66ae1b5a895e2401ae8d01dafa98dad7d16587c6`，[最终发行 CI](https://github.com/CMCC-AI/OpenResearch/actions/runs/41768398929) 全部必需门禁成功。Linux/macOS 的独立真实 PDF 步骤通过，Windows 保留明确未验收边界。已下载全部四项资产并通过校验和核验；未部署生产或生成签名安装包。历史失败记录保留，不作为最终候选通过证据。

@@ -143,3 +143,6 @@ agent 会话中项目身份从会话解析，不能用 --project 指向其他项
 有效材料声明对应的原件与读取回执随研究 ZIP 封存，保留包/SRC/相对路径及 SHA-256。只纳入当前计划产物和有效声明来源，历史/撤回声明的原件不会因此被扩入交付。准备时核验原件，批准提交前复核文件身份、计划与 Run；写事务内不复制或重哈希文件。
 
 已批准包的下载核验封存字节和当前审批，不再从可变原件重建，不产生阅读事实。材料包自身的 4 GiB 配额不覆盖研究 ZIP 缓存；交付限额和未实施的回收治理见[研究交付快照](research-delivery-snapshots-2026-11-04.md)。
+
+
+发行更新：上述读取、声明来源、网页选区和封存快照已随 [MobileSci `.3`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.3) 源码发布，完整发行 CI 为 [41768398929](https://github.com/CMCC-AI/OpenResearch/actions/runs/41768398929)。现有执行器和静态资源不会自动升级；生产部署与真实主机恢复验收另列。

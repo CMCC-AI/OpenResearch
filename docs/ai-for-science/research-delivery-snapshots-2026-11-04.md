@@ -28,6 +28,9 @@
 
 新增测试覆盖真实 HTTP、真实 CLI 流式导出、批准前拒绝、非主理人拒绝、来源在批准边界变化的回滚、无原件仍可拒绝、并发写入不被哈希/复制占用写锁、来源/清单/计划/结束状态变化、缓存损坏、旧写入器保护、已结束研究导出、旧无材料范围兼容、日志范围及运行配置不泄露，以及实际 DAG 下载入口保护。ZIP 按清单逐项核验字节与哈希。
 
-本批完整检查结果写入[进度对照](implementation-progress-vs-plan-2026-11-04.md)。本地 macOS 验收不替代 Windows/Linux CI、真实 pdftotext 解析主机验收、模型研究质量或生产容量测试；没有新发布和部署。
+本批完整检查结果写入[进度对照](implementation-progress-vs-plan-2026-11-04.md)。本地 macOS 验收不替代 Windows/Linux CI、真实 pdftotext 解析主机验收、模型研究质量或生产容量测试；本地实施阶段没有新发布和部署；后续已随 `.3` 源码发行，生产部署仍未执行。
 
 后续顺序：P1 真实解析主机及跨平台发行验收；P2 读取覆盖/解析器身份与科学指标来源；P2 缓存占用统计、预览及受保护回收；P2/P3 根据实际平台需求继续官方专项回移。
+
+
+后续发行：该能力已随 [MobileSci `.3`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.3) 源码交付，发布提交 `66ae1b5a895e2401ae8d01dafa98dad7d16587c6`、[完整发行 CI](https://github.com/CMCC-AI/OpenResearch/actions/runs/41768398929) 成功；生产部署与签名安装包不在本次发行范围。
