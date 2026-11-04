@@ -5,8 +5,8 @@
 ## 实施与依据
 
 - `tests/materials_cli.rs` 增加真实 Poppler 集成测试，使用合成双页文字 PDF、仅含图片的 PDF 和损坏 PDF，实际调用 CLI 子进程并检查 SQLite 读取回执。验证逐页内容、越界拒绝、损坏诊断、图片页需要 OCR、缺失工具失败，以及恢复工具后按原回执定位；失败不产生 written，重读产生新回执，跨 CLI 进程保留原来源和选区。
-- `ORX_REQUIRE_REAL_PDF=1` 强制存在可用的真实解析器；工具缺失时此门禁失败。普通开发环境缺少工具时明确输出未运行，不将它算作真实解析验收。原有伪解析器测试继续覆盖超时、管道、有界正文/诊断和布局变化，不能以真实 ASCII 测试替代它们。
-- Linux 主检查安装 Poppler 并强制运行；新增 macOS CLI job 检查 clippy、构建及完整测试，同样强制真实 Poppler。Windows 仍运行原生构建/测试；未安装 Poppler 时不宣称 Windows PDF 执行端验收完成。macOS CLI job 不等于签名桌面包验收。
+- 真实 PDF 测试显式标为需要外部工具的 ignored 测试，普通回归显示未运行；Linux/macOS 的独立 `Real PDF acceptance` 步骤必须执行 `scripts/test-real-pdf.sh`。脚本先检查测试名确实存在，再运行该精确测试；工具缺失、探测失败或测试缺失均失败，不允许零项测试冒充通过。原有伪解析器测试继续覆盖超时、管道、有界正文/诊断和布局变化，不能以真实 ASCII 测试替代它们。
+- Linux 主检查安装 Poppler 并强制运行；新增 macOS CLI job 检查 clippy、构建及完整测试，同样强制真实 Poppler。Windows 仍运行原生构建/测试，默认显式忽略此外部工具测试，不宣称 Windows PDF 执行端验收完成。macOS CLI job 不等于签名桌面包验收。
 - `executor-tools/pdf-check.py` 仅使用 Python 标准库生成夹具，以 stdin 调用真实 pdftotext，无网络、无需模型、无用户资料。安装脚本将它写入 `/usr/local/libexec/orx/check-pdf.py`，现有 `orx-check-executor-tools` 以 UID 1000 执行真实解析自检；新镜像及离线升级包共用该安装流程。
 - `.3` 版本元数据同步 Cargo.toml/Cargo.lock/product-upstream.json，发行说明覆盖 `.2` 后的读取、修订、回执、网页来源和封存导出。真实官方祖先仍是 v0.2.19，v0.2.23 为部分回移，不恢复官方更新通道。
 
@@ -25,3 +25,12 @@
 - P1：同一 `.3` 候选的完整发行门禁、不可变源码资产及发布状态核验；实际部署和既有私人执行器替换另行验收。
 - P2：解析器精确身份及版本追溯、复杂版面/加密/多语言/OCR 样本、任务阅读覆盖汇总和科学指标来源。当前合成夹具不证明这些能力。
 - P2：交付缓存总占用统计、清理预览及受保护回收，保留当前输入/引用/审批/活动运行与失败恢复边界。
+
+
+## Windows 发行门禁发现及修正
+
+首个 `.3` 候选 `10755b0d` 的 [发行 CI 41752092845](https://github.com/CMCC-AI/OpenResearch/actions/runs/41752092845) 在 Windows 上的真实解析器版本探测失败（stderr 为空），因此阻止发布；该候选其余 1,371 项 Windows 单元测试通过，macOS Poppler 26.10.0 的真实解析测试也通过。没有据此认定 Windows 具备可用 Poppler，更没有把旧 CI 结果用于放行新候选。
+
+修正后默认测试明确报告该外部工具测试未运行，由已安装 Poppler 的 Linux/macOS 独立强制门禁承担真实验收；Windows 的 PDF 执行端仍列未验收。探测失败输出状态、stdout、stderr，便于以后定位不兼容工具。修正不改变生产解析、平台权限或发布的完整 CI 要求，必须对新候选重新验收。
+
+本地修正验证：普通材料 CLI 回归 6 项通过、真实 PDF 1 项明确 ignored；独立真实门禁显式执行该 1 项并通过（Poppler 22.12.0）。缺少工具及测试列表为空的负向检查均失败，未执行意外测试；clippy、格式和版本/发行回归通过。日志：`/tmp/mobilesci-pdf-boundary-{real,default,missing,empty-list,clippy,release-tests}.log`。

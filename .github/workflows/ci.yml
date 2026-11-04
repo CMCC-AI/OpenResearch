@@ -180,13 +180,13 @@ jobs:
           test "$(target/release/orx --no-telemetry version --build-channel)" = "development"
 
       - name: Test
-        env:
-          ORX_REQUIRE_REAL_PDF: '1'
+        run: cargo test --locked
+
+      - name: Real PDF acceptance
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends poppler-utils
-          pdftotext -v
-          cargo test --locked
+          bash scripts/test-real-pdf.sh
 
   # The Linux desktop app: a glibc build with the `desktop` feature, packaged as
   # an AppImage on the oldest Ubuntu it supports and launched under a virtual
@@ -267,9 +267,9 @@ jobs:
       - name: Build
         run: cargo build --locked
       - name: Test
-        env:
-          ORX_REQUIRE_REAL_PDF: '1'
         run: cargo test --locked
+      - name: Real PDF acceptance
+        run: bash scripts/test-real-pdf.sh
 
   # Only what differs by platform: the checks above are platform-independent,
   # and ui/dist is committed, so no Node here.

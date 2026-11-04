@@ -493,26 +493,20 @@ fn research_cli_exports_only_the_confirmed_zip_and_denies_non_lead_sessions() {
     assert!(denied.stdout.is_empty());
 }
 
-/// The mandatory Linux CI gate uses installed Poppler. Other hosts may run this
-/// with a real pdftotext in PATH; a missing tool is never a successful read.
+/// Explicit external-tool acceptance. Linux/macOS CI must run this through
+/// scripts/test-real-pdf.sh; an unavailable/incompatible parser fails the gate.
 #[test]
+#[ignore = "requires real Poppler; Linux/macOS CI run the explicit PDF gate"]
 fn material_cli_real_pdf_pages_failures_and_parser_recovery_preserve_receipts() {
-    let version = match Command::new("pdftotext").arg("-v").output() {
-        Ok(version) => version,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            assert_ne!(
-                std::env::var("ORX_REQUIRE_REAL_PDF").as_deref(),
-                Ok("1"),
-                "mandatory real Poppler gate has no pdftotext"
-            );
-            eprintln!("real PDF acceptance not run: pdftotext unavailable; set ORX_REQUIRE_REAL_PDF=1 to require it");
-            return;
-        }
-        Err(error) => panic!("cannot execute real Poppler: {error}"),
-    };
+    let version = Command::new("pdftotext")
+        .arg("-v")
+        .output()
+        .expect("real Poppler is required for PDF acceptance");
     assert!(
         version.status.success(),
-        "{}",
+        "Poppler probe failed ({}): stdout={} stderr={}",
+        version.status,
+        String::from_utf8_lossy(&version.stdout),
         String::from_utf8_lossy(&version.stderr)
     );
     eprintln!("{}", String::from_utf8_lossy(&version.stderr));
