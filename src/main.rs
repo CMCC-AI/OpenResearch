@@ -84,7 +84,7 @@ enum Command {
     Research(commands::research::ResearchArgs),
     /// Read uploaded research materials in any work mode.
     Materials(commands::materials::MaterialsArgs),
-    /// Observe local storage without authorizing reclamation.
+    /// Observe local storage and review operator-only archive reclamation.
     Storage(commands::storage::StorageArgs),
 
     /// List a project's runs.

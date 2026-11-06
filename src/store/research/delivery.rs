@@ -17,6 +17,8 @@ pub struct ArchiveDescriptor {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DeliverySnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_version: Option<u32>,
     pub scope_hash: String,
     pub identity_hash: String,
     pub archive: ArchiveDescriptor,
@@ -142,7 +144,7 @@ impl Store {
             &serde_json::json!({"project":study.project_id,"session":study.session_id,"mode":study.mode,"plans":study.plans,"claims":study.claims,"claimRevision":study.claim_revision,"materialCitationRevision":study.material_citation_revision,"changes":evidence.changes,"runs":runs}),
         )?))
     }
-    fn archive_dir(&self, study: &Study) -> Result<PathBuf> {
+    pub(super) fn archive_dir(&self, study: &Study) -> Result<PathBuf> {
         if study.id.is_empty()
             || !study
                 .id
@@ -150,6 +152,12 @@ impl Store {
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         {
             return Err(anyhow!("研究标识无效"));
+        }
+        let project = self
+            .get_local_project(&study.project_id)?
+            .ok_or_else(|| anyhow!("项目不存在"))?;
+        if !super::super::storage_usage::single_component(&project.slug) {
+            return Err(anyhow!("项目目录标识无效"));
         }
         let root = self.research_root(study)?;
         Ok(root
@@ -379,7 +387,8 @@ impl Store {
         };
         drop(archive);
         let target = directory.join(format!("{}.zip", descriptor.sha256));
-        if target.exists() {
+        let existed = target.try_exists()?;
+        if existed {
             let mut existing = FileSource::open(&target, "封存研究包")?;
             if existing.bytes() != descriptor.bytes || existing.hash()? != descriptor.sha256 {
                 return Err(anyhow!("已有封存研究包损坏，请核查存储"));
@@ -388,6 +397,7 @@ impl Store {
             std::fs::rename(&temp.0, &target)?;
         }
         let mut final_archive = FileSource::open(&target, "封存研究包")?;
+        final_archive.lock_shared()?;
         if final_archive.hash()? != descriptor.sha256 {
             return Err(anyhow!("封存研究包发布期间发生变化"));
         }
@@ -396,7 +406,9 @@ impl Store {
             scope["deliveryBundle"] = serde_json::to_value(&descriptor)?;
         }
         let scope = serde_json::to_string(&scope)?;
+        self.research_register_archive(study, &descriptor, existed, &digest(scope.as_bytes()))?;
         let snapshot = DeliverySnapshot {
+            catalog_version: Some(1),
             scope_hash: digest(scope.as_bytes()),
             identity_hash: identity.clone(),
             archive: descriptor,
@@ -497,6 +509,7 @@ impl Store {
                 .join(format!("{}.zip", snapshot.archive.sha256)),
             "封存研究包",
         )?;
+        file.lock_shared()?;
         if file.bytes() != snapshot.archive.bytes || file.hash()? != snapshot.archive.sha256 {
             return Err(anyhow!("封存研究包已变化，不能下载"));
         }
