@@ -64,7 +64,9 @@ test('actual app restores warm/cold workspaces, history, case boundaries and uns
     const pattern = `**/api/projects/${fixture.projects[0].id}/ui-state`;
     await page.route(pattern, async route => {
       pending.resolve(); await release.promise;
-      try { if (!route.request().failure()) await route.continue(); }
+      // Even an aborted request must finish its Playwright route handler.
+      // Skipping it leaves unrouteAll(wait) waiting for an unresolved route.
+      try { await route.continue(); }
       finally { completed.resolve(); }
     });
     try {
@@ -119,7 +121,7 @@ test('actual app restores warm/cold workspaces, history, case boundaries and uns
     const pattern = `**/api/projects/${project.id}/file`;
     await page.route(pattern, async route => {
       if (route.request().method() === 'PUT') await release.promise;
-      if (!route.request().failure()) await route.continue();
+      await route.continue();
     });
     try {
       await editor.fill('Synthetic unsaved browser draft\n');

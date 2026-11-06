@@ -15084,6 +15084,9 @@ mod checkpoint_tests {
         let (dir, store, ctx) = checkpoint_fixture();
         let host = ctx.host.clone();
         assert!(store.claim_chat_turn("session", "token").unwrap());
+        // Database initialization is fixture setup, not part of observing
+        // when cancellation releases the heartbeat's directory gate.
+        let worker_store = Store::open_at(dir.clone()).unwrap();
         host.durable_turns
             .lock()
             .unwrap()
@@ -15092,14 +15095,13 @@ mod checkpoint_tests {
         let guard = gate.clone().lock_owned().await;
         let (started, ready) = tokio::sync::oneshot::channel();
         let (release, wait) = std::sync::mpsc::channel();
-        let root = dir.clone();
         let worker_host = host.clone();
         let worker = tokio::spawn(async move {
             worker_host
                 .renew_turn_leases_with_store(guard, move || {
                     let _ = started.send(());
                     wait.recv_timeout(Duration::from_secs(3)).unwrap();
-                    Store::open_at(root)
+                    Ok(worker_store)
                 })
                 .await
         });

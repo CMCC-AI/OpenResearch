@@ -41,3 +41,10 @@ PR #6 增加独立 Chromium 验收：CI 通过 `scripts/dev-slot.mjs` 启动专�
 第二轮 Chromium（CI 42259488345）中窄屏/折叠导航通过。宽屏流程已执行暖/冷切换、历史/刷新、慢读取消、失败重试、关闭/研究 pane、同名案例隔离及未保存取消离开的全部步骤，截图和 JSON 步骤报告无业务步骤错误，但整体测试因释放被拦截的 PUT 后立即卸载拦截器/结束测试发生 Route is already handled 而失败；不能记作宽屏整项通过。
 
 已检查宽屏未保存截图、窄屏材料截图及回调实现。清理改为释放屏障后使用 [unrouteAll 的 wait 行为](https://playwright.dev/docs/api/class-page#page-unroute-all)，等待在途回调结束，保留真实错误；随后确认保存状态清空再允许测试退出。慢读/失败重试的拦截清理也统一等待，不用 ignoreErrors 吞掉异常。新候选仍需真实 CI 重跑通过。
+
+
+第三轮 CI 42263417663 的窄屏继续通过，宽屏在“取消慢读”步骤超时。下载并检查 trace 后确认：客户端取消的 GET 被 request.failure 条件跳过，没有调用 Route 的 continue/abort/fulfill/fallback，Playwright 的处理承诺始终未完成，因而 unrouteAll(wait) 一直等待。修正为屏障释放后始终结束路由回调；继续等待清理、保留错误及未保存/保存完成断言，不放宽 120 秒验收超时。
+
+同轮 Windows 在 lease_heartbeat_worker_retains_gate_after_waiter_cancellation 的三秒门禁释放断言超时。测试原先把 Store::open_at 的迁移/连接准备也放在屏障释放之后；现提前准备工作连接，屏障仍控制真实租约续期和门禁生命周期，三秒断言及生产心跳逻辑不变。该修正只调整夹具，不声称已证明 Windows 恢复。
+
+本地八线程心跳回归 8 项、检查点回归 65 项通过（4 项既有 ignored 不计入通过），UI 580 项通过；脚本语法和两场景发现、格式及 diff 检查通过。最终跨平台和真实 Chromium 重跑仍是合入门禁，不能以前序局部结果替代。
