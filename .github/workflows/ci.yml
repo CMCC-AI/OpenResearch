@@ -235,6 +235,29 @@ jobs:
           sudo apt-get install -y --no-install-recommends poppler-utils
           bash scripts/test-real-pdf.sh
 
+      - name: Install Chromium for workspace acceptance
+        working-directory: ui
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Actual workspace browser acceptance
+        timeout-minutes: 10
+        run: node --experimental-strip-types scripts/test-workspace-browser.mjs
+
+      - name: Stop the acceptance slot
+        if: always()
+        run: |
+          if [ -f ui/test-results/workspace-server/owned-slot.json ]; then
+            node scripts/dev-slot.mjs stop
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: workspace-browser-${{ github.run_id }}
+          path: ui/test-results/
+          if-no-files-found: warn
+          retention-days: 7
+
   # The Linux desktop app: a glibc build with the `desktop` feature, packaged as
   # an AppImage on the oldest Ubuntu it supports and launched under a virtual
   # display. The checks above cover the default, GTK-free build.
