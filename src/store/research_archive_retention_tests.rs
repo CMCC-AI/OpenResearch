@@ -584,3 +584,313 @@ fn archive_retention_pending_intents_block_legacy_scope_only_approvals() {
         "aborted"
     );
 }
+
+#[test]
+fn archive_retention_pages_past_two_thousand_protected_rows_without_deleting_them() {
+    let (_dir, store, study, root, _) = snapshot_fixture();
+    let tx = store.begin_immediate().unwrap();
+    for n in 0..2000 {
+        store.conn.execute("INSERT INTO research_archive_objects(study_id,sha256,bytes,manifest_sha256,legacy,created_at) VALUES(?1,?2,1,'legacy',1,0)",params![study.id,format!("{n:064x}")]).unwrap();
+    }
+    tx.commit().unwrap();
+    let hash = archive_orphan(&store, &study, &root);
+    let (before, now) = archive_clock();
+    let first = store
+        .archive_preview_at("project", &study.id, before, now)
+        .unwrap();
+    assert_eq!(first.scanned, 2000);
+    assert_eq!(first.retained, 2000);
+    assert!(first.candidates.is_empty());
+    assert!(first.has_more);
+    assert!(first.next_cursor > first.after);
+    let page = ArchiveGcWindow {
+        before,
+        after: first.next_cursor,
+        through: Some(first.through),
+    };
+    let next = store
+        .archive_preview_at("project", &study.id, page, now)
+        .unwrap();
+    assert_eq!(next.candidates.len(), 1);
+    assert_eq!(next.candidates[0].sha256, hash);
+    assert_eq!(next.scanned, 1);
+    assert!(!next.has_more);
+    assert!(store
+        .archive_apply_at(
+            "project",
+            &study.id,
+            before,
+            &next.preview_hash,
+            now,
+            |_| Ok(())
+        )
+        .is_err());
+    let result = store
+        .archive_apply_at("project", &study.id, page, &next.preview_hash, now, |_| {
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(result.removed, vec![hash]);
+    assert_eq!(result.next_cursor, next.next_cursor);
+    assert!(!result.has_more);
+    assert_eq!(
+        store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM research_archive_objects WHERE legacy=1",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        2000
+    );
+}
+
+#[test]
+fn archive_retention_batch_boundary_does_not_skip_the_twenty_first_candidate() {
+    let (_dir, store, study, root, _) = snapshot_fixture();
+    let mut hashes = vec![];
+    for n in 0..21 {
+        store
+            .research_update(&study.id, |s| {
+                s.plans.last_mut().unwrap().summary = format!("orphan version {n}");
+                Ok(())
+            })
+            .unwrap();
+        hashes.push(archive_orphan(
+            &store,
+            &store.research_study(&study.id).unwrap(),
+            &root,
+        ));
+    }
+    let (before, now) = archive_clock();
+    let first = store
+        .archive_preview_at("project", &study.id, before, now)
+        .unwrap();
+    assert_eq!(first.candidates.len(), 20);
+    assert_eq!(first.scanned, 20);
+    assert!(first.has_more);
+    assert_eq!(first.next_cursor, first.candidates.last().unwrap().cursor);
+    let result = store
+        .archive_apply_at(
+            "project",
+            &study.id,
+            ArchiveGcWindow {
+                before,
+                after: first.after,
+                through: Some(first.through),
+            },
+            &first.preview_hash,
+            now,
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(result.removed, hashes[..20]);
+    let second = store
+        .archive_preview_at(
+            "project",
+            &study.id,
+            ArchiveGcWindow {
+                before,
+                after: result.next_cursor,
+                through: Some(result.through),
+            },
+            now,
+        )
+        .unwrap();
+    assert_eq!(second.candidates.len(), 1);
+    assert_eq!(second.candidates[0].sha256, hashes[20]);
+    assert!(!second.has_more);
+    assert_eq!(second.next_cursor, second.through);
+}
+
+#[test]
+fn archive_retention_pins_catalog_horizon_and_rejects_invalid_or_mismatched_windows() {
+    let (_dir, store, study, root, _) = snapshot_fixture();
+    archive_orphan(&store, &study, &root);
+    let (before, now) = archive_clock();
+    let first = store
+        .archive_preview_at("project", &study.id, before, now)
+        .unwrap();
+    // A concurrent registration does not mutate the study document or this window.
+    store.conn.execute("INSERT INTO research_archive_objects(seq,study_id,sha256,bytes,manifest_sha256,legacy,created_at) VALUES(?3,?1,?2,1,'legacy',1,0)",params![study.id,"e".repeat(64),first.through+10]).unwrap();
+    let fixed = ArchiveGcWindow {
+        before,
+        after: 0,
+        through: Some(first.through),
+    };
+    let again = store
+        .archive_preview_at("project", &study.id, fixed, now)
+        .unwrap();
+    assert_eq!(first.preview_hash, again.preview_hash);
+    // Global catalog sequences have gaps between studies. Bind the horizon even
+    // when changing it adds no row, candidate or next cursor to this page.
+    let gap = ArchiveGcWindow {
+        before,
+        after: 0,
+        through: Some(first.through + 1),
+    };
+    let changed = store
+        .archive_preview_at("project", &study.id, gap, now)
+        .unwrap();
+    assert_eq!(changed.candidates, first.candidates);
+    assert_eq!(changed.next_cursor, first.next_cursor);
+    assert_ne!(changed.preview_hash, first.preview_hash);
+    assert!(store
+        .archive_apply_at("project", &study.id, gap, &first.preview_hash, now, |_| Ok(
+            ()
+        ))
+        .is_err());
+
+    assert!(store
+        .archive_apply_at(
+            "project",
+            &study.id,
+            before,
+            &first.preview_hash,
+            now,
+            |_| Ok(())
+        )
+        .is_err());
+    for window in [
+        ArchiveGcWindow {
+            before,
+            after: -1,
+            through: None,
+        },
+        ArchiveGcWindow {
+            before,
+            after: first.through + 1,
+            through: Some(first.through),
+        },
+        ArchiveGcWindow {
+            before,
+            after: 0,
+            through: Some(i64::MAX),
+        },
+    ] {
+        assert!(store
+            .archive_preview_at("project", &study.id, window, now)
+            .is_err());
+    }
+    let empty = store
+        .archive_preview_at(
+            "project",
+            &study.id,
+            ArchiveGcWindow {
+                before,
+                after: first.through,
+                through: Some(first.through),
+            },
+            now,
+        )
+        .unwrap();
+    assert!(empty.candidates.is_empty());
+    assert_eq!(empty.scanned, 0);
+    assert!(!empty.has_more);
+    let result = store
+        .archive_apply_at(
+            "project",
+            &study.id,
+            fixed,
+            &first.preview_hash,
+            now,
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(result.removed.len(), 1);
+}
+
+#[test]
+fn archive_retention_partial_failure_keeps_the_page_cursor_for_reviewed_retry() {
+    let (dir, store, study, root, _) = snapshot_fixture();
+    let hash = archive_orphan(&store, &study, &root);
+    let path = store
+        .archive_dir(&study)
+        .unwrap()
+        .join(format!("{hash}.zip"));
+    let retained = dir.path().join("retained-failed-archive.zip");
+    let (before, now) = archive_clock();
+    let preview = store
+        .archive_preview_at("project", &study.id, before, now)
+        .unwrap();
+    let page = ArchiveGcWindow {
+        before,
+        after: preview.after,
+        through: Some(preview.through),
+    };
+    let failed = store
+        .archive_apply_at(
+            "project",
+            &study.id,
+            page,
+            &preview.preview_hash,
+            now,
+            |stage| {
+                if stage == "planned" {
+                    std::fs::rename(&path, &retained)?;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(failed.failed, vec![hash.clone()]);
+    assert_eq!(failed.logical_bytes_removed, 0);
+    assert_eq!(failed.next_cursor, preview.after);
+    assert!(failed.has_more);
+    assert!(retained.exists());
+    std::fs::rename(retained, &path).unwrap();
+    let retry = store
+        .archive_preview_at("project", &study.id, page, now)
+        .unwrap();
+    let result = store
+        .archive_apply_at("project", &study.id, page, &retry.preview_hash, now, |_| {
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(result.removed, vec![hash]);
+    assert!(result.failed.is_empty());
+    assert!(!result.has_more);
+}
+
+#[cfg(unix)]
+#[test]
+fn archive_retention_byte_budget_keeps_the_unprocessed_candidate_for_the_next_page() {
+    let (_dir, store, study, _root, _) = snapshot_fixture();
+    let directory = store.archive_dir(&study).unwrap();
+    std::fs::create_dir_all(&directory).unwrap();
+    // Sparse metadata fixtures exercise the 2 GiB preview budget without
+    // allocating payloads or hashing fictional multi-gigabyte archives.
+    let bytes: u64 = 768 * 1024 * 1024;
+    for n in 0..3 {
+        let hash = format!("{n:064x}");
+        std::fs::File::create(directory.join(format!("{hash}.zip")))
+            .unwrap()
+            .set_len(bytes)
+            .unwrap();
+        store.conn.execute("INSERT INTO research_archive_objects(study_id,sha256,bytes,manifest_sha256,legacy,created_at) VALUES(?1,?2,?3,'synthetic',0,0)",params![study.id,hash,bytes]).unwrap();
+    }
+    let (before, now) = archive_clock();
+    let first = store
+        .archive_preview_at("project", &study.id, before, now)
+        .unwrap();
+    assert_eq!(first.candidates.len(), 2);
+    assert_eq!(first.logical_bytes, 2 * bytes);
+    assert_eq!(first.scanned, 2);
+    assert!(first.has_more);
+    let next = store
+        .archive_preview_at(
+            "project",
+            &study.id,
+            ArchiveGcWindow {
+                before,
+                after: first.next_cursor,
+                through: Some(first.through),
+            },
+            now,
+        )
+        .unwrap();
+    assert_eq!(next.candidates.len(), 1);
+    assert_eq!(next.candidates[0].sha256, format!("{:064x}", 2));
+    assert!(!next.has_more);
+}

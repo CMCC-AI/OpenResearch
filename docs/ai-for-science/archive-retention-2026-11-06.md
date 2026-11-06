@@ -50,3 +50,22 @@ orx storage --project PROJECT archive-recover --study STUDY
 开发中迁移索引顺序错误导致一次完整运行失败并被终止；随后纠正并复跑，又发现旧错误提示关键词兼容性断言不匹配。最终修正提示、补齐历史审批范围保护后从最终代码完整通过；没有将这些中间失败计作成功。原始日志保留在 `/tmp/mobilesci-archive-{full-tests,full-tests-final,verified-full,tests-final,clippy-verified,release-checks}.log`。
 
 本批已合入，未另行发行或部署，也未在生产执行 GC。源码完成、CI 合入、发行和生产上线分别记账。
+
+## GC 扫描续页候选（2026-11-07）
+
+后续 `feat/archive-gc-pagination` 解决上述首版的 2000 项扫描及批次边界问题。预览新增 `after`、`through` 和 `nextCursor`；首次缺省 through 时固定为该研究当前最大登记序号，之后保持相同 before/through 逐页检查。`hasMore:false` 只表示本窗口处理完毕，不代表窗口之后的新登记或全执行器已清理。受保护/缺失/在用项仍保留，可在以后重新扫描。
+
+```sh
+# 首次预览，记录 before、through、after 和 previewHash
+orx storage --project PROJECT archive-gc --study STUDY
+# 审核并执行本页；必须与该页预览的参数对应
+orx storage --project PROJECT archive-gc --study STUDY --before BEFORE --after AFTER --through THROUGH --apply PREVIEW_HASH
+# hasMore 为 true 时，将 nextCursor 作为下一页 after；每页重新预览和审核
+orx storage --project PROJECT archive-gc --study STUDY --before BEFORE --after NEXT_CURSOR --through THROUGH
+```
+
+令牌策略升为 2，绑定固定窗口、起始/结束游标、当前文档和候选描述；旧预览必须重新生成。窗口/游标变化会拒绝执行，即使候选列表恰好相同。新增登记不会进入已审核的固定窗口；省略 through 而范围已变化时会拒绝旧令牌。没有增加自动分页删除或一次令牌授权多页。
+
+20 个对象或 2 GiB 达到批次边界时，尚未处理的候选不会被游标跳过。逐文件删除失败保留 failed 记录，返回原页 after 和 hasMore:true；CLI 先输出结构化结果再以非零退出，须检查失败原因并重新预览当前页。已删部分不重复计释放。准备/下载锁、历史保护、活动准入、事务外哈希和中断恢复保持原协议。
+
+新增回归覆盖 2000 个旧登记后的候选、21 个候选的批次边界、固定上界下并发新增、错误窗口和空页、局部失败重试及实际 CLI 参数/令牌绑定。Unix 另以稀疏文件元数据测试 2 GiB 边界，不读取或哈希大文件、不把虚构内容计作真实归档验收。本地完整 1472 项单元和 28 项普通 CLI 通过（13 项既有单元与 1 项外部真实 PDF 忽略不计通过），全目标 Clippy 零警告、格式、上游基线与 8 项发行相关检查通过。新增 5 项存储及 1 项 CLI 回归，最后增强的窗口空隙令牌断言另行重跑通过。日志为 `/tmp/mobilesci-gc-page-{full,cli,window-token,clippy-final,release-checks}.log`。完整模拟合并 CI 和合入状态另行记录，尚未发布或在生产执行删除。
