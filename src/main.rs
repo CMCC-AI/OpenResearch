@@ -29,6 +29,7 @@ mod output;
 mod paths;
 mod plane;
 mod remote;
+mod scientific_metrics;
 mod store;
 mod telemetry;
 mod updates;
@@ -89,6 +90,9 @@ enum Command {
 
     /// List a project's runs.
     Runs(RunsArgs),
+
+    /// Inspect scientific metric files against recorded run and input identities.
+    Metrics(commands::metrics::MetricsArgs),
 
     /// Show a run's compact log summary (path, size, and preview) by default.
     Logs(LogsArgs),
@@ -1261,6 +1265,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Materials(_) => "materials",
         Command::Storage(_) => "storage",
         Command::Runs(_) => "runs",
+        Command::Metrics(_) => "metrics",
         Command::Logs(_) => "logs",
         Command::CreateExperiment(_) => "create-experiment",
         Command::Compute(_) => "compute",
@@ -1313,6 +1318,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Materials(args) => commands::materials::run(args).await,
         Command::Storage(args) => commands::storage::run(args).await,
         Command::Runs(args) => commands::runs::run(args).await,
+        Command::Metrics(args) => commands::metrics::run(args).await,
         Command::Logs(args) => commands::logs::run(args).await,
         Command::CreateExperiment(args) => commands::create_experiment::run(args).await,
         Command::Compute(args) => commands::compute::run(args).await,

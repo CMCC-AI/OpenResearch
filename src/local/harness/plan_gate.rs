@@ -313,6 +313,7 @@ fn is_readonly_orx(tokens: &[&str], stage: &str) -> bool {
                 )
         }
         // Verbs with a write subcommand: allow only the read-only subcommand(s).
+        "metrics" => matches!(subcommand(&mut rest), Some("inspect")),
         "project" => matches!(subcommand(&mut rest), Some("view")),
         "exp" => match subcommand(&mut rest) {
             // Pure reads.
@@ -768,8 +769,21 @@ mod tests {
             );
         }
         // The verbs with mixed read/write subcommands must also be real.
-        for verb in ["project", "exp"] {
+        for verb in ["project", "exp", "metrics"] {
             assert!(real.contains(verb), "`{verb}` is not a real orx command");
         }
+    }
+
+    #[test]
+    fn scientific_metric_inspection_is_readonly_but_unknown_writes_stay_gated() {
+        assert!(command_is_readonly(
+            "orx metrics inspect run --file metrics.json --project p"
+        ));
+        assert!(!command_is_readonly(
+            "orx metrics register run --file metrics.json"
+        ));
+        assert!(!command_is_readonly(
+            "orx metrics inspect run --file metrics.json > saved.json"
+        ));
     }
 }
