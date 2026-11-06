@@ -85,6 +85,94 @@ pub(super) async fn inspect(Path(id): Path<String>) -> ApiResult {
     })
     .await
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CoverageQuery {
+    source: Option<String>,
+    session: Option<String>,
+    study: Option<String>,
+}
+
+fn coverage_permits() -> &'static Arc<tokio::sync::Semaphore> {
+    static LIMIT: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(2)))
+}
+
+/// Read the same bounded snapshot as the CLI; dashboard viewing never records a read.
+pub(super) async fn coverage(
+    Path(id): Path<String>,
+    Query(query): Query<CoverageQuery>,
+) -> std::result::Result<Response, ApiError> {
+    let permit = coverage_permits()
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            ApiError(
+                StatusCode::TOO_MANY_REQUESTS,
+                "读取范围查询繁忙，请稍后重试。".into(),
+            )
+        })?;
+    let value = blocking_task(move || -> std::result::Result<_, ApiError> {
+        let _permit = permit;
+        let package = material::inspect(&id).map_err(bad_request)?;
+        if !package.ready {
+            return Err(bad_request("材料尚未完成导入，不能查询读取范围"));
+        }
+        let store = Store::open()?;
+        store
+            .get_local_project(&package.project_id)?
+            .ok_or_else(|| not_found("project"))?;
+        if query
+            .source
+            .as_ref()
+            .is_some_and(|source| !package.files.iter().any(|file| &file.id == source))
+        {
+            return Err(bad_request("读取范围筛选的来源不属于此材料包"));
+        }
+        if let Some(session) = &query.session {
+            if store
+                .get_chat_session(session)?
+                .is_none_or(|chat| chat.project_id != package.project_id)
+            {
+                return Err(bad_request("读取范围筛选的会话不属于材料项目"));
+            }
+        }
+        if let Some(study) = &query.study {
+            if store.research_study(study).map_err(bad_request)?.project_id != package.project_id {
+                return Err(bad_request("读取范围筛选的研究不属于材料项目"));
+            }
+        }
+        let filter = crate::store::material_reads::ReadFilter {
+            package: Some(id.clone()),
+            source: query.source.clone(),
+            session: query.session.clone(),
+            study: query.study.clone(),
+        };
+        let coverage = store
+            .material_read_coverage(&package.project_id, &filter)
+            .map_err(bad_request)?;
+        let value = json!({"schemaVersion":1,"projectId":package.project_id,"packageId":id,
+            "source":query.source,"session":query.session,"study":query.study,
+            "measuredAt":crate::store::now_ms(),"coverage":coverage});
+        if serde_json::to_vec(&value).map_err(bad_request)?.len() > 2 * 1024 * 1024 {
+            return Err(ApiError(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "读取范围超过 2 MiB，请按文件或会话缩小范围；未返回部分汇总".into(),
+            ));
+        }
+        Ok(value)
+    })
+    .await??;
+    Ok((
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        Json(value),
+    )
+        .into_response())
+}
 pub(super) async fn download(
     Path((id, source)): Path<(String, String)>,
 ) -> std::result::Result<Response, ApiError> {
@@ -182,6 +270,7 @@ pub(super) async fn citation_preview(
 mod tests {
     use super::*;
     include!("materials/citation_tests.rs");
+    include!("materials/coverage_tests.rs");
 
     #[test]
     fn material_preview_http_checks_scope_hash_and_safe_headers() {

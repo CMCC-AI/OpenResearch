@@ -277,3 +277,61 @@ test("native project snapshots support every existing coding harness", () => {
     assert.equal(normalizeCase(value).sessions[0].harness, harness);
   }
 });
+
+test("range snapshot identities cannot mix projects, packages or sources", () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  const path = `/api/materials/${id}/coverage`;
+  const base = materialWorkspace();
+  base.responses[`/api/materials/${id}`].files[0].format = "pdf";
+  base.responses[path] = {
+    schemaVersion: 1,
+    projectId: "project",
+    packageId: id,
+    source: null,
+    session: null,
+    study: null,
+    coverage: {
+      consideredEvents: 1,
+      groups: [
+        {
+          scope: {
+            packageId: id,
+            source: "SRC-0001",
+            path: "输入/原件.pdf",
+            format: "pdf",
+            sha256: "a".repeat(64),
+          },
+        },
+      ],
+    },
+  };
+  assert.deepEqual(normalizeNativeWorkspace(base), base);
+  for (const change of [
+    (v) => {
+      v.responses[path].projectId = "foreign";
+    },
+    (v) => {
+      v.responses[path].packageId = "foreign";
+    },
+    (v) => {
+      v.responses[path].source = "SRC-0001";
+    },
+    (v) => {
+      v.responses[path].coverage.groups[0].scope.source = "SRC-9999";
+    },
+    (v) => {
+      v.responses[path].coverage.groups[0].scope.sha256 = "b".repeat(64);
+    },
+    (v) => {
+      v.responses[path].coverage.consideredEvents = 10001;
+    },
+    (v) => {
+      v.responses[path + "?session=foreign"] = v.responses[path];
+      delete v.responses[path];
+    },
+  ]) {
+    const v = structuredClone(base);
+    change(v);
+    assert.throws(() => normalizeNativeWorkspace(v));
+  }
+});

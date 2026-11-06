@@ -220,14 +220,6 @@ jobs:
       - name: Build
         run: cargo build --locked
 
-      - name: Source builds cannot enable production telemetry
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(target/debug/orx --no-telemetry version --build-channel)" = "development"
-          cargo build --release --locked
-          test "$(target/release/orx --no-telemetry version --build-channel)" = "development"
-
       - name: Test
         run: cargo test --locked
 
@@ -251,6 +243,16 @@ jobs:
           if [ -f ui/test-results/workspace-server/owned-slot.json ]; then
             node scripts/dev-slot.mjs stop
           fi
+
+      # Keep interactive feedback ahead of the slower optimized rebuild; both
+      # development-channel assertions remain required before this job passes.
+      - name: Source builds cannot enable production telemetry
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(target/debug/orx --no-telemetry version --build-channel)" = "development"
+          cargo build --release --locked
+          test "$(target/release/orx --no-telemetry version --build-channel)" = "development"
 
       - uses: actions/upload-artifact@v4
         if: always()

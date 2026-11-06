@@ -10,13 +10,15 @@ import { MediaToolbarSlot } from "./mediaToolbar";
 import { Md } from "./Md";
 import { Button, IconButton, IconButtonLink, Input, Spinner } from "./ui";
 import { useDialogFocus } from "./useDialogFocus";
+import { MaterialReadCoverage } from "./MaterialReadCoverage";
 
-export default function MaterialReader({ id, onClose, embedded = false }: { id: string; onClose: () => void; embedded?: boolean }) {
+export default function MaterialReader({ id, onClose, embedded = false, sessionId }: { id: string; onClose: () => void; embedded?: boolean; sessionId?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const [material, setMaterial] = useState<MaterialPackage | null>(null);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
+  const [view, setView] = useState<"original" | "coverage">("original");
   useDialogFocus(ref, onClose);
   useEffect(() => {
     const controller = new AbortController();
@@ -37,7 +39,8 @@ export default function MaterialReader({ id, onClose, embedded = false }: { id: 
         <div className="min-w-0"><h2 id={titleId} className="m-0 flex items-center gap-2 font-semibold"><FolderOpen size={19} className="text-primary" />研究材料{material ? <span className="text-sm font-normal text-subtext">{material.files.length} 个文件</span> : null}</h2><p className="mb-0 mt-1 text-xs text-subtext">浏览原件不代表 AI 已阅读；引用以本次导入版本为准。</p></div>
         {!embedded && <IconButton aria-label="关闭材料阅读器" onClick={onClose}><X size={18} /></IconButton>}
       </header>
-      {material ? <ReaderContent key={material.id} material={material} /> : <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-5">
+      {material && <nav aria-label="材料视图" className="flex shrink-0 gap-2 border-b border-border px-3 py-2"><Button size="small" aria-pressed={view === "original"} onClick={() => setView("original")}>浏览原件</Button><Button size="small" aria-pressed={view === "coverage"} onClick={() => setView("coverage")}>读取范围</Button></nav>}
+      {material ? view === "coverage" ? <MaterialReadCoverage key={material.id} material={material} sessionId={sessionId} /> : <ReaderContent key={material.id} material={material} /> : <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-5">
         {error ? <><p role="alert" className="text-sm text-accent-red">{error}</p><Button data-initial-focus onClick={() => setAttempt(value => value + 1)}>重新加载</Button></> : <><Spinner /><p role="status" className="text-sm text-subtext">正在加载材料目录…</p></>}
       </div>}
     </div>;
@@ -161,6 +164,6 @@ function MaterialPreview({ material, file, onOpen }: { material: MaterialPackage
   </div>;
 }
 
-export function MaterialReaderPane({ id }: { id: string }) {
-  return <MaterialReader id={id} embedded onClose={() => {}} />;
+export function MaterialReaderPane({ id, sessionId }: { id: string; sessionId?: string }) {
+  return <MaterialReader id={id} sessionId={sessionId} embedded onClose={() => {}} />;
 }

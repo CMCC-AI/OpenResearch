@@ -251,7 +251,7 @@ export function normalizeNativeWorkspace(value) {
   const runIds = new Set(runs.map((run) => run.id)),
     experimentIds = new Set(experiments.map((experiment) => experiment.id));
   const allowed =
-    /^\/api\/(?:projects(?:\/activity|\/[^/?]+(?:\/(?:ui-state|experiments|runs|files|code-tree|file))?)?|chat\/sessions(?:\/[^/?]+(?:\/(?:messages|worktree))?)?|research\/sessions\/[^/?]+|materials\/[^/?]+|settings\/(?:ui-state|compute)|files\/abs|harnesses|skills|runs\/[^/?]+\/(?:diff|log)|experiments\/[^/?]+\/diff)(?:\?|$)/;
+    /^\/api\/(?:projects(?:\/activity|\/[^/?]+(?:\/(?:ui-state|experiments|runs|files|code-tree|file))?)?|chat\/sessions(?:\/[^/?]+(?:\/(?:messages|worktree))?)?|research\/sessions\/[^/?]+|materials\/[^/?]+(?:\/coverage)?|settings\/(?:ui-state|compute)|files\/abs|harnesses|skills|runs\/[^/?]+\/(?:diff|log)|experiments\/[^/?]+\/diff)(?:\?|$)/;
   for (const [path, response] of Object.entries(value.responses)) {
     check(allowed.test(path), 400, "项目副本含不支持的资源");
     const route = new URL(path, "http://snapshot.invalid").pathname;
@@ -301,6 +301,66 @@ export function normalizeNativeWorkspace(value) {
         );
       }
       materials.set(materialId, fileIds);
+    }
+  }
+  // Validate after collecting all manifests; response property order is not
+  // an authorization boundary. Only complete, package-scoped snapshots belong here.
+  for (const [path, response] of Object.entries(value.responses)) {
+    const match = new URL(path, "http://snapshot.invalid").pathname.match(
+      /^\/api\/materials\/([^/]+)\/coverage$/,
+    );
+    if (!match) continue;
+    const id = match[1];
+    const query = new URL(path, "http://snapshot.invalid").searchParams;
+    const source = query.get("source");
+    check(
+      materials.has(id) && (source === null || materials.get(id).has(source)),
+      400,
+      "读取范围不属于案例材料",
+    );
+    check(
+      path ===
+        `/api/materials/${id}/coverage${source === null ? "" : `?source=${encodeURIComponent(source)}`}`,
+      400,
+      "读取范围查询必须属于完整材料包或其中来源",
+    );
+    check(
+      response.schemaVersion === 1 &&
+        response.projectId === value.projectId &&
+        response.packageId === id &&
+        response.source === source &&
+        response.session === null &&
+        response.study === null,
+      400,
+      "读取范围副本身份不一致",
+    );
+    const coverage = response.coverage;
+    check(
+      coverage &&
+        Array.isArray(coverage.groups) &&
+        coverage.groups.length <= 512 &&
+        Number.isSafeInteger(coverage.consideredEvents) &&
+        coverage.consideredEvents >= 0 &&
+        coverage.consideredEvents <= 10000,
+      400,
+      "读取范围副本超限或不完整",
+    );
+    for (const group of coverage.groups) {
+      const scope = group?.scope;
+      const file = value.responses[`/api/materials/${id}`].files.find(
+        (file) => file.id === scope?.source,
+      );
+      check(
+        file &&
+          scope.packageId === id &&
+          (source === null || scope.source === source) &&
+          scope.sha256 === file.sha256 &&
+          scope.path === file.path &&
+          scope.format === file.format &&
+          ["text", "pdf", "notebook"].includes(scope.format),
+        400,
+        "读取范围混入其他来源或版本",
+      );
     }
   }
   for (const [path, name] of Object.entries(value.assets)) {

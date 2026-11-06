@@ -36,9 +36,13 @@ if (process.env.CI && !existsSync(path.join(registry, 'cargo-target'))) {
   symlinkSync(path.join(root, 'target'), path.join(registry, 'cargo-target'), 'dir')
 }
 const projects = ['a', 'b', 'c', 'd'].map(letter => ({ id: `browser-${letter}`, main: `browser-${letter}-main`, title: `Browser conversation ${letter.toUpperCase()}`, name: `Browser fixture ${letter.toUpperCase()}` }))
+const readingProject = { id: 'browser-reading', main: 'browser-reading-main', title: 'Browser reading conversation', name: 'Browser reading fixture' }
+const seededProjects = [...projects, readingProject]
 let origin = null
 let detail = null
+let readingDetail = null
 let assets = []
+let readingAssets = []
 const unexpected = []
 const account = http.createServer((request, response) => {
   const url = new URL(request.url, 'http://fixture.invalid')
@@ -53,8 +57,13 @@ const account = http.createServer((request, response) => {
   if (request.method === 'GET' && url.pathname === '/api/platform/catalog-session') {
     json({ user: { id: 'browser-fixture-user', name: 'Synthetic browser fixture', email: 'browser@example.invalid', isAdmin: false }, canAccessResearch: true, privateResearch: false, deepLiteratureUrl: null }); return
   }
-  if (request.method === 'GET' && url.pathname === '/api/platform/cases') { json({ cases: detail ? [detail] : [] }); return }
+  if (request.method === 'GET' && url.pathname === '/api/platform/cases') { json({ cases: detail ? [detail, ...(readingDetail ? [readingDetail] : [])] : [] }); return }
   if (request.method === 'GET' && url.pathname === '/api/platform/cases/browser-case' && detail) { json(detail); return }
+  if (request.method === 'GET' && url.pathname === '/api/platform/cases/browser-reading-case' && readingDetail) { json(readingDetail); return }
+  if (request.method === 'GET' && url.pathname === '/api/platform/cases/browser-reading-case/assets') {
+    const asset = readingAssets.find(item => item.name === url.searchParams.get('name'))
+    if (asset) { response.writeHead(200, { 'content-type': 'application/octet-stream' }).end(Buffer.from(asset.content, 'base64')); return }
+  }
   if (request.method === 'GET' && url.pathname === '/api/platform/cases/browser-case/assets') {
     const asset = assets.find(item => item.name === url.searchParams.get('name'))
     if (asset) { response.writeHead(200, { 'content-type': 'application/octet-stream' }).end(Buffer.from(asset.content, 'base64')); return }
@@ -84,7 +93,7 @@ try {
   // memory; query_only forbids SQL writes during the emptiness/audit checks.
   execFileSync('python3', ['-c', "import sqlite3,sys; c=sqlite3.connect('file:'+sys.argv[1]+'?mode=rw',uri=True); c.execute('PRAGMA query_only=ON'); assert c.execute('SELECT count(*) FROM local_projects').fetchone()[0]==0 and c.execute('SELECT count(*) FROM chat_sessions').fetchone()[0]==0, 'Refuse a nonempty database'", path.join(data, 'orx.db')])
   const repos = mkdtempSync(path.join(data, 'browser-fixture-'))
-  for (const project of projects) {
+  for (const project of seededProjects) {
     project.repo = path.join(repos, project.id)
     mkdirSync(project.repo, { recursive: true })
     writeFileSync(path.join(project.repo, 'README.md'), `Synthetic browser file for ${project.id}\n`)
@@ -102,7 +111,7 @@ with sqlite3.connect(sys.argv[1]) as c:
   c.execute("INSERT INTO local_projects(id,name,slug,github_owner,github_repo,github_sync_enabled,baseline_branch,repo_path,created_at,updated_at) VALUES(?,?,?,'','',0,'main',?,1,1)",(p['id'],p['name'],p['id'],p['repo']))
   c.execute("INSERT INTO chat_sessions(id,project_id,harness,title,created_at,updated_at) VALUES(?,?,'opencode',?,1,1)",(p['main'],p['id'],p['title']))
  c.execute("INSERT INTO chat_sessions(id,project_id,harness,title,side_parent_session_id,created_at,updated_at) VALUES('browser-a-side','browser-a','opencode','Browser side A','browser-a-main',2,2)")`
-  execFileSync('python3', ['-c', seed, path.join(data, 'orx.db'), JSON.stringify(projects)])
+  execFileSync('python3', ['-c', seed, path.join(data, 'orx.db'), JSON.stringify(seededProjects)])
   const read = async (url, init) => {
     const response = await fetch(new URL(url, backend), init)
     if (!response.ok) throw new Error(`Fixture API ${url}: ${response.status} ${await response.text()}`)
@@ -118,6 +127,19 @@ with sqlite3.connect(sys.argv[1]) as c:
   await post('/api/settings/ui-state', { tourCompleted: true, preferredAgent: { harness: 'opencode', model: null }, workspace: { lastLocation: '/projects', railOpen: true, panelWidth: 480, experimentsView: 'tree' } })
   // Generate the case through the production capture implementation and real
   // APIs. Only its hash primitive is supplied by Node instead of browser crypto.
+  // Actual upload/CLI receipts, isolated from the four navigation fixtures.
+  // The two read events below are synthetic test observations, never model calls.
+  const readingMaterial = await (await post(`/api/projects/${readingProject.id}/materials`, {})).json()
+  await read(`/api/projects/${readingProject.id}/materials/${readingMaterial.id}/files?path=notes.txt`, { method: 'PUT', headers: { 'content-type': 'application/octet-stream' }, body: 'one\ntwo\nthree\nfour\n' })
+  const readingManifest = await (await post(`/api/projects/${readingProject.id}/materials/${readingMaterial.id}/finalize`, {})).json()
+  const cliEnv = { ...environment, ORX_DATA_DIR: data, ORX_CACHE_DIR: path.join(data, 'cache'), XDG_CONFIG_HOME: path.join(registry, `${state.slotKey}-config`), ORX_CHAT_SESSION_ID: readingProject.main, ORX_NO_UPDATE_CHECK: '1' }
+  for (const offset of ['1', '2']) await run(path.join(registry, 'cargo-target/debug/orx'), ['--no-telemetry', 'materials', '--project', readingProject.id, 'read', readingMaterial.id, readingManifest.files[0].id, '--offset', offset, '--limit', '2'], cliEnv)
+  execFileSync('python3', ['-c', `import sqlite3,sys,json
+with sqlite3.connect(sys.argv[1]) as c:
+ c.execute("INSERT INTO chat_messages(id,session_id,role,parts_json,created_at) VALUES('browser-reading-upload',?,'user',?,3)",(sys.argv[2],json.dumps([{'id':'browser-reading-material-part','type':'material','text':sys.argv[3]}])))
+ c.execute("UPDATE chat_sessions SET active_leaf_id='browser-reading-upload' WHERE id=?",(sys.argv[2],))`, path.join(data, 'orx.db'), readingProject.main, readingMaterial.id])
+  const readingPane = { kind: 'home', view: 'materials' }
+  await post(`/api/projects/${readingProject.id}/ui-state`, { version: 1, lastTaskId: readingProject.main, lastLocation: `/projects/${readingProject.id}/tasks/${readingProject.main}`, tasks: { [readingProject.main]: { tabs: [readingPane], active: readingPane, previewKey: null, history: [], expanded: {}, scroll: {}, sourceModes: {}, filesView: 'files', scope: 'project', panelMax: false } } })
   const require = createRequire(path.join(ui, 'package.json'))
   const ts = require('typescript')
   const { canonicalRequest } = await import(pathToFileURL(path.join(ui, 'src/readOnlyApi.ts')).href)
@@ -135,16 +157,20 @@ with sqlite3.connect(sys.argv[1]) as c:
   caseState.tasks[projects[0].main].active = { kind: 'home', view: 'research' }
   caseState.tasks[projects[0].main].tabs = [{ kind: 'home', view: 'research' }]
   detail = { id: 'browser-case', title: 'Synthetic browser case', summary: 'Isolated acceptance fixture', category: 'test', status: 'published', revision: 1, sort_order: 0, created_at: '2026-11-07T00:00:00Z', updated_at: '2026-11-07T00:00:00Z', published_at: '2026-11-07T00:00:00Z', source_project_id: projects[0].id, files: [], snapshot: { sessions: [], workspace: captured.workspace } }
+  const readingCapture = await module.captureNativeProject(readingProject.id)
+  if (!readingCapture.workspace.responses[`/api/materials/${readingMaterial.id}/coverage`]) throw new Error('Reading fixture must capture the actual uploaded material and its CLI ranges')
+  readingAssets = readingCapture.assets
+  readingDetail = { ...detail, id: 'browser-reading-case', title: 'Synthetic reading case', source_project_id: readingProject.id, snapshot: { sessions: [], workspace: readingCapture.workspace } }
   const fixtureFile = path.join(artifacts, 'fixture.json')
-  writeFileSync(fixtureFile, JSON.stringify({ origin, backend, accountOrigin, projects }))
+  writeFileSync(fixtureFile, JSON.stringify({ origin, backend, accountOrigin, projects, readingProject, readingManifest }))
   await run(process.execPath, [cli, 'test', '--config', path.join(ui, 'playwright.config.mjs')], { ...environment, ORX_BROWSER_BASE_URL: origin, ORX_BROWSER_FIXTURE_FILE: fixtureFile })
   if (unexpected.length) throw new Error(`Unexpected fixture account requests: ${unexpected.join(', ')}`)
   const audit = JSON.parse(execFileSync('python3', ['-c', `import sqlite3,sys,json
 with sqlite3.connect('file:'+sys.argv[1]+'?mode=rw',uri=True) as c:
  c.execute('PRAGMA query_only=ON')
  print(json.dumps({t:c.execute('SELECT count(*) FROM '+t).fetchone()[0] for t in ['runs','chat_messages','chat_queued_messages','chat_spawns','material_read_events']}))`, path.join(data, 'orx.db')], { encoding: 'utf8' }))
-  if (Object.values(audit).some(value => value !== 0)) throw new Error(`Unexpected agent/run/material mutations: ${JSON.stringify(audit)}`)
-  writeFileSync(path.join(artifacts, 'acceptance.json'), JSON.stringify({ revision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(), mode: 'synthetic account; actual app and isolated native backend', slot: state.slotKey, audit, productionDeployed: false }, null, 2))
+  if (JSON.stringify(audit) !== JSON.stringify({ runs: 0, chat_messages: 1, chat_queued_messages: 0, chat_spawns: 0, material_read_events: 2 })) throw new Error(`Unexpected agent/run/material mutations: ${JSON.stringify(audit)}`)
+  writeFileSync(path.join(artifacts, 'acceptance.json'), JSON.stringify({ revision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(), mode: 'synthetic account/upload/two CLI reads; actual app and isolated native backend', slot: state.slotKey, audit, productionDeployed: false }, null, 2))
 } finally {
   try {
     if (attempted) await run(process.execPath, [path.join(root, 'scripts/dev-slot.mjs'), 'stop'])

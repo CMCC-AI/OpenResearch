@@ -825,6 +825,7 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
         )
         .route("/api/chat/attachments/{name}", get(chat_attachment))
         .route("/api/materials/{id}", get(materials::inspect))
+        .route("/api/materials/{id}/coverage", get(materials::coverage))
         .route(
             "/api/materials/{id}/{source}/citations/{event}",
             get(materials::citation_preview),

@@ -390,7 +390,7 @@
 
 @media (max-width: 1024px) {
   .workspace-body:has(> .product-sidebar) {
-    grid-template-columns: 17.5rem minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr);
   }
   .workspace-body:has(> .product-sidebar):has(> .right-pane:not(.max)) {
     grid-template-rows: 4rem minmax(0, 1fr) minmax(0, 1fr);
