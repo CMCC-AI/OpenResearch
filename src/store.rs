@@ -13,6 +13,7 @@ pub(crate) mod research;
 mod research_metrics;
 mod schema;
 pub(crate) mod steering;
+mod storage_usage;
 mod telemetry;
 pub(crate) use telemetry::{InvocationIdentity, TokenUsage};
 

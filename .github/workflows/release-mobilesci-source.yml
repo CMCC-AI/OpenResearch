@@ -55,6 +55,12 @@ jobs:
           node-version: 22
       - name: Build immutable source archives
         run: node scripts/source-release.mjs .mobilesci-run/source-release "$GITHUB_SHA"
+      - uses: actions/download-artifact@v4
+        with:
+          name: source-archive-hashes-Linux
+          path: ${{ runner.temp }}/verified-source-hashes
+      - name: Bind published archives to the cross-platform CI evidence
+        run: cmp "$RUNNER_TEMP/verified-source-hashes/SHA256SUMS" .mobilesci-run/source-release/SHA256SUMS
       - name: Publish verified version
         env:
           GH_TOKEN: ${{ github.token }}

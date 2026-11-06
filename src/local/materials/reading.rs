@@ -84,7 +84,9 @@ async fn read_expected_at(
             if let Some(view) =
                 store.material_read_view(&receipt.context.project_id, &expected.read_event_id)?
             {
-                if serde_json::to_value(view)? != result["view"] {
+                let current: crate::store::material_reads::ReadView =
+                    serde_json::from_value(result["view"].clone())?;
+                if view.identity() != current.identity() {
                     return Err(anyhow!(
                         "解析器或完整视图与引用回执不一致，不能返回旧引用选区"
                     ));

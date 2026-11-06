@@ -33,6 +33,8 @@ impl Sandbox {
         let mut command = Command::new(env!("CARGO_BIN_EXE_orx"));
         command
             .env("ORX_DATA_DIR", self.root.join("data"))
+            .env("ORX_CACHE_DIR", self.root.join("cache"))
+            .env("ORX_MATERIAL_STORAGE_BYTES", "4294967296")
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("ORX_NO_UPDATE_CHECK", "1")
             .env_remove("ORX_CHAT_SESSION_ID")
@@ -631,6 +633,100 @@ fn material_cli_real_pdf_pages_failures_and_parser_recovery_preserve_receipts() 
         .iter()
         .filter(|e| e["receipt"]["outcome"] == "failed")
         .all(|e| e["outputState"] != "written"));
+}
+
+#[test]
+fn storage_cli_observes_project_bytes_without_exposing_other_materials_or_collecting_archives() {
+    let sandbox = Sandbox::new();
+    let package_root = sandbox.root.join("data/materials").join(&sandbox.package);
+    let manifest_file = package_root.join("manifest.json");
+    let mut manifest: Value =
+        serde_json::from_slice(&std::fs::read(&manifest_file).unwrap()).unwrap();
+    std::fs::rename(
+        package_root.join("originals/notes.txt"),
+        package_root.join("originals/材料.txt"),
+    )
+    .unwrap();
+    manifest["files"][0]["path"] = "材料.txt".into();
+    std::fs::write(manifest_file, manifest.to_string()).unwrap();
+    let read = sandbox.run(&[
+        "materials",
+        "--project",
+        "project",
+        "read",
+        &sandbox.package,
+        "SRC-0001",
+        "--limit",
+        "1",
+    ]);
+    assert!(read.status.success());
+    let before = sandbox.events();
+    let foreign = uuid::Uuid::new_v4().to_string();
+    let foreign_root = sandbox.root.join("data/materials").join(&foreign);
+    std::fs::create_dir_all(&foreign_root).unwrap();
+    std::fs::write(
+        foreign_root.join("manifest.json"),
+        json!({"id":foreign,"projectId":"other","createdAt":1,"ready":true,"files":[]}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        foreign_root.join("foreign-content"),
+        b"private other project",
+    )
+    .unwrap();
+    let archive = sandbox
+        .root
+        .join("data/files/p/research/.delivery-bundles/history/unindexed.zip");
+    std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
+    std::fs::write(&archive, b"retained archive").unwrap();
+    let legacy = sandbox.root.join("cache/repos/untouched.txt");
+    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    std::fs::write(&legacy, b"preserve legacy cache").unwrap();
+    let output = sandbox.run(&["storage", "--project", "project", "usage"]);
+    assert_eq!(std::fs::read(&legacy).unwrap(), b"preserve legacy cache");
+    assert!(!sandbox.root.join("data/repos").exists());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["projectId"], "project");
+    assert_eq!(report["materials"]["sealedPackages"], 1);
+    assert_eq!(report["materials"]["unsealedPackages"], 0);
+    assert_eq!(report["projectMetadata"]["readEvents"], 1);
+    assert_eq!(
+        report["projectMetadata"]["receiptJsonBytes"]
+            .as_u64()
+            .unwrap(),
+        before["events"][0]["receipt"].to_string().len() as u64
+    );
+    assert_eq!(
+        report["projectFilesIncludingDeliveryBundles"]["regularFileBytes"],
+        16
+    );
+    assert_eq!(report["deliveryBundlesSubset"]["regularFileBytes"], 16);
+    assert_eq!(
+        report["archiveRetention"]["allCachedArchivesProtected"],
+        true
+    );
+    assert_eq!(report["archiveRetention"]["deletionCandidates"], json!([]));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("foreign-content"));
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains(sandbox.root.to_string_lossy().as_ref())
+    );
+    assert_eq!(sandbox.events(), before);
+    assert_eq!(std::fs::read(&archive).unwrap(), b"retained archive");
+    for session in ["reader", "missing"] {
+        let output = sandbox
+            .command()
+            .env("ORX_CHAT_SESSION_ID", session)
+            .args(["storage", "--project", "other", "usage"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
 }
 
 #[test]

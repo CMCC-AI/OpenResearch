@@ -382,13 +382,16 @@ async fn material_read_views_keep_legacy_unknown_and_separate_task_plan_and_pars
     let f = Fixture::new("notes.txt", b"one\ntwo\nthree\n");
     let result = f.read(1, 1, None).await.unwrap();
     let receipt = f.events()["events"][0]["receipt"].clone();
-    for variant in ["legacy", "parser", "plan", "task", "source", "page"] {
+    for variant in [
+        "legacy", "parser", "producer", "plan", "task", "source", "page",
+    ] {
         let mut receipt = receipt.clone();
         match variant {
             "legacy" => {
                 receipt.as_object_mut().unwrap().remove("view");
             }
-            "parser" => receipt["view"]["producerVersion"] = "next-version".into(),
+            "producer" => receipt["view"]["producerVersion"] = "next-version".into(),
+            "parser" => receipt["view"]["textSha256"] = "c".repeat(64).into(),
             "plan" => receipt["context"]["planVersion"] = 2.into(),
             "task" => {
                 receipt["context"]["studyId"] = "study".into();
@@ -426,6 +429,11 @@ async fn material_read_views_keep_legacy_unknown_and_separate_task_plan_and_pars
         .unwrap();
     assert_eq!(coverage["groups"].as_array().unwrap().len(), 5);
     assert_eq!(coverage["excluded"]["unknownView"], 2);
+    assert!(coverage["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|g| g["producerVersions"].as_array().unwrap().len() == 2));
     assert!(coverage["groups"]
         .as_array()
         .unwrap()
@@ -469,4 +477,39 @@ async fn material_read_views_reject_stale_full_view_before_recording_prepared_re
     assert_eq!(events["events"][2]["receipt"]["outcome"], "failed");
     assert_eq!(events["events"][2]["outputState"], "notApplicable");
     assert!(result["view"]["textSha256"].is_string());
+}
+
+#[tokio::test]
+async fn material_read_views_allow_cli_upgrade_when_parser_and_view_are_identical() {
+    let f = Fixture::new("notes.txt", b"one\ntwo\nthree\n");
+    f.read(1, 1, None).await.unwrap();
+    let mut receipt = f.events()["events"][0]["receipt"].clone();
+    receipt["view"]["producerVersion"] = "older-cli-version".into();
+    let receipt: ReadReceipt = serde_json::from_value(receipt).unwrap();
+    let event = f.store.record_material_read(&receipt).unwrap();
+    f.store
+        .material_read_output("project", &event, None)
+        .unwrap();
+    let citation = f.store.material_citation("project", &event).unwrap();
+    let context = f
+        .store
+        .material_read_context("project", None, &f.package.id)
+        .unwrap();
+    let replay = read_expected_at(
+        &f.store,
+        context,
+        ReadRequest {
+            package: f.package.id.clone(),
+            source: f.package.files[0].id.clone(),
+            offset: 1,
+            limit: 1,
+            page: None,
+        },
+        &f.materials,
+        Some(&citation),
+    )
+    .await
+    .unwrap();
+    assert_eq!(replay["content"], "1: one\n");
+    assert_ne!(replay["view"]["producerVersion"], "older-cli-version");
 }
