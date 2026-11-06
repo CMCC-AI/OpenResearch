@@ -563,6 +563,15 @@ fn material_cli_real_pdf_pages_failures_and_parser_recovery_preserve_receipts() 
     let first: Value = serde_json::from_slice(&first.stdout).unwrap();
     assert_eq!(first["page"], 1);
     assert_eq!(first["content"], "1: First page alpha\n");
+    assert_eq!(first["view"]["parser"], "pdftotext-layout");
+    assert!(first["view"]["parserVersion"]
+        .as_str()
+        .is_some_and(|s| !s.is_empty()));
+    assert_eq!(
+        first["view"]["executableSha256"].as_str().unwrap().len(),
+        64
+    );
+    assert_eq!(first["view"]["textSha256"].as_str().unwrap().len(), 64);
     let second = read("SRC-0001", "2", None);
     assert!(
         second.status.success(),
@@ -622,4 +631,67 @@ fn material_cli_real_pdf_pages_failures_and_parser_recovery_preserve_receipts() 
         .iter()
         .filter(|e| e["receipt"]["outcome"] == "failed")
         .all(|e| e["outputState"] != "written"));
+}
+
+#[test]
+fn material_cli_coverage_unions_outputs_without_creating_reading_events() {
+    let sandbox = Sandbox::new();
+    for (offset, limit) in [("1", "2"), ("2", "2"), ("1", "2")] {
+        let output = sandbox.run(&[
+            "materials",
+            "--project",
+            "project",
+            "read",
+            &sandbox.package,
+            "SRC-0001",
+            "--offset",
+            offset,
+            "--limit",
+            limit,
+        ]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let before = sandbox.events();
+    let output = sandbox.run(&[
+        "materials",
+        "--project",
+        "project",
+        "coverage",
+        "--package",
+        &sandbox.package,
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let coverage: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(coverage["groups"].as_array().unwrap().len(), 1);
+    assert_eq!(coverage["groups"][0]["ranges"], json!([[1, 3]]));
+    assert_eq!(coverage["groups"][0]["coveredLines"], 3);
+    assert_eq!(
+        coverage["groups"][0]["scope"]["view"]["parser"],
+        "utf8-lines"
+    );
+    assert!(coverage["groups"][0]["scope"]["view"]["parserVersion"].is_null());
+    assert_eq!(sandbox.events(), before);
+    let denied = sandbox
+        .command()
+        .env("ORX_CHAT_SESSION_ID", "reader")
+        .args([
+            "materials",
+            "--project",
+            "other",
+            "coverage",
+            "--package",
+            &sandbox.package,
+        ])
+        .output()
+        .unwrap();
+    assert!(!denied.status.success());
+    assert!(denied.stdout.is_empty());
 }

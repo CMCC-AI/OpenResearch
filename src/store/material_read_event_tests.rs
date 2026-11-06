@@ -17,6 +17,7 @@ fn read_receipt(
         selection: Some(
             serde_json::json!({"offset":1,"lineCount":1,"contentSha256":"returned-hash"}),
         ),
+        view: None,
         error: None,
         started_at: 1,
         recorded_at: 2,
