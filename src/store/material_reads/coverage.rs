@@ -1,6 +1,6 @@
 //! Bounded, snapshot-consistent unions of confirmed output ranges. No understanding claims.
 use super::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,7 +17,13 @@ struct Scope {
     conversation_id: Option<String>,
     in_plan_inputs: Option<bool>,
     page: Option<u32>,
-    view: ReadView,
+    view: ReadViewIdentity,
+}
+
+struct ObservedRanges {
+    total_lines: usize,
+    ranges: Vec<(usize, usize)>,
+    producer_versions: BTreeSet<String>,
 }
 
 fn hash(value: &str) -> bool {
@@ -72,7 +78,7 @@ impl Store {
             return Err(anyhow!("阅读范围汇总必须指定 package"));
         }
         let tx = self.conn.unchecked_transaction()?;
-        let mut groups: BTreeMap<Scope, (usize, Vec<(usize, usize)>)> = BTreeMap::new();
+        let mut groups: BTreeMap<Scope, ObservedRanges> = BTreeMap::new();
         let mut excluded = BTreeMap::<&str, usize>::new();
         let mut after = 0;
         let mut considered = 0;
@@ -129,6 +135,7 @@ impl Store {
                     continue;
                 };
                 let total = usize::try_from(total.ok_or_else(|| anyhow!("missing totalLines"))?)?;
+                let producer = view.producer_version.clone();
                 let scope = Scope {
                     package_id: citation.package_id,
                     source: citation.source,
@@ -146,14 +153,19 @@ impl Store {
                     task_session_id: context.task_session_id,
                     in_plan_inputs: context.in_plan_inputs,
                     page: citation.page,
-                    view,
+                    view: view.identity(),
                 };
-                let value = groups.entry(scope).or_insert_with(|| (total, Vec::new()));
-                if value.0 != total {
+                let value = groups.entry(scope).or_insert_with(|| ObservedRanges {
+                    total_lines: total,
+                    ranges: Vec::new(),
+                    producer_versions: BTreeSet::new(),
+                });
+                value.producer_versions.insert(producer);
+                if value.total_lines != total {
                     return Err(anyhow!("同一解析视图的总行数不一致，不能合并范围"));
                 }
                 value
-                    .1
+                    .ranges
                     .push((citation.offset, citation.offset + citation.line_count - 1));
                 if groups.len() > 512 {
                     return Err(anyhow!("解析视图超过 512 组，请缩小范围；未返回部分汇总"));
@@ -166,7 +178,15 @@ impl Store {
             }
         }
         let mut results = Vec::new();
-        for (scope, (total, mut ranges)) in groups {
+        for (
+            scope,
+            ObservedRanges {
+                total_lines: total,
+                mut ranges,
+                producer_versions: producers,
+            },
+        ) in groups
+        {
             ranges.sort_unstable();
             let mut union: Vec<(usize, usize)> = Vec::new();
             for (start, end) in ranges {
@@ -180,7 +200,7 @@ impl Store {
                 }
             }
             let covered: usize = union.iter().map(|(start, end)| end - start + 1).sum();
-            results.push(serde_json::json!({"scope":scope,"ranges":union,"coveredLines":covered,"viewTotalLines":total}));
+            results.push(serde_json::json!({"scope":scope,"ranges":union,"coveredLines":covered,"viewTotalLines":total,"producerVersions":producers}));
         }
         tx.commit()?;
         Ok(

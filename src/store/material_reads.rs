@@ -29,6 +29,29 @@ pub struct ReadView {
     pub text_sha256: String,
 }
 
+/// Compatibility identity excludes the producing CLI release. The observation
+/// stays on each receipt; identical views survive an unrelated CLI upgrade.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadViewIdentity {
+    parser: String,
+    parser_version: Option<String>,
+    executable_sha256: Option<String>,
+    view_revision: String,
+    text_sha256: String,
+}
+impl ReadView {
+    pub fn identity(&self) -> ReadViewIdentity {
+        ReadViewIdentity {
+            parser: self.parser.clone(),
+            parser_version: self.parser_version.clone(),
+            executable_sha256: self.executable_sha256.clone(),
+            view_revision: self.view_revision.clone(),
+            text_sha256: self.text_sha256.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadReceipt {
