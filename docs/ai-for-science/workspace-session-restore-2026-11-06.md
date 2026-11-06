@@ -2,6 +2,16 @@
 
 本批适配官方 v0.2.24 的 [#872 / `59acdeb02d1869edfc37d0725dd98b87d3c1bf1c`](https://github.com/alphaXiv/OpenResearch/commit/59acdeb02d1869edfc37d0725dd98b87d3c1bf1c)。原补丁统一 ChatPanel 的 SessionRow.onOpen，本地另有首页 ResearchProjectNavigation 入口，以及私人空间/只读案例 API、研究和材料 pane，需一并适配。
 
+## 当前集成状态（2026-11-07）
+
+`5dfd582b` 的 CI 42269493163 已通过 Linux 主检查、Windows 安装包、两个 Linux 桌面架构和实际 Chromium 两场景；attempt 2 又通过三系统归档重现性，但 ARM 原生作业始终未取得 runner，注解确认为容量不足，最终取消。不能记作完整 CI 成功。后文保留各轮历史时点，当前以本节和最新实施台账为准。
+
+科学指标来源随后已通过自己的完整 CI 并合入产品分支。本批以 `3ab69a6c` 同步当前产品 `37a66df3`，验证工作区恢复和指标代码的真实组合；不是只为排队重启相同提交。合并未改变本候选 UI 源码或 dist，新增的 Rust/CLI 来源模块和测试必须接受新候选的完整模拟合并检查。
+
+集成本地完整八线程 1472 项 Rust 单元、30 项普通 CLI、580 项 UI、全目标 Clippy 及 8 项版本/归档/发行检查通过；13 项既有单元和 1 项外部 PDF 忽略不计通过。此前浏览器证据不能替代新候选的完整 CI。
+
+同时采用[归档资源分配](ci-runner-allocation-2026-11-07.md)：只有 Node/Git 的 macOS 源码归档改用标准 Intel runner，Rust 原生构建、测试和真实 PDF 继续保留 ARM。YAML 语法通过，三系统摘要和全部发布门禁保持必需；实际容量效果及跨主机一致性仍待新 CI。未发布、未部署。
+
 ## 行为与依据
 
 - ChatPanel 的同项目/跨项目点击都进入 App.onActiveSessionChange；首页 SessionRow 也通过共享恢复器打开会话。目标保存的 side、research、materials、文件等 pane 继续使用原 taskLocation 和工作区还原协议，显式关闭 active:null 保持关闭。
