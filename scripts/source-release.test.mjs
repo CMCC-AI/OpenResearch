@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { gunzipSync } from 'node:zlib'
-import { prepareSourceRelease } from './source-release.mjs'
+import { prepareSourceRelease, canonicalGzipHeader } from './source-release.mjs'
+import { Readable } from 'node:stream'
 
 async function fixture(t) {
   const base = await mkdtemp(join(tmpdir(), 'mobilesci-source-release-'))
@@ -42,7 +43,9 @@ test('source archives and checksums bind the exact clean revision and are reprod
   for (const name of [...manifest.artifacts, 'source-release.json', 'SHA256SUMS']) {
     assert.deepEqual(await readFile(join(first, name)), await readFile(join(second, name)))
   }
-  const tar = gunzipSync(await readFile(join(first, manifest.artifacts[0])))
+  const gzip = await readFile(join(first, manifest.artifacts[0]))
+  assert.equal(gzip[9], 255, 'gzip must not encode the producer OS')
+  const tar = gunzipSync(gzip)
   assert.ok(tar.includes(Buffer.from(`MobileSci-${version}/Cargo.toml`)))
   assert.ok(tar.includes(Buffer.from('材料阅读与可靠投递')))
   const sums = (await readFile(join(first, 'SHA256SUMS'), 'utf8')).trim().split('\n')
@@ -64,4 +67,33 @@ test('dirty or mismatched candidates and reused output files cannot be released'
   await writeFile(path, 'preserve existing data')
   await assert.rejects(prepareSourceRelease(root, output, revision), /EEXIST/)
   assert.equal(await readFile(path, 'utf8'), 'preserve existing data')
+})
+
+
+test('source archives are byte-identical across caller timezones', async t => {
+  const { base, root, revision } = await fixture(t)
+  const script = new URL('./source-release.mjs', import.meta.url).href
+  for (const [name, timezone] of [['utc', 'UTC'], ['shanghai', 'Asia/Shanghai']]) {
+    execFileSync(process.execPath, ['--input-type=module', '-e', 'const {prepareSourceRelease}=await import(process.argv[1]); await prepareSourceRelease(...process.argv.slice(2))', script, root, join(base, name), revision], { env: { ...process.env, TZ: timezone } })
+  }
+  const manifest = JSON.parse(await readFile(join(base, 'utc', 'source-release.json'), 'utf8'))
+  for (const name of [...manifest.artifacts, 'source-release.json', 'SHA256SUMS']) {
+    assert.deepEqual(await readFile(join(base, 'utc', name)), await readFile(join(base, 'shanghai', name)), name)
+  }
+})
+
+
+test('gzip producer OS metadata is normalized even across split headers', async () => {
+  const fixture = Buffer.from('1f8b080000000000021300', 'hex')
+  const normalize = async bytes => {
+    const chunks = []
+    for await (const chunk of Readable.from([bytes.subarray(0, 9), bytes.subarray(9, 10), bytes.subarray(10)]).pipe(canonicalGzipHeader())) chunks.push(chunk)
+    return Buffer.concat(chunks)
+  }
+  const mac = await normalize(fixture)
+  const linux = Buffer.from(fixture); linux[9] = 3
+  assert.deepEqual(mac, await normalize(linux))
+  assert.equal(mac[9], 255)
+  assert.deepEqual(mac.subarray(10), fixture.subarray(10))
+  await assert.rejects(async () => { for await (const _ of Readable.from([Buffer.from('short')]).pipe(canonicalGzipHeader())) {} }, /Truncated/)
 })

@@ -4,9 +4,28 @@ import { createReadStream, createWriteStream } from 'node:fs'
 import { mkdir, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { resolve, dirname } from 'node:path'
 import { pipeline } from 'node:stream/promises'
+import { Transform } from 'node:stream'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createGzip } from 'node:zlib'
 import { validateProductVersion } from './product-version.mjs'
+
+// RFC 1952's OS byte is metadata, not payload. Node emits the host OS;
+// normalize it without buffering the archive or changing compressed contents.
+export function canonicalGzipHeader() {
+  let offset = 0
+  return new Transform({
+    transform(chunk, encoding, done) {
+      const bytes = Buffer.from(chunk)
+      for (let i = 0; i < bytes.length && offset + i < 10; i++) {
+        const at = offset + i
+        if (at === 9) bytes[i] = 255 // unknown OS, identical on every producer
+      }
+      offset += bytes.length
+      done(null, bytes)
+    },
+    flush(done) { done(offset < 10 ? Error('Truncated gzip header') : null) },
+  })
+}
 
 export async function prepareSourceRelease(root, output, revision) {
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim()
@@ -29,7 +48,7 @@ export async function prepareSourceRelease(root, output, revision) {
     const file = await open(path, 'wx')
     let complete = false
     try {
-      execFileSync('git', ['archive', `--format=${format}`, `--prefix=${prefix}/`, revision], { cwd: root, stdio: ['ignore', file.fd, 'pipe'] })
+      execFileSync('git', ['archive', `--format=${format}`, `--prefix=${prefix}/`, revision], { cwd: root, env: { ...process.env, TZ: 'UTC' }, stdio: ['ignore', file.fd, 'pipe'] })
       complete = true
     } finally {
       await file.close()
@@ -40,7 +59,7 @@ export async function prepareSourceRelease(root, output, revision) {
   try {
     await archive('tar', tar)
     ownedTar = true
-    await pipeline(createReadStream(tar), createGzip({ level: 9 }), createWriteStream(resolve(output, tgz), { flags: 'wx' }))
+    await pipeline(createReadStream(tar), createGzip({ level: 9 }), canonicalGzipHeader(), createWriteStream(resolve(output, tgz), { flags: 'wx' }))
   } finally { if (ownedTar) await rm(tar, { force: true }) }
   await archive('zip', resolve(output, zip))
   const manifest = {

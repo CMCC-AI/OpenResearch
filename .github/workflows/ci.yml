@@ -27,6 +27,53 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  source-archive-hashes:
+    name: source archive (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify source archive metadata
+        run: node --test scripts/source-release.test.mjs
+      - name: Produce hashes for this exact revision
+        shell: bash
+        run: node scripts/source-release.mjs "$RUNNER_TEMP/source-repro" "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source-archive-hashes-${{ runner.os }}
+          path: ${{ runner.temp }}/source-repro/SHA256SUMS
+          if-no-files-found: error
+
+  source-archive-reproducibility:
+    name: source archive reproducibility
+    needs: source-archive-hashes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: source-archive-hashes-*
+          path: source-hashes
+      - name: Require identical archives from all three operating systems
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFile } from 'node:fs/promises';
+          const systems = ['Linux', 'macOS', 'Windows'];
+          const sums = await Promise.all(systems.map(os => readFile(`source-hashes/source-archive-hashes-${os}/SHA256SUMS`, 'utf8')));
+          for (let i = 1; i < sums.length; i++) assert.equal(sums[i], sums[0], `${systems[i]} archive differs from Linux`);
+          console.log('Source ZIP, gzip and manifest hashes match on Linux, macOS and Windows');
+          NODE
+
   executor-tools:
     name: executor tools and permissions
     runs-on: ubuntu-latest
