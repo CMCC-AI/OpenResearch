@@ -33,7 +33,12 @@ test('real uploaded material shows stable CLI unions and case copies never fall 
   await section.getByRole('combobox', { name:'筛选读取记录的文件' }).selectOption(fixture.readingManifest.files[0].id);
   await expect(section).toContainText('检查 2 条回执');
   await page.setViewportSize({ width:390,height:844 });
-  await expect(section).toBeVisible();
+  await expect(section).toBeInViewport();
+  await expect.poll(async () => {
+    const box = await section.boundingBox();
+    return box ? Math.ceil(box.x + box.width) : Infinity;
+  }).toBeLessThanOrEqual(391);
+  await expect.poll(() => page.locator('body').evaluate(element => element.scrollWidth)).toBeLessThanOrEqual(391);
   await page.screenshot({ path:info.outputPath('reading-summary-case-narrow.png'),fullPage:true });
   expect(privateRequests).toBe(0);
   await page.unrouteAll({ behavior:'wait' });
