@@ -29,7 +29,7 @@ new Function("require", "exports", code)((name) => {
   throw new Error(`Unexpected import: ${name}`);
 }, exports);
 
-test("HTTP project capture with uploaded materials passes the server contract and preserves file bytes", async () => {
+test("HTTP project capture with uploaded materials passes the server contract and preserves file bytes", async t => {
   const originalFetch = globalThis.fetch;
   const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
   const bytes = new TextEncoder().encode("科研成果\n");
@@ -54,10 +54,24 @@ test("HTTP project capture with uploaded materials passes the server contract an
     "/api/skills?harness=opencode&project=p": {},
     "/api/settings/compute?projectId=p": {}, "/api/research/sessions/s": {},
   };
+  const coverage = source => ({ schemaVersion:1, projectId:"p", packageId:materialId, source, session:null, study:null, measuredAt:1, coverage:{groups:[],consideredEvents:0,excluded:{},meaning:"fixture"} });
+  responses[`/api/materials/${materialId}/coverage`] = coverage(null);
+  responses[`/api/materials/${materialId}/coverage?source=SRC-0001`] = coverage("SRC-0001");
+  let missingCoverage = false, failedCoverage = false, changingCoverage = false, timestampOnly = false, rangeCalls = 0;
   Object.defineProperty(globalThis, "crypto", { configurable: true, value: {} });
   globalThis.fetch = async (path) => {
     if (path.startsWith("/api/projects/p/file/raw?") || path === `/api/materials/${materialId}/SRC-0001/download`) return new Response(bytes);
+    if (path.includes("/coverage") && missingCoverage) return Response.json({ error:"route not found" },{ status:404 });
+    if (path.includes("/coverage") && failedCoverage) return Response.json({ error:"too many" },{ status:400 });
     const key = canonicalRequest(path);
+    if ((changingCoverage || timestampOnly) && key === `/api/materials/${materialId}/coverage`) {
+      rangeCalls++;
+      const value = structuredClone(responses[key]);
+      value.measuredAt = rangeCalls;
+      if (changingCoverage && rangeCalls > 1) value.coverage.consideredEvents = 1;
+      return Response.json(value);
+    }
+
     assert.ok(key in responses, `Unexpected capture request: ${key}`);
     return Response.json(responses[key]);
   };
@@ -73,6 +87,32 @@ test("HTTP project capture with uploaded materials passes the server contract an
     assert.deepEqual(await (await replay.read(`/api/materials/${materialId}`)).json(), responses[`/api/materials/${materialId}`]);
     assert.equal(replay.asset(`/api/materials/${materialId}/SRC-0001/download`), `/api/platform/cases/case/assets?name=${name}`);
     assert.equal((await replay.read("/api/materials/foreign")).status, 404);
+    assert.deepEqual(await (await replay.read(`/api/materials/${materialId}/coverage?source=SRC-0001`)).json(), coverage("SRC-0001"));
+    await t.test("old executors preserve missing range snapshots without fabricating zero", async () => {
+      missingCoverage = true;
+      const legacy = await exports.captureNativeProject("p");
+      assert.ok(!(`/api/materials/${materialId}/coverage` in legacy.workspace.responses));
+      validator.normalizeNativeWorkspace(legacy.workspace);
+      const oldCase = createReadOnlyProjectApi({ id:"old",base:"",admin:false,workspace:legacy.workspace });
+      assert.equal((await oldCase.read(`/api/materials/${materialId}/coverage`)).status,404);
+      missingCoverage = false;
+    });
+    await t.test("CLI receipt changes without chat updates invalidate the captured snapshot", async () => {
+      changingCoverage = true; rangeCalls = 0;
+      await assert.rejects(exports.captureNativeProject("p"), /读取记录发生变化/);
+      changingCoverage = false;
+    });
+    await t.test("a new observation timestamp alone does not invalidate unchanged ranges", async () => {
+      timestampOnly = true; rangeCalls = 0;
+      validator.normalizeNativeWorkspace((await exports.captureNativeProject("p")).workspace);
+      timestampOnly = false;
+    });
+    await t.test("available but incomplete range snapshots cannot be silently omitted", async () => {
+      failedCoverage = true;
+      await assert.rejects(exports.captureNativeProject("p"), /未复制完整/);
+      failedCoverage = false;
+    });
+
   } finally {
     globalThis.fetch = originalFetch;
     if (cryptoDescriptor) Object.defineProperty(globalThis, "crypto", cryptoDescriptor);
