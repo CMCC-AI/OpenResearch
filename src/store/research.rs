@@ -11,6 +11,7 @@ use super::{now_ms, Store, StoredRun};
 use crate::error::{anyhow, Result};
 
 mod archive_retention;
+pub use archive_retention::ArchiveGcWindow;
 mod claims;
 mod delivery;
 pub use delivery::{DeliverySnapshot, PreparedDelivery};

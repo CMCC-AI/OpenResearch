@@ -1,7 +1,7 @@
 //! Project-scoped observations and explicitly reviewed, operator-only reclamation.
 use crate::{
     error::{anyhow, Result},
-    store::Store,
+    store::{research::ArchiveGcWindow, Store},
 };
 use clap::{Args, Subcommand};
 
@@ -32,6 +32,12 @@ pub enum StorageCommand {
         /// Fixed Unix millisecond cutoff, at least 24 hours in the past.
         #[arg(long)]
         before: Option<i64>,
+        /// Resume after this catalog cursor; keep the preview's fixed window.
+        #[arg(long, default_value_t = 0)]
+        after: i64,
+        /// Inclusive catalog horizon returned by the first preview.
+        #[arg(long)]
+        through: Option<i64>,
         /// Apply the exact previewHash; operator CLI only, never an agent tool.
         #[arg(long, requires = "before")]
         apply: Option<String>,
@@ -80,24 +86,30 @@ pub async fn run(args: StorageArgs) -> Result<()> {
         StorageCommand::ArchiveGc {
             study,
             before,
+            after,
+            through,
             apply,
         } => {
             let before = before.unwrap_or_else(|| crate::store::now_ms() - 7 * 86_400_000);
+            let window = ArchiveGcWindow {
+                before,
+                after,
+                through,
+            };
             if let Some(token) = apply {
                 if session.is_some() {
                     return Err(anyhow!("Agent 会话不能执行归档回收，请使用独立操作员终端"));
                 }
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &store.research_archive_gc_apply(&project, &study, before, &token)?
-                    )?
-                );
+                let result = store.research_archive_gc_apply(&project, &study, window, &token)?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+                if !result.failed.is_empty() {
+                    return Err(anyhow!("部分归档回收失败，请检查 failed 并重新预览当前页"));
+                }
             } else {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(
-                        &store.research_archive_gc_preview(&project, &study, before)?
+                        &store.research_archive_gc_preview(&project, &study, window)?
                     )?
                 );
             }
