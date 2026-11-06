@@ -32,6 +32,7 @@ mod remote;
 mod store;
 mod telemetry;
 mod updates;
+mod verified_file;
 mod workspace_state;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};

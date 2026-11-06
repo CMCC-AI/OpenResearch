@@ -34,6 +34,17 @@ pub enum MaterialsCommand {
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
+    /// Union confirmed ranges within each task, plan, source and parser view.
+    Coverage {
+        #[arg(long)]
+        package: String,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        study: Option<String>,
+    },
     /// Preview abandoned unsealed uploads; sealed inputs are always retained.
     Gc {
         #[arg(long, default_value_t = 7)]
@@ -108,6 +119,20 @@ pub async fn run(args: MaterialsArgs) -> Result<()> {
             },
             after,
             limit,
+        )?,
+        MaterialsCommand::Coverage {
+            package,
+            source,
+            session,
+            study,
+        } => store.material_read_coverage(
+            &project,
+            &ReadFilter {
+                package: Some(package),
+                source,
+                session,
+                study,
+            },
         )?,
         MaterialsCommand::Gc { days, apply } => {
             if apply && crate::local::chat::launching_chat_session().is_some() {

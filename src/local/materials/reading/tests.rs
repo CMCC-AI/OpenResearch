@@ -326,3 +326,147 @@ async fn material_read_events_keep_notebook_view_lines_and_pdf_failures_distinct
     assert_eq!(receipt["outcome"], "failed");
     assert!(receipt["selection"].is_null());
 }
+
+#[tokio::test]
+async fn material_read_coverage_deduplicates_written_ranges_and_excludes_other_outcomes() {
+    let f = Fixture::new("notes.txt", b"one\ntwo\nthree\nfour\nfive\n");
+    let filter = ReadFilter {
+        package: Some(f.package.id.clone()),
+        ..Default::default()
+    };
+    for (offset, limit) in [(1, 2), (2, 2), (5, 1), (1, 2)] {
+        let result = f.read(offset, limit, None).await.unwrap();
+        crate::commands::materials::write_result(&f.store, "project", &result, Vec::new()).unwrap();
+    }
+    let pending = f.read(4, 1, None).await.unwrap();
+    let failed = f.read(4, 1, None).await.unwrap();
+    f.store
+        .material_read_output(
+            "project",
+            failed["readEventId"].as_str().unwrap(),
+            Some("broken stream"),
+        )
+        .unwrap();
+    assert!(f.read(9, 1, None).await.is_err());
+    let before = f.events();
+    let coverage = f.store.material_read_coverage("project", &filter).unwrap();
+    assert_eq!(coverage["consideredEvents"], 7);
+    assert_eq!(
+        coverage["groups"][0]["ranges"],
+        serde_json::json!([[1, 3], [5, 5]])
+    );
+    assert_eq!(coverage["groups"][0]["coveredLines"], 4);
+    assert_eq!(coverage["groups"][0]["viewTotalLines"], 5);
+    assert_eq!(
+        coverage["groups"][0]["scope"]["view"]["textSha256"],
+        format!("{:x}", Sha256::digest(b"one\ntwo\nthree\nfour\nfive\n"))
+    );
+    for key in ["outputPending", "outputFailed", "readFailed"] {
+        assert_eq!(coverage["excluded"][key], 1);
+    }
+    assert_eq!(
+        f.events(),
+        before,
+        "coverage never writes receipts or gates"
+    );
+    assert!(pending["view"]["parserVersion"].is_null());
+    assert!(f
+        .store
+        .material_read_coverage("project", &ReadFilter::default())
+        .is_err());
+    assert!(f.store.material_read_coverage("other", &filter).is_err());
+}
+
+#[tokio::test]
+async fn material_read_views_keep_legacy_unknown_and_separate_task_plan_and_parser_changes() {
+    let f = Fixture::new("notes.txt", b"one\ntwo\nthree\n");
+    let result = f.read(1, 1, None).await.unwrap();
+    let receipt = f.events()["events"][0]["receipt"].clone();
+    for variant in ["legacy", "parser", "plan", "task", "source", "page"] {
+        let mut receipt = receipt.clone();
+        match variant {
+            "legacy" => {
+                receipt.as_object_mut().unwrap().remove("view");
+            }
+            "parser" => receipt["view"]["producerVersion"] = "next-version".into(),
+            "plan" => receipt["context"]["planVersion"] = 2.into(),
+            "task" => {
+                receipt["context"]["studyId"] = "study".into();
+                receipt["context"]["planVersion"] = 1.into();
+                receipt["context"]["taskId"] = "worker".into();
+                receipt["context"]["taskSessionId"] = "task-session".into();
+            }
+            "source" => receipt["sha256"] = "b".repeat(64).into(),
+            // A PDF version is not enough without an observed executable hash.
+            "page" => {
+                receipt["format"] = "pdf".into();
+                receipt["requestedPage"] = 1.into();
+                receipt["selection"]["page"] = 1.into();
+                receipt["view"]["parser"] = "pdftotext-layout".into();
+                receipt["view"]["parserVersion"] = "22.12.0".into();
+            }
+            _ => unreachable!(),
+        }
+        let receipt: ReadReceipt = serde_json::from_value(receipt).unwrap();
+        let id = f.store.record_material_read(&receipt).unwrap();
+        f.store.material_read_output("project", &id, None).unwrap();
+    }
+    f.store
+        .material_read_output("project", result["readEventId"].as_str().unwrap(), None)
+        .unwrap();
+    let coverage = f
+        .store
+        .material_read_coverage(
+            "project",
+            &ReadFilter {
+                package: Some(f.package.id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(coverage["groups"].as_array().unwrap().len(), 5);
+    assert_eq!(coverage["excluded"]["unknownView"], 2);
+    assert!(coverage["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|g| g["coveredLines"] == 1));
+}
+
+#[tokio::test]
+async fn material_read_views_reject_stale_full_view_before_recording_prepared_replay() {
+    let f = Fixture::new("notes.txt", b"one\ntwo\nthree\n");
+    let result = f.read(1, 1, None).await.unwrap();
+    let mut receipt = f.events()["events"][0]["receipt"].clone();
+    receipt["view"]["textSha256"] = "a".repeat(64).into();
+    let receipt: ReadReceipt = serde_json::from_value(receipt).unwrap();
+    let event = f.store.record_material_read(&receipt).unwrap();
+    f.store
+        .material_read_output("project", &event, None)
+        .unwrap();
+    let citation = f.store.material_citation("project", &event).unwrap();
+    let context = f
+        .store
+        .material_read_context("project", None, &f.package.id)
+        .unwrap();
+    let error = read_expected_at(
+        &f.store,
+        context,
+        ReadRequest {
+            package: f.package.id.clone(),
+            source: f.package.files[0].id.clone(),
+            offset: 1,
+            limit: 1,
+            page: None,
+        },
+        &f.materials,
+        Some(&citation),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("完整视图"));
+    let events = f.events();
+    assert_eq!(events["events"][2]["receipt"]["outcome"], "failed");
+    assert_eq!(events["events"][2]["outputState"], "notApplicable");
+    assert!(result["view"]["textSha256"].is_string());
+}
