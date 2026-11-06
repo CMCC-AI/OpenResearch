@@ -3,7 +3,7 @@
   "tag": "v0.2.19",
   "commit": "1d8a285468aed5d5a1f1ea86ecf6e2f63fcaa8bd",
   "version": "0.2.19",
-  "productVersion": "0.2.23-mobilesci.4",
+  "productVersion": "0.2.23-mobilesci.5",
   "backportTarget": {
     "tag": "v0.2.23",
     "commit": "a92fd471aba91e9bdd14a88e2322ec42f9dfdbdb",
