@@ -31,6 +31,8 @@ mod plane;
 mod remote;
 mod store;
 mod telemetry;
+#[cfg(test)]
+mod test_support;
 mod updates;
 mod verified_file;
 mod workspace_state;
