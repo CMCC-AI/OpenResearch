@@ -3,10 +3,11 @@ import { sidebarClasses } from "../sidebarLayout";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { FolderPlus } from "lucide-react";
-import { listProjectsQuery, getUiStateQuery, listProjectActivityQuery } from "../queries/projects";
+import { listProjectsQuery, listProjectActivityQuery } from "../queries/projects";
 import { listChatSessionsQuery } from "../queries/chat";
 import { useLocale } from "../locale";
-import { parseDestination } from "../workspaceState";
+import { taskLocation } from "../workspaceState";
+import { useSessionNavigation } from "../useSessionNavigation";
 import { deleteChatSession, renameChatSession, setChatSessionArchived, type ChatSession } from "../api";
 import { ProjectInfoCard } from "./ProjectInfoCard";
 import { SessionFilterMenu, SessionRow, type SessionFilter } from "./NativeSidebarRows";
@@ -27,10 +28,10 @@ function storedIds(key: string): string[] {
 
 export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
   const navigate = useNavigate();
+  const sessionNavigation = useSessionNavigation(true);
   useLocale();
   const canPublish = useOptionalAuthSession()?.user?.isAdmin === true;
   const projects = useQuery({ ...listProjectsQuery(true), enabled });
-  const state = useQuery({ ...getUiStateQuery(true), enabled });
   const activity = useQuery({ ...listProjectActivityQuery(true), enabled });
   const [filter, setFilter] = useState<SessionFilter>("active");
   const [grouping, setGrouping] = useState<"projects" | "list">(() => { try { return localStorage.getItem("sidebar-grouping") === "list" ? "list" : "projects"; } catch { return "projects"; } });
@@ -39,12 +40,6 @@ export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
   const [limits, setLimits] = useState<Record<string, number>>({});
   const sorted = [...(projects.data ?? [])].sort((a, b) => Number(pinned.includes(b.id)) - Number(pinned.includes(a.id)) || (activity.data?.find((row) => row.projectId === b.id)?.lastActivityAt ?? b.updatedAt) - (activity.data?.find((row) => row.projectId === a.id)?.lastActivityAt ?? a.updatedAt));
   const sessions = useQueries({ queries: sorted.map((project) => ({ ...listChatSessionsQuery(project.id, true), enabled: enabled && (grouping === "list" || !collapsed.includes(project.id)), refetchInterval: 5000 })) });
-  const remembered = parseDestination((state.data?.workspace?.lastLocation ?? "").split("?")[0]);
-  const projectId = sorted.find((project) => project.id === remembered?.projectId)?.id ?? sorted[0]?.id;
-  const go = (suffix: string, id = projectId) => {
-    if (id) void navigate({ href: `/projects/${encodeURIComponent(id)}/${suffix}` });
-    else void navigate({ to: "/projects", search: { new: true } });
-  };
   const toggleId = (id: string, values: string[], update: (next: string[]) => void, key: string) => {
     const next = values.includes(id) ? values.filter((value) => value !== id) : [...values, id];
     update(next); try { localStorage.setItem(key, JSON.stringify(next)); } catch { /* Preferences are optional. */ }
@@ -55,7 +50,7 @@ export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
   }
   const matching = (rows: ChatSession[]) => rows.filter((session) => isSidebarSession(session) && (filter === "all" || (filter === "archived" ? session.archived : !session.archived))).sort((a, b) => b.updatedAt - a.updatedAt);
   const renderSession = (session: ChatSession) => <SessionRow key={session.id} session={session} active={false} unread={false} busy={session.busy} waiting={false} revealTitle={undefined}
-    onOpen={() => go(`tasks/${encodeURIComponent(session.id)}`, session.projectId)}
+    onOpen={() => sessionNavigation.open(session.projectId, session.id, (pane) => { void navigate({ href: taskLocation(session.projectId, session.id, pane) }); })}
     onRename={(title) => void act(() => renameChatSession(session.id, title, true), session)}
     onSetArchived={(archived) => void act(() => setChatSessionArchived(session.id, archived, true), session)}
     onDelete={() => { if (window.confirm(m.chat_delete_session_confirm({ title: session.title || m.chat_untitled() }))) void act(() => deleteChatSession(session.id, true), session); }} />;

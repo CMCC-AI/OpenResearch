@@ -792,9 +792,7 @@ fn material_cli_coverage_unions_outputs_without_creating_reading_events() {
     assert!(denied.stdout.is_empty());
 }
 
-#[test]
-fn storage_archive_cli_reviews_exact_cutoff_and_denies_agent_mutations() {
-    let sandbox = Sandbox::new();
+fn storage_archive_fixture(sandbox: &Sandbox) -> (rusqlite::Connection, PathBuf, String) {
     let conn = rusqlite::Connection::open(sandbox.root.join("data/orx.db")).unwrap();
     let body = json!({"id":"gc-study","projectId":"project","sessionId":"reader","mode":"team","objective":"synthetic GC fixture","status":"stopped","plans":[],"decisions":[],"claims":[],"createdAt":1,"updatedAt":1});
     conn.execute("INSERT INTO research_studies(id,project_id,session_id,document) VALUES('gc-study','project','reader',?1)",[body.to_string()]).unwrap();
@@ -813,6 +811,13 @@ fn storage_archive_cli_reviews_exact_cutoff_and_denies_agent_mutations() {
         .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 86_400))
         .unwrap();
     conn.execute("INSERT INTO research_archive_objects(study_id,sha256,bytes,manifest_sha256,legacy,created_at) VALUES('gc-study',?1,?2,'synthetic',0,1)",rusqlite::params![hash,bytes.len()]).unwrap();
+    (conn, path, hash)
+}
+
+#[test]
+fn storage_archive_cli_reviews_exact_cutoff_and_denies_agent_mutations() {
+    let sandbox = Sandbox::new();
+    let (_conn, path, hash) = storage_archive_fixture(&sandbox);
     let before_events = sandbox.events();
     let output = sandbox.run(&[
         "storage",
@@ -914,4 +919,147 @@ fn storage_archive_cli_reviews_exact_cutoff_and_denies_agent_mutations() {
     );
     assert!(!path.exists());
     assert_eq!(sandbox.events(), before_events);
+}
+
+#[test]
+fn storage_archive_cli_pins_and_applies_the_reviewed_scan_window() {
+    let sandbox = Sandbox::new();
+    let (conn, first_path, first_hash) = storage_archive_fixture(&sandbox);
+    let preview = sandbox.run(&[
+        "storage",
+        "--project",
+        "project",
+        "archive-gc",
+        "--study",
+        "gc-study",
+    ]);
+    assert!(
+        preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    let first: Value = serde_json::from_slice(&preview.stdout).unwrap();
+    let before = first["before"].to_string();
+    let through = first["through"].to_string();
+    let token = first["previewHash"].as_str().unwrap();
+    let bytes = b"second synthetic archive";
+    let hash = format!("{:x}", Sha256::digest(bytes));
+    let path = first_path.parent().unwrap().join(format!("{hash}.zip"));
+    std::fs::write(&path, bytes).unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(std::fs::metadata(&first_path).unwrap().modified().unwrap())
+        .unwrap();
+    conn.execute("INSERT INTO research_archive_objects(study_id,sha256,bytes,manifest_sha256,legacy,created_at) VALUES('gc-study',?1,?2,'synthetic',0,1)",rusqlite::params![hash,bytes.len()]).unwrap();
+    let changed = sandbox.run(&[
+        "storage",
+        "--project",
+        "project",
+        "archive-gc",
+        "--study",
+        "gc-study",
+        "--before",
+        &before,
+        "--apply",
+        token,
+    ]);
+    assert!(
+        !changed.status.success(),
+        "a changed implicit horizon must invalidate the review token"
+    );
+    assert!(first_path.exists() && path.exists());
+    let applied = sandbox.run(&[
+        "storage",
+        "--project",
+        "project",
+        "archive-gc",
+        "--study",
+        "gc-study",
+        "--before",
+        &before,
+        "--after",
+        "0",
+        "--through",
+        &through,
+        "--apply",
+        token,
+    ]);
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    let report: Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(report["removed"], json!([first_hash]));
+    assert_eq!(
+        report["hasMore"], false,
+        "the fixed window is complete; newer registrations belong to another sweep"
+    );
+    assert!(!first_path.exists());
+    assert!(path.exists());
+    let next_cursor = report["nextCursor"].to_string();
+    let preview = sandbox.run(&[
+        "storage",
+        "--project",
+        "project",
+        "archive-gc",
+        "--study",
+        "gc-study",
+        "--before",
+        &before,
+        "--after",
+        &next_cursor,
+    ]);
+    assert!(preview.status.success());
+    let next: Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert_eq!(next["candidates"][0]["sha256"], hash);
+    let next_through = next["through"].to_string();
+    let next_token = next["previewHash"].as_str().unwrap();
+    let wrong_page = sandbox.run(&[
+        "storage",
+        "--project",
+        "project",
+        "archive-gc",
+        "--study",
+        "gc-study",
+        "--before",
+        &before,
+        "--through",
+        &next_through,
+        "--apply",
+        next_token,
+    ]);
+    assert!(
+        !wrong_page.status.success(),
+        "the page cursor must also match the reviewed token"
+    );
+    assert!(path.exists());
+    let applied = sandbox.run(&[
+        "storage",
+        "--project",
+        "project",
+        "archive-gc",
+        "--study",
+        "gc-study",
+        "--before",
+        &before,
+        "--after",
+        &next_cursor,
+        "--through",
+        &next_through,
+        "--apply",
+        next_token,
+    ]);
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    assert!(!path.exists());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&applied.stdout).unwrap()["removed"],
+        json!([hash])
+    );
 }

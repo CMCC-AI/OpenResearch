@@ -141,9 +141,28 @@ pub(super) fn migrate(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
+/// A bounded catalog window. Keep `before` and `through` for every page;
+/// each page still needs its own reviewed preview token.
+#[derive(Clone, Copy, Debug)]
+pub struct ArchiveGcWindow {
+    pub before: i64,
+    pub after: i64,
+    pub through: Option<i64>,
+}
+impl From<i64> for ArchiveGcWindow {
+    fn from(before: i64) -> Self {
+        Self {
+            before,
+            after: 0,
+            through: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ArchiveCandidate {
+    pub cursor: i64,
     pub sha256: String,
     pub bytes: u64,
     pub modified_at: u64,
@@ -154,6 +173,9 @@ pub struct ArchiveGcPreview {
     pub project_id: String,
     pub study_id: String,
     pub before: i64,
+    pub after: i64,
+    pub through: i64,
+    pub next_cursor: i64,
     pub document_hash: String,
     pub candidates: Vec<ArchiveCandidate>,
     pub preview_hash: String,
@@ -166,6 +188,10 @@ pub struct ArchiveGcPreview {
 #[serde(rename_all = "camelCase")]
 pub struct ArchiveGcResult {
     pub preview_hash: String,
+    pub after: i64,
+    pub through: i64,
+    pub next_cursor: i64,
+    pub has_more: bool,
     pub removed: Vec<String>,
     pub failed: Vec<String>,
     pub logical_bytes_removed: u64,
@@ -324,29 +350,30 @@ impl Store {
         &self,
         project: &str,
         id: &str,
-        before: i64,
+        window: impl Into<ArchiveGcWindow>,
     ) -> Result<ArchiveGcPreview> {
-        self.archive_preview_at(project, id, before, now_ms())
+        self.archive_preview_at(project, id, window, now_ms())
     }
     pub(super) fn archive_preview_at(
         &self,
         project: &str,
         id: &str,
-        before: i64,
+        window: impl Into<ArchiveGcWindow>,
         now: i64,
     ) -> Result<ArchiveGcPreview> {
         let study = self.archive_study(project, id)?;
         let mut lock = self.archive_lock(&study)?;
         let _guard = lock.try_write()?;
-        self.archive_preview_locked(project, id, before, now)
+        self.archive_preview_locked(project, id, window.into(), now)
     }
     fn archive_preview_locked(
         &self,
         project: &str,
         id: &str,
-        before: i64,
+        window: ArchiveGcWindow,
         now: i64,
     ) -> Result<ArchiveGcPreview> {
+        let before = window.before;
         if before <= 0 || before > now.saturating_sub(DAY) {
             return Err(anyhow!("回收截止时间必须至少早于当前时间 24 小时"));
         }
@@ -354,10 +381,22 @@ impl Store {
         let study = self.archive_study(project, id)?;
         self.archive_quiet(&study, now)?;
         let directory = self.archive_directory(&study)?;
+        let maximum: i64 = self.conn.query_row(
+            "SELECT COALESCE(max(seq),0) FROM research_archive_objects WHERE study_id=?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        let through = window.through.unwrap_or(maximum);
+        if window.after < 0 || window.after > through || through > maximum {
+            return Err(anyhow!("归档扫描游标或窗口无效"));
+        }
         let mut preview = ArchiveGcPreview {
             project_id: project.into(),
             study_id: id.into(),
             before,
+            after: window.after,
+            through,
+            next_cursor: window.after,
             document_hash: self.archive_document_hash(id)?,
             candidates: vec![],
             preview_hash: String::new(),
@@ -366,13 +405,15 @@ impl Store {
             has_more: false,
             logical_bytes: 0,
         };
-        let mut stmt=self.conn.prepare("SELECT sha256,bytes,legacy,created_at,(EXISTS(SELECT 1 FROM research_archive_history h WHERE h.study_id=o.study_id AND h.sha256=o.sha256) OR EXISTS(SELECT 1 FROM research_archive_decision_scopes d WHERE d.study_id=o.study_id AND d.scope_hash=o.scope_hash)),EXISTS(SELECT 1 FROM research_archive_gc g WHERE g.study_id=o.study_id AND g.sha256=o.sha256 AND status='planned') FROM research_archive_objects o WHERE study_id=?1 ORDER BY seq LIMIT ?2")?;
-        let mut rows = stmt.query(params![id, SCAN_LIMIT + 1])?;
+        let mut stmt=self.conn.prepare("SELECT sha256,bytes,legacy,created_at,(EXISTS(SELECT 1 FROM research_archive_history h WHERE h.study_id=o.study_id AND h.sha256=o.sha256) OR EXISTS(SELECT 1 FROM research_archive_decision_scopes d WHERE d.study_id=o.study_id AND d.scope_hash=o.scope_hash)),EXISTS(SELECT 1 FROM research_archive_gc g WHERE g.study_id=o.study_id AND g.sha256=o.sha256 AND status='planned'),seq FROM research_archive_objects o WHERE study_id=?1 AND seq>?2 AND seq<=?3 ORDER BY seq LIMIT ?4")?;
+        let mut rows = stmt.query(params![id, window.after, through, SCAN_LIMIT + 1])?;
         while let Some(row) = rows.next()? {
             if preview.scanned == SCAN_LIMIT {
                 preview.has_more = true;
                 break;
             }
+            let previous = preview.next_cursor;
+            preview.next_cursor = row.get(6)?;
             preview.scanned += 1;
             let hash: String = row.get(0)?;
             let bytes: u64 = row.get(1)?;
@@ -402,14 +443,20 @@ impl Store {
                 continue;
             }
             file.check_unchanged()?;
+            if bytes > BATCH_BYTES {
+                return Err(anyhow!("单个归档超出回收批次预算，请核查登记"));
+            }
             if preview.candidates.len() == BATCH_LIMIT
                 || bytes > BATCH_BYTES - preview.logical_bytes
             {
                 preview.has_more = true;
+                preview.next_cursor = previous;
+                preview.scanned -= 1;
                 break;
             }
             preview.logical_bytes += bytes;
             preview.candidates.push(ArchiveCandidate {
+                cursor: preview.next_cursor,
                 sha256: hash,
                 bytes,
                 modified_at: modified,
@@ -421,7 +468,7 @@ impl Store {
         // A fixed cutoff makes the review token stable; observations/timings are
         // excluded. Recheck document, object metadata and file hash before unlink.
         preview.preview_hash = digest(&serde_json::to_vec(
-            &serde_json::json!({"policy":1,"project":project,"study":id,"before":before,"document":preview.document_hash,"candidates":preview.candidates}),
+            &serde_json::json!({"policy":2,"project":project,"study":id,"before":before,"after":window.after,"through":through,"nextCursor":preview.next_cursor,"document":preview.document_hash,"candidates":preview.candidates}),
         )?);
         Ok(preview)
     }
@@ -429,16 +476,16 @@ impl Store {
         &self,
         project: &str,
         id: &str,
-        before: i64,
+        window: impl Into<ArchiveGcWindow>,
         expected: &str,
     ) -> Result<ArchiveGcResult> {
-        self.archive_apply_at(project, id, before, expected, now_ms(), |_| Ok(()))
+        self.archive_apply_at(project, id, window, expected, now_ms(), |_| Ok(()))
     }
     pub(super) fn archive_apply_at(
         &self,
         project: &str,
         id: &str,
-        before: i64,
+        window: impl Into<ArchiveGcWindow>,
         expected: &str,
         now: i64,
         mut checkpoint: impl FnMut(&str) -> Result<()>,
@@ -446,7 +493,9 @@ impl Store {
         let study = self.archive_study(project, id)?;
         let mut lock = self.archive_lock(&study)?;
         let _guard = lock.try_write()?;
-        let preview = self.archive_preview_locked(project, id, before, now)?;
+        let window = window.into();
+        let before = window.before;
+        let preview = self.archive_preview_locked(project, id, window, now)?;
         if preview.preview_hash != expected {
             return Err(anyhow!("回收预览已变化，请重新检查预览"));
         }
@@ -490,6 +539,10 @@ impl Store {
         checkpoint("planned")?;
         let mut result = ArchiveGcResult {
             preview_hash: expected.into(),
+            after: preview.after,
+            through: preview.through,
+            next_cursor: preview.next_cursor,
+            has_more: preview.has_more,
             removed: vec![],
             failed: vec![],
             logical_bytes_removed: 0,
@@ -510,6 +563,8 @@ impl Store {
                 "removed"
             } else {
                 result.failed.push(candidate.sha256.clone());
+                result.next_cursor = preview.after;
+                result.has_more = true;
                 "failed"
             };
             self.conn.execute("UPDATE research_archive_gc SET status=?2,completed_at=?3 WHERE id=?1 AND status='planned'",params![intent,status,now_ms()])?;

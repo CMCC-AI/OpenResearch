@@ -1307,54 +1307,18 @@ pub(crate) fn capture_experiment_started(kind: &str, local: bool, target: Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard};
-
-    // Serializes the telemetry tests below, which mutate the process-global
-    // variables in OPT_VARS. IMPORTANT: this lock
-    // is telemetry-module-local — it does NOT protect against a test in ANOTHER
-    // module reading those same vars concurrently under the default
-    // multithreaded test runner. Today no other test reads them at runtime (the
-    // k8s/slurm/ssh tests are pure functions; localbox uses a disjoint
-    // ORX_DATA_DIR), so there's no race. Any NEW test elsewhere that touches
-    // these vars or config_dir() must isolate itself (e.g. its own temp
-    // XDG_CONFIG_HOME) — it cannot rely on this lock.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    struct EnvGuard {
-        _lock: MutexGuard<'static, ()>,
-        saved: Vec<(&'static str, Option<String>)>,
-    }
-
-    impl EnvGuard {
-        fn new(vars: &[&'static str]) -> Self {
-            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let saved = vars
-                .iter()
-                .map(|k| (*k, std::env::var(k).ok()))
-                .collect::<Vec<_>>();
-            for k in vars {
-                std::env::remove_var(k);
-            }
-            EnvGuard { _lock: lock, saved }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            for (k, v) in &self.saved {
-                match v {
-                    Some(val) => std::env::set_var(k, val),
-                    None => std::env::remove_var(k),
-                }
-            }
-        }
-    }
-
+    // A module-local env mutex cannot protect unrelated config/SSH readers.
+    // Each environment-changing test runs alone in a child process instead.
     const OPT_VARS: &[&str] = &["XDG_CONFIG_HOME", "ORX_TELEMETRY_ENV", "ORX_TELEMETRY_HOST"];
 
     #[test]
     fn environment_policy_is_fail_closed_and_downgrade_only() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::environment_policy_is_fail_closed_and_downgrade_only",
+            OPT_VARS,
+        ) {
+            return;
+        }
         assert!(matches!(
             environment_disabled_reason_for("development", None),
             Some(DisabledReason::DevelopmentBuild)
@@ -1379,7 +1343,9 @@ mod tests {
 
     #[test]
     fn persisted_opt_out() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated("telemetry::tests::persisted_opt_out", OPT_VARS) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-persist-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
@@ -1407,7 +1373,12 @@ mod tests {
 
     #[test]
     fn opt_out_preserves_consent_and_never_consumes_temporary_files() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::opt_out_preserves_consent_and_never_consumes_temporary_files",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-prune-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         std::fs::create_dir_all(outbox_dir()).unwrap();
@@ -1455,7 +1426,12 @@ mod tests {
         // so field-disjoint writes accumulate rather than overwrite. This is the
         // in-process analog of the cross-process flock guarantee that a
         // concurrent install-id write can't drop a persisted opt-out.
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::disjoint_mutations_merge_and_dont_clobber",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-merge-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
@@ -1478,7 +1454,12 @@ mod tests {
         // settings.json telemetry owns. Both must go through mutate_settings so a
         // data-dir write preserves install_id/telemetry_disabled and vice-versa —
         // otherwise a completed data-dir move reverts on the next CLI run.
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::data_dir_and_telemetry_fields_dont_clobber_each_other",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-datadir-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
@@ -1515,7 +1496,12 @@ mod tests {
         // Same single-writer contract: the onboarding profile persists in the
         // telemetry-owned settings.json, so a profile write must preserve
         // install_id/telemetry_disabled and vice-versa.
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::profile_fields_dont_clobber_siblings",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-profile-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
@@ -1582,7 +1568,12 @@ mod tests {
     fn disabled_lit_sources_roundtrip_preserves_siblings() {
         // Same single-writer contract: the disabled-source set persists in the
         // telemetry-owned settings.json, so its write must preserve siblings.
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::disabled_lit_sources_roundtrip_preserves_siblings",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-lit-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
@@ -1616,7 +1607,12 @@ mod tests {
     #[test]
     fn ssh_settings_preserve_siblings_and_reject_corrupt_config() {
         use crate::config::SshHostSettings;
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::ssh_settings_preserve_siblings_and_reject_corrupt_config",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-ssh-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         assert!(ssh_settings().unwrap().hosts.is_empty());
@@ -1654,7 +1650,12 @@ mod tests {
         // Same single-writer contract as data_dir: the Compute settings persist
         // in the telemetry-owned settings.json, so a default-target write must
         // preserve install_id/telemetry_disabled/data_dir and vice-versa.
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::compute_default_roundtrip_preserves_siblings",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-compute-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
@@ -1701,7 +1702,12 @@ mod tests {
 
     #[test]
     fn github_project_default_roundtrip_preserves_siblings() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::github_project_default_roundtrip_preserves_siblings",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-github-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
@@ -1722,7 +1728,9 @@ mod tests {
 
     #[test]
     fn install_id_is_stable() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated("telemetry::tests::install_id_is_stable", OPT_VARS) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-id-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
@@ -1737,7 +1745,12 @@ mod tests {
 
     #[test]
     fn standard_payload_shape_excludes_sensitive_fields() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::standard_payload_shape_excludes_sensitive_fields",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-shape-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         let payload = build_payload(
@@ -1780,7 +1793,12 @@ mod tests {
 
     #[test]
     fn extra_cannot_overwrite_base_context() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::extra_cannot_overwrite_base_context",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-extra-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         // A caller passing base keys in `extra` must not corrupt identity/context.
@@ -1808,7 +1826,12 @@ mod tests {
 
     #[test]
     fn consent_identity_is_phantom_free() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::consent_identity_is_phantom_free",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-cid-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
@@ -1836,7 +1859,12 @@ mod tests {
 
     #[test]
     fn first_action_claims_each_surface_once() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::first_action_claims_each_surface_once",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-first-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
@@ -1855,10 +1883,22 @@ mod tests {
 
     #[test]
     fn a_disabled_first_action_does_not_burn_the_surface() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::a_disabled_first_action_does_not_burn_the_surface",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-burn-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
-        std::env::set_var("ORX_NO_TELEMETRY", "1");
+        // This is the actual CLI flag. An ORX_NO_TELEMETRY environment
+        // variable is not read by production policy and did not test opt-out.
+        set_flag(true);
+        assert!(flag());
+        assert!(matches!(
+            preference_disabled_reason(flag()),
+            Some(DisabledReason::Flag)
+        ));
 
         capture_first_action("project", "typed_prompt");
         assert!(
@@ -1867,13 +1907,23 @@ mod tests {
                 .unwrap_or(true),
             "an opt-out must leave the slot free for a later opt-in"
         );
+        assert!(pending().lock().unwrap().is_empty());
+        assert!(
+            claim_first_action_surface("project"),
+            "the slot remains claimable"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn dimension_events_reject_values_outside_the_allowlists() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::dimension_events_reject_values_outside_the_allowlists",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-vocab-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
@@ -1892,7 +1942,12 @@ mod tests {
 
     #[test]
     fn every_event_name_is_cli_prefixed() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::every_event_name_is_cli_prefixed",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-prefix-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         // Event names remain stable across the first-party migration.
@@ -1931,7 +1986,12 @@ mod tests {
 
     #[test]
     fn payloads_reuse_the_supplied_client_event_id() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::payloads_reuse_the_supplied_client_event_id",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-event-id-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         let event_id = uuid::Uuid::new_v4();
@@ -1980,7 +2040,12 @@ mod tests {
     async fn sender_posts_the_first_party_endpoint() {
         use tokio::io::AsyncWriteExt;
 
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::sender_posts_the_first_party_endpoint",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         std::env::set_var("ORX_TELEMETRY_HOST", format!("http://{address}"));
@@ -2012,7 +2077,12 @@ mod tests {
     async fn outbox_deletes_terminal_responses_and_retries_transient_responses() {
         use tokio::io::AsyncWriteExt;
 
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::outbox_deletes_terminal_responses_and_retries_transient_responses",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-outbox-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2054,7 +2124,12 @@ mod tests {
     async fn consent_retry_bypasses_persisted_opt_out() {
         use tokio::io::AsyncWriteExt;
 
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::consent_retry_bypasses_persisted_opt_out",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir =
             std::env::temp_dir().join(format!("orx-tel-consent-retry-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
@@ -2225,7 +2300,12 @@ mod tests {
 
     #[test]
     fn telemetry_host_override_only_accepts_loopback_origins() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::telemetry_host_override_only_accepts_loopback_origins",
+            OPT_VARS,
+        ) {
+            return;
+        }
         std::env::set_var("ORX_TELEMETRY_HOST", "http://127.0.0.1:4000");
         assert_eq!(telemetry_host(), "http://127.0.0.1:4000");
         std::env::set_var("ORX_TELEMETRY_HOST", "https://example.com");
@@ -2236,7 +2316,12 @@ mod tests {
 
     #[test]
     fn payload_context_carries_the_dashboard_locale_once_reported() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::payload_context_carries_the_dashboard_locale_once_reported",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-locale-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         let before = build_payload("app_started", "did", json!({}));
@@ -2249,7 +2334,12 @@ mod tests {
 
     #[test]
     fn consent_payload_carries_agreed_flag() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::consent_payload_carries_agreed_flag",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-agreed-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         set_dashboard_locale("es").unwrap();
@@ -2264,7 +2354,12 @@ mod tests {
 
     #[test]
     fn product_event_payloads_have_expected_properties() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::product_event_payloads_have_expected_properties",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-product-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
@@ -2359,7 +2454,12 @@ mod tests {
 
     #[test]
     fn up_launch_modes_follow_the_dashboard_code_paths() {
-        let _g = EnvGuard::new(&["SSH_CONNECTION", "SSH_TTY", "SSH_CLIENT"]);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::up_launch_modes_follow_the_dashboard_code_paths",
+            &["SSH_CONNECTION", "SSH_TTY", "SSH_CLIENT"],
+        ) {
+            return;
+        }
         let args = |argv: &[&str]| {
             use clap::Parser;
             match crate::Cli::parse_from(argv).command {
@@ -2386,7 +2486,12 @@ mod tests {
 
     #[tokio::test]
     async fn environment_disabled_consent_never_creates_an_install_id() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::environment_disabled_consent_never_creates_an_install_id",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-consent-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         if build_channel() == "production" {
@@ -2406,7 +2511,12 @@ mod tests {
 
     #[tokio::test]
     async fn environment_disabled_all_capture_paths_stay_inert() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::environment_disabled_all_capture_paths_stay_inert",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-inert-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         if build_channel() == "production" {
@@ -2451,7 +2561,12 @@ mod tests {
 
     #[test]
     fn corrupt_settings_fails_safe_and_is_not_clobbered() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::corrupt_settings_fails_safe_and_is_not_clobbered",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-corrupt-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
@@ -2481,7 +2596,12 @@ mod tests {
 
     #[tokio::test]
     async fn capture_respects_the_embedded_build_channel() {
-        let _g = EnvGuard::new(OPT_VARS);
+        if crate::test_support::run_isolated(
+            "telemetry::tests::capture_respects_the_embedded_build_channel",
+            OPT_VARS,
+        ) {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("orx-tel-flush-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         // Dead endpoint: the send will fail fast; we only care about registration

@@ -17,7 +17,7 @@ export default function MaterialWorkspace({ sessionId, requestedId }: { sessionI
   if (!id) return <EmptyMaterials />;
   return <div className="flex h-full min-h-0 flex-col">
     {ids.length > 1 && <label className="flex shrink-0 items-center gap-2 border-b border-border p-3 text-sm">导入批次<select aria-label="选择材料导入批次" className="min-w-0 flex-1 rounded-md border border-border bg-background p-1.5" value={id} onChange={event => setSelection({ requested: requestedId, id: event.target.value })}>{ids.map((value, index) => <option key={value} value={value}>批次 {ids.length - index} · {value.slice(0, 8)}</option>)}</select></label>}
-    <div className="min-h-0 flex-1"><MaterialReaderPane key={id} id={id} /></div>
+    <div className="min-h-0 flex-1"><MaterialReaderPane key={id} id={id} sessionId={sessionId} /></div>
   </div>;
 }
 

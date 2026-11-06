@@ -11,7 +11,8 @@
     "lint:i18n": "node scripts/check-i18n.mjs",
     "lint:styles": "node scripts/check-styles.mjs",
     "test": "node --test --experimental-strip-types tests/*.test.mjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:browser": "node --experimental-strip-types ../scripts/test-workspace-browser.mjs"
   },
   "dependencies": {
     "@clo/react-markdown": "jsr:1.1.1",
@@ -43,6 +44,7 @@
     "unified": "11.0.5"
   },
   "devDependencies": {
+    "@playwright/test": "1.65.0",
     "@tailwindcss/vite": "4.3.3",
     "@tanstack/react-query-devtools": "^5.102.0",
     "@tanstack/router-cli": "^1.167.33",

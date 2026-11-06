@@ -20,6 +20,24 @@ export async function captureNativeProject(projectId: string, progress: (message
     workspace.responses[key] = value;
     return value;
   }
+  // Older executors have no range endpoint. Preserve that absence rather
+  // than fabricate an empty summary or query the viewer's executor later.
+  const missingCoverage = new Set<string>();
+  async function captureCoverage(id: string, files: { id: string }[]) {
+    const base = `/api/materials/${encodeURIComponent(id)}/coverage`;
+    if (missingCoverage.has(base) || base in workspace.responses) return;
+    progress("正在复制材料读取范围记录…");
+    for (const path of [base, ...files.map(file => `${base}?source=${encodeURIComponent(file.id)}`)]) {
+      const response = await fetch(path, { credentials: "include", cache: "no-store" });
+      if (response.status === 404 && path === base) {
+        const detail = await response.json().catch(() => null);
+        if (detail?.error === "route not found") { missingCoverage.add(base); return; }
+        throw new Error("材料读取范围资源已丢失，不能省略发布。");
+      }
+      if (!response.ok) throw new Error(`材料读取范围未复制完整（${response.status}），请缩小记录范围或检查后端后重试。`);
+      workspace.responses[canonicalRequest(path)] = await response.json();
+    }
+  }
   async function asset(path: string, filename: string) {
     const key = canonicalRequest(path);
     if (workspace.assets[key]) return;
@@ -93,6 +111,7 @@ export async function captureNativeProject(projectId: string, progress: (message
     for (const message of messages.messages) for (const part of message.parts) if (part.type === "material" && part.text) {
       const material = await read<{ id: string; files: { id: string; path: string }[] }>(`/api/materials/${encodeURIComponent(part.text)}`);
       for (const file of material.files) await asset(`/api/materials/${encodeURIComponent(material.id)}/${encodeURIComponent(file.id)}/download`, file.path.split("/").at(-1) || file.id);
+      await captureCoverage(material.id, material.files);
     }
   }
   const experiments=(await read<{experiments:Experiment[]}>(`/api/projects/${projectId}/experiments`)).experiments;
@@ -106,5 +125,14 @@ export async function captureNativeProject(projectId: string, progress: (message
   }
   const after=await fetch(`/api/chat/sessions?projectId=${projectId}`,{credentials:"include",cache:"no-store"}).then((response)=>response.json()) as typeof before;
   if(JSON.stringify(after)!==JSON.stringify(before))throw new Error("复制期间原项目会话发生变化，请重试。");
+  // All package summaries must overlap one stable interval, including CLI
+  // reads that do not update a chat's timestamp. Ignore observation timestamps.
+  for (const [path, captured] of Object.entries(workspace.responses)) {
+    if (!/^\/api\/materials\/[^/]+\/coverage$/.test(path)) continue;
+    const response = await fetch(path, { credentials: "include", cache: "no-store" });
+    if (!response.ok) throw new Error("材料读取范围复核失败，不能省略发布。");
+    const latest = await response.json();
+    if (JSON.stringify(latest.coverage) !== JSON.stringify((captured as { coverage: unknown }).coverage)) throw new Error("复制期间材料读取记录发生变化，请重试。");
+  }
   return {workspace,assets};
 }

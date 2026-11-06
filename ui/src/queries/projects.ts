@@ -21,9 +21,9 @@ export const getUiStateQuery = (personal = false) => queryOptions({
   staleTime: 300_000,
 });
 
-export const getProjectUiStateQuery = (projectId: string) => queryOptions({
-  queryKey: workspaceKey("getProjectUiState", projectId),
-  queryFn: ({ signal }) => api.getProjectUiState(projectId, signal),
+export const getProjectUiStateQuery = (projectId: string, personal = false) => queryOptions({
+  queryKey: workspaceKeyFor(personal, "getProjectUiState", projectId),
+  queryFn: ({ signal }) => api.getProjectUiState(projectId, signal, personal),
   staleTime: 300_000,
 });
 

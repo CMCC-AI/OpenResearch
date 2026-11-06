@@ -226,8 +226,8 @@ export const DEFAULT_AUTONOMY: Autonomy = "agentic";
 
 export const getUiState = (signal?: AbortSignal, personal = false) => get<UiState>("/api/settings/ui-state", signal, personal);
 
-export const getProjectUiState = (projectId: string, signal?: AbortSignal) =>
-  get<ProjectWorkspace | null>(`/api/projects/${encodeURIComponent(projectId)}/ui-state`, signal);
+export const getProjectUiState = (projectId: string, signal?: AbortSignal, personal = false) =>
+  get<ProjectWorkspace | null>(`/api/projects/${encodeURIComponent(projectId)}/ui-state`, signal, personal);
 
 export const saveProjectUiState = async (projectId: string, state: ProjectWorkspace, keepalive = false) => {
   const url = `/api/projects/${encodeURIComponent(projectId)}/ui-state`;

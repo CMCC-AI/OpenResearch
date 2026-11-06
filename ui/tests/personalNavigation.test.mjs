@@ -124,7 +124,7 @@ test("the original sidebar renders project menus and new-chat controls while a c
       }),
     },
     "../queries/projects": f.projects, "../queries/chat": f.chats, "../locale": { useLocale: () => "zh-CN" },
-    "../workspaceState": { parseDestination: () => null }, "../api": f.api, "./ProjectInfoCard": card,
+    "../workspaceState": {}, "../useSessionNavigation": { useSessionNavigation: () => ({ open: () => {} }) }, "../api": f.api, "./ProjectInfoCard": card,
     "./NativeSidebarRows": { SessionFilterMenu: () => null, SessionRow: (props) => {
       assert.ok(!props.readOnly, "personal chats must retain their action menu");
       return React.createElement("span", {}, props.session.title);
@@ -143,4 +143,99 @@ test("the original sidebar renders project menus and new-chat controls while a c
     assert.ok(html.includes("projects_home_delete_project_action"));
     assert.equal(html.includes("Case"), false);
   } finally { f.cleanup(); }
+});
+
+function navigationFixture(f, cached) {
+  const commits=[],errors=[],notifications=[],effects=[];
+  const routeListeners=new Set();
+  const router={state:{location:{href:"/cases/case-1"}},subscribe:(_event,callback)=>{routeListeners.add(callback);return()=>routeListeners.delete(callback);}};
+  const pure=load("../src/sessionNavigation.ts",{"./workspaceState": {getTaskWorkspace:(doc,key)=>doc&&Object.hasOwn(doc.tasks,key)?doc.tasks[key]:undefined}});
+  let epoch=0;
+  const hook=load("../src/useSessionNavigation.ts",{
+    react:{useMemo:fn=>fn(),useLayoutEffect:fn=>effects.push(fn)},
+    "@tanstack/react-router":{useRouter:()=>router},
+    sonner:{toast:{loading:()=>{notifications.push("loading");return 1;},dismiss:()=>notifications.push("dismiss")}},
+    "./api":f.api,"./readOnlyApi":readOnlyApi,"./queries/client":f.client,"./queries/projects":f.projects,
+    "./useProjectWorkspace":{getCachedProjectWorkspace:()=>cached,getProjectWorkspaceEpoch:()=>epoch},
+    "./sessionNavigation":pure,"./components/ui/Toast":{showAlert:message=>errors.push(message)},"./paraglide/messages.js":{m:messages},
+  });
+  const nav=hook.useSessionNavigation(true);
+  const cleanups=effects.map(fn=>fn());
+  return {nav,commits,errors,notifications,router,open:()=>nav.open("source","s",pane=>commits.push(pane)),changeEpoch:()=>epoch++,route:()=>{router.state.location.href="/projects/other/tasks/new";routeListeners.forEach(fn=>fn());},cleanup:()=>cleanups.forEach(fn=>fn())};
+}
+const settleNavigation=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
+
+test("project workspace reads use personal transport and keys even for the case's source project",async()=>{
+  const f=fixture(),originalFetch=globalThis.fetch;
+  const own={version:1,tasks:{s:{active:{kind:"home",view:"materials"}}}};
+  const requests=[];
+  globalThis.fetch=async(url,init)=>{requests.push([url,init.signal]);return Response.json(own);};
+  try{
+    const options=f.projects.getProjectUiStateQuery("source",true);
+    assert.deepEqual(options.queryKey,["workspace",f.client.getWorkspaceGeneration(),"getProjectUiState","source"]);
+    assert.deepEqual(await f.client.queryClient.fetchQuery(options),own);
+    await assert.rejects(f.client.queryClient.fetchQuery(f.projects.getProjectUiStateQuery("source")), error => error.status === 404);
+    assert.equal(requests.length,1,"case-only request must not fall back to private data");
+    assert.equal(requests[0][0],"/api/projects/source/ui-state");
+  }finally{globalThis.fetch=originalFetch;f.cleanup();}
+});
+
+test("personal session restore ignores a case's live cache and preserves its distinct query cache",async()=>{
+  const f=fixture(),originalFetch=globalThis.fetch;
+  const caseDoc={version:1,tasks:{s:{active:{kind:"side",sessionId:"case-side"}}}};
+  const ownDoc={version:1,tasks:{s:{active:{kind:"home",view:"research"}}}};
+  const caseKey=f.projects.getProjectUiStateQuery("source").queryKey;
+  f.client.queryClient.setQueryData(caseKey,caseDoc);
+  const n=navigationFixture(f,caseDoc);
+  globalThis.fetch=async()=>Response.json(ownDoc);
+  try{
+    n.open();await settleNavigation();
+    assert.deepEqual(n.commits,[ownDoc.tasks.s.active]);
+    assert.deepEqual(f.client.queryClient.getQueryData(caseKey),caseDoc);
+    assert.deepEqual(f.client.queryClient.getQueryData(f.projects.getProjectUiStateQuery("source",true).queryKey),ownDoc);
+    assert.deepEqual(n.notifications,["loading","dismiss"]);
+  }finally{n.cleanup();globalThis.fetch=originalFetch;f.cleanup();}
+});
+for(const cancel of ["account","route","unmount","epoch"]){
+  test(`personal restore rejects stale data after ${cancel}`,async()=>{
+    const f=fixture(),originalFetch=globalThis.fetch,n=navigationFixture(f);
+    let finish,signal;
+    globalThis.fetch=(_url,init)=>{signal=init.signal;return new Promise(resolve=>{finish=resolve;});};
+    try{
+      const oldKey=f.projects.getProjectUiStateQuery("source",true).queryKey;
+      n.open();await settleNavigation();
+      if(cancel==="account")f.client.activateWorkspace("second-account");
+      if(cancel==="route")n.route();
+      if(cancel==="unmount")n.cleanup();
+      if(cancel==="epoch")n.changeEpoch();
+      if(cancel!=="epoch")assert.equal(signal.aborted,true);
+      finish(Response.json({version:1,tasks:{s:{active:{kind:"side",sessionId:"stale"}}}}));await settleNavigation();
+      assert.deepEqual(n.commits,[]);assert.deepEqual(n.errors,[]);
+      assert.equal(f.client.queryClient.getQueryData(oldKey),undefined);
+      assert.equal(n.notifications.at(-1),"dismiss");
+    }finally{n.cleanup();globalThis.fetch=originalFetch;f.cleanup();}
+  });
+}
+
+test("the real home SessionRow opens the personal session with its saved pane",async()=>{
+  const React=await import("react"),{renderToStaticMarkup}=await import("react-dom/server");
+  const f=fixture(),originalFetch=globalThis.fetch,n=navigationFixture(f);
+  const workspace=await import("../src/workspaceState.ts");
+  const routes=[];let open;
+  const project={id:"source",name:"Personal source",updatedAt:1,repoPath:"/mine"};
+  const {ResearchProjectNavigation}=load("../src/components/ResearchNavigation.tsx",{
+    "../sidebarLayout":{sidebarClasses:{}},"@tanstack/react-router":{useNavigate:()=>value=>routes.push(value)},
+    "@tanstack/react-query":{useQuery:({queryKey})=>({data:queryKey[2]==="listProjects"?[project]:[],isPending:false}),useQueries:()=>[{data:[{id:"s",projectId:"source",title:"Personal session",updatedAt:1}]}]},
+    "../queries/projects":f.projects,"../queries/chat":f.chats,"../locale":{useLocale:()=>"en"},
+    "../workspaceState":workspace,"../useSessionNavigation":{useSessionNavigation:personal=>{assert.equal(personal,true);return n.nav;}},
+    "../api":f.api,"./ProjectInfoCard":{ProjectInfoCard:()=>null},"./NativeSidebarRows":{SessionFilterMenu:()=>null,SessionRow:props=>{open=props.onOpen;return React.createElement("span",{},props.session.title);}},
+    "../paraglide/messages.js":{m:messages},"../researchSessions":{isSidebarSession:()=>true},"../product/AuthSession":{useOptionalAuthSession:()=>({user:{}})},
+    "./ui":{Button:({children})=>children,IconButton:({children})=>children,showAlert:()=>{}},
+  });
+  globalThis.fetch=async()=>Response.json({version:1,tasks:{s:{active:{kind:"side",sessionId:"own-side"}}}});
+  try{
+    renderToStaticMarkup(React.createElement(ResearchProjectNavigation,{enabled:true}));assert.equal(typeof open,"function");
+    open();await settleNavigation();assert.deepEqual(routes,[{href:workspace.taskLocation("source","s",{kind:"side",sessionId:"own-side"})}]);
+    assert.equal(routes[0].href.startsWith("/projects/"),true);
+  }finally{n.cleanup();globalThis.fetch=originalFetch;f.cleanup();}
 });

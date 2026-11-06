@@ -382,6 +382,12 @@ mod antigravity_tests {
 
     #[tokio::test]
     async fn bypass_env_var_allows_immediately() {
+        if crate::test_support::run_isolated(
+            "commands::mcp_gate::antigravity_tests::bypass_env_var_allows_immediately",
+            &["ORX_AGY_GATE"],
+        ) {
+            return;
+        }
         std::env::set_var("ORX_AGY_GATE", "bypass");
         let res = antigravity_decision("invalid-json").await.unwrap();
         assert_eq!(res["decision"], "allow");
