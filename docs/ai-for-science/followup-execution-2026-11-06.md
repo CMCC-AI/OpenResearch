@@ -1,17 +1,19 @@
 # 后续实施台账（2026-11-06）
 
-## 最新状态（2026-11-07 01:41，上海时间）
+## 最新状态（2026-11-07 02:21，上海时间）
 
 已发布源码仍为 `.23-mobilesci.4`（`d959cf82`）；本轮未合入新候选、发布新版本或切换生产。用户主工作区的 AGENTS、来源图标和 ui/dist 未纳入候选，330 项指纹复核一致。下面的历史记录保留当时失败/待验收状态，当前结论以本节及其引用的最终提交为准。
 
 | 批次 | 最终候选与当前证据 | 剩余门禁 |
 | --- | --- | --- |
-| [#6 工作区恢复](https://github.com/CMCC-AI/OpenResearch/pull/6) | `a3f48a2f`；580 项 UI 与构建通过；第二轮 Chromium 窄屏通过、宽屏业务步骤执行完毕，但在途 PUT 清理失败 | 修正为释放屏障后等待路由回调和保存结束；[CI 42263417663](https://github.com/CMCC-AI/OpenResearch/actions/runs/42263417663) 正在运行，宽屏整项及完整 CI 待通过 |
+| [#6 工作区恢复](https://github.com/CMCC-AI/OpenResearch/pull/6) | `5dfd582b`；580 项 UI、8 项心跳与 65 项检查点通过，Clippy 零警告；第三轮窄屏通过，宽屏及 Windows 测试失败已定位并修正 | 取消的路由也必须结束处理；租约夹具准备前置，不放宽超时；[CI 42269493163](https://github.com/CMCC-AI/OpenResearch/actions/runs/42269493163) 正在运行，真实浏览器及跨平台待通过 |
 | [#7 归档续页](https://github.com/CMCC-AI/OpenResearch/pull/7) | `199892a7`；1472 项单元、28 项普通 CLI 及非 macOS 检查通过 | 第三轮 macOS 仍未分配 runner 即取消，注解为 ARM 容量不足；暂不重复重试 |
 | [#8 环境测试隔离](https://github.com/CMCC-AI/OpenResearch/pull/8) | `de3c898c`；六项环境测试隔离，1467 项单元、27 项普通 CLI 八线程通过，Linux 主检查通过 | macOS 同样因 ARM 容量未分配而取消，完整 CI 未通过 |
-| [#9 遥测测试隔离](https://github.com/CMCC-AI/OpenResearch/pull/9) | `b15e706a`；另 31 项环境测试隔离，真实 CLI 退出标记断言；定向 48 项、全量 1467/27 项通过，Clippy 零警告 | [CI 42261951279](https://github.com/CMCC-AI/OpenResearch/actions/runs/42261951279) 正在运行；依赖 #8，合入前需调整并核验产品目标分支与最终检查 |
+| [#9 遥测测试隔离](https://github.com/CMCC-AI/OpenResearch/pull/9) | `b15e706a`；另 31 项环境测试隔离，真实 CLI 退出标记断言；定向 48 项、全量 1467/27 项通过，Clippy 零警告 | [CI 42261951279](https://github.com/CMCC-AI/OpenResearch/actions/runs/42261951279) 非 macOS 检查通过，macOS 未分配即取消，聚合跳过；依赖 #8，合入前需调整并核验产品目标分支与最终检查 |
 
 #6 第二轮的截图/JSON 已实际检查：暖/冷切换、历史/刷新、取消/重试、关闭/研究 pane、案例隔离及未保存取消离开各步骤均无步骤错误，整体仍因 `Route is already handled` 失败。新候选使用 Playwright 的 wait 清理行为保留回调错误，另确认保存状态清空；不能将修正意图或局部通过当整项验收。
+
+第三轮 trace 显示宽屏实际阻塞在“取消慢读”：request.failure 条件使已取消请求没有继续处理，Playwright 未结束的处理承诺导致 wait 清理挂起。新提交始终调用 Route.continue。Windows 的三秒门禁观察同时包含了数据库连接准备，现仅前置夹具准备并保留真实续租/取消断言；本地回归已通过，但仍待本候选 Windows CI。
 
 macOS 架构选择已异步询问：保留 ARM 等待资源，或改用 Intel 执行相同检查并明确失去本批 ARM 原生验证。收到选择前保持原架构和所有门禁，不改变检查以绕过失败。Mac 再次核验仍锁屏且浏览器连接不可用，生产入口尚未实测；生产替换前还须重新核验活动、挂载、配置归一、恢复和组件身份。
 
