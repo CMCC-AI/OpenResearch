@@ -43,4 +43,10 @@ orx storage --project PROJECT archive-recover --study STUDY
 
 本批不是总配额治理、材料/Run GC、历史研究文档分页或科学指标实现。默认保留全部观测快照会持续占用空间；放宽保留必须另行设计审计、引用和恢复协议。跨进程锁为协作协议，不能防止主机管理员绕过锁直接改动文件；实际写入和删除前仍校验文件身份、时间和内容。
 
-验证结果在最终回归后补入；源码完成、CI 合入、发行和生产上线分别记账。
+本地最终回归 1467 项单元及 27 项普通 CLI 通过；13 项既有单元忽略与 1 项外部真实 PDF 忽略未计通过。新增 11 项存储和 1 项 CLI 回归，覆盖历史审批指针丢失、旧写入器、跨连接竞争、共享锁生命周期、后代租约、路径链接、哈希变化、两处中断和 Agent 权限。全目标 Clippy 零警告、Rust/Windows launcher 格式及 8 项版本/归档/发行证据检查通过。
+
+固定源码 `792fc9ddf17f1a17a5931327c9f539b5fe8cf142` 的完整 [CI 42215810593](https://github.com/CMCC-AI/OpenResearch/actions/runs/42215810593) attempt 1 成功；Linux 双架构、macOS、Windows、平台、执行器、版本及三系统源码归档一致性门禁均完成，Linux/macOS 另执行真实 PDF。PR 的 [Release 检查](https://github.com/CMCC-AI/OpenResearch/actions/runs/42215810322) 成功是 PR 门禁，不是发布了新版本。[PR #4](https://github.com/CMCC-AI/OpenResearch/pull/4) 合入提交为 `12f5d00395928991b46772738ad3a642e173b4f4`。
+
+开发中迁移索引顺序错误导致一次完整运行失败并被终止；随后纠正并复跑，又发现旧错误提示关键词兼容性断言不匹配。最终修正提示、补齐历史审批范围保护后从最终代码完整通过；没有将这些中间失败计作成功。原始日志保留在 `/tmp/mobilesci-archive-{full-tests,full-tests-final,verified-full,tests-final,clippy-verified,release-checks}.log`。
+
+本批已合入，未另行发行或部署，也未在生产执行 GC。源码完成、CI 合入、发行和生产上线分别记账。
