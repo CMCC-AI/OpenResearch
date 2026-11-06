@@ -1,16 +1,11 @@
 #[test]
 fn coverage_http_preserves_scope_unions_and_receipts() {
-    const CHILD: &str = "ORX_TEST_COVERAGE_HTTP";
     const TEST: &str = "commands::up::materials::tests::coverage_http_preserves_scope_unions_and_receipts";
-    if std::env::var_os(CHILD).is_none() {
-        let root = std::env::temp_dir().join(format!("orx-coverage-http-{}", uuid::Uuid::new_v4()));
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", TEST, "--nocapture"])
-            .env(CHILD, "1").env("ORX_DATA_DIR", &root).output().unwrap();
-        let _ = std::fs::remove_dir_all(root);
-        assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    if crate::test_support::run_isolated(TEST, &["ORX_DATA_DIR"]) {
         return;
     }
+    let root = crate::local::git::TemporaryDirectory::new("orx-coverage-http").unwrap();
+    std::env::set_var("ORX_DATA_DIR", root.path());
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
         let store = Store::open().unwrap();
         for id in ["project", "other"] {
