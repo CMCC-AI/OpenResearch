@@ -1,3 +1,4 @@
+import { useSessionNavigation } from "./useSessionNavigation";
 import { MaterialNavigationContext } from "./materialNavigation";
 import { mainSessionId } from "./researchSessions";
 import { lazy, Suspense } from "react";
@@ -65,7 +66,6 @@ import {
   defaultTaskWorkspace,
 } from "./workspaceTabs";
 import {
-  getCachedProjectWorkspace,
   inheritNewTaskWorkspace,
   useProjectWorkspace,
 } from "./useProjectWorkspace";
@@ -715,6 +715,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     }
     previousTreeScope.current = { projectId, taskId: activeSessionId, scope: effectiveScope };
   }, [workspaceReady, experimentDataReady, destination?.kind, projectId, activeSessionId, effectiveScope]);
+  const sessionNavigation = useSessionNavigation();
   const onActiveSessionChange = useCallback((sessionId: string | null, options?: { replace?: boolean; projectId?: string; preservePane?: boolean }) => {
     // `/resume` reaches chats in other projects; everything below is per-project.
     const target = options?.projectId ?? projectId;
@@ -726,11 +727,16 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
         inheritNewTaskWorkspace(target, sessionId);
       }
     }
-    const saved = getTaskWorkspace(getCachedProjectWorkspace(target), sessionId ?? "new");
-    const remembered = saved ? saved.active : (isDemoProjectId(target) ? defaultTaskWorkspace(sessionId ?? undefined, tourCompletedRef.current === false)?.active : undefined);
-    const nextPane = sameProject && (options?.preservePane || (options?.replace && sessionId && activeSessionId === null)) ? navigationRef.current.pane : remembered;
-    void router.navigate({ href: taskLocation(target, sessionId, nextPane), replace: sameProject && options?.replace });
-  }, [router, projectId, activeSessionId, captureWorkspace]);
+    const commit = (nextPane: Pane | null | undefined) => {
+      void router.navigate({ href: taskLocation(target, sessionId, nextPane), replace: sameProject && options?.replace });
+    };
+    if (sameProject && (options?.preservePane || (options?.replace && sessionId && activeSessionId === null))) {
+      sessionNavigation.cancel();
+      commit(navigationRef.current.pane);
+    } else {
+      sessionNavigation.open(target, sessionId, commit, isDemoProjectId(target) ? defaultTaskWorkspace(sessionId ?? undefined, tourCompletedRef.current === false)?.active : undefined);
+    }
+  }, [router, projectId, activeSessionId, captureWorkspace, sessionNavigation]);
   useEffect(() => {
     if (workspaceReady && destination?.kind !== "task" && !rememberedSessionRef.current && workspaceRef.current.lastTaskId && sessions?.includes(workspaceRef.current.lastTaskId)) {
       rememberedSessionRef.current = workspaceRef.current.lastTaskId;

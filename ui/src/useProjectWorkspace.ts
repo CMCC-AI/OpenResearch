@@ -31,6 +31,7 @@ import {
 } from "./workspaceTabs";
 
 let epoch = 0;
+export const getProjectWorkspaceEpoch = () => epoch;
 const writers = new Map<string, ReturnType<typeof createWorkspaceWriter<ProjectWorkspace>>>();
 const saveErrors = new Map<string, string>();
 const errorListeners = new Set<() => void>();

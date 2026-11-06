@@ -16,3 +16,7 @@
 源码候选为 `1cdd4cc2490a2af730766529160bc670f2cfe984`，来自独立 `fix/upstream-test-fixtures` 分支。本地 jobs 定向回归 92 项通过、2 项既有忽略，包含实际 SSH 取消进程组和 local_job_lifecycle；全目标 Clippy 零警告、格式及真实上游基线检查通过。日志为 `/tmp/mobilesci-v024-native-tests.log` 与 `/tmp/mobilesci-v024-native-clippy.log`。[完整模拟合并 CI 42216431258](https://github.com/CMCC-AI/OpenResearch/actions/runs/42216431258) attempt 1 全部成功，包含 Windows/Linux/macOS 的原生回归与构建、平台、执行器、版本和源码归档一致性；Linux/macOS 另执行真实 PDF。[PR #5](https://github.com/CMCC-AI/OpenResearch/pull/5) 合入提交为 `6cab6f90454341aa6134b5d0e43a4fa5fabcccd4`。本批是已合入的两项 .24 选择性回移，未另行发行，不计入 `.4` 的已发布回移数量。两个临时本地/远端分支已清理，代码由产品分支保留。
 
 P1 #872 跨项目工作区恢复仍未实施，需要保留 MobileSci 路由、保存 pane、未保存离开保护及只读案例边界，重建隔离工作树的 ui/dist 并验证实际切换入口。#869 先复现本地逐轮渲染模型，不机械引入上游不同函数；技能编辑与桌面专项保持独立验收。新 OAuth/Vercel 后端/官方自动更新和 dev.ts 不整批引入。
+
+## 工作区恢复候选
+
+#872 已在隔离 `fix/workspace-session-restore` 分支实施，并扩展到首页入口与私人/案例读取隔离。完整 UI 580 项、类型、样式、语言与生产构建通过，资源已重建；实际浏览器及新候选自身 CI 仍需验收，尚不计为已合入/已发行。实现依据和边界见[工作区恢复记录](workspace-session-restore-2026-11-06.md)。

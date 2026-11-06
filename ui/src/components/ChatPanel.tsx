@@ -6335,8 +6335,7 @@ export function ChatPanel({
                       waiting={waitingSessions.has(s.id)}
                       revealTitle={titleReveals.get(s.id)}
                       onOpen={() => {
-                        if (project.id === projectId) onActiveSessionChange(s.id);
-                        else void navigate({ to: "/projects/$projectId/tasks/$sessionId", params: { projectId: project.id, sessionId: s.id } });
+                        onActiveSessionChange(s.id, { projectId: project.id });
                         if (project.id === DEMO_PROJECT_ID) {
                           markDemoSessionRead(s.id);
                           const experiment = DEMO_EXPERIMENT_LABELS[s.id];
