@@ -72,7 +72,7 @@ test('actual app restores warm/cold workspaces, history, case boundaries and uns
       await openSession(page, 1); await expectSession(page, 1, materials);
       release.resolve(); await completed.promise;
       await expectSession(page, 1, materials);
-    } finally { release.resolve(); await page.unroute(pattern); }
+    } finally { release.resolve(); await page.unrouteAll({ behavior: 'wait' }); }
   });
   await test.step('a failed cold read stays on home and a new click retries', async () => {
     await page.goto('/projects');
@@ -87,7 +87,7 @@ test('actual app restores warm/cold workspaces, history, case boundaries and uns
       await expect(page.getByText('Synthetic workspace read failure', { exact: true })).toBeVisible();
       expect(new URL(page.url()).pathname).toBe('/projects');
       await openSession(page, 0); await expectSession(page, 0, side);
-    } finally { await page.unroute(pattern); }
+    } finally { await page.unrouteAll({ behavior: 'wait' }); }
   });
   await test.step('closed and research panes retain their distinct states', async () => {
     await openSession(page, 2); await expectSession(page, 2, null);
@@ -131,7 +131,11 @@ test('actual app restores warm/cold workspaces, history, case boundaries and uns
       await expect(page).toHaveURL(url => url.pathname === `/projects/${project.id}/tasks/${project.main}`);
       await expect(editor).toHaveValue('Synthetic unsaved browser draft\n');
       await page.screenshot({ path: info.outputPath('unsaved-navigation-cancelled.png'), fullPage: true });
-    } finally { release.resolve(); await page.unroute(pattern); }
+    } finally {
+      release.resolve();
+      await page.unrouteAll({ behavior: 'wait' });
+    }
+    await expect(page.locator('.file-view-save-status')).toHaveCount(0);
   });
   expect(errors).toEqual([]);
 });
