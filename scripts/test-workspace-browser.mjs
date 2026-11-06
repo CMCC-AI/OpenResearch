@@ -136,7 +136,7 @@ with sqlite3.connect(sys.argv[1]) as c:
   for (const offset of ['1', '2']) await run(path.join(registry, 'cargo-target/debug/orx'), ['--no-telemetry', 'materials', '--project', readingProject.id, 'read', readingMaterial.id, readingManifest.files[0].id, '--offset', offset, '--limit', '2'], cliEnv)
   execFileSync('python3', ['-c', `import sqlite3,sys,json
 with sqlite3.connect(sys.argv[1]) as c:
- c.execute("INSERT INTO chat_messages(id,session_id,role,parts_json,created_at) VALUES('browser-reading-upload',?,'user',?,3)",(sys.argv[2],json.dumps([{'type':'material','text':sys.argv[3]}])))
+ c.execute("INSERT INTO chat_messages(id,session_id,role,parts_json,created_at) VALUES('browser-reading-upload',?,'user',?,3)",(sys.argv[2],json.dumps([{'id':'browser-reading-material-part','type':'material','text':sys.argv[3]}])))
  c.execute("UPDATE chat_sessions SET active_leaf_id='browser-reading-upload' WHERE id=?",(sys.argv[2],))`, path.join(data, 'orx.db'), readingProject.main, readingMaterial.id])
   const readingPane = { kind: 'home', view: 'materials' }
   await post(`/api/projects/${readingProject.id}/ui-state`, { version: 1, lastTaskId: readingProject.main, lastLocation: `/projects/${readingProject.id}/tasks/${readingProject.main}`, tasks: { [readingProject.main]: { tabs: [readingPane], active: readingPane, previewKey: null, history: [], expanded: {}, scroll: {}, sourceModes: {}, filesView: 'files', scope: 'project', panelMax: false } } })
@@ -158,6 +158,7 @@ with sqlite3.connect(sys.argv[1]) as c:
   caseState.tasks[projects[0].main].tabs = [{ kind: 'home', view: 'research' }]
   detail = { id: 'browser-case', title: 'Synthetic browser case', summary: 'Isolated acceptance fixture', category: 'test', status: 'published', revision: 1, sort_order: 0, created_at: '2026-11-07T00:00:00Z', updated_at: '2026-11-07T00:00:00Z', published_at: '2026-11-07T00:00:00Z', source_project_id: projects[0].id, files: [], snapshot: { sessions: [], workspace: captured.workspace } }
   const readingCapture = await module.captureNativeProject(readingProject.id)
+  if (!readingCapture.workspace.responses[`/api/materials/${readingMaterial.id}/coverage`]) throw new Error('Reading fixture must capture the actual uploaded material and its CLI ranges')
   readingAssets = readingCapture.assets
   readingDetail = { ...detail, id: 'browser-reading-case', title: 'Synthetic reading case', source_project_id: readingProject.id, snapshot: { sessions: [], workspace: readingCapture.workspace } }
   const fixtureFile = path.join(artifacts, 'fixture.json')
