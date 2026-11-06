@@ -96,7 +96,7 @@ async fn reported_version(mut command: tokio::process::Command) -> Option<String
         .ok()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
