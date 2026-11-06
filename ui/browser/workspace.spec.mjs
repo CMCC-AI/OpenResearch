@@ -10,10 +10,17 @@ const paneOf = page => { const value = new URL(page.url()).searchParams.get('pan
 const pathFor = (project, pane) => `/projects/${project.id}/tasks/${project.main}${pane ? `?pane=${encodeURIComponent(JSON.stringify(pane))}` : ''}`;
 async function openSession(page, index) {
   const row = page.getByRole('button', { name: new RegExp(fixture.projects[index].title) }).first();
+  const history = page.getByRole('button', { name: '展开历史项目', exact: true });
+  const sidebar = page.getByRole('button', { name: 'Show sidebar', exact: true });
+  // Auth and sidebar loading are asynchronous. Wait for a usable navigation
+  // control before deciding whether the narrow/collapsed sidebar needs opening.
+  await expect.poll(async () => await row.isVisible() || await history.isVisible() || await sidebar.isVisible()).toBe(true);
+  // Vite intentionally opens query devtools. Close it through its actual UI;
+  // forcing the row click would hide an interception failure and skip the user flow.
+  const devtools = page.getByRole('button', { name: 'Close tanstack query devtools', exact: true });
+  if (await devtools.isVisible()) await devtools.click();
   if (!await row.isVisible()) {
-    const history = page.getByRole('button', { name: '展开历史项目', exact: true });
     if (await history.isVisible()) await history.click();
-    const sidebar = page.getByRole('button', { name: 'Show sidebar', exact: true });
     if (await sidebar.isVisible()) await sidebar.click();
   }
   await expect(row).toBeVisible();
