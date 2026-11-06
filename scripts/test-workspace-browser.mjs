@@ -80,7 +80,9 @@ try {
   origin = `http://localhost:${state.uiPort}`
   const backend = `http://127.0.0.1:${state.backendPort}`
   const data = path.join(registry, state.slotKey)
-  execFileSync('python3', ['-c', "import sqlite3,sys; c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True); assert c.execute('SELECT count(*) FROM local_projects').fetchone()[0]==0 and c.execute('SELECT count(*) FROM chat_sessions').fetchone()[0]==0, 'Refuse a nonempty database'", path.join(data, 'orx.db')])
+  // An existing-file connection can participate in the live WAL's shared
+  // memory; query_only forbids SQL writes during the emptiness/audit checks.
+  execFileSync('python3', ['-c', "import sqlite3,sys; c=sqlite3.connect('file:'+sys.argv[1]+'?mode=rw',uri=True); c.execute('PRAGMA query_only=ON'); assert c.execute('SELECT count(*) FROM local_projects').fetchone()[0]==0 and c.execute('SELECT count(*) FROM chat_sessions').fetchone()[0]==0, 'Refuse a nonempty database'", path.join(data, 'orx.db')])
   const repos = mkdtempSync(path.join(data, 'browser-fixture-'))
   for (const project of projects) {
     project.repo = path.join(repos, project.id)
@@ -138,7 +140,8 @@ with sqlite3.connect(sys.argv[1]) as c:
   await run(process.execPath, [cli, 'test', '--config', path.join(ui, 'playwright.config.mjs')], { ...environment, ORX_BROWSER_BASE_URL: origin, ORX_BROWSER_FIXTURE_FILE: fixtureFile })
   if (unexpected.length) throw new Error(`Unexpected fixture account requests: ${unexpected.join(', ')}`)
   const audit = JSON.parse(execFileSync('python3', ['-c', `import sqlite3,sys,json
-with sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True) as c:
+with sqlite3.connect('file:'+sys.argv[1]+'?mode=rw',uri=True) as c:
+ c.execute('PRAGMA query_only=ON')
  print(json.dumps({t:c.execute('SELECT count(*) FROM '+t).fetchone()[0] for t in ['runs','chat_messages','chat_queued_messages','chat_spawns','material_read_events']}))`, path.join(data, 'orx.db')], { encoding: 'utf8' }))
   if (Object.values(audit).some(value => value !== 0)) throw new Error(`Unexpected agent/run/material mutations: ${JSON.stringify(audit)}`)
   writeFileSync(path.join(artifacts, 'acceptance.json'), JSON.stringify({ revision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(), mode: 'synthetic account; actual app and isolated native backend', slot: state.slotKey, audit, productionDeployed: false }, null, 2))
