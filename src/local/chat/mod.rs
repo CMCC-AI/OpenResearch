@@ -11148,38 +11148,44 @@ mod session_env_tests {
         in_local_session, launching_chat_harness, trusted_up_port, CHAT_HARNESS_ENV,
         CHAT_SESSION_ENV, LOCAL_SESSION_ENV, UP_PORT_ENV,
     };
-    use std::sync::{Mutex, MutexGuard};
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    struct EnvGuard {
-        _lock: MutexGuard<'static, ()>,
-        saved: Vec<(&'static str, Option<String>)>,
-    }
-
-    impl EnvGuard {
-        fn new(vars: &[&'static str]) -> Self {
-            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let saved = vars
-                .iter()
-                .map(|k| (*k, std::env::var(k).ok()))
-                .collect::<Vec<_>>();
-            for k in vars {
-                std::env::remove_var(k);
-            }
-            EnvGuard { _lock: lock, saved }
+    /// A module-local mutex cannot protect unrelated tests reading the same
+    /// process environment. Re-execute just this test with a clean child
+    /// environment; only that child may change session attribution variables.
+    fn run_in_isolated_process(name: &str) -> bool {
+        const CHILD: &str = "ORX_SESSION_ENV_TEST_CHILD";
+        if std::env::var(CHILD).as_deref() == Ok(name) {
+            return false;
         }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            for (k, v) in &self.saved {
-                match v {
-                    Some(val) => std::env::set_var(k, val),
-                    None => std::env::remove_var(k),
-                }
-            }
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                &format!("local::chat::session_env_tests::{name}"),
+                "--test-threads=1",
+                "--nocapture",
+                "--color=never",
+            ])
+            .env(CHILD, name);
+        for key in [
+            CHAT_HARNESS_ENV,
+            CHAT_SESSION_ENV,
+            LOCAL_SESSION_ENV,
+            UP_PORT_ENV,
+            "ORX_INVOCATION_CONTEXT",
+        ] {
+            command.env_remove(key);
         }
+        let output = command
+            .output()
+            .expect("start isolated session environment test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed; 0 failed"),
+            "isolated {name} failed or did not execute: {}\n{stdout}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+        );
+        true
     }
 
     /// The cloud box's opencode plugin exports CHAT_SESSION_ENV for experiment
@@ -11187,7 +11193,9 @@ mod session_env_tests {
     /// `orx skill` serves the Local skill bodies on every cloud box.
     #[test]
     fn chat_session_alone_is_not_a_local_session() {
-        let _guard = EnvGuard::new(&[CHAT_HARNESS_ENV, CHAT_SESSION_ENV, LOCAL_SESSION_ENV]);
+        if run_in_isolated_process("chat_session_alone_is_not_a_local_session") {
+            return;
+        }
 
         std::env::set_var(CHAT_SESSION_ENV, "ses_cloud_box");
         assert!(!in_local_session());
@@ -11203,7 +11211,9 @@ mod session_env_tests {
     /// its own environment.
     #[test]
     fn forwarded_runs_ignore_the_servers_launch_environment() {
-        let _guard = EnvGuard::new(&[CHAT_SESSION_ENV, "ORX_INVOCATION_CONTEXT"]);
+        if run_in_isolated_process("forwarded_runs_ignore_the_servers_launch_environment") {
+            return;
+        }
         std::env::set_var(CHAT_SESSION_ENV, "server-session");
         std::env::set_var(
             "ORX_INVOCATION_CONTEXT",
@@ -11225,14 +11235,18 @@ mod session_env_tests {
 
     #[test]
     fn empty_local_marker_is_not_a_local_session() {
-        let _guard = EnvGuard::new(&[CHAT_SESSION_ENV, LOCAL_SESSION_ENV]);
+        if run_in_isolated_process("empty_local_marker_is_not_a_local_session") {
+            return;
+        }
         std::env::set_var(LOCAL_SESSION_ENV, "");
         assert!(!in_local_session());
     }
 
     #[test]
     fn local_session_requires_a_valid_trusted_port() {
-        let _guard = EnvGuard::new(&[LOCAL_SESSION_ENV, UP_PORT_ENV]);
+        if run_in_isolated_process("local_session_requires_a_valid_trusted_port") {
+            return;
+        }
         std::env::set_var(LOCAL_SESSION_ENV, "1");
         assert!(trusted_up_port().is_err());
 
