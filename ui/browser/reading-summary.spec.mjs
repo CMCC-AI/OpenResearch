@@ -40,6 +40,10 @@ test('real uploaded material shows stable CLI unions and case copies never fall 
   }).toBeLessThanOrEqual(391);
   await expect.poll(() => page.locator('body').evaluate(element => element.scrollWidth)).toBeLessThanOrEqual(391);
   await page.screenshot({ path:info.outputPath('reading-summary-case-narrow.png'),fullPage:true });
+  const confirmedRange = section.getByText('文本解析视图：已确认输出 3 / 4 行', { exact:true });
+  await confirmedRange.scrollIntoViewIfNeeded();
+  await expect(confirmedRange).toBeInViewport({ ratio:1 });
+  await page.screenshot({ path:info.outputPath('reading-summary-case-narrow-range.png'),fullPage:true });
   expect(privateRequests).toBe(0);
   await page.unrouteAll({ behavior:'wait' });
 });
