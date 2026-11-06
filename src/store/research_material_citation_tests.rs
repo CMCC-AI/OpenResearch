@@ -36,6 +36,7 @@ fn material_citation_fixture() -> (TestDir, Store, Study, PathBuf, String) {
         selection: Some(
             serde_json::json!({"page":null,"offset":1,"lineCount":1,"totalLines":2,"nextOffset":2,"contentBytes":content.len(),"contentSha256":digest(content.as_bytes())}),
         ),
+        view: None,
         error: None,
         started_at: 1,
         recorded_at: 2,

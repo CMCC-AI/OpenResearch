@@ -64,6 +64,7 @@ async fn read_expected_at(
         verified: false,
         outcome: "failed".into(),
         selection: None,
+        view: None,
         error: None,
         started_at: crate::store::now_ms(),
         recorded_at: 0,
@@ -80,6 +81,15 @@ async fn read_expected_at(
     let result = result.and_then(|result| {
         if let Some(expected) = expected {
             verify_citation(expected, &receipt.format, &result)?;
+            if let Some(view) =
+                store.material_read_view(&receipt.context.project_id, &expected.read_event_id)?
+            {
+                if serde_json::to_value(view)? != result["view"] {
+                    return Err(anyhow!(
+                        "解析器或完整视图与引用回执不一致，不能返回旧引用选区"
+                    ));
+                }
+            }
         }
         Ok(result)
     });
@@ -89,6 +99,7 @@ async fn read_expected_at(
             let content = result["content"]
                 .as_str()
                 .ok_or_else(|| anyhow!("读取结果缺少正文"))?;
+            receipt.view = Some(serde_json::from_value(result["view"].clone())?);
             receipt.outcome = "prepared".into();
             receipt.selection = Some(
                 serde_json::json!({"page":result["page"],"offset":result["offset"],"lineCount":result["lineCount"],"totalLines":result["totalLines"],"nextOffset":result["nextOffset"],"contentBytes":content.len(),"contentSha256":format!("{:x}",Sha256::digest(content.as_bytes()))}),
