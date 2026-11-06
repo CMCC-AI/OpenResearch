@@ -83,6 +83,8 @@ enum Command {
     Research(commands::research::ResearchArgs),
     /// Read uploaded research materials in any work mode.
     Materials(commands::materials::MaterialsArgs),
+    /// Observe local storage without authorizing reclamation.
+    Storage(commands::storage::StorageArgs),
 
     /// List a project's runs.
     Runs(RunsArgs),
@@ -1256,6 +1258,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Agent(_) => "agent",
         Command::Research(_) => "research",
         Command::Materials(_) => "materials",
+        Command::Storage(_) => "storage",
         Command::Runs(_) => "runs",
         Command::Logs(_) => "logs",
         Command::CreateExperiment(_) => "create-experiment",
@@ -1289,7 +1292,7 @@ fn command_name(command: &Command) -> &'static str {
 
 async fn dispatch(command: Command) -> error::Result<()> {
     let uses_lock = command_uses_lifecycle_lock(&command);
-    if uses_lock {
+    if uses_lock && !matches!(&command, Command::Storage(_)) {
         local::storage::prepare().await?;
     }
     let lifecycle_lock = uses_lock.then(store::open_lifecycle_lock).transpose()?;
@@ -1307,6 +1310,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Agent(args) => commands::agent::run(args).await,
         Command::Research(args) => commands::research::run(args).await,
         Command::Materials(args) => commands::materials::run(args).await,
+        Command::Storage(args) => commands::storage::run(args).await,
         Command::Runs(args) => commands::runs::run(args).await,
         Command::Logs(args) => commands::logs::run(args).await,
         Command::CreateExperiment(args) => commands::create_experiment::run(args).await,

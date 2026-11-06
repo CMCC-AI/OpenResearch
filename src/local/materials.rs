@@ -40,6 +40,10 @@ pub struct Package {
     pub files: Vec<Entry>,
 }
 
+pub(crate) fn storage_limit() -> Result<u64> {
+    storage::limit()
+}
+
 pub fn root() -> PathBuf {
     crate::store::data_dir().join("materials")
 }
