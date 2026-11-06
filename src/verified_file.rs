@@ -52,6 +52,21 @@ impl FileSource {
         self.stamp.bytes
     }
 
+    /// The owned descriptor retains this lease through `into_file` and streaming.
+    pub(crate) fn lock_shared(&self) -> Result<()> {
+        self.file
+            .try_lock_shared()
+            .map_err(|e| anyhow!("文件正在回收或无法锁定: {e}"))?;
+        Ok(())
+    }
+
+    pub(crate) fn lock_exclusive(&self) -> Result<()> {
+        self.file
+            .try_lock()
+            .map_err(|e| anyhow!("文件正在使用或无法锁定: {e}"))?;
+        Ok(())
+    }
+
     /// One extra byte detects growth without following an indefinitely appended file.
     pub(crate) fn reader(&mut self) -> Take<&mut File> {
         (&mut self.file).take(self.stamp.bytes.saturating_add(1))

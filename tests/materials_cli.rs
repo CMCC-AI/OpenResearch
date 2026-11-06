@@ -707,8 +707,8 @@ fn storage_cli_observes_project_bytes_without_exposing_other_materials_or_collec
     );
     assert_eq!(report["deliveryBundlesSubset"]["regularFileBytes"], 16);
     assert_eq!(
-        report["archiveRetention"]["allCachedArchivesProtected"],
-        true
+        report["archiveRetention"]["automaticDeletionEnabled"],
+        false
     );
     assert_eq!(report["archiveRetention"]["deletionCandidates"], json!([]));
     assert!(!String::from_utf8_lossy(&output.stdout).contains("foreign-content"));
@@ -790,4 +790,128 @@ fn material_cli_coverage_unions_outputs_without_creating_reading_events() {
         .unwrap();
     assert!(!denied.status.success());
     assert!(denied.stdout.is_empty());
+}
+
+#[test]
+fn storage_archive_cli_reviews_exact_cutoff_and_denies_agent_mutations() {
+    let sandbox = Sandbox::new();
+    let conn = rusqlite::Connection::open(sandbox.root.join("data/orx.db")).unwrap();
+    let body = json!({"id":"gc-study","projectId":"project","sessionId":"reader","mode":"team","objective":"synthetic GC fixture","status":"stopped","plans":[],"decisions":[],"claims":[],"createdAt":1,"updatedAt":1});
+    conn.execute("INSERT INTO research_studies(id,project_id,session_id,document) VALUES('gc-study','project','reader',?1)",[body.to_string()]).unwrap();
+    let bytes = b"synthetic unused archive";
+    let hash = format!("{:x}", Sha256::digest(bytes));
+    let directory = sandbox
+        .root
+        .join("data/files/p/research/.delivery-bundles/gc-study");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(format!("{hash}.zip"));
+    std::fs::write(&path, bytes).unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 86_400))
+        .unwrap();
+    conn.execute("INSERT INTO research_archive_objects(study_id,sha256,bytes,manifest_sha256,legacy,created_at) VALUES('gc-study',?1,?2,'synthetic',0,1)",rusqlite::params![hash,bytes.len()]).unwrap();
+    let before_events = sandbox.events();
+    let output = sandbox.run(&[
+        "storage",
+        "--project",
+        "project",
+        "archive-gc",
+        "--study",
+        "gc-study",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let preview: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(preview["candidates"].as_array().unwrap().len(), 1);
+    let before = preview["before"].to_string();
+    let token = preview["previewHash"].as_str().unwrap();
+    for session in ["reader", "missing"] {
+        for command in [
+            vec![
+                "storage",
+                "--project",
+                "project",
+                "archive-gc",
+                "--study",
+                "gc-study",
+                "--before",
+                &before,
+                "--apply",
+                token,
+            ],
+            vec![
+                "storage",
+                "--project",
+                "project",
+                "archive-recover",
+                "--study",
+                "gc-study",
+            ],
+        ] {
+            let output = sandbox
+                .command()
+                .env("ORX_CHAT_SESSION_ID", session)
+                .args(command)
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+        }
+    }
+    let missing_cutoff = sandbox.run(&[
+        "storage",
+        "--project",
+        "project",
+        "archive-gc",
+        "--study",
+        "gc-study",
+        "--apply",
+        token,
+    ]);
+    assert!(!missing_cutoff.status.success());
+    assert!(path.exists());
+    let listed = sandbox.run(&[
+        "storage",
+        "--project",
+        "project",
+        "archives",
+        "--study",
+        "gc-study",
+        "--limit",
+        "1",
+    ]);
+    assert!(listed.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&listed.stdout).unwrap()["items"][0]["sha256"],
+        hash
+    );
+    let output = sandbox.run(&[
+        "storage",
+        "--project",
+        "project",
+        "archive-gc",
+        "--study",
+        "gc-study",
+        "--before",
+        &before,
+        "--apply",
+        token,
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["removed"],
+        json!([hash])
+    );
+    assert!(!path.exists());
+    assert_eq!(sandbox.events(), before_events);
 }

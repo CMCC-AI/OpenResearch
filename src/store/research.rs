@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use super::{now_ms, Store, StoredRun};
 use crate::error::{anyhow, Result};
 
+mod archive_retention;
 mod claims;
 mod delivery;
 pub use delivery::{DeliverySnapshot, PreparedDelivery};
@@ -568,6 +569,7 @@ pub(super) fn migrate(conn: &rusqlite::Connection) -> Result<()> {
     claims::migrate(conn)?;
     material_citations::migrate(conn)?;
     delivery::migrate(conn)?;
+    archive_retention::migrate(conn)?;
     conn.execute_batch(&format!(
         "CREATE INDEX IF NOT EXISTS idx_research_studies_active ON research_studies(id) WHERE {ACTIVE_STUDY_FILTER}"
     ))?;
@@ -3031,6 +3033,7 @@ mod tests {
     include!("research_material_citation_tests.rs");
     include!("research_delivery_tests.rs");
     include!("research_delivery_snapshot_tests.rs");
+    include!("research_archive_retention_tests.rs");
     include!("research_material_tests.rs");
     include!("research_lifecycle_tests.rs");
     include!("research_file_tests.rs");

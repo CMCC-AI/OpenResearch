@@ -97,7 +97,7 @@ fn scan(path: &Path, depth: usize, budget: &mut Budget) -> Usage {
     }
     result
 }
-fn single_component(value: &str) -> bool {
+pub(super) fn single_component(value: &str) -> bool {
     !value.is_empty()
         && !value.contains('\\')
         && Path::new(value).components().count() == 1
@@ -228,8 +228,8 @@ impl Store {
             "projectMetadata":{"readEvents":events,"receiptJsonBytes":receipt_bytes,"studies":studies,"studyJsonBytes":document_bytes},
             "sharedExecutorDatabase":shared,
             "scanBudget":{"visitedEntries":budget.entries,"maximumEntries":budget.maximum,"maximumDepth":64,"budgetMs":3000},
-            "archiveRetention":{"currentDescriptorCount":current.len(),"referenceScanComplete":references_complete,"allCachedArchivesProtected":true,"deletionCandidates":[]},
-            "meaning":"观测普通文件的逻辑字节数，不是物理磁盘占用；目录扫描预算为 100000 次、64 层、3 秒，按条目检查；未完成项是下界，链接不跟随。材料限额属于执行器，当前项目占用不是执行器剩余额度。数据库文件属于整个私人执行器，不能按项目相加；交付包已包含于项目文件，不能重复相加。历史审批归档未完整登记，所有缓存 ZIP 保留，本报告不授权回收。扫描与文件写入可并发，数值不是配额准入快照。"}),
+            "archiveRetention":{"currentDescriptorCount":current.len(),"referenceScanComplete":references_complete,"automaticDeletionEnabled":false,"unknownFilesProtected":true,"snapshotPolicy":"all-observed-snapshots","deletionCandidates":[]},
+            "meaning":"观测普通文件的逻辑字节数，不是物理磁盘占用；目录扫描预算为 100000 次、64 层、3 秒，按条目检查；未完成项是下界，链接不跟随。材料限额属于执行器，当前项目占用不是执行器剩余额度。数据库文件属于整个私人执行器，不能按项目相加；交付包已包含于项目文件，不能重复相加。所有已观测交付快照及未登记 ZIP 保留；本报告不授权回收，闲置准备包须经独立 archive-gc 预览和人工执行。扫描与文件写入可并发，数值不是配额准入快照。"}),
         )
     }
 }
