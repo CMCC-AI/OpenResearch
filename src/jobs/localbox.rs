@@ -524,7 +524,14 @@ mod tests {
 
     #[test]
     fn local_job_lifecycle() {
-        // The only test that touches ORX_DATA_DIR, so the global env is safe.
+        // Other tests can read the store's data dir without taking a local
+        // lock. Exercise this lifecycle with its real env in a private process.
+        if crate::test_support::run_isolated(
+            "jobs::localbox::tests::local_job_lifecycle",
+            &["ORX_DATA_DIR"],
+        ) {
+            return;
+        }
         let base = std::env::temp_dir().join(format!("orx-localbox-test-{}", uuid::Uuid::new_v4()));
         std::env::set_var("ORX_DATA_DIR", &base);
 
