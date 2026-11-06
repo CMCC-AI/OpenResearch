@@ -19,3 +19,7 @@
 - 跨时区与三系统源码摘要一致性门禁。
 
 科学指标、受保护回收、测试进程隔离及后续官方专项继续独立实施。`.3` 服务器隔离候选的真实解析、SQLite/账号库备份恢复已经验收，但仍未切换生产；`.4` 需自己的最终 CI、构建及部署证据。
+
+## 已发布状态（2026-11-06）
+
+[`.4` 源码](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.4) 已发布，固定提交 `d959cf82`，[发行 CI 42205071962](https://github.com/CMCC-AI/OpenResearch/actions/runs/42205071962) 成功；四个实际附件摘要、清单和本地字节重现性已核验。本版服务器隔离构建与备份恢复也已独立通过，尚未切换生产，详见[执行台账](../ai-for-science/followup-execution-2026-11-06.md)。
