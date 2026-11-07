@@ -9,6 +9,7 @@
 //! `~/.local/share/openresearch`.
 
 pub(crate) mod material_reads;
+pub(crate) mod metric_evidence;
 pub(crate) mod research;
 mod research_metrics;
 mod schema;
@@ -1099,6 +1100,7 @@ impl Store {
         phase("compatibility");
         research::migrate(&conn)?;
         material_reads::migrate(&conn)?;
+        metric_evidence::migrate(&conn)?;
         migrate_chat_spawns(&conn)?;
         phase("research-and-spawns");
         Ok(Self {

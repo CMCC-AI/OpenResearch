@@ -172,3 +172,108 @@ fn verified_files_reject_tampering_size_and_identity_changes() {
     std::fs::write(&path, b"abcd").unwrap();
     assert!(open_hashed(&path, &hash, 4, 4).is_err());
 }
+
+#[test]
+fn registration_rechecks_run_under_lock_and_rolls_back_failed_inserts() {
+    let dir = crate::local::git::TemporaryDirectory::new("metric-registration").unwrap();
+    let store = Store::open_at(dir.path().into()).unwrap();
+    let db = rusqlite::Connection::open(dir.path().join("orx.db")).unwrap();
+    db.execute("INSERT INTO local_projects(id,name,slug,github_owner,github_repo,github_sync_enabled,baseline_branch,repo_path,created_at,updated_at) VALUES('project','project','project','','',0,'main','/tmp',1,1)",[]).unwrap();
+    let (run, backend, report) = fixture();
+    store.upsert_run(&run).unwrap();
+    let expected = store.get_run(&run.id).unwrap().unwrap();
+    let mut inspection = Inspection {
+        schema_version: 1,
+        project_id: run.project_id.clone(),
+        run_id: run.id.clone(),
+        experiment_id: run.experiment_id.clone(),
+        status: run.status.clone(),
+        command: run.command.clone(),
+        execution: json!({}),
+        report_path: "metrics.json".into(),
+        report_sha256: "c".repeat(64),
+        report_bytes: 100,
+        source_bytes: 10,
+        measured_at: 1,
+        meaning: "synthetic registration fixture",
+        report: parse(&serde_json::to_vec(&report).unwrap(), &run, &backend).unwrap(),
+    };
+    // This deterministically represents a different process changing identity
+    // after all file verification but before the writer transaction begins.
+    for sql in [
+        "UPDATE runs SET updated_at=updated_at+1 WHERE id='run'",
+        "UPDATE runs SET command='changed' WHERE id='run'",
+        "UPDATE runs SET exit_code=1 WHERE id='run'",
+        "UPDATE runs SET backend_json='{}' WHERE id='run'",
+        "UPDATE runs SET commit_sha=NULL WHERE id='run'",
+        "UPDATE runs SET ended_at=3 WHERE id='run'",
+        "UPDATE runs SET project_id='other' WHERE id='run'",
+        "UPDATE runs SET experiment_id='changed' WHERE id='run'",
+        "UPDATE runs SET created_at=3 WHERE id='run'",
+        "UPDATE runs SET status='error' WHERE id='run'",
+    ] {
+        db.execute("DELETE FROM runs", []).unwrap();
+        store.upsert_run(&expected).unwrap();
+        db.execute(sql, []).unwrap();
+        assert!(
+            store
+                .register_metric_evidence(&expected, &inspection)
+                .is_err(),
+            "{sql}"
+        );
+    }
+    db.execute("DELETE FROM runs", []).unwrap();
+    assert!(store
+        .register_metric_evidence(&expected, &inspection)
+        .is_err());
+    store.upsert_run(&expected).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_metric_insert BEFORE INSERT ON scientific_metric_evidence BEGIN SELECT RAISE(ABORT,'synthetic write failure'); END;").unwrap();
+    assert!(store
+        .register_metric_evidence(&expected, &inspection)
+        .is_err());
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM scientific_metric_evidence", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    db.execute_batch("DROP TRIGGER reject_metric_insert")
+        .unwrap();
+    let first = store
+        .register_metric_evidence(&expected, &inspection)
+        .unwrap();
+    // A successful retry appends exactly one observation and releases its lock.
+    assert_eq!(
+        store.metric_evidence("project", &first.id).unwrap().id,
+        first.id
+    );
+    let other = Store::open_at(dir.path().into()).unwrap();
+    assert!(
+        other
+            .register_metric_evidence(&expected, &inspection)
+            .unwrap()
+            .sequence
+            > first.sequence
+    );
+    inspection.command = "x".repeat(4 * 1024 * 1024 + 1);
+    assert!(other
+        .register_metric_evidence(&expected, &inspection)
+        .is_err());
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM scientific_metric_evidence", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    // Idempotent schema reopen preserves the original observation unchanged.
+    drop(other);
+    drop(store);
+    let reopened = Store::open_at(dir.path().into()).unwrap();
+    assert_eq!(
+        reopened
+            .metric_evidence("project", &first.id)
+            .unwrap()
+            .snapshot_sha256,
+        first.snapshot_sha256
+    );
+}
