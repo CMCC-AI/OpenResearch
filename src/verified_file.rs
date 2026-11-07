@@ -72,9 +72,29 @@ impl FileSnapshot {
     }
 }
 
+// Preflight observed special files before opening. On Unix, O_NONBLOCK also
+// prevents a regular-to-FIFO replacement race from blocking the identity probe.
+fn open_regular(path: &Path, kind: &str) -> Result<File> {
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(anyhow!("{kind}必须为普通文件"));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(anyhow!("{kind}读取期间路径类型变化"));
+    }
+    Ok(file)
+}
+
 impl FileSource {
     pub(crate) fn open(path: &Path, kind: &'static str) -> Result<Self> {
-        let file = File::open(path)?;
+        let file = open_regular(path, kind)?;
         let stamp = FileStamp::read(file.metadata()?, kind)?;
         let identity = same_file::Handle::from_file(file.try_clone()?)?;
         Ok(Self {
@@ -130,7 +150,7 @@ impl FileSource {
 
     pub(crate) fn check_unchanged(&self) -> Result<()> {
         if self.stamp != FileStamp::read(self.file.metadata()?, self.kind)?
-            || self.identity != same_file::Handle::from_path(&self.path)?
+            || self.identity != same_file::Handle::from_file(open_regular(&self.path, self.kind)?)?
         {
             return Err(anyhow!("{}读取期间发生变化，请重新校验", self.kind));
         }

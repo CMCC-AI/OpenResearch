@@ -22,6 +22,7 @@ mod folder_picker;
 mod invocation;
 mod jobs;
 // Local mode (`orx up`): builds out across stages; not all of it is wired yet.
+mod input_sets;
 #[allow(dead_code)]
 mod local;
 mod net;
@@ -95,6 +96,8 @@ enum Command {
 
     /// Inspect scientific metric files against recorded run and input identities.
     Metrics(commands::metrics::MetricsArgs),
+    /// Freeze explicitly selected inputs without launching experiments.
+    Inputs(commands::inputs::InputsArgs),
 
     /// Show a run's compact log summary (path, size, and preview) by default.
     Logs(LogsArgs),
@@ -1268,6 +1271,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Storage(_) => "storage",
         Command::Runs(_) => "runs",
         Command::Metrics(_) => "metrics",
+        Command::Inputs(_) => "inputs",
         Command::Logs(_) => "logs",
         Command::CreateExperiment(_) => "create-experiment",
         Command::Compute(_) => "compute",
@@ -1321,6 +1325,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Storage(args) => commands::storage::run(args).await,
         Command::Runs(args) => commands::runs::run(args).await,
         Command::Metrics(args) => commands::metrics::run(args).await,
+        Command::Inputs(args) => commands::inputs::run(args).await,
         Command::Logs(args) => commands::logs::run(args).await,
         Command::CreateExperiment(args) => commands::create_experiment::run(args).await,
         Command::Compute(args) => commands::compute::run(args).await,

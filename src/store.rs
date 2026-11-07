@@ -8,13 +8,14 @@
 //! Data dir: `$ORX_DATA_DIR`, else `$XDG_DATA_HOME/openresearch`, else
 //! `~/.local/share/openresearch`.
 
+pub(crate) mod input_sets;
 pub(crate) mod material_reads;
 pub(crate) mod metric_evidence;
 pub(crate) mod research;
 mod research_metrics;
 mod schema;
 pub(crate) mod steering;
-mod storage_usage;
+pub(crate) mod storage_usage;
 mod telemetry;
 pub(crate) use telemetry::{InvocationIdentity, TokenUsage};
 
@@ -1101,6 +1102,7 @@ impl Store {
         research::migrate(&conn)?;
         material_reads::migrate(&conn)?;
         metric_evidence::migrate(&conn)?;
+        input_sets::migrate(&conn)?;
         migrate_chat_spawns(&conn)?;
         phase("research-and-spawns");
         Ok(Self {

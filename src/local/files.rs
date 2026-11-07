@@ -31,8 +31,11 @@ const MAX_ENTRIES: usize = 2000;
 /// root is still migrated in place when no `files/` root exists; when both
 /// exist, `files/` remains authoritative and the legacy root is untouched.
 fn files_root() -> PathBuf {
-    let root = data_dir().join("files");
-    let legacy = data_dir().join("artifacts");
+    files_root_at(&data_dir())
+}
+fn files_root_at(data: &Path) -> PathBuf {
+    let root = data.join("files");
+    let legacy = data.join("artifacts");
     if !root.exists() && legacy.is_dir() {
         // Same filesystem (sibling dirs), so a plain rename; on failure fall
         // through — ensure_dir will create the new root and the legacy dir
@@ -45,6 +48,12 @@ fn files_root() -> PathBuf {
 /// `<data dir>/files/<slug>/` — slugs are unique per store and filesystem-safe.
 pub fn files_dir(project: &LocalProject) -> PathBuf {
     files_root().join(&project.slug)
+}
+
+/// Resolve the same legacy layout for an explicitly bound Store, without
+/// consulting another profile through the process-global data directory.
+pub(crate) fn files_dir_at(data: &Path, slug: &str) -> PathBuf {
+    files_root_at(data).join(slug)
 }
 
 /// The artifacts dir as the UI sees it, for recognizing artifact paths in chat
