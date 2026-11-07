@@ -2,6 +2,8 @@
 
 状态：集合及独立副本池预约已通过独立完整 CI 并合入产品 `78540620`，详见[阶段一实现](frozen-input-sets-2026-11-07.md)，尚未另行发行；契约、执行端、消费及封存阶段仍未实现。原设计基于计划继承候选 3a62da0，不计作已发行 .6 的能力或运行时消费证明。
 
+下一阶段在 `feat/run-input-contracts` 推进[身份保护基础](run-input-contracts-2026-11-07.md)，当前为未合入的在制代码；CLI/HTTP、G2/G3、投递和消费门禁仍须后续实现，不改变上段产品状态。
+
 ## 当前依据与缺口
 
 - `src/compute.rs` 的 `SourceSnapshot::create` 已按 Git commit 生成内容寻址代码 tar/可选 Ray ZIP，并记录摘要、字节数与路径；`snapshot_script` 将该包解入 Run 独立 repo。不能重新发明一套代码快照，也不能把代码归档当作外部数据输入快照。

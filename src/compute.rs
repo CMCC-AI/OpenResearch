@@ -820,6 +820,7 @@ pub async fn submit(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         })
         .unwrap_or_default();
     let mut descriptor = BackendDescriptor {
+        input_set: None,
         ssh_container: None,
         monitoring_error: None,
         cancellation_accepted: false,
@@ -1041,10 +1042,40 @@ fn reserve_run(
 }
 
 pub fn record_submission_handle(run_id: &str, descriptor: &BackendDescriptor) -> Result<()> {
-    let database_error = Store::open()
-        .and_then(|store| store.set_backend_json(run_id, &descriptor.to_json()))
+    record_submission_handle_at(Store::open(), &crate::store::data_dir(), run_id, descriptor)
+}
+
+pub(crate) fn record_submission_handle_at(
+    store: Result<Store>,
+    data_dir: &Path,
+    run_id: &str,
+    descriptor: &BackendDescriptor,
+) -> Result<()> {
+    let database_error = store
+        .and_then(|store| {
+            if descriptor.input_set.is_some() {
+                let current = store.get_run(run_id)?.ok_or_else(|| {
+                    anyhow!(
+                        "{}: input-bound run was not reserved",
+                        crate::run_inputs::GUARD
+                    )
+                })?;
+                crate::run_inputs::check_descriptor(&current, descriptor)?;
+            }
+            store.set_backend_json(run_id, &descriptor.to_json())
+        })
         .err();
-    let dir = crate::store::data_dir().join("submission-handles");
+    // A provider handle is not permission to discard an immutable input
+    // contract. In particular, do not turn a constraint failure into a
+    // successful unbound recovery file as older writers did.
+    if let Some(error) = database_error.as_ref() {
+        if descriptor.input_set.is_some() || crate::run_inputs::is_guard_error(error) {
+            return Err(anyhow!(
+                "Could not persist input-bound submission; no recovery downgrade: {error}"
+            ));
+        }
+    }
+    let dir = data_dir.join("submission-handles");
     if let Err(error) = std::fs::create_dir_all(&dir) {
         return match database_error {
             None => {
@@ -1073,12 +1104,20 @@ pub fn record_submission_handle(run_id: &str, descriptor: &BackendDescriptor) ->
     Ok(())
 }
 
-pub fn recover_submission_handle(run_id: &str) -> Result<Option<BackendDescriptor>> {
-    let path = crate::store::data_dir()
+pub fn recover_submission_handle(store: &Store, run_id: &str) -> Result<Option<BackendDescriptor>> {
+    let path = store
+        .input_data_root()?
         .join("submission-handles")
         .join(format!("{run_id}.json"));
     match std::fs::read_to_string(path) {
-        Ok(json) => BackendDescriptor::parse(&json).map(Some),
+        Ok(json) => {
+            let descriptor = BackendDescriptor::parse(&json)?;
+            let run = store
+                .get_run(run_id)?
+                .ok_or_else(|| anyhow!("Run {run_id} not found"))?;
+            crate::run_inputs::check_descriptor(&run, &descriptor)?;
+            Ok(Some(descriptor))
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }

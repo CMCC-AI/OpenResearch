@@ -161,6 +161,7 @@ pub async fn submit_local_slurm_with_source(
     .await?;
 
     let mut descriptor = BackendDescriptor {
+        input_set: None,
         ssh_container: None,
         monitoring_error: None,
         cancellation_accepted: false,

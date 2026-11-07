@@ -120,6 +120,7 @@ async fn submit_controller_run(
     })?;
 
     let mut descriptor = BackendDescriptor {
+        input_set: None,
         ssh_container: None,
         monitoring_error: None,
         cancellation_accepted: false,
