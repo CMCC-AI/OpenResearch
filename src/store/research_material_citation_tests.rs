@@ -55,6 +55,7 @@ fn material_claim_input(event: &str) -> ClaimInput {
         line_start: None,
         line_end: None,
         material_read_id: Some(event.into()),
+        metric: None,
     }
 }
 fn prepare_material_citation(

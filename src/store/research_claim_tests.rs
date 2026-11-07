@@ -11,6 +11,7 @@ fn inferred_claim(text: &str) -> ClaimInput {
         line_start: None,
         line_end: None,
         material_read_id: None,
+        metric: None,
     }
 }
 fn claim_change_count(store: &Store, study: &Study) -> i64 {
@@ -505,6 +506,7 @@ fn claim_amendments_keep_current_task_run_logs_required_after_withdrawal() {
                 line_start: Some(1),
                 line_end: Some(1),
                 material_read_id: None,
+                metric: None,
             },
         )
         .unwrap();

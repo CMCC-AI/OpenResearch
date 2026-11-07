@@ -76,6 +76,7 @@ fn delivery_scope_keeps_explicit_historical_claims_including_previous_attempts()
                     line_start: Some(1),
                     line_end: Some(1),
                     material_read_id: None,
+                    metric: None,
                 },
             )
             .unwrap();

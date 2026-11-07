@@ -5,13 +5,17 @@ import { createRequire } from "node:module";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
+import { parseMetricCitation } from "../src/metricCitation.ts";
 import { researchAttention, researchTaskStatus, researchWorkflow } from "../src/research.ts";
 
 const source = readFileSync(new URL("../src/components/ResearchEvidence.tsx", import.meta.url), "utf8");
 const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 const exports = {};
 const realRequire = createRequire(import.meta.url);
-new Function("require", "exports", code)(id => id === "./MaterialCitationSource" ? { MaterialCitationSource: ({ citation }) => React.createElement("button", null, `查看原文选区：${citation.path}`) } : id === "../readOnlyApi" ? { getReadOnlyApi: () => null } : realRequire(id), exports);
+const metricExports = {};
+const metricCode = ts.transpileModule(readFileSync(new URL("../src/components/MetricCitationSource.tsx", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+new Function("require", "exports", metricCode)(id => id === "../metricCitation" ? { parseMetricCitation } : realRequire(id), metricExports);
+new Function("require", "exports", code)(id => id === "./MetricCitationSource" ? metricExports : id === "./MaterialCitationSource" ? { MaterialCitationSource: ({ citation }) => React.createElement("button", null, `查看原文选区：${citation.path}`) } : id === "../readOnlyApi" ? { getReadOnlyApi: () => null } : realRequire(id), exports);
 const claim = id => ({ id, text: `statement-${id}`, support: "inference", source: "hypothesis" });
 const study = { status: "active", mode: "team", claims: [claim("old"), claim("new")], decisions: [], plans: [] };
 const render = value => renderToStaticMarkup(React.createElement(exports.ResearchEvidence, { study: value }));
@@ -56,4 +60,11 @@ test("canonical sources stay accessible for current and retired statements witho
   assert.doesNotMatch(current, /查看原文选区：资料\/old.txt/);
   assert.match(history, /查看原文选区：资料\/old.txt/);
   assert.doesNotMatch(render(study), /查看原文选区/);
+});
+
+test("fixed metric identities remain in current and retired evidence with independent review status", () => {
+  const metricCitation = { selection: { evidenceId: "00000000-0000-4000-8000-000000000001", name: "accuracy", split: "validation", step: 1 }, value: 0.9, unit: "1", snapshotSha256: "a".repeat(64), reportSha256: "b".repeat(64), sourceSha256: "c".repeat(64), commitSha: "d".repeat(40), runId: "run", experimentId: "exp", producerVersion: "fixture", measuredAt: 1, registeredAt: 2 };
+  const value = { ...study, activeClaimIds: ["new"], evidenceReviewRequired: true, claimChanges: [{ claimId: "old", action: "withdrawn", reason: "retired" }], claims: study.claims.map(c => ({ ...c, metricCitation })) };
+  const [current,history] = render(value).split("历史声明（1）");
+  assert.match(current,/登记值：0.9/);assert.match(history,/登记值：0.9/);assert.match(current,/重新独立审查/);assert.doesNotMatch(render(study),/指标登记来源/);
 });

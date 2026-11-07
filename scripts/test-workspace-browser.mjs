@@ -152,6 +152,10 @@ with sqlite3.connect(sys.argv[1]) as c:
     throw new Error(`Unexpected capture dependency ${name}`)
   }, module, read)
   const captured = await module.captureNativeProject(projects[0].id)
+  // Synthetic public-case projection only: no native Run, registry write or
+  // scientific claim is fabricated in the executor. Rust/CLI tests cover those.
+  const caseMetric = { selection: { evidenceId: '00000000-0000-4000-8000-000000000001', name: 'accuracy', split: 'validation', step: 1 }, snapshotSha256: 'a'.repeat(64), reportSha256: 'b'.repeat(64), sourceSha256: 'c'.repeat(64), commitSha: 'd'.repeat(40), runId: 'synthetic-case-run', experimentId: 'synthetic-case-exp', unit: '1', value: 0.9, measuredAt: 1, registeredAt: 2, producerVersion: 'synthetic-case-fixture' }
+  captured.workspace.responses[`/api/research/sessions/${projects[0].main}`] = { study: { id: 'synthetic-case-study', projectId: projects[0].id, sessionId: projects[0].main, mode: 'team', objective: 'Synthetic metric citation display', status: 'ended', plans: [], decisions: [], claims: [{ id: 'synthetic-case-claim', text: 'Synthetic point for display acceptance', support: 'experiment', source: 'Synthetic fixture', metricCitation: caseMetric }], metricCitationRevision: 1, createdAt: 1, updatedAt: 2 }, runs: [], metrics: null }
   assets = captured.assets
   const caseState = captured.workspace.responses['/api/projects/browser-a/ui-state']
   caseState.tasks[projects[0].main].active = { kind: 'home', view: 'research' }
@@ -168,9 +172,9 @@ with sqlite3.connect(sys.argv[1]) as c:
   const audit = JSON.parse(execFileSync('python3', ['-c', `import sqlite3,sys,json
 with sqlite3.connect('file:'+sys.argv[1]+'?mode=rw',uri=True) as c:
  c.execute('PRAGMA query_only=ON')
- print(json.dumps({t:c.execute('SELECT count(*) FROM '+t).fetchone()[0] for t in ['runs','chat_messages','chat_queued_messages','chat_spawns','material_read_events']}))`, path.join(data, 'orx.db')], { encoding: 'utf8' }))
-  if (JSON.stringify(audit) !== JSON.stringify({ runs: 0, chat_messages: 1, chat_queued_messages: 0, chat_spawns: 0, material_read_events: 2 })) throw new Error(`Unexpected agent/run/material mutations: ${JSON.stringify(audit)}`)
-  writeFileSync(path.join(artifacts, 'acceptance.json'), JSON.stringify({ revision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(), mode: 'synthetic account/upload/two CLI reads; actual app and isolated native backend', slot: state.slotKey, audit, productionDeployed: false }, null, 2))
+ print(json.dumps({t:c.execute('SELECT count(*) FROM '+t).fetchone()[0] for t in ['runs','chat_messages','chat_queued_messages','chat_spawns','material_read_events','scientific_metric_evidence']}))`, path.join(data, 'orx.db')], { encoding: 'utf8' }))
+  if (JSON.stringify(audit) !== JSON.stringify({ runs: 0, chat_messages: 1, chat_queued_messages: 0, chat_spawns: 0, material_read_events: 2, scientific_metric_evidence: 0 })) throw new Error(`Unexpected agent/run/material mutations: ${JSON.stringify(audit)}`)
+  writeFileSync(path.join(artifacts, 'acceptance.json'), JSON.stringify({ revision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(), mode: 'synthetic account/upload/two CLI reads; static public-case metric projection; actual app and isolated native backend', slot: state.slotKey, audit, productionDeployed: false }, null, 2))
 } finally {
   try {
     if (attempted) await run(process.execPath, [path.join(root, 'scripts/dev-slot.mjs'), 'stop'])

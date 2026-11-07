@@ -13,6 +13,7 @@ fn evidence_fixture() -> (TestDir, Store, Study, ClaimInput) {
         line_start: Some(2),
         line_end: Some(2),
         material_read_id: None,
+        metric: None,
     };
     (dir, store, study, input)
 }
@@ -181,6 +182,7 @@ fn evidence_capture_allows_concurrent_writes_and_preserves_new_claims() {
                     line_start: None,
                     line_end: None,
                     material_read_id: None,
+                    metric: None,
                 },
             )?;
             evidence::scan_log(reader, start, end)

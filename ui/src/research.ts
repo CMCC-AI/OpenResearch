@@ -35,7 +35,7 @@ export interface ResearchStudy {
   claimChanges?: ResearchClaimChange[];
   evidenceReviewRequired?: boolean;
   staleReviewTaskIds?: string[];
-  claims: { id: string; text: string; support: string; source: string; location?: string; runId?: string; excerpt?: string; materialCitation?: MaterialCitation }[];
+  claims: { id: string; text: string; support: string; source: string; location?: string; runId?: string; excerpt?: string; materialCitation?: MaterialCitation; metricCitation?: unknown }[];
 }
 export interface ResearchClaimChange {
   claimId: string; action: "withdrawn" | "replaced"; reason: string;

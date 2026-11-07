@@ -1,3 +1,4 @@
+import { MetricCitationSource } from "./MetricCitationSource";
 import { MaterialCitationSource } from "./MaterialCitationSource";
 import { getReadOnlyApi } from "../readOnlyApi";
 import type { ResearchStudy } from "../research";
@@ -14,6 +15,7 @@ export function ResearchEvidence({ study }: { study: ResearchStudy }) {
     <p className="break-words text-xs text-subtext">{claim.support === "experiment" ? "实验关联证据" : claim.support === "paper" ? "论文原文声明" : "推测"} · {claim.source} {claim.location}</p>
     <p className="break-all text-xs text-muted">声明：{claim.id}</p>
     {claim.materialCitation && <MaterialCitationSource key={`${study.id}:${claim.id}:${claim.materialCitation.readEventId}:${getReadOnlyApi()?.id ?? "live"}`} citation={claim.materialCitation} />}
+    {claim.metricCitation != null && <MetricCitationSource citation={claim.metricCitation} />}
     {claim.excerpt && <pre className="mt-1 whitespace-pre-wrap break-words text-xs">{claim.excerpt}</pre>}
   </div>;
   return <section aria-label="证据声明" className="space-y-2">

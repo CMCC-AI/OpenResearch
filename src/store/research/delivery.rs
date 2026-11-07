@@ -140,9 +140,11 @@ impl Store {
         let evidence = self.research_evidence(study)?;
         let mut runs = self.research_runs(study)?;
         runs.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(digest(&serde_json::to_vec(
-            &serde_json::json!({"project":study.project_id,"session":study.session_id,"mode":study.mode,"plans":study.plans,"claims":study.claims,"claimRevision":study.claim_revision,"materialCitationRevision":study.material_citation_revision,"changes":evidence.changes,"runs":runs}),
-        )?))
+        let mut scope = serde_json::json!({"project":study.project_id,"session":study.session_id,"mode":study.mode,"plans":study.plans,"claims":study.claims,"claimRevision":study.claim_revision,"materialCitationRevision":study.material_citation_revision,"changes":evidence.changes,"runs":runs});
+        if let Some(revision) = study.metric_citation_revision {
+            scope["metricCitationRevision"] = revision.into();
+        }
+        Ok(digest(&serde_json::to_vec(&scope)?))
     }
     pub(super) fn archive_dir(&self, study: &Study) -> Result<PathBuf> {
         if study.id.is_empty()
@@ -195,7 +197,7 @@ impl Store {
         for claim in &evidence.claims {
             self.research_validate_material_claim(study, claim)?;
         }
-        if !evidence.changes.is_empty() {
+        if !evidence.changes.is_empty() || study.metric_citation_revision.is_some() {
             claims::require_review_roles(plan.tasks.iter().map(|t| t.spec.role.as_str()))?;
         }
         if plan.tasks.iter().any(|t| {
@@ -360,11 +362,43 @@ impl Store {
                 builder.bytes(&format!("read-receipts/{}.json",citation.read_event_id),&serde_json::to_vec(&serde_json::json!({"id":citation.read_event_id,"receipt":serde_json::from_str::<serde_json::Value>(&body)?,"outputState":state}))?)?;
             }
         }
+        let mut metric_ids = std::collections::BTreeSet::new();
+        let mut metric_sources = vec![];
+        for claim in &evidence.claims {
+            if let Some(citation) = &claim.metric_citation {
+                let id = &citation.selection.evidence_id;
+                if !metric_ids.insert(id.clone()) {
+                    continue;
+                }
+                if uuid::Uuid::parse_str(id).is_err() {
+                    return Err(anyhow!("指标登记 ID 无效"));
+                }
+                let (saved, json) = self.metric_evidence_with_json(&study.project_id, id)?;
+                let run = self
+                    .get_run(&citation.run_id)?
+                    .ok_or_else(|| anyhow!("指标来源 Run 不存在"))?;
+                if crate::scientific_metrics::citation(&saved, &citation.selection, &run)?
+                    != *citation
+                {
+                    return Err(anyhow!("指标来源与规范引用不一致"));
+                }
+                if saved.snapshot_sha256 != citation.snapshot_sha256 {
+                    return Err(anyhow!("指标登记摘要已变化"));
+                }
+                let name = format!("scientific-metrics/{id}.json");
+                builder.bytes(&name, json.as_bytes())?;
+                metric_sources.push(serde_json::json!({"id":id,"snapshotSha256":saved.snapshot_sha256,"archivePath":name}));
+                after_file(&name)?;
+            }
+        }
         let mut scope = serde_json::json!({"plan":plan,"claims":evidence.claims,"runs":provenance});
         if !evidence.changes.is_empty() {
             scope["claimChanges"] = serde_json::to_value(&evidence.changes)?;
         }
-        let has_sources = !sources.is_empty();
+        let has_sources = !sources.is_empty() || !metric_sources.is_empty();
+        if !metric_sources.is_empty() {
+            scope["metricSources"] = serde_json::to_value(metric_sources)?;
+        }
         if has_sources {
             scope["materialSources"] =
                 serde_json::to_value(sources.into_values().collect::<Vec<_>>())?;

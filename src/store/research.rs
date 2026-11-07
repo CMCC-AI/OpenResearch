@@ -17,7 +17,9 @@ mod delivery;
 pub use delivery::{DeliverySnapshot, PreparedDelivery};
 mod evidence;
 mod material_citations;
+mod metric_citations;
 pub use claims::ClaimAmendmentInput;
+pub use metric_citations::{MetricCitation, MetricSelection};
 mod files;
 
 /// The same membership drives accounting and lifecycle protection: the lead,
@@ -153,6 +155,8 @@ pub struct ClaimInput {
     pub line_end: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material_read_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric: Option<MetricSelection>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -162,6 +166,8 @@ pub struct EvidenceClaim {
     pub input: ClaimInput,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material_citation: Option<super::material_reads::MaterialCitation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_citation: Option<MetricCitation>,
     pub commit_sha: Option<String>,
     pub log_sha256: Option<String>,
     pub excerpt: Option<String>,
@@ -183,6 +189,8 @@ pub struct Study {
     pub claim_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material_citation_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_citation_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -569,6 +577,7 @@ pub(super) fn migrate(conn: &rusqlite::Connection) -> Result<()> {
         DELETE FROM research_studies WHERE project_id=OLD.id; END;")?;
     claims::migrate(conn)?;
     material_citations::migrate(conn)?;
+    metric_citations::migrate(conn)?;
     delivery::migrate(conn)?;
     archive_retention::migrate(conn)?;
     conn.execute_batch(&format!(
@@ -665,6 +674,7 @@ impl Store {
             claims: vec![],
             claim_revision: None,
             material_citation_revision: None,
+            metric_citation_revision: None,
             delivery_error: None,
             delivery_snapshot: None,
             created_at: now_ms(),
@@ -716,7 +726,7 @@ impl Store {
         self.research_update(id, |study| {
             study.ensure_active()?;
             validate_plan(&input, &study.mode)?;
-            if study.claim_revision.is_some() {
+            if study.claim_revision.is_some() || study.metric_citation_revision.is_some() {
                 claims::require_review_roles(input.tasks.iter().map(|task| task.role.as_str()))?;
             }
             if self.count_live_chat_spawns(&study.session_id)? > 0
@@ -1495,7 +1505,7 @@ impl Store {
         for claim in &evidence.claims {
             self.research_validate_material_claim(study, claim)?;
         }
-        if !evidence.changes.is_empty() {
+        if !evidence.changes.is_empty() || study.metric_citation_revision.is_some() {
             claims::require_review_roles(plan.tasks.iter().map(|task| task.spec.role.as_str()))?;
         }
         for task in &plan.tasks {
@@ -2039,6 +2049,7 @@ mod tests {
                     line_start: None,
                     line_end: None,
                     material_read_id: None,
+                    metric: None,
                 },
             )
             .unwrap();
@@ -2162,6 +2173,7 @@ mod tests {
                     line_start: Some(1),
                     line_end: Some(1),
                     material_read_id: None,
+                    metric: None,
                 }
             )
             .is_err());
@@ -3032,6 +3044,7 @@ mod tests {
     include!("research_claim_tests.rs");
     include!("material_read_event_tests.rs");
     include!("research_material_citation_tests.rs");
+    include!("research_metric_citation_tests.rs");
     include!("research_delivery_tests.rs");
     include!("research_delivery_snapshot_tests.rs");
     include!("research_archive_retention_tests.rs");

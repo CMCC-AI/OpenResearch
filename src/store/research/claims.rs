@@ -131,6 +131,17 @@ impl Store {
     }
 
     pub(super) fn research_evidence<'a>(&self, study: &'a Study) -> Result<EvidenceScope<'a>> {
+        let metric_count = study
+            .claims
+            .iter()
+            .filter(|c| c.metric_citation.is_some())
+            .count() as u64;
+        if study.metric_citation_revision.unwrap_or(0) != metric_count {
+            return Err(anyhow!("指标引用版本与声明不一致"));
+        }
+        for claim in &study.claims {
+            self.research_validate_metric_claim(study, claim)?;
+        }
         let changes = self.research_claim_changes(&study.id)?;
         if study.claim_revision.unwrap_or(0) != changes.len() as u64 {
             return Err(anyhow!("声明修订状态已变化或不完整，请刷新后核查"));
@@ -170,13 +181,16 @@ impl Store {
     pub fn research_study_view(&self, study: &Study) -> Result<serde_json::Value> {
         let evidence = self.research_evidence(study)?;
         let mut value = serde_json::to_value(study)?;
-        if !evidence.changes.is_empty() || study.material_citation_revision.is_some() {
+        if !evidence.changes.is_empty()
+            || study.material_citation_revision.is_some()
+            || study.metric_citation_revision.is_some()
+        {
             let evidence_digest = evidence.digest()?;
             let needs_review = study.plans.last().is_none_or(|plan| {
                 ["as-independent-reviewer", "as-quality-citation-auditor"]
                     .iter()
                     .any(|role| {
-                        (!evidence.changes.is_empty()
+                        ((!evidence.changes.is_empty() || study.metric_citation_revision.is_some())
                             && !plan.tasks.iter().any(|task| task.spec.role == *role))
                             || plan
                                 .tasks
