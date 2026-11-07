@@ -21,6 +21,7 @@ mod metric_citations;
 pub use claims::ClaimAmendmentInput;
 pub use metric_citations::{MetricCitation, MetricSelection};
 mod files;
+mod plans;
 
 /// The same membership drives accounting and lifecycle protection: the lead,
 /// every registered expert (including past plans), and their chat descendants.
@@ -382,18 +383,7 @@ pub fn safe_relative(path: &str) -> bool {
 const MAX_ARTIFACT_BYTES: u64 = 32 * 1024 * 1024;
 
 pub fn inspect_artifact(root: &Path, relative: &str) -> Result<Artifact> {
-    if !safe_relative(relative) {
-        return Err(anyhow!("产物路径必须为目录内的相对路径"));
-    }
-    let root = root.canonicalize()?;
-    let path = root.join(relative).canonicalize()?;
-    if !path.starts_with(&root) || !path.is_file() {
-        return Err(anyhow!("产物路径越界或不是文件"));
-    }
-    let mut source = files::FileSource::open(&path, "研究产物")?;
-    if source.bytes() > MAX_ARTIFACT_BYTES {
-        return Err(anyhow!("单个研究包产物超过 32 MiB"));
-    }
+    let (_, mut source) = files::open_artifact(root, relative)?;
     Ok(Artifact {
         path: relative.into(),
         sha256: source.hash()?,
@@ -721,174 +711,6 @@ impl Store {
             .join(&project.slug)
             .join("research")
             .join(&study.id))
-    }
-    pub fn research_set_plan(&self, id: &str, input: PlanInput) -> Result<()> {
-        self.research_update(id, |study| {
-            study.ensure_active()?;
-            validate_plan(&input, &study.mode)?;
-            if study.claim_revision.is_some() || study.metric_citation_revision.is_some() {
-                claims::require_review_roles(input.tasks.iter().map(|task| task.role.as_str()))?;
-            }
-            if self.count_live_chat_spawns(&study.session_id)? > 0
-                || self
-                    .research_runs(study)?
-                    .iter()
-                    .any(|r| !crate::local::is_terminal(&r.status))
-            {
-                return Err(anyhow!("请先等待当前专家会话和实验结束，再修订计划"));
-            }
-            if study
-                .plans
-                .last()
-                .is_some_and(|p| p.tasks.iter().any(|t| t.state == "running"))
-            {
-                return Err(anyhow!("请先结束或停止当前任务，再修订计划"));
-            }
-            let version = study.plans.last().map_or(1, |p| p.version + 1);
-            // Compare effective routes: legacy manual plans may omit workflow,
-            // while a team plan may select a different research contract.
-            let same_workflow =
-                input.workflow.as_deref().unwrap_or(&study.mode) == study.workflow_mode();
-            let root = self.research_root(study).ok();
-            let evidence_digest = self.research_evidence(study)?.digest()?;
-            let prev_tasks: std::collections::HashMap<String, ResearchTask> = study
-                .plans
-                .last()
-                .map(|p| {
-                    p.tasks
-                        .iter()
-                        .cloned()
-                        .map(|t| (t.spec.id.clone(), t))
-                        .collect()
-                })
-                .unwrap_or_default();
-            // Material packages are immutable. Their IDs already identify the
-            // source/hash snapshot; do not re-read every original under this write lock.
-            let material_ids = crate::local::materials::session_ids(self, &study.session_id)?;
-            let same_materials = match study.plans.last().and_then(|plan| plan.material_ids.as_ref()) {
-                Some(previous) => previous == &material_ids,
-                None if material_ids.is_empty() => {
-                    // Retain ordinary legacy no-material plans, but never infer
-                    // that an old expert's known material inputs were also empty.
-                    let mut had_materials = false;
-                    for task in prev_tasks.values() {
-                        if let Some(session) = &task.session_id {
-                            if self.get_chat_session(session)?.and_then(|s| s.bootstrap_context)
-                                .is_some_and(|context| context.contains("<research-materials>")) {
-                                had_materials = true;
-                                break;
-                            }
-                        }
-                    }
-                    !had_materials
-                }
-                None => false, // No recorded baseline for a legacy material plan.
-            };
-            let mut inherited_ids = HashSet::new();
-            loop {
-                let before = inherited_ids.len();
-                for spec in &input.tasks {
-                    if !same_workflow || !same_materials || inherited_ids.contains(&spec.id) || spec.force_rerun {
-                        continue;
-                    }
-                    let Some(prev) = prev_tasks.get(&spec.id) else {
-                        continue;
-                    };
-                    if prev.state != "completed"
-                        || prev.spec.role != spec.role
-                        || prev.spec.brief != spec.brief
-                        || prev.spec.outputs != spec.outputs
-                        || prev.spec.depends_on != spec.depends_on
-                        || !spec.depends_on.iter().all(|d| inherited_ids.contains(d))
-                    {
-                        continue;
-                    }
-                    if matches!(
-                        spec.role.as_str(),
-                        "as-independent-reviewer" | "as-quality-citation-auditor"
-                    ) && prev.evidence_digest.as_deref() != Some(evidence_digest.as_str())
-                    {
-                        continue;
-                    }
-                    let artifacts_valid = root.as_ref().is_some_and(|root_dir| {
-                        !prev.artifacts.is_empty()
-                            && prev.artifacts.iter().all(|a| {
-                                inspect_artifact(root_dir, &a.path)
-                                    .is_ok_and(|current| current.sha256 == a.sha256)
-                            })
-                    });
-                    if artifacts_valid {
-                        inherited_ids.insert(spec.id.clone());
-                    }
-                }
-                if inherited_ids.len() == before {
-                    break;
-                }
-            }
-            let mut tasks = Vec::with_capacity(input.tasks.len());
-            for spec in input.tasks {
-                if inherited_ids.contains(&spec.id) {
-                    if let Some(prev) = prev_tasks.get(&spec.id) {
-                        if let Some(sid) = &prev.session_id {
-                            self.conn.execute(
-                                "UPDATE research_sessions SET version=?1 WHERE session_id=?2 AND study_id=?3",
-                                params![version, sid, study.id],
-                            )?;
-                        }
-                        if let Some(contract) = &prev.run_contract {
-                            self.conn.execute(
-                                "UPDATE research_experiments SET version=?1 WHERE experiment_id=?2 AND study_id=?3",
-                                params![version, contract.experiment_id, study.id],
-                            )?;
-                        }
-                        tasks.push(ResearchTask {
-                            spec,
-                            state: "completed".into(),
-                            session_id: prev.session_id.clone(),
-                            previous_sessions: prev.previous_sessions.clone(),
-                            attempts: prev.attempts,
-                            contract_batch: prev.contract_batch,
-                            pending_nudge: None,
-                            pending_nudge_turn_id: None,
-                            summary: prev.summary.clone(),
-                            artifacts: prev.artifacts.clone(),
-                            output_baseline: prev.output_baseline.clone(),
-                            run_contract: prev.run_contract.clone(),
-                            run_ids: prev.run_ids.clone(),
-                            previous_run_ids: prev.previous_run_ids.clone(),
-                            evidence_digest: prev.evidence_digest.clone(),
-                        });
-                        continue;
-                    }
-                }
-                tasks.push(ResearchTask {
-                    spec,
-                    state: "pending".into(),
-                    session_id: None,
-                    previous_sessions: vec![],
-                    attempts: 0,
-                    contract_batch: 0,
-                    pending_nudge: None,
-                    pending_nudge_turn_id: None,
-                    summary: None,
-                    artifacts: vec![],
-                    output_baseline: None,
-                    run_contract: None,
-                    run_ids: vec![],
-                    previous_run_ids: vec![],
-                    evidence_digest: None,
-                });
-            }
-            study.delivery_error = None;
-            study.plans.push(ResearchPlan {
-                version,
-                material_ids: Some(material_ids),
-                workflow: input.workflow,
-                summary: input.summary,
-                tasks,
-            });
-            study.request_gate("G1", study.plan_scope()?)
-        })
     }
     /// Called inside the same transaction that creates the native helper.
     pub fn research_bind_task(&self, study_id: &str, task_id: &str, session: &str) -> Result<()> {
@@ -3040,6 +2862,7 @@ mod tests {
     }
 
     include!("research_debt_tests.rs");
+    include!("research_plan_tests.rs");
     include!("research_evidence_tests.rs");
     include!("research_claim_tests.rs");
     include!("material_read_event_tests.rs");

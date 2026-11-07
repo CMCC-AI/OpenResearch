@@ -12,6 +12,8 @@ use crate::error::{anyhow, Result};
 struct FileStamp {
     bytes: u64,
     modified: SystemTime,
+    #[cfg(unix)]
+    changed: (i64, i64),
 }
 
 impl FileStamp {
@@ -22,6 +24,11 @@ impl FileStamp {
         Ok(Self {
             bytes: metadata.len(),
             modified: metadata.modified()?,
+            #[cfg(unix)]
+            changed: {
+                use std::os::unix::fs::MetadataExt;
+                (metadata.ctime(), metadata.ctime_nsec())
+            },
         })
     }
 }
@@ -32,6 +39,37 @@ pub(crate) struct FileSource {
     identity: same_file::Handle,
     stamp: FileStamp,
     kind: &'static str,
+}
+
+/// A post-hash witness for optimistic commits. Unix stores device/inode without
+/// retaining descriptors; other targets retain only the portable identity handle.
+/// It detects replacement and metadata changes, not hostile filesystem tampering.
+pub(crate) struct FileSnapshot {
+    path: PathBuf,
+    stamp: FileStamp,
+    kind: &'static str,
+    #[cfg(unix)]
+    identity: (u64, u64),
+    #[cfg(not(unix))]
+    identity: same_file::Handle,
+}
+
+impl FileSnapshot {
+    pub(crate) fn check_unchanged(&self) -> Result<()> {
+        let current = FileSource::open(&self.path, self.kind)?;
+        #[cfg(unix)]
+        let same_identity = {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = current.file.metadata()?;
+            self.identity == (metadata.dev(), metadata.ino())
+        };
+        #[cfg(not(unix))]
+        let same_identity = self.identity == current.identity;
+        if self.stamp != current.stamp || !same_identity {
+            return Err(anyhow!("{}核验后发生变化，请重新校验", self.kind));
+        }
+        Ok(())
+    }
 }
 
 impl FileSource {
@@ -45,6 +83,24 @@ impl FileSource {
             identity,
             stamp,
             kind,
+        })
+    }
+
+    pub(crate) fn into_snapshot(self) -> Result<FileSnapshot> {
+        self.check_unchanged()?;
+        #[cfg(unix)]
+        let identity = {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = self.file.metadata()?;
+            (metadata.dev(), metadata.ino())
+        };
+        #[cfg(not(unix))]
+        let identity = self.identity;
+        Ok(FileSnapshot {
+            path: self.path,
+            stamp: self.stamp,
+            kind: self.kind,
+            identity,
         })
     }
 
