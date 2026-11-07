@@ -1,5 +1,5 @@
-//! Bounded, read-only scientific observations. A report's association with a run
-//! is a producer declaration; matching bytes do not prove that code consumed
+//! Bounded inspections and explicitly registered scientific observations.
+//! A report's association with a Run is a producer declaration; matching bytes do not prove that code consumed
 //! these inputs or that a scientific result is valid.
 use std::collections::HashSet;
 use std::io::Read;
@@ -77,6 +77,7 @@ pub(crate) struct Inspection {
     report_path: String,
     report_sha256: String,
     report_bytes: u64,
+    source_bytes: u64,
     measured_at: i64,
     meaning: &'static str,
     report: Report,
@@ -186,12 +187,12 @@ fn open_regular(path: &Path, kind: &'static str) -> Result<FileSource> {
 }
 
 /// No network, external process, database write transaction or experiment launch.
-pub(crate) fn inspect(
+fn verify(
     store: &Store,
     project: &str,
     run_id: &str,
     relative: &str,
-) -> Result<Inspection> {
+) -> Result<(Inspection, StoredRun)> {
     if relative.len() > 1024 || relative.contains(':') || relative.chars().any(char::is_control) {
         return Err(anyhow!("指标报告需要安全的项目产物相对路径"));
     }
@@ -214,8 +215,11 @@ pub(crate) fn inspect(
         return Err(anyhow!("科学指标文件超过 2 MiB；未返回部分序列"));
     }
     let mut bytes = Vec::new();
-    report_file.reader().read_to_end(&mut bytes)?;
-    if bytes.len() as u64 != report_file.bytes() {
+    report_file
+        .reader()
+        .take(REPORT_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > REPORT_BYTES || bytes.len() as u64 != report_file.bytes() {
         return Err(anyhow!("科学指标文件读取期间长度变化"));
     }
     let report = parse(&bytes, &run, &backend)?;
@@ -248,27 +252,53 @@ pub(crate) fn inspect(
     let current = store
         .get_run(&run.id)?
         .ok_or_else(|| anyhow!("Run 在核验期间被删除"))?;
-    if current.project_id != run.project_id
-        || current.experiment_id != run.experiment_id
-        || current.status != run.status
-        || current.exit_code != run.exit_code
-        || current.commit_sha != run.commit_sha
-        || current.backend_json != run.backend_json
-        || current.command != run.command
-        || current.updated_at != run.updated_at
-    {
+    if !same_run(&current, &run) {
         return Err(anyhow!("Run 来源在核验期间变化，请重试"));
     }
-    Ok(Inspection {
-        schema_version: 1, project_id: project.into(), run_id: run.id,
-        experiment_id: run.experiment_id, status: run.status, command: run.command,
+    let inspection = Inspection {
+        schema_version: 1, project_id: project.into(), run_id: run.id.clone(),
+        experiment_id: run.experiment_id.clone(), status: run.status.clone(), command: run.command.clone(),
         execution: serde_json::json!({"kind":backend.kind,"flavor":backend.flavor,"image":backend.image,
             "timeoutSecs":backend.timeout_secs,"cpusPerTask":backend.cpus_per_task,"mem":backend.mem}),
         report_path: relative.into(), report_sha256: format!("{:x}", Sha256::digest(&bytes)),
-        report_bytes: bytes.len() as u64, measured_at: crate::store::now_ms(),
+        report_bytes: bytes.len() as u64, source_bytes: size, measured_at: crate::store::now_ms(),
         meaning: "报告声明关联此 Run；核验的是检查时的报告、冻结代码和数据文件字节身份，不证明运行时实际使用、指标正确性或可复现性。未登记持久证据，不生成实验或阅读回执。",
         report,
-    })
+    };
+    Ok((inspection, run))
+}
+
+/// Compare every Run field represented by, or relevant to, this observation.
+/// Repeated under the writer lock before an immutable record is inserted.
+pub(crate) fn same_run(current: &StoredRun, expected: &StoredRun) -> bool {
+    current.id == expected.id
+        && current.project_id == expected.project_id
+        && current.experiment_id == expected.experiment_id
+        && current.status == expected.status
+        && current.exit_code == expected.exit_code
+        && current.commit_sha == expected.commit_sha
+        && current.backend_json == expected.backend_json
+        && current.command == expected.command
+        && current.created_at == expected.created_at
+        && current.ended_at == expected.ended_at
+        && current.updated_at == expected.updated_at
+}
+
+pub(crate) fn inspect(store: &Store, project: &str, run: &str, file: &str) -> Result<Inspection> {
+    Ok(verify(store, project, run, file)?.0)
+}
+
+/// Filesystem work finishes before taking the database writer lock. This stores
+/// the observed snapshot, not a promise that live files remain unchanged.
+pub(crate) fn register(
+    store: &Store,
+    project: &str,
+    run: &str,
+    file: &str,
+) -> Result<crate::store::metric_evidence::MetricEvidence> {
+    let (mut inspection, expected) = verify(store, project, run, file)?;
+    inspection.meaning = "持久保存核验时的报告内容及来源字节身份；关联是生产者声明，不证明运行时实际使用、指标正确性或可复现性。当前文件可能已经变化；未封存原始报告、代码或数据文件，不生成实验或阅读回执。";
+    store.register_metric_evidence(&expected, &inspection)
 }
 
 #[cfg(test)]

@@ -137,6 +137,7 @@ impl Store {
         let root = database.parent().ok_or_else(|| anyhow!("数据库目录无效"))?;
         let tx = self.conn.unchecked_transaction()?;
         let (events,receipt_bytes):(u64,u64)=self.conn.query_row("SELECT count(*),COALESCE(sum(length(CAST(receipt AS BLOB))),0) FROM material_read_events WHERE project_id=?1",[&project.id],|r| Ok((r.get(0)?,r.get(1)?)))?;
+        let (metric_evidence,metric_bytes):(u64,u64)=self.conn.query_row("SELECT count(*),COALESCE(sum(length(CAST(inspection AS BLOB))),0) FROM scientific_metric_evidence WHERE project_id=?1",[&project.id],|r| Ok((r.get(0)?,r.get(1)?)))?;
         let (studies,document_bytes):(u64,u64)=self.conn.query_row("SELECT count(*),COALESCE(sum(length(CAST(document AS BLOB))),0) FROM research_studies WHERE project_id=?1",[&project.id],|r| Ok((r.get(0)?,r.get(1)?)))?;
         let mut statement=self.conn.prepare("SELECT id,json_extract(document,'$.deliverySnapshot.archive.sha256') FROM research_studies WHERE project_id=?1 ORDER BY id LIMIT 1001")?;
         let rows = statement.query_map([&project.id], |r| {
@@ -225,7 +226,7 @@ impl Store {
             serde_json::json!({"projectId":project.id,"observedAt":now_ms(),"elapsedMs":start.elapsed().as_millis(),"metadataQueryMs":query_ms,
             "projectFilesIncludingDeliveryBundles":project_usage,"deliveryBundlesSubset":bundle_usage,
             "materials":{"sealed":sealed,"unsealed":unsealed,"sealedPackages":sealed_packages,"unsealedPackages":unsealed_packages,"ownershipScanComplete":materials_complete,"unattributedManifestCount":unknown_ownership,"executorLimitBytes":crate::local::materials::storage_limit()?},
-            "projectMetadata":{"readEvents":events,"receiptJsonBytes":receipt_bytes,"studies":studies,"studyJsonBytes":document_bytes},
+            "projectMetadata":{"readEvents":events,"receiptJsonBytes":receipt_bytes,"studies":studies,"studyJsonBytes":document_bytes,"scientificMetricEvidence":metric_evidence,"metricInspectionJsonBytes":metric_bytes},
             "sharedExecutorDatabase":shared,
             "scanBudget":{"visitedEntries":budget.entries,"maximumEntries":budget.maximum,"maximumDepth":64,"budgetMs":3000},
             "archiveRetention":{"currentDescriptorCount":current.len(),"referenceScanComplete":references_complete,"automaticDeletionEnabled":false,"unknownFilesProtected":true,"snapshotPolicy":"all-observed-snapshots","deletionCandidates":[]},
