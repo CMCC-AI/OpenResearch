@@ -203,7 +203,7 @@ fn plan_inheritance_rejects_post_hash_file_changes_and_preserves_the_old_plan() 
             "replace" => {
                 let replacement = root.join("replacement.md");
                 std::fs::write(&replacement, std::fs::read(&file).unwrap()).unwrap();
-                std::fs::File::open(&replacement)
+                std::fs::File::options().write(true).open(&replacement)
                     .unwrap()
                     .set_modified(metadata.modified().unwrap())
                     .unwrap();
