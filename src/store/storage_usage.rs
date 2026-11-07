@@ -97,7 +97,7 @@ fn scan(path: &Path, depth: usize, budget: &mut Budget) -> Usage {
     }
     result
 }
-pub(super) fn single_component(value: &str) -> bool {
+pub(crate) fn single_component(value: &str) -> bool {
     !value.is_empty()
         && !value.contains('\\')
         && Path::new(value).components().count() == 1
@@ -138,6 +138,7 @@ impl Store {
         let tx = self.conn.unchecked_transaction()?;
         let (events,receipt_bytes):(u64,u64)=self.conn.query_row("SELECT count(*),COALESCE(sum(length(CAST(receipt AS BLOB))),0) FROM material_read_events WHERE project_id=?1",[&project.id],|r| Ok((r.get(0)?,r.get(1)?)))?;
         let (metric_evidence,metric_bytes):(u64,u64)=self.conn.query_row("SELECT count(*),COALESCE(sum(length(CAST(inspection AS BLOB))),0) FROM scientific_metric_evidence WHERE project_id=?1",[&project.id],|r| Ok((r.get(0)?,r.get(1)?)))?;
+        let (input_count,input_json,input_charge,frozen,preparing,cancelled):(u64,u64,u64,u64,u64,u64)=self.conn.query_row("SELECT count(*),COALESCE(sum(length(CAST(manifest AS BLOB))),0),COALESCE(sum(charged_bytes),0),COALESCE(sum(state='frozen'),0),COALESCE(sum(state IN ('preparing','copying')),0),COALESCE(sum(state='cancelled'),0) FROM frozen_input_sets WHERE project_id=?1",[&project.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
         let (studies,document_bytes):(u64,u64)=self.conn.query_row("SELECT count(*),COALESCE(sum(length(CAST(document AS BLOB))),0) FROM research_studies WHERE project_id=?1",[&project.id],|r| Ok((r.get(0)?,r.get(1)?)))?;
         let mut statement=self.conn.prepare("SELECT id,json_extract(document,'$.deliverySnapshot.archive.sha256') FROM research_studies WHERE project_id=?1 ORDER BY id LIMIT 1001")?;
         let rows = statement.query_map([&project.id], |r| {
@@ -227,6 +228,7 @@ impl Store {
             "projectFilesIncludingDeliveryBundles":project_usage,"deliveryBundlesSubset":bundle_usage,
             "materials":{"sealed":sealed,"unsealed":unsealed,"sealedPackages":sealed_packages,"unsealedPackages":unsealed_packages,"ownershipScanComplete":materials_complete,"unattributedManifestCount":unknown_ownership,"executorLimitBytes":crate::local::materials::storage_limit()?},
             "projectMetadata":{"readEvents":events,"receiptJsonBytes":receipt_bytes,"studies":studies,"studyJsonBytes":document_bytes,"scientificMetricEvidence":metric_evidence,"metricInspectionJsonBytes":metric_bytes},
+            "frozenInputPool":{"records":input_count,"manifestJsonBytes":input_json,"chargedBytes":input_charge,"frozenSets":frozen,"preparingSets":preparing,"cancelledSets":cancelled,"ledgerOnly":true,"scope":"project share of dedicated input pool; includes in-flight reservations; not physical usage or workspace quota"},
             "sharedExecutorDatabase":shared,
             "scanBudget":{"visitedEntries":budget.entries,"maximumEntries":budget.maximum,"maximumDepth":64,"budgetMs":3000},
             "archiveRetention":{"currentDescriptorCount":current.len(),"referenceScanComplete":references_complete,"automaticDeletionEnabled":false,"unknownFilesProtected":true,"snapshotPolicy":"all-observed-snapshots","deletionCandidates":[]},

@@ -314,6 +314,15 @@ fn is_readonly_orx(tokens: &[&str], stage: &str) -> bool {
         }
         // Verbs with a write subcommand: allow only the read-only subcommand(s).
         "metrics" => matches!(subcommand(&mut rest), Some("inspect" | "list" | "show")),
+        "inputs" => {
+            use clap::Parser;
+            let parsed = crate::Cli::try_parse_from(tokens).map(|cli| cli.command);
+            (stage
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '\t' | '-' | '_'))
+                && matches!(&parsed,Err(error) if matches!(error.kind(),clap::error::ErrorKind::DisplayHelp|clap::error::ErrorKind::DisplayVersion)))
+                || matches!(parsed, Ok(Some(crate::Command::Inputs(args))) if matches!(args.command, crate::commands::inputs::InputsCommand::List{..}|crate::commands::inputs::InputsCommand::Show{..}|crate::commands::inputs::InputsCommand::Verify{..}))
+        }
         "project" => matches!(subcommand(&mut rest), Some("view")),
         "exp" => match subcommand(&mut rest) {
             // Pure reads.
@@ -774,6 +783,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn frozen_input_inspection_is_readonly_but_preparation_and_capacity_are_not() {
+        assert!(command_is_readonly("orx inputs freeze --help"));
+        assert!(!command_is_readonly("orx inputs freeze --help > help.txt"));
+        for verb in ["list", "show id", "verify id"] {
+            assert!(command_is_readonly(&format!(
+                "orx inputs {verb} --project p"
+            )));
+        }
+        for command in [
+            "orx inputs freeze --file inputs.json",
+            "orx inputs quota --bytes 4096",
+            "orx inputs recover id --apply",
+            "orx inputs show id > output.json",
+            "orx inputs --project list freeze --file inputs.json",
+            "orx inputs --project show quota --bytes 4096",
+        ] {
+            assert!(!command_is_readonly(command));
+        }
+    }
     #[test]
     fn scientific_metric_inspection_is_readonly_but_unknown_writes_stay_gated() {
         assert!(command_is_readonly(

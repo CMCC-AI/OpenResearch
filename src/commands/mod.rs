@@ -24,6 +24,7 @@ pub mod discover;
 pub mod exp;
 pub mod feedback;
 mod file_serve;
+pub mod inputs;
 pub mod install_cli;
 pub mod install_skills;
 pub mod instance;
