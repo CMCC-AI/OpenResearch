@@ -30,6 +30,7 @@ mod output;
 mod paths;
 mod plane;
 mod remote;
+mod run_inputs;
 mod scientific_metrics;
 mod store;
 mod telemetry;

@@ -51,6 +51,9 @@ pub fn default_python_env(env: &HashMap<String, String>) -> HashMap<String, Stri
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackendDescriptor {
+    /// Immutable selected inputs, independent of delivery/consumption facts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_set: Option<crate::run_inputs::InputSetRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_container: Option<ssh::ContainerRun>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -270,6 +273,7 @@ mod tests {
 
     fn openresearch_descriptor() -> BackendDescriptor {
         BackendDescriptor {
+            input_set: None,
             ssh_container: None,
             monitoring_error: None,
             cancellation_accepted: false,

@@ -13,6 +13,7 @@ pub(crate) mod material_reads;
 pub(crate) mod metric_evidence;
 pub(crate) mod research;
 mod research_metrics;
+mod run_inputs;
 mod schema;
 pub(crate) mod steering;
 pub(crate) mod storage_usage;
@@ -1103,6 +1104,7 @@ impl Store {
         material_reads::migrate(&conn)?;
         metric_evidence::migrate(&conn)?;
         input_sets::migrate(&conn)?;
+        run_inputs::migrate(&conn)?;
         migrate_chat_spawns(&conn)?;
         phase("research-and-spawns");
         Ok(Self {

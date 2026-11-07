@@ -81,6 +81,7 @@ pub async fn submit_local_ssh_with_source(
     }
 
     let mut descriptor = BackendDescriptor {
+        input_set: None,
         ssh_container: container.clone(),
         monitoring_error: None,
         cancellation_accepted: false,
