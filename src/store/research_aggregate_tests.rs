@@ -243,6 +243,7 @@ fn research_aggregate_update_benchmark() {
         for index in 0..claims {
             study.claims.push(EvidenceClaim {
                 material_citation: None,
+                metric_citation: None,
                 id: format!("claim-{index}"),
                 input: ClaimInput {
                     text: "x".repeat(16 * 1024),
@@ -253,6 +254,7 @@ fn research_aggregate_update_benchmark() {
                     line_start: None,
                     line_end: None,
                     material_read_id: None,
+                    metric: None,
                 },
                 commit_sha: None,
                 log_sha256: None,
@@ -296,6 +298,7 @@ fn research_active_scan_benchmark() {
     for index in 0..64 {
         study.claims.push(EvidenceClaim {
             material_citation: None,
+            metric_citation: None,
             id: format!("claim-{index}"),
             input: ClaimInput {
                 text: "x".repeat(16 * 1024),
@@ -306,6 +309,7 @@ fn research_active_scan_benchmark() {
                 line_start: None,
                 line_end: None,
                 material_read_id: None,
+                metric: None,
             },
             commit_sha: None,
             log_sha256: None,

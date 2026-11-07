@@ -24,6 +24,10 @@ struct RunSource {
     status: String,
     commit_sha: Option<String>,
     updated_at: i64,
+    experiment_id: String,
+    backend_json: String,
+    command: String,
+    exit_code: Option<i64>,
 }
 
 impl From<&StoredRun> for RunSource {
@@ -34,6 +38,10 @@ impl From<&StoredRun> for RunSource {
             status: run.status.clone(),
             commit_sha: run.commit_sha.clone(),
             updated_at: run.updated_at,
+            experiment_id: run.experiment_id.clone(),
+            backend_json: run.backend_json.clone(),
+            command: run.command.clone(),
+            exit_code: run.exit_code,
         }
     }
 }
@@ -135,6 +143,12 @@ impl Store {
                 .map(|s| s.len()),
             )
             .fold(0usize, usize::saturating_add);
+        let input_bytes = input_bytes.saturating_add(input.metric.as_ref().map_or(0, |m| {
+            m.evidence_id
+                .len()
+                .saturating_add(m.name.len())
+                .saturating_add(m.split.len())
+        }));
         if input_bytes > MAX_CLAIM_INPUT_BYTES {
             return Err(anyhow!("证据声明字段总计超过 64 KiB"));
         }
@@ -150,6 +164,7 @@ impl Store {
             id: uuid::Uuid::new_v4().to_string(),
             input,
             material_citation: None,
+            metric_citation: None,
             commit_sha: None,
             log_sha256: None,
             excerpt: None,
@@ -192,6 +207,7 @@ impl Store {
             }
             (None, None)
         };
+        self.research_prepare_metric_claim(&study, &mut claim)?;
         let material = self.research_prepare_material_claim(&study, &mut claim, material_root)?;
         Ok(PreparedClaim {
             study_id: study.id,
@@ -231,6 +247,7 @@ impl Store {
             log.check_unchanged()?;
         }
         self.research_validate_material_claim(study, &prepared.claim)?;
+        self.research_validate_metric_claim(study, &prepared.claim)?;
         if let Some(material) = &prepared.material {
             material.check_unchanged()?;
             study.supersede_gate(crate::local::research::delivery_gate(study.workflow_mode()))?;
@@ -244,6 +261,24 @@ impl Store {
                 count
                     .checked_add(1)
                     .ok_or_else(|| anyhow!("材料引用版本已达上限"))?,
+            );
+        }
+        let new_metric = prepared.claim.metric_citation.is_some();
+        if new_metric || study.metric_citation_revision.is_some() {
+            // Once metric evidence participates in review, every new claim
+            // changes that reviewed evidence set, including plain inferences.
+            study.supersede_gate(crate::local::research::delivery_gate(study.workflow_mode()))?;
+            study.delivery_error = None;
+        }
+        if new_metric {
+            study.metric_citation_revision = Some(
+                (study
+                    .claims
+                    .iter()
+                    .filter(|c| c.metric_citation.is_some())
+                    .count() as u64)
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("指标引用版本已达上限"))?,
             );
         }
         let id = prepared.claim.id.clone();

@@ -85,6 +85,14 @@ impl Store {
     }
 
     pub(crate) fn metric_evidence(&self, project: &str, id: &str) -> Result<MetricEvidence> {
+        Ok(self.metric_evidence_with_json(project, id)?.0)
+    }
+
+    pub(crate) fn metric_evidence_with_json(
+        &self,
+        project: &str,
+        id: &str,
+    ) -> Result<(MetricEvidence, String)> {
         let row = self.conn.query_row("SELECT sequence,id,project_id,run_id,registered_at,producer_version,snapshot_sha256,inspection FROM scientific_metric_evidence WHERE project_id=?1 AND id=?2", params![project,id], |r| {
             Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?))
         }).optional()?.ok_or_else(|| anyhow!("本项目中不存在该科学指标登记"))?;
@@ -103,16 +111,19 @@ impl Store {
         {
             return Err(anyhow!("科学指标登记内容或摘要损坏"));
         }
-        Ok(MetricEvidence {
-            sequence,
-            id,
-            project_id,
-            run_id,
-            registered_at,
-            producer_version,
-            snapshot_sha256,
-            inspection: serde_json::from_str(&json)?,
-        })
+        Ok((
+            MetricEvidence {
+                sequence,
+                id,
+                project_id,
+                run_id,
+                registered_at,
+                producer_version,
+                snapshot_sha256,
+                inspection: serde_json::from_str(&json)?,
+            },
+            json,
+        ))
     }
 
     /// Summaries only: at most 50 rows, never 50 full point collections.

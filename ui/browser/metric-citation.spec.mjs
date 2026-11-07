@@ -1,0 +1,36 @@
+import { test, expect } from '@playwright/test';
+
+test('synthetic public-case metric stays readable at wide/narrow widths without private lookup', async ({ page }, info) => {
+  let privateRequests = 0;
+  const errors = [];page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(() => localStorage.setItem('orx:locale', 'en'));
+  for (const pattern of ['**/api/metrics/**','**/api/research/**']) await page.route(pattern, route => { privateRequests++;return route.abort(); });
+  await page.goto('/cases/browser-case?pane='+encodeURIComponent(JSON.stringify({ kind:'home',view:'research' })));
+  const evidence = page.getByRole('button', { name:'证据与来源',exact:true });
+  await expect(evidence).toBeVisible();
+  const devtools = page.getByRole('button', { name:'Close tanstack query devtools',exact:true });
+  if (await devtools.isVisible()) await devtools.click();
+  await evidence.click();
+  await page.getByText('当前证据声明（1）', { exact:true }).click();
+  const citation = page.locator('[aria-label="指标登记来源"]');
+  await expect(citation).toBeVisible();
+  await expect(citation).toContainText('accuracy · validation · step 1');
+  await expect(citation).toContainText('登记值：0.9 · 单位：1');
+  await expect(citation).toContainText('历史核验记录');
+  await citation.getByText('核验身份', { exact:true }).click();
+  await expect(citation).toContainText('a'.repeat(64));
+  await page.screenshot({ path:info.outputPath('metric-citation-case-wide.png'),fullPage:true });
+  await page.setViewportSize({ width:390,height:844 });
+  await citation.scrollIntoViewIfNeeded();
+  const value = citation.getByText('登记值：0.9 · 单位：1', { exact:true });
+  await value.scrollIntoViewIfNeeded();
+  await expect(value).toBeInViewport({ ratio:1 });
+  await expect.poll(() => page.locator('body').evaluate(e => e.scrollWidth)).toBeLessThanOrEqual(391);
+  await page.screenshot({ path:info.outputPath('metric-citation-case-narrow.png'),fullPage:true });
+  const collapse = page.getByRole('button', { name:'收起导航',exact:true });
+  if (await collapse.isVisible()) await collapse.click();
+  await expect(citation).toBeVisible();
+  await expect.poll(() => page.locator('body').evaluate(e => e.scrollWidth)).toBeLessThanOrEqual(391);
+  await page.screenshot({ path:info.outputPath('metric-citation-case-collapsed.png'),fullPage:true });
+  expect(privateRequests).toBe(0);expect(errors).toEqual([]);
+});

@@ -41,3 +41,11 @@ list 使用项目/Run/sequence 索引和 seek 游标，默认 20、最多 50 条
 最终定向 5 项指标单元及 5 项真实 CLI 再次通过，包括快照 4 MiB 上限、登记前 Run 十类字段变化/删除、失败插入回滚与跨连接重试、重开迁移、历史保留、跨项目/会话、分页范围和摘要不符拒绝。不可覆盖断言同时检查 UPDATE、单项 DELETE、INSERT OR REPLACE；合成破坏摘要后 show 非零退出且 stdout 为空。只读 inspect 不生成登记，registry 不产生材料回执或聊天消息。
 
 格式、全目标 Clippy 零警告、上游关系及 8 项版本/源码归档/发行证据测试通过。未改 UI 或提交资源。远程最终模拟合并的完整跨平台 CI 尚待验收；不借用 `.5` 或旧指标候选的成功状态，不提前合入、发行或清理本候选分支。
+
+## 合入状态
+
+固定候选 `48ce63910a9961f6025bb41cc747d4e20b59e069` 已由 [PR #13](https://github.com/CMCC-AI/OpenResearch/pull/13) 合入产品 `e957505baccbbf168ecdbc90bdd5587f353fef65`。[完整 CI 42318881286](https://github.com/CMCC-AI/OpenResearch/actions/runs/42318881286) attempt 1 全成功，实际模拟合并为 `105a2c4d85d97367038ba3add4e718d8e273571c`，包含 Windows 安装包、两架构 Linux AppImage、ARM macOS 原生/真实 PDF、平台/执行器和三系统归档一致性。已下载浏览器附件 13551759610，三场景 41.2 秒，expected=3、skipped=0、unexpected=0、flaky=0、errors=[]，修订与模拟合并一致；检查窄屏截图和基线审计，生产未部署。
+
+上述前期“候选/待验收”保留当时边界，现阶段以本节为准。它已合入但未新发行；`.5` 标签和资产未移动。指标与声明/审查/交付绑定继续由独立后续候选实现，不能借用本 PR 的完整 CI 状态。
+
+确认产品分支保留完整来源，后续引用候选已快进产品基线；原功能工作树无任何未提交/忽略文件。按精确旧提交租约删除 `feat/scientific-metric-registry` 远端分支，同时清理本地分支和工作树；没有归档标签，用户主工作区保持原样。

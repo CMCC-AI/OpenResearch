@@ -301,5 +301,71 @@ pub(crate) fn register(
     store.register_metric_evidence(&expected, &inspection)
 }
 
+/// Resolve one exact point from a durable observation, without consulting the
+/// current mutable report or data files. Existing Run/log evidence still applies.
+pub(crate) fn citation(
+    saved: &crate::store::metric_evidence::MetricEvidence,
+    selection: &crate::store::research::MetricSelection,
+    run: &StoredRun,
+) -> Result<crate::store::research::MetricCitation> {
+    if uuid::Uuid::parse_str(&selection.evidence_id).is_err()
+        || saved.id != selection.evidence_id
+        || saved.run_id != run.id
+        || saved.project_id != run.project_id
+        || run.status != "done"
+        || run.exit_code != Some(0)
+        || saved.inspection["schemaVersion"] != 1
+        || saved.inspection["projectId"] != saved.project_id
+        || saved.inspection["runId"] != run.id
+        || saved.inspection["command"] != run.command
+    {
+        return Err(anyhow!("指标登记与成功 Run 的身份或核验契约不一致"));
+    }
+    let backend = BackendDescriptor::parse(&run.backend_json)?;
+    if saved.inspection["status"] != "done"
+        || saved.inspection["sourceBytes"].as_u64().is_none()
+        || saved.inspection["sourceBytes"].as_u64() != backend.source_size
+    {
+        return Err(anyhow!("指标登记与 Run 代码快照字节身份不一致"));
+    }
+    let report = parse(
+        &serde_json::to_vec(&saved.inspection["report"])?,
+        run,
+        &backend,
+    )?;
+    let series = report
+        .series
+        .iter()
+        .find(|s| s.name == selection.name && s.split == selection.split)
+        .ok_or_else(|| anyhow!("指标名称或数据划分不在该登记中"))?;
+    let point = series
+        .points
+        .iter()
+        .find(|p| p.step == selection.step)
+        .ok_or_else(|| anyhow!("指标 step 不在该登记中"))?;
+    let report_sha256 = saved.inspection["reportSha256"]
+        .as_str()
+        .filter(|s| sha256(s))
+        .ok_or_else(|| anyhow!("指标报告摘要无效"))?
+        .to_string();
+    let measured_at = saved.inspection["measuredAt"]
+        .as_i64()
+        .ok_or_else(|| anyhow!("指标核验时间无效"))?;
+    Ok(crate::store::research::MetricCitation {
+        selection: selection.clone(),
+        snapshot_sha256: saved.snapshot_sha256.clone(),
+        report_sha256,
+        run_id: run.id.clone(),
+        experiment_id: report.experiment_id,
+        commit_sha: report.commit_sha,
+        source_sha256: report.source_sha256,
+        unit: series.unit.clone(),
+        value: point.value,
+        measured_at,
+        registered_at: saved.registered_at,
+        producer_version: saved.producer_version.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests;
