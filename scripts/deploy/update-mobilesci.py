@@ -16,7 +16,8 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / '.mobilesci-run' / 'updates'
-TARGET = 'ubuntu@61.136.101.179'
+TARGET = 'root@10.7.0.18'
+SSH_PORT = '22'
 SSH_OPTIONS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=2']
 
 
@@ -212,11 +213,11 @@ def authorize_upload(bundle, evidence):
 def upload(bundle, unified_opencode=False, evidence=None):
     authorize_upload(bundle, evidence)
     sha = digest(bundle)
-    remote = '/home/ubuntu/.mobilesci-updates/' + sha[:16]
-    ssh = ['ssh', *SSH_OPTIONS, '-p', '20280', TARGET]
+    remote = '/root/.mobilesci-updates/' + sha[:16]
+    ssh = ['ssh', *SSH_OPTIONS, '-p', SSH_PORT, TARGET]
     # Check connectivity before uploading; a failed upload may be retried safely.
     run([*ssh, 'umask 077; mkdir -p ' + shlex.quote(remote)])
-    run(['scp', *SSH_OPTIONS, '-P', '20280', bundle, TARGET + ':' + remote + '/bundle.tgz'])
+    run(['scp', *SSH_OPTIONS, '-P', SSH_PORT, bundle, TARGET + ':' + remote + '/bundle.tgz'])
     # Verify the outer archive before executing anything from it. Extraction is
     # limited to regular files and directories, with traversal/links rejected.
     bootstrap = '''import hashlib,pathlib,sys,tarfile
