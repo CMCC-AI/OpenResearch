@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import socket
 import sqlite3
 import subprocess
@@ -86,6 +87,20 @@ def managed_environment(env):
             raise RuntimeError('Unexpected managed image reference: ' + key)
         result[key] = EXECUTOR_IMAGE
     return result
+
+
+def validate_runtime_rows(rows):
+    if {row['workspace_id'] for row in rows} != {name.removeprefix('orx-managed-') for name in PRIVATE}:
+        raise RuntimeError('Persisted private runtime set changed')
+    if any(row['desired'] != 'running' or row['status'] != 'ready' for row in rows):
+        raise RuntimeError('A private space is queued, starting, failed or deleting')
+
+
+def runtime_rows():
+    query = "SELECT coalesce(json_agg(t),'[]'::json) FROM (SELECT workspace_id,status,desired FROM workspace_runtimes WHERE status<>'deleted' ORDER BY workspace_id) t"
+    command = 'exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc ' + shlex.quote(query)
+    return json.loads(run('docker', 'exec', '--env', 'PGOPTIONS=-c default_transaction_read_only=on',
+                          DATABASE, 'sh', '-c', command, capture=True))
 
 
 def desired_config(name, old):
@@ -175,6 +190,8 @@ def plan():
     database = inspect(DATABASE)
     if database['Image'] != DATABASE_IMAGE or not database['State']['Running']:
         raise RuntimeError('Database identity changed')
+    rows = runtime_rows()
+    validate_runtime_rows(rows)
     origin = environment(originals[PLATFORM]['Config']).get('OPENRESEARCH_APP_ORIGIN')
     if origin != 'http://49.232.238.110:20281':
         raise RuntimeError('Public origin changed; review entry checks')
@@ -204,13 +221,14 @@ def plan():
               'nginxSha256': digest((CURRENT / 'nginx.conf').read_bytes()),
               'environmentSha256': digest((CURRENT / '.env').read_bytes()) if (CURRENT / '.env').exists() else None,
               'currentUi': current_ui, 'candidateUi': ui,
-              'databaseId': database['Id'], 'databaseImage': database['Image']}
+              'databaseId': database['Id'], 'databaseImage': database['Image'], 'runtimeRows': rows}
     fingerprint = digest(json.dumps(stable, sort_keys=True).encode())
     return {'fingerprint': fingerprint, 'originals': originals, 'compose': updated,
             'configs': configs, 'origin': origin, 'ui': ui}
 
 
 def assert_idle(names):
+    validate_runtime_rows(runtime_rows())
     for name in names:
         code = "fetch('http://127.0.0.1:4791/api/projects/activity').then(r=>{if(!r.ok)throw Error('activity');return r.json()}).then(d=>{if(!Array.isArray(d.activity))throw Error('shape');console.log(JSON.stringify(d.activity))})"
         activity = json.loads(run('docker', 'exec', name, 'node', '-e', code, capture=True))

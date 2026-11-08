@@ -212,6 +212,19 @@ class CutoverTests(unittest.TestCase):
             self.assertEqual([db.execute(q, (1000,) if '?' in q else ()).fetchone()[0]
                               for q in cutover.IDLE_QUERIES], [1, 1, 1, 3])
 
+    def test_only_the_reviewed_ready_running_private_spaces_can_be_replaced(self):
+        rows = [{'workspace_id': name.removeprefix('orx-managed-'), 'desired': 'running', 'status': 'ready'}
+                for name in cutover.PRIVATE]
+        cutover.validate_runtime_rows(rows)
+        for key, value in [('desired', 'deleted'), ('status', 'queued'), ('status', 'starting'),
+                           ('status', 'failed'), ('status', 'unknown')]:
+            changed = copy.deepcopy(rows)
+            changed[0][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(RuntimeError):
+                cutover.validate_runtime_rows(changed)
+        with self.assertRaisesRegex(RuntimeError, 'runtime set changed'):
+            cutover.validate_runtime_rows(rows[1:])
+
     def test_static_conflict_and_symlink_are_rejected_before_exchange(self):
         with tempfile.TemporaryDirectory() as directory:
             release, candidate, backups, *_ = self.fixture(directory, Engine())
