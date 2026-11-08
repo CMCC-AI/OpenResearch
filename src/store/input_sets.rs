@@ -96,13 +96,13 @@ impl Store {
             )
             .optional()?;
         let used: u64 = tx.query_row(
-            "SELECT COALESCE(sum(charged_bytes),0) FROM frozen_input_sets WHERE state!='cancelled'",
+            &format!("SELECT {}", super::input_deliveries::USED),
             [],
             |r| r.get(0),
         )?;
         tx.commit()?;
         Ok(
-            serde_json::json!({"scope":"frozen-input-pool-only","limitBytes":limit,"chargedBytes":used,"includesPreparing":true,"countsDatabaseMetadata":false,"automaticDeletion":false}),
+            serde_json::json!({"scope":"frozen-and-run-input-copies","limitBytes":limit,"chargedBytes":used,"includesPreparing":true,"countsDatabaseMetadata":false,"automaticDeletion":false}),
         )
     }
     pub(crate) fn input_reserve(

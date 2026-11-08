@@ -30,6 +30,7 @@ mod output;
 mod paths;
 mod plane;
 mod remote;
+mod run_inputs;
 mod scientific_metrics;
 mod store;
 mod telemetry;
@@ -513,6 +514,10 @@ pub enum ExpCommand {
 #[derive(Args, Debug)]
 pub struct ExpRunArgs {
     pub exp_id: String,
+    /// Explicit frozen input set (currently local backend). Copies are retained
+    /// and charged to the input pool; bound Runs cannot yet be deleted.
+    #[arg(long)]
+    pub input_set: Option<String>,
     /// Disk in GB for a `--backend openresearch` instance (default 100).
     #[arg(long)]
     pub disk: Option<i64>,

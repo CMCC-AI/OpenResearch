@@ -123,6 +123,7 @@ pub async fn submit_local_ray_with_source(
     let watch = ray::job_url(&address, &submission_id);
 
     let mut descriptor = BackendDescriptor {
+        input_set: None,
         ssh_container: None,
         monitoring_error: None,
         cancellation_accepted: false,

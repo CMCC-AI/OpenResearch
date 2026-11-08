@@ -1,6 +1,6 @@
 use super::*;
 use crate::local::model::LocalProject;
-struct TempDir(PathBuf);
+pub(super) struct TempDir(PathBuf);
 impl std::ops::Deref for TempDir {
     type Target = PathBuf;
     fn deref(&self) -> &Self::Target {
@@ -9,16 +9,36 @@ impl std::ops::Deref for TempDir {
 }
 impl Drop for TempDir {
     fn drop(&mut self) {
+        #[cfg(windows)]
+        fn writable_tree(path: &Path) {
+            if let Ok(entries) = fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    if let Ok(kind) = entry.file_type() {
+                        if kind.is_dir() {
+                            writable_tree(&entry.path());
+                        } else if kind.is_file() {
+                            if let Ok(m) = entry.metadata() {
+                                let mut p = m.permissions();
+                                p.set_readonly(false);
+                                let _ = fs::set_permissions(entry.path(), p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        #[cfg(windows)]
+        writable_tree(&self.0);
         let _ = fs::remove_dir_all(&self.0);
     }
 }
-struct Fixture {
-    store: Store,
-    dir: TempDir,
+pub(super) struct Fixture {
+    pub(super) store: Store,
+    pub(super) dir: TempDir,
     package: String,
 }
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let dir = std::env::temp_dir().join(format!("orx-input-set-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let store = Store::open_at(dir.clone()).unwrap();
@@ -68,7 +88,7 @@ impl Fixture {
             package,
         }
     }
-    fn request(&self) -> Request {
+    pub(super) fn request(&self) -> Request {
         Request {
             schema_version: 1,
             files: vec![SelectedFile {

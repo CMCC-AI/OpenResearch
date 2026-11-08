@@ -249,6 +249,7 @@ fn shell_quote(value: &str) -> String {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Capabilities {
+    pub frozen_inputs: bool,
     pub id: &'static str,
     pub label: &'static str,
     pub remote: bool,
@@ -386,6 +387,7 @@ macro_rules! backend_adapter {
         impl ComputeBackend for $name {
             fn capabilities(&self) -> Capabilities {
                 Capabilities {
+                    frozen_inputs: $id == "local",
                     id: $id,
                     label: $label,
                     remote: $remote,
@@ -534,6 +536,7 @@ pub struct SshCompute {
 impl ComputeBackend for SshCompute {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
+            frozen_inputs: false,
             id: "ssh",
             label: "SSH",
             remote: true,
@@ -691,6 +694,9 @@ pub fn capabilities() -> Vec<Capabilities> {
 }
 
 pub fn validate_run_args(args: &crate::ExpRunArgs) -> Result<()> {
+    if args.input_set.is_some() && args.backend.as_deref().unwrap_or("local") != "local" {
+        return Err(anyhow!("--input-set is currently supported only by --backend local; no job was started or billed"));
+    }
     if let Some(timeout) = &args.timeout {
         match args.backend.as_deref().unwrap_or("local") {
             "local" | "ssh" => {
@@ -784,6 +790,11 @@ pub async fn submit(args: &crate::ExpRunArgs) -> Result<StoredRun> {
     let project = store
         .get_local_project(&experiment.project_id)?
         .ok_or_else(|| anyhow!("Local project {} not found.", experiment.project_id))?;
+    let prepared_input = args
+        .input_set
+        .as_deref()
+        .map(|id| crate::input_sets::delivery::prepare(&store, &project.id, id))
+        .transpose()?;
     let research_contract = if store
         .research_requires_gate(&experiment.id, args.launching_chat_session().as_deref())?
     {
@@ -808,7 +819,10 @@ pub async fn submit(args: &crate::ExpRunArgs) -> Result<StoredRun> {
                 .unwrap_or_else(|| "Compute backend is not ready.".to_string())
         ));
     }
-    let source = backend.stage_source(&project, &experiment).await?;
+    let mut source = backend.stage_source(&project, &experiment).await?;
+    if prepared_input.is_some() {
+        source.0.path = crate::paths::canonicalize(&source.0.path)?;
+    }
     let run_id = uuid::Uuid::new_v4().to_string();
     let command = Some(experiment.run_command.clone())
         .filter(|value| !value.trim().is_empty())
@@ -820,6 +834,7 @@ pub async fn submit(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         })
         .unwrap_or_default();
     let mut descriptor = BackendDescriptor {
+        input_set: prepared_input.as_ref().map(|p| p.reference.clone()),
         ssh_container: None,
         monitoring_error: None,
         cancellation_accepted: false,
@@ -893,6 +908,7 @@ pub async fn submit(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         identity.as_ref(),
         report.as_ref(),
         research_contract.as_ref(),
+        prepared_input.as_ref(),
     )?;
     let pending_backend_json = descriptor.to_json();
     match backend.submit(args, source, run_id.clone()).await {
@@ -919,7 +935,13 @@ pub async fn submit(args: &crate::ExpRunArgs) -> Result<StoredRun> {
             if !handle_was_persisted
                 && store.update_status(
                     &run_id,
-                    RunStatus::Failed,
+                    if prepared_input.is_some()
+                        && current.as_ref().is_some_and(|run| run.cancel_requested)
+                    {
+                        RunStatus::Cancelled
+                    } else {
+                        RunStatus::Failed
+                    },
                     Some(crate::store::now_ms()),
                     None,
                 )?
@@ -990,6 +1012,7 @@ fn reserve_run(
     identity: Option<&crate::store::InvocationIdentity>,
     report: Option<&(String, serde_json::Value)>,
     research_contract: Option<&crate::store::research::RunContract>,
+    prepared_input: Option<&crate::input_sets::delivery::PreparedInput>,
 ) -> Result<()> {
     let dir = crate::store::data_dir().join("submission-locks");
     std::fs::create_dir_all(&dir)?;
@@ -1035,16 +1058,52 @@ fn reserve_run(
         )?;
     }
     store.reserve_run_telemetry(&pending.id, identity, report)?;
+    if let Some(input) = prepared_input {
+        input.check(store)?;
+    }
     store.upsert_run(pending)?;
+    if prepared_input.is_some() {
+        store.reserve_input_delivery(&pending.id)?;
+    }
     tx.commit()?;
     Ok(())
 }
 
 pub fn record_submission_handle(run_id: &str, descriptor: &BackendDescriptor) -> Result<()> {
-    let database_error = Store::open()
-        .and_then(|store| store.set_backend_json(run_id, &descriptor.to_json()))
+    record_submission_handle_at(Store::open(), &crate::store::data_dir(), run_id, descriptor)
+}
+
+pub(crate) fn record_submission_handle_at(
+    store: Result<Store>,
+    data_dir: &Path,
+    run_id: &str,
+    descriptor: &BackendDescriptor,
+) -> Result<()> {
+    let database_error = store
+        .and_then(|store| {
+            if descriptor.input_set.is_some() {
+                let current = store.get_run(run_id)?.ok_or_else(|| {
+                    anyhow!(
+                        "{}: input-bound run was not reserved",
+                        crate::run_inputs::GUARD
+                    )
+                })?;
+                crate::run_inputs::check_descriptor(&current, descriptor)?;
+            }
+            store.set_backend_json(run_id, &descriptor.to_json())
+        })
         .err();
-    let dir = crate::store::data_dir().join("submission-handles");
+    // A provider handle is not permission to discard an immutable input
+    // contract. In particular, do not turn a constraint failure into a
+    // successful unbound recovery file as older writers did.
+    if let Some(error) = database_error.as_ref() {
+        if descriptor.input_set.is_some() || crate::run_inputs::is_guard_error(error) {
+            return Err(anyhow!(
+                "Could not persist input-bound submission; no recovery downgrade: {error}"
+            ));
+        }
+    }
+    let dir = data_dir.join("submission-handles");
     if let Err(error) = std::fs::create_dir_all(&dir) {
         return match database_error {
             None => {
@@ -1073,12 +1132,20 @@ pub fn record_submission_handle(run_id: &str, descriptor: &BackendDescriptor) ->
     Ok(())
 }
 
-pub fn recover_submission_handle(run_id: &str) -> Result<Option<BackendDescriptor>> {
-    let path = crate::store::data_dir()
+pub fn recover_submission_handle(store: &Store, run_id: &str) -> Result<Option<BackendDescriptor>> {
+    let path = store
+        .input_data_root()?
         .join("submission-handles")
         .join(format!("{run_id}.json"));
     match std::fs::read_to_string(path) {
-        Ok(json) => BackendDescriptor::parse(&json).map(Some),
+        Ok(json) => {
+            let descriptor = BackendDescriptor::parse(&json)?;
+            let run = store
+                .get_run(run_id)?
+                .ok_or_else(|| anyhow!("Run {run_id} not found"))?;
+            crate::run_inputs::check_descriptor(&run, &descriptor)?;
+            Ok(Some(descriptor))
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
@@ -1165,6 +1232,7 @@ pub(crate) mod tests {
 
     pub(crate) fn tinker_args() -> crate::ExpRunArgs {
         crate::ExpRunArgs {
+            input_set: None,
             exp_id: "exp".into(),
             disk: None,
             provider: None,

@@ -273,11 +273,17 @@ pub fn run_contract(store: &Store, args: &crate::ExpRunArgs) -> Result<RunContra
     let mut env = crate::config::list_synced_env();
     env.sort();
     let settings = serde_json::to_vec(&(execution_settings, env))?;
+    let mut options = run_options(args, &digest(&settings));
+    if let Some(id) = args.input_set.as_deref() {
+        crate::compute::validate_run_args(args)?;
+        let prepared = crate::input_sets::delivery::prepare(store, &exp.project_id, id)?;
+        options["inputSet"] = serde_json::to_value(prepared.reference)?;
+    }
     Ok(RunContract {
         experiment_id: exp.id,
         revision,
         command,
-        options: run_options(args, &digest(&settings)),
+        options,
     })
 }
 

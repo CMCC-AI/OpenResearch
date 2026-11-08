@@ -122,7 +122,7 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
     }
     let mut descriptor = BackendDescriptor::parse(&stored.backend_json)?;
     if descriptor.job_id.is_none() {
-        if let Some(recovered) = crate::compute::recover_submission_handle(&run_id)? {
+        if let Some(recovered) = crate::compute::recover_submission_handle(&store, &run_id)? {
             store.set_backend_json(&run_id, &recovered.to_json())?;
             descriptor = recovered;
         }

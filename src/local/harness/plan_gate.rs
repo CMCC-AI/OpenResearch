@@ -321,7 +321,7 @@ fn is_readonly_orx(tokens: &[&str], stage: &str) -> bool {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '\t' | '-' | '_'))
                 && matches!(&parsed,Err(error) if matches!(error.kind(),clap::error::ErrorKind::DisplayHelp|clap::error::ErrorKind::DisplayVersion)))
-                || matches!(parsed, Ok(Some(crate::Command::Inputs(args))) if matches!(args.command, crate::commands::inputs::InputsCommand::List{..}|crate::commands::inputs::InputsCommand::Show{..}|crate::commands::inputs::InputsCommand::Verify{..}))
+                || matches!(parsed, Ok(Some(crate::Command::Inputs(args))) if matches!(args.command, crate::commands::inputs::InputsCommand::List{..}|crate::commands::inputs::InputsCommand::Show{..}|crate::commands::inputs::InputsCommand::Verify{..}|crate::commands::inputs::InputsCommand::Run{..}))
         }
         "project" => matches!(subcommand(&mut rest), Some("view")),
         "exp" => match subcommand(&mut rest) {
@@ -787,7 +787,7 @@ mod tests {
     fn frozen_input_inspection_is_readonly_but_preparation_and_capacity_are_not() {
         assert!(command_is_readonly("orx inputs freeze --help"));
         assert!(!command_is_readonly("orx inputs freeze --help > help.txt"));
-        for verb in ["list", "show id", "verify id"] {
+        for verb in ["list", "show id", "verify id", "run id", "run id --verify"] {
             assert!(command_is_readonly(&format!(
                 "orx inputs {verb} --project p"
             )));
@@ -796,9 +796,12 @@ mod tests {
             "orx inputs freeze --file inputs.json",
             "orx inputs quota --bytes 4096",
             "orx inputs recover id --apply",
+            "orx inputs recover-run id",
+            "orx inputs recover-run id --apply",
             "orx inputs show id > output.json",
             "orx inputs --project list freeze --file inputs.json",
             "orx inputs --project show quota --bytes 4096",
+            "orx inputs --project run freeze --file inputs.json",
         ] {
             assert!(!command_is_readonly(command));
         }
