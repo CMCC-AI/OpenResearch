@@ -1,8 +1,10 @@
 # 跨项目会话工作区恢复
 
+> 最终状态（2026-11-08 核查）：本能力已由 PR #12 合入 `ad8c5432`，随 `.5`、`.6` 发行；集成 CI 42312664244、精确 `.5` 发行 CI 42315297793 及三项真实浏览器场景成功。详见[最终集成证据](followup-integration-2026-11-07.md#已完成的发行证据)。下文的候选、失败及待验收保留为历史，不再表示未合入/未发行；生产验收仍单独报告。
+
 本批适配官方 v0.2.24 的 [#872 / `59acdeb02d1869edfc37d0725dd98b87d3c1bf1c`](https://github.com/alphaXiv/OpenResearch/commit/59acdeb02d1869edfc37d0725dd98b87d3c1bf1c)。原补丁统一 ChatPanel 的 SessionRow.onOpen，本地另有首页 ResearchProjectNavigation 入口，以及私人空间/只读案例 API、研究和材料 pane，需一并适配。
 
-## 当前集成状态（2026-11-07）
+## 历史集成状态（2026-11-07）
 
 `5dfd582b` 的 CI 42269493163 已通过 Linux 主检查、Windows 安装包、两个 Linux 桌面架构和实际 Chromium 两场景；attempt 2 又通过三系统归档重现性，但 ARM 原生作业始终未取得 runner，注解确认为容量不足，最终取消。不能记作完整 CI 成功。后文保留各轮历史时点，当前以本节和最新实施台账为准。
 
