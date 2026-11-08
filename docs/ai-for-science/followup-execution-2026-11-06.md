@@ -43,6 +43,8 @@
 
 生产四个原容器仍在运行且镜像未变；未修改 Compose/Nginx 或执行器自动创建配置，未调用真实模型/实验。当前授权明确排除替换生产服务，因此下一步先核对部署拓扑与静态资源路径，准备可审阅的切换和回滚清单；实际入口和实时空闲准入不能由本次副本验收替代。不新增科研溯源能力或另发版本，PR #17 保持草稿。
 
+当前拓扑已只读核实：`mobilesci-replica`、current→f817211、网关挂载 current/ui、公共 Origin 为 `http://49.232.238.110:20281`；旧更新器固定的 remote/workbench/公网入口不适用。固定版本切换脚本、真实只读计划指纹和 58 项部署辅助验证见[切换工具候选](release-v0.2.23-mobilesci.6-evidence.md#当前托管部署的切换工具候选2026-11-08)。候选完整 CI 尚待运行，生产执行仍未授权；不据默认规划成功宣称实际切换与回滚通过。
+
 ## 当前状态（2026-11-07，.6 源码已发行，生产未切换）
 
 科学指标持久登记（PR #13）与声明选点绑定、审批失效、原始登记字节封存、网页来源展示（PR #14）均已合入产品 `8d1bf3db`。冻结提交 `ba641033954d7a5a92cc099ee63106b788d8f2ba` 经自己的完整[模拟合并 CI 42341125043](https://github.com/CMCC-AI/OpenResearch/actions/runs/42341125043)及独立[发行 CI 42342582854](https://github.com/CMCC-AI/OpenResearch/actions/runs/42342582854)通过后，于 2026-11-07 13:42（上海时间）发布 [v0.2.23-mobilesci.6 源码版](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.6)。标签、四个实际附件、清单和同提交归档字节均已核验；完整证据及与初始计划的对照见[第六版发布后记录](release-v0.2.23-mobilesci.6-evidence.md)。
