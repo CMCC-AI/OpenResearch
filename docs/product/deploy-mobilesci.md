@@ -2,7 +2,9 @@
 
 运行形态、规范入口和推荐配置源统一见[运行与部署约定](runtime-and-deployment.md)。本文提供该形态的具体操作步骤。
 
-入口为仓库根目录 `deploy-mobilesci.command`。SSH 目标固定为 `ubuntu@61.136.101.179:20280`，部署后浏览器访问 **http://61.136.101.179:20281/mobilesci**，无需手动建立 SSH 隧道。已确认同步本地 OpenCode 配置及模型登录凭据，并明确授权该公网 HTTP 入口；其他部署继续默认要求 HTTPS。
+当前检查与维护按 AGENTS 使用 `ssh root@10.7.0.18`（默认 22 端口）；增量更新入口是 `update-mobilesci.command`，SSH、SCP 和日志跟踪统一使用该私人网络入口。公网浏览器地址与平台 Host/Origin 不因 SSH 传输入口改变而修改。
+
+下文初装入口 `deploy-mobilesci.command` 及公网 SSH `ubuntu@61.136.101.179:20280` 保留为历史部署说明，不用于当前维护。其曾获授权同步模型登录凭据，不构成对本轮重新上传凭据或重装服务的授权。历史浏览器入口为 **http://61.136.101.179:20281/mobilesci**；其他部署继续默认要求 HTTPS。
 
 ## 一键执行
 
@@ -158,7 +160,7 @@ ssh -p 20280 ubuntu@61.136.101.179 \
 已有上述双服务器部署时，在仓库根目录执行：
 
 ```bash
-./update-mobilesci.command
+./update-mobilesci.command --bundle /完整路径/更新包.tgz --evidence /完整路径/该包验收证据.json
 ```
 
 该入口更新 61 服务器的科研后端、前端以及账号平台代码和依赖；不替换文献服务或网关。保留当前容器的环境变量、数据挂载、权限、网络和重启策略，不重新同步模型凭据。更新前检查活跃智能体、运行实验、排队消息、会话租约和未完成派发；任一非零则停止更新。使用科研 SQLite 副本演练新版迁移，验证完整性与原有表记录数；备份科研 SQLite 和账号 PostgreSQL 后，执行账号平台的向前兼容迁移，不重置已有账号或密码。保留旧镜像和旧容器，启动与入口验证失败时恢复旧容器。
@@ -171,9 +173,9 @@ ssh -p 20280 ubuntu@61.136.101.179 \
 ./update-mobilesci.command --prepare-only
 ```
 
-产物位于 `.mobilesci-run/updates/`，不包含账号密码、模型凭据或研究数据。指定某个包时使用 `./update-mobilesci.command --bundle /完整路径/更新包.tgz`；默认按本地源码与资源指纹复用最新包，源码变化后会重新准备。服务器需已有两个 MobileSci 容器、Docker、Python 3，以及 `ubuntu` 用户的 Docker 操作权限，无需重新开启 sudo。
+产物位于 `.mobilesci-run/updates/`，不包含账号密码、模型凭据或研究数据。实际更新必须提供绑定该包与提交的 `--evidence`，校验不通过则在任何 SSH/SCP 前拒绝；`--prepare-only` 不连接服务器。默认按本地源码与资源指纹复用最新包，源码变化后会重新准备。当前服务器通过私人网络 root 入口维护，需已有 MobileSci 容器、Docker 和 Python 3；此脚本修补不授权执行更新，仍须先满足空闲、备份/恢复与候选验收门禁。
 
-服务器更新日志位于 `/home/ubuntu/.mobilesci-updates/<包哈希前缀>/deploy.log`。回滚元数据位于用户私有 `.mobilesci-sidebar-upgrade-<时间>/rollback.json`，其中可能包含容器环境变量，勿分享；同目录 `platform.dump` 是已验证格式的账号数据库备份。科研备份保存在现有研究数据挂载的 `state/backups/sidebar-<时间>.db`，迁移演练副本保存在 `state/backups/rehearsal-<时间>/`。本次更新不会清理备份、旧镜像或回滚容器。脚本会验证新版后端版本、新资源、服务健康和匿名科研 API 拒绝访问，并同步开机启动脚本的版本检查；原启动脚本保存在发布目录 `start.sh.before-<时间>`。脚本不会创建线上测试会话或调用模型。数据库迁移不通过镜像回退自动撤销。
+当前更新日志位于 `/root/.mobilesci-updates/<包哈希前缀>/deploy.log`；旧 ubuntu 入口留下的历史日志不迁移或删除。回滚元数据位于用户私有 `.mobilesci-sidebar-upgrade-<时间>/rollback.json`，其中可能包含容器环境变量，勿分享；同目录 `platform.dump` 是已验证格式的账号数据库备份。科研备份保存在现有研究数据挂载的 `state/backups/sidebar-<时间>.db`，迁移演练副本保存在 `state/backups/rehearsal-<时间>/`。本次更新不会清理备份、旧镜像或回滚容器。脚本会验证新版后端版本、新资源、服务健康和匿名科研 API 拒绝访问，并同步开机启动脚本的版本检查；原启动脚本保存在发布目录 `start.sh.before-<时间>`。脚本不会创建线上测试会话或调用模型。数据库迁移不通过镜像回退自动撤销。
 
 ### 2026-10-14 科研与侧栏修复部署验收
 

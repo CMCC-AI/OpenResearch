@@ -15,6 +15,23 @@ spec.loader.exec_module(update)
 
 
 class UpdateBundleTests(unittest.TestCase):
+    def test_update_transport_uses_the_private_root_entry_consistently(self):
+        bundle = self.bundle()
+        progress = json.dumps({'log': '', 'offset': 0, 'code': 0})
+        with patch.object(update, 'authorize_upload'), patch.object(update, 'run') as run, \
+                patch.object(update.subprocess, 'check_output', return_value=progress) as monitor:
+            update.upload(bundle, evidence=Path('controlled-evidence.json'))
+        commands = [call.args[0] for call in run.call_args_list] + [monitor.call_args.args[0]]
+        self.assertEqual([command[0] for command in commands], ['ssh', 'scp', 'ssh', 'ssh'])
+        for command in commands:
+            port_flag = '-P' if command[0] == 'scp' else '-p'
+            self.assertEqual(command[command.index(port_flag) + 1], '22')
+            if command[0] == 'scp':
+                self.assertTrue(command[-1].startswith('root@10.7.0.18:/root/.mobilesci-updates/'))
+            else:
+                self.assertIn('root@10.7.0.18', command)
+            self.assertNotIn('/home/ubuntu', ' '.join(map(str, command)))
+
     def test_rehearsal_allows_migration_metadata_but_rejects_business_row_loss(self):
         import ast
         import sqlite3
