@@ -164,6 +164,14 @@ def read_compose(path):
         '--no-interpolate', '--format', 'json', capture=True))
 
 
+def review_snapshot(detail):
+    result = {key: detail[key] for key in ['Id', 'Image', 'Config', 'HostConfig', 'Mounts']}
+    # Docker inspect enumerates a mount map; list order carries no semantics.
+    # Retain every field and duplicate, without changing the create payload.
+    result['Mounts'] = sorted(detail['Mounts'], key=lambda mount: json.dumps(mount, sort_keys=True))
+    return result
+
+
 def plan():
     if CURRENT.resolve() != RELEASE or any((CURRENT / name).is_symlink()
             for name in ['ui', 'compose.yaml', 'nginx.conf', '.env']):
@@ -215,8 +223,7 @@ def plan():
     if any(path.startswith('assets/') and path in current_ui and current_ui[path] != sha
            for path, sha in ui.items()):
         raise RuntimeError('Conflicting cached asset; review before cutover')
-    stable = {'containers': {name: {key: value[key] for key in ['Id', 'Image', 'Config', 'HostConfig', 'Mounts']}
-                            for name, value in originals.items()},
+    stable = {'containers': {name: review_snapshot(value) for name, value in originals.items()},
               'composeSha256': digest((CURRENT / 'compose.yaml').read_bytes()),
               'nginxSha256': digest((CURRENT / 'nginx.conf').read_bytes()),
               'environmentSha256': digest((CURRENT / '.env').read_bytes()) if (CURRENT / '.env').exists() else None,
