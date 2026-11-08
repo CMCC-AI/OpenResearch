@@ -54,6 +54,11 @@ async fn submit_controller_run(
     kind: &str,
 ) -> Result<StoredRun> {
     let backend = kind.trim_end_matches("_job");
+    if args.input_set.is_some() && kind != "local_job" {
+        return Err(anyhow!(
+            "Frozen input delivery is not supported by {backend}"
+        ));
+    }
     if args.flavor.is_some() {
         return Err(anyhow!("--backend {backend} does not take --flavor."));
     }
@@ -78,7 +83,7 @@ async fn submit_controller_run(
         .or_else(|| project.run_command.clone().filter(|c| !c.trim().is_empty()))
         .ok_or_else(|| anyhow!("{}", crate::invocation::no_run_command(&project.id)))?;
 
-    let script = crate::compute::snapshot_script(
+    let mut script = crate::compute::snapshot_script(
         &crate::local::bash::bash_path(&source.path),
         &crate::local::bash::local_run_command(&run_command),
     );
@@ -112,13 +117,6 @@ async fn submit_controller_run(
         secret_env.insert(crate::jobs::tinker::API_KEY_ENV.to_string(), key);
     }
 
-    let dir = localbox::run_job(&localbox::LocalJobSpec {
-        run_id: run_id.clone(),
-        script,
-        env,
-        secret_env,
-    })?;
-
     let mut descriptor = BackendDescriptor {
         input_set: None,
         ssh_container: None,
@@ -126,7 +124,7 @@ async fn submit_controller_run(
         cancellation_accepted: false,
         kind: kind.to_string(),
         namespace: None,
-        job_id: Some(dir.to_string_lossy().into_owned()),
+        job_id: None,
         flavor: None,
         image: None,
         url: None,
@@ -144,6 +142,61 @@ async fn submit_controller_run(
         source_size: None,
     };
     source.apply_to_descriptor(&mut descriptor);
+    let pending = store.get_run(&run_id)?;
+    if let Some(id) = args.input_set.as_deref() {
+        let reserved = pending
+            .as_ref()
+            .ok_or_else(|| anyhow!("Input-bound Run has not been reserved"))?;
+        if reserved.command != run_command
+            || reserved.commit_sha.as_deref() != Some(source.revision.as_str())
+            || reserved.experiment_id != exp.id
+            || reserved.project_id != project.id
+        {
+            return Err(anyhow!(
+                "Run command/code/project changed after its reservation"
+            ));
+        }
+        let reference = BackendDescriptor::parse(&reserved.backend_json)?
+            .input_set
+            .ok_or_else(|| anyhow!("Run is missing its fixed input identity"))?;
+        if reference.id != id {
+            return Err(anyhow!("Requested inputs differ from the reserved Run"));
+        }
+        descriptor.input_set = Some(reference);
+    }
+    if let Some(pending) = pending.as_ref() {
+        crate::run_inputs::check_descriptor(pending, &descriptor)?;
+    }
+    if descriptor.input_set.is_some() {
+        let delivered = crate::paths::canonicalize(crate::input_sets::delivery::deliver(
+            &store,
+            &project.id,
+            &run_id,
+        )?)?;
+        let executable = crate::paths::spawnable_exe()?;
+        let quote = crate::jobs::ssh::sh_quote;
+        // Native forward-slash Windows paths work for both Python and Git Bash.
+        let input_dir = delivered.join("files").to_string_lossy().replace('\\', "/");
+        let manifest = delivered
+            .join("manifest.json")
+            .to_string_lossy()
+            .replace('\\', "/");
+        env.insert(
+            "ORX_DATA_DIR".into(),
+            crate::paths::canonicalize(store.input_data_root()?)?
+                .to_string_lossy()
+                .into_owned(),
+        );
+        script=format!("set -eo pipefail; {} --no-telemetry inputs --project {} run {} --verify >/dev/null; export ORX_RUN_ID={}; export ORX_INPUTS_DIR={}; export ORX_INPUTS_MANIFEST={}; {}",
+            quote(&crate::local::bash::bash_path(&executable)),quote(&project.id),quote(&run_id),quote(&run_id),quote(&input_dir),quote(&manifest),script);
+    }
+    let dir = localbox::run_job(&localbox::LocalJobSpec {
+        run_id: run_id.clone(),
+        script,
+        env,
+        secret_env,
+    })?;
+    descriptor.job_id = Some(dir.to_string_lossy().into_owned());
     if let Err(error) = crate::compute::record_submission_handle(&run_id, &descriptor) {
         let _ = localbox::cancel_job(&dir);
         return Err(error);
@@ -155,7 +208,7 @@ async fn submit_controller_run(
         status: "starting".to_string(),
         backend_json: descriptor.to_json(),
         command: run_command,
-        created_at: now_ms(),
+        created_at: pending.as_ref().map_or_else(now_ms, |run| run.created_at),
         updated_at: now_ms(),
         ended_at: None,
         exit_code: None,

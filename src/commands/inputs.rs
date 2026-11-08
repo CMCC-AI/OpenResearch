@@ -37,8 +37,20 @@ pub enum InputsCommand {
     Show { id: String },
     /// Rehash retained copies, without querying their live originals.
     Verify { id: String },
+    /// Inspect a Run's fixed input delivery; optionally rehash its copies/code.
+    Run {
+        id: String,
+        #[arg(long)]
+        verify: bool,
+    },
     /// Operator-only preview/recovery of an abandoned uncommitted reservation.
     Recover {
+        id: String,
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Operator-only recovery of an uncommitted per-Run input delivery.
+    RecoverRun {
         id: String,
         #[arg(long)]
         apply: bool,
@@ -49,7 +61,9 @@ pub async fn run(args: InputsArgs) -> Result<()> {
     let session = crate::local::chat::launching_chat_session();
     if matches!(
         args.command,
-        InputsCommand::Quota { .. } | InputsCommand::Recover { .. }
+        InputsCommand::Quota { .. }
+            | InputsCommand::Recover { .. }
+            | InputsCommand::RecoverRun { .. }
     ) && session.is_some()
     {
         return Err(anyhow!("输入池配额和预约恢复仅限操作者，不能由 Agent 执行"));
@@ -98,7 +112,17 @@ pub async fn run(args: InputsArgs) -> Result<()> {
         InputsCommand::List { after, limit } => store.input_list(&project, after, limit)?,
         InputsCommand::Show { id } => serde_json::to_value(store.input_record(&project, &id)?)?,
         InputsCommand::Verify { id } => input_sets::verify(&store, &project, &id)?,
+        InputsCommand::Run { id, verify } => {
+            if verify {
+                input_sets::delivery::verify(&store, &project, &id)?
+            } else {
+                input_sets::delivery::show(&store, &project, &id)?
+            }
+        }
         InputsCommand::Recover { id, apply } => input_sets::recover(&store, &project, &id, apply)?,
+        InputsCommand::RecoverRun { id, apply } => {
+            input_sets::delivery::recover(&store, &project, &id, apply)?
+        }
         InputsCommand::Quota { .. } => unreachable!(),
     };
     println!("{}", serde_json::to_string_pretty(&value)?);

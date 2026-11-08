@@ -7,6 +7,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 
 pub(crate) const GUARD: &str = "INPUT_BINDING_GUARD";
+pub(crate) const INPUT_PROTOCOL: u64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

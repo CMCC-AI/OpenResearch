@@ -30,7 +30,7 @@ pub(super) fn portable(path: &str) -> bool {
                     && matches!(base.as_bytes()[3], b'1'..=b'9'))
         })
 }
-fn directory(path: &Path) -> Result<()> {
+pub(super) fn directory(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(m) if m.file_type().is_dir() => Ok(()),
         Ok(_) => Err(anyhow!("输入池目录不能是链接或特殊文件")),

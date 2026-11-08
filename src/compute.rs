@@ -249,6 +249,7 @@ fn shell_quote(value: &str) -> String {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Capabilities {
+    pub frozen_inputs: bool,
     pub id: &'static str,
     pub label: &'static str,
     pub remote: bool,
@@ -386,6 +387,7 @@ macro_rules! backend_adapter {
         impl ComputeBackend for $name {
             fn capabilities(&self) -> Capabilities {
                 Capabilities {
+                    frozen_inputs: $id == "local",
                     id: $id,
                     label: $label,
                     remote: $remote,
@@ -534,6 +536,7 @@ pub struct SshCompute {
 impl ComputeBackend for SshCompute {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
+            frozen_inputs: false,
             id: "ssh",
             label: "SSH",
             remote: true,
@@ -691,6 +694,9 @@ pub fn capabilities() -> Vec<Capabilities> {
 }
 
 pub fn validate_run_args(args: &crate::ExpRunArgs) -> Result<()> {
+    if args.input_set.is_some() && args.backend.as_deref().unwrap_or("local") != "local" {
+        return Err(anyhow!("--input-set is currently supported only by --backend local; no job was started or billed"));
+    }
     if let Some(timeout) = &args.timeout {
         match args.backend.as_deref().unwrap_or("local") {
             "local" | "ssh" => {
@@ -784,6 +790,11 @@ pub async fn submit(args: &crate::ExpRunArgs) -> Result<StoredRun> {
     let project = store
         .get_local_project(&experiment.project_id)?
         .ok_or_else(|| anyhow!("Local project {} not found.", experiment.project_id))?;
+    let prepared_input = args
+        .input_set
+        .as_deref()
+        .map(|id| crate::input_sets::delivery::prepare(&store, &project.id, id))
+        .transpose()?;
     let research_contract = if store
         .research_requires_gate(&experiment.id, args.launching_chat_session().as_deref())?
     {
@@ -808,7 +819,10 @@ pub async fn submit(args: &crate::ExpRunArgs) -> Result<StoredRun> {
                 .unwrap_or_else(|| "Compute backend is not ready.".to_string())
         ));
     }
-    let source = backend.stage_source(&project, &experiment).await?;
+    let mut source = backend.stage_source(&project, &experiment).await?;
+    if prepared_input.is_some() {
+        source.0.path = crate::paths::canonicalize(&source.0.path)?;
+    }
     let run_id = uuid::Uuid::new_v4().to_string();
     let command = Some(experiment.run_command.clone())
         .filter(|value| !value.trim().is_empty())
@@ -820,7 +834,7 @@ pub async fn submit(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         })
         .unwrap_or_default();
     let mut descriptor = BackendDescriptor {
-        input_set: None,
+        input_set: prepared_input.as_ref().map(|p| p.reference.clone()),
         ssh_container: None,
         monitoring_error: None,
         cancellation_accepted: false,
@@ -894,6 +908,7 @@ pub async fn submit(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         identity.as_ref(),
         report.as_ref(),
         research_contract.as_ref(),
+        prepared_input.as_ref(),
     )?;
     let pending_backend_json = descriptor.to_json();
     match backend.submit(args, source, run_id.clone()).await {
@@ -920,7 +935,13 @@ pub async fn submit(args: &crate::ExpRunArgs) -> Result<StoredRun> {
             if !handle_was_persisted
                 && store.update_status(
                     &run_id,
-                    RunStatus::Failed,
+                    if prepared_input.is_some()
+                        && current.as_ref().is_some_and(|run| run.cancel_requested)
+                    {
+                        RunStatus::Cancelled
+                    } else {
+                        RunStatus::Failed
+                    },
                     Some(crate::store::now_ms()),
                     None,
                 )?
@@ -991,6 +1012,7 @@ fn reserve_run(
     identity: Option<&crate::store::InvocationIdentity>,
     report: Option<&(String, serde_json::Value)>,
     research_contract: Option<&crate::store::research::RunContract>,
+    prepared_input: Option<&crate::input_sets::delivery::PreparedInput>,
 ) -> Result<()> {
     let dir = crate::store::data_dir().join("submission-locks");
     std::fs::create_dir_all(&dir)?;
@@ -1036,7 +1058,13 @@ fn reserve_run(
         )?;
     }
     store.reserve_run_telemetry(&pending.id, identity, report)?;
+    if let Some(input) = prepared_input {
+        input.check(store)?;
+    }
     store.upsert_run(pending)?;
+    if prepared_input.is_some() {
+        store.reserve_input_delivery(&pending.id)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1204,6 +1232,7 @@ pub(crate) mod tests {
 
     pub(crate) fn tinker_args() -> crate::ExpRunArgs {
         crate::ExpRunArgs {
+            input_set: None,
             exp_id: "exp".into(),
             disk: None,
             provider: None,

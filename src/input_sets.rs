@@ -13,6 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(crate) mod delivery;
 mod files;
 use files::{
     blob_sizes, check_layout, discard, existing_pool, pool, portable, source_file, sync_directory,

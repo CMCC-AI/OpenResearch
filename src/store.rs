@@ -8,6 +8,7 @@
 //! Data dir: `$ORX_DATA_DIR`, else `$XDG_DATA_HOME/openresearch`, else
 //! `~/.local/share/openresearch`.
 
+pub(crate) mod input_deliveries;
 pub(crate) mod input_sets;
 pub(crate) mod material_reads;
 pub(crate) mod metric_evidence;
@@ -1104,6 +1105,7 @@ impl Store {
         material_reads::migrate(&conn)?;
         metric_evidence::migrate(&conn)?;
         input_sets::migrate(&conn)?;
+        input_deliveries::migrate(&conn)?;
         run_inputs::migrate(&conn)?;
         migrate_chat_spawns(&conn)?;
         phase("research-and-spawns");

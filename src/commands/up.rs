@@ -1018,6 +1018,7 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
         "ok": true,
         "version": env!("CARGO_PKG_VERSION"),
         "dashboardProtocol": crate::commands::up_remote::DASHBOARD_PROTOCOL,
+        "inputCopyProtocol": crate::run_inputs::INPUT_PROTOCOL,
         "instanceId": state.remote_instance_id,
     }))
 }
@@ -2643,6 +2644,8 @@ async fn compute_backends() -> Json<Value> {
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateRunReq {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input_set_id: Option<String>,
     invocation_context: Option<String>,
     #[serde(default)]
     telemetry_suppressed: bool,
@@ -2672,6 +2675,7 @@ struct CreateRunReq {
 impl CreateRunReq {
     fn from_run_args(args: &crate::ExpRunArgs) -> Result<Self> {
         Ok(Self {
+            input_set_id: args.input_set.clone(),
             telemetry_suppressed: args.telemetry_suppressed
                 || !crate::telemetry::accounting_reports_enabled(),
             invocation_context: args
@@ -2704,6 +2708,7 @@ impl CreateRunReq {
         let mut flavor = self.flavor;
         local::apply_compute_default(&mut backend, &mut flavor);
         crate::ExpRunArgs {
+            input_set: self.input_set_id,
             invocation_context: self.invocation_context,
             telemetry_suppressed: self.telemetry_suppressed,
             exp_id: self.experiment_id,
@@ -2793,6 +2798,19 @@ pub(crate) async fn submit_run_via_up(
     port: u16,
     args: &crate::ExpRunArgs,
 ) -> Result<RunLaunchSummary> {
+    if args.input_set.is_some() {
+        let response = authenticate_up_request(
+            local_client()?.get(format!("http://127.0.0.1:{port}/api/health")),
+        )
+        .send()
+        .await?;
+        let health: Value = decode_local_response(response, "check frozen input protocol").await?;
+        if health.get("inputCopyProtocol").and_then(Value::as_u64)
+            != Some(crate::run_inputs::INPUT_PROTOCOL)
+        {
+            return Err(anyhow!("The trusted orx up does not support frozen inputs; upgrade/restart it before submitting. No run request was sent."));
+        }
+    }
     let request = CreateRunReq::from_run_args(args)?;
     let response =
         authenticate_up_request(local_client()?.post(format!("http://127.0.0.1:{port}/api/runs")))
@@ -8944,6 +8962,64 @@ pub(crate) async fn spa(uri: Uri) -> Response {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn input_protocol_is_confirmed_before_sending_a_run_request() {
+        use std::sync::{Arc, Mutex};
+        struct Server(tokio::task::JoinHandle<()>);
+        impl Drop for Server {
+            fn drop(&mut self) {
+                self.0.abort();
+            }
+        }
+        for protocol in [None, Some(2_u64), Some(crate::run_inputs::INPUT_PROTOCOL)] {
+            let received = Arc::new(Mutex::new(Vec::<Value>::new()));
+            let requests = received.clone();
+            let mut health = json!({"ok":true});
+            if let Some(p) = protocol {
+                health["inputCopyProtocol"] = json!(p);
+            }
+            let router=Router::new().route("/api/health",get(move||{let health=health.clone();async move {Json(health)}}))
+              .route("/api/runs",post(move|Json(body):Json<Value>|{let requests=requests.clone();async move {
+                  requests.lock().unwrap().push(body);
+                  (StatusCode::BAD_REQUEST,Json(json!({"error":"controlled transport acceptance; no job created"})))
+              }}));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let _server = Server(tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            }));
+            let mut args = crate::compute::tests::tinker_args();
+            args.backend = Some("local".into());
+            args.input_set = Some(uuid::Uuid::new_v4().to_string());
+            args.forwarded = true;
+            args.telemetry_suppressed = true;
+            let result =
+                tokio::time::timeout(Duration::from_secs(5), submit_run_via_up(port, &args))
+                    .await
+                    .unwrap();
+            assert!(result.is_err());
+            let bodies = received.lock().unwrap();
+            if protocol == Some(crate::run_inputs::INPUT_PROTOCOL) {
+                assert_eq!(bodies.len(), 1);
+                assert_eq!(
+                    bodies[0]["inputSetId"],
+                    args.input_set.as_ref().unwrap().as_str()
+                );
+                let forwarded = serde_json::from_value::<CreateRunReq>(bodies[0].clone())
+                    .unwrap()
+                    .into_run_args();
+                assert_eq!(forwarded.input_set, args.input_set);
+            } else {
+                assert!(bodies.is_empty());
+                assert!(result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("No run request was sent"));
+            }
+        }
+    }
+
     fn session_query(scope: Option<&str>) -> SessionsQuery {
         SessionsQuery {
             project_id: None,
@@ -9698,6 +9774,7 @@ mod tests {
     #[test]
     fn create_run_request_preserves_forwarded_slurm_resources_and_attribution() {
         let args = crate::ExpRunArgs {
+            input_set: None,
             invocation_context: None,
             telemetry_suppressed: true,
             forwarded: false,
