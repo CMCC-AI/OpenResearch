@@ -105,9 +105,15 @@
 
 ## 当前托管部署的切换工具候选（2026-11-08）
 
+PR #19 的源码 `d84ff60e` 已由完整 [CI 42457375339](https://github.com/CMCC-AI/OpenResearch/actions/runs/42457375339) 验证实际模拟合并 `67c3aff7`，合入 `adfdc8cc`，文件树均为 `bf581edfd7ee17d356617be78508916ab72d878b`。Linux 1504/35、macOS 1509/35、Windows 1421/24 单元/普通 CLI 通过，13 项单元与 1 项普通 PDF 忽略单列，Linux/macOS 真实 PDF 另通过；四个浏览器场景、两架构 AppImage、Windows 安装包、平台和三系统归档一致性均通过。其临时本地/远端分支已按精确 SHA 租约清理；未切换生产。
+
+合入后的只读复核发现本轮遗漏：Docker inspect 的挂载列表枚举顺序会变化，原脚本把此顺序计入计划，误报真实配置漂移。三次采样的 Config/HostConfig 与挂载集合摘要不变，只有 raw Mounts 顺序变化。后续最小修补仅在指纹快照中按完整挂载 JSON 排序；实际创建载荷不变，路径、RW、Mode、重复挂载和其他配置变化仍改变指纹。新增回归验证所有六种枚举顺序及实际属性变化。**旧 da2a1fa2 脚本及其历史计划指纹撤回，不用于生产执行。**
+
+上海时间 15:29:53，修补版在真实服务器连续三次只读规划得到相同的新指纹（如下），原始挂载顺序确实变化；部署辅助 60 项通过。该修补须通过自己的完整 CI，不能借用 PR #19 的成功。15:27:15 的只读准入仍发现第二个私人空间有科研活动；不取消、不强制切换。独立 Docker API 隔离版本验证已通过两个精确候选 ID，临时容器已删除；公开入口基线与当前挂载 index 相同、匿名 API 返回 401。本次始终没有生产替换或真实模型调用。
+
 只读核验确认服务器实际是 `mobilesci-replica`，`/opt/mobilesci/current` 指向 `/opt/mobilesci/releases/f817211`。现有 `update-server.py` 固定旧 `mobilesci-remote` 平台/workbench 和公网 Host，不能执行本次部署；只修 SSH 入口不等于这条更新流程已经适用。网关直接挂载 current/ui，provisioner 两个未来镜像引用也必须一起更新。
 
-为这一次已固定源码/镜像的交付提供 `scripts/deploy/cutover-mobilesci-v6.py`，不是新的通用更新框架。默认只读；2026-11-08 已在真实服务器通过默认规划，未上传该脚本、写配置、停止服务或使用 `--apply`。计划指纹为 `acdfcffa2c010caea566867c73d332caac6aec0d195c34d7031ff540999422cb`，绑定真实容器 ID/配置/挂载、Compose、Nginx、现有 .env、旧/新静态文件及数据库镜像身份；执行前重新计算，变化即拒绝。脚本 SHA-256 为 `da2a1fa263f8e1bb6999965978427bde74ef4f969bf3d16265388964e247ff38`。
+为这一次已固定源码/镜像的交付提供 `scripts/deploy/cutover-mobilesci-v6.py`，不是新的通用更新框架。默认只读；2026-11-08 已在真实服务器通过默认规划，未上传该脚本、写配置、停止服务或使用 `--apply`。计划指纹为 `7ff7347417cebccee1fb9dc23e19c3a1d67ae70005664ec3df235095037fae91`，绑定真实容器 ID/配置/挂载、Compose、Nginx、现有 .env、旧/新静态文件及数据库镜像身份；执行前重新计算，变化即拒绝。脚本 SHA-256 为 `3857668005ab8137ce41d3aa320f4361fc7a8575381db8923f2a7bcd6efde296`。
 
 待授权后的固定步骤：
 
@@ -124,9 +130,9 @@
 # 默认只读，先核对输出指纹与审阅状态。
 python3 cutover-mobilesci-v6.py
 # 获生产执行授权后，才允许短暂维护和替换服务。
-python3 cutover-mobilesci-v6.py --apply --expected-plan acdfcffa2c010caea566867c73d332caac6aec0d195c34d7031ff540999422cb
+python3 cutover-mobilesci-v6.py --apply --expected-plan 7ff7347417cebccee1fb9dc23e19c3a1d67ae70005664ec3df235095037fae91
 # 需要回滚时使用该次实际输出的私有备份路径；脚本再次检查活动和操作归属。
 python3 cutover-mobilesci-v6.py --apply --rollback /opt/mobilesci/backups/cutover-ba64103-实际时间戳
 ```
 
-本地部署辅助 59 项通过，包含新脚本 12 项测试：四个替换点各覆盖创建失败/创建后响应丢失，公开入口失败恢复，配置漂移拒绝，未知容器归属拒绝，真实 SQLite 备份/外键故障，Run 状态词汇、缓存资源冲突、符号链接和私有 umask 下的新静态资源权限。首次 py_compile 因本机缓存目录权限失败，随后 AST 解析及禁用字节码写入的完整部署辅助测试通过；不把该失败当作语法或测试成功。本批没有 UI/Rust 产品逻辑改动，未重建冻结发行资源；候选自身完整 CI 与合入状态另行记录，未执行真实容器替换或生产回滚。
+本地部署辅助 60 项通过，包含新脚本 13 项测试：四个替换点各覆盖创建失败/创建后响应丢失，公开入口失败恢复，配置漂移拒绝，未知容器归属拒绝，真实 SQLite 备份/外键故障，Run 状态词汇、缓存资源冲突、符号链接和私有 umask 下的新静态资源权限。首次 py_compile 因本机缓存目录权限失败，随后 AST 解析及禁用字节码写入的完整部署辅助测试通过；不把该失败当作语法或测试成功。本批没有 UI/Rust 产品逻辑改动，未重建冻结发行资源；候选自身完整 CI 与合入状态另行记录，未执行真实容器替换或生产回滚。

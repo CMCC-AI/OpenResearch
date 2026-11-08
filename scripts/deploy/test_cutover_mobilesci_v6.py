@@ -1,5 +1,6 @@
 import copy
 import importlib.util
+import itertools
 import json
 import os
 from pathlib import Path
@@ -76,6 +77,33 @@ class Engine:
 
 
 class CutoverTests(unittest.TestCase):
+    def test_review_fingerprint_ignores_only_mount_enumeration_order(self):
+        engine = Engine()
+        detail = copy.deepcopy(engine.originals[cutover.PRIVATE[0]])
+        detail['Mounts'] = [
+            {'Source': '/private/home', 'Destination': '/home/node', 'RW': True, 'Mode': 'z'},
+            {'Source': '/private/model', 'Destination': '/run/model', 'RW': False, 'Mode': 'ro'},
+            {'Source': '/private/token', 'Destination': '/run/token', 'RW': False, 'Mode': 'ro'}]
+        original = copy.deepcopy(detail)
+        def fingerprint(value):
+            return cutover.digest(json.dumps(cutover.review_snapshot(value), sort_keys=True).encode())
+        expected = fingerprint(detail)
+        for ordering in itertools.permutations(detail['Mounts']):
+            reordered = copy.deepcopy(detail)
+            reordered['Mounts'] = list(ordering)
+            self.assertEqual(fingerprint(reordered), expected)
+        self.assertEqual(detail, original)
+        for key, value in [('Source', '/another/private/home'), ('RW', False), ('Mode', 'ro')]:
+            changed = copy.deepcopy(detail)
+            changed['Mounts'][0][key] = value
+            self.assertNotEqual(fingerprint(changed), expected)
+        duplicated = copy.deepcopy(detail)
+        duplicated['Mounts'].append(copy.deepcopy(detail['Mounts'][0]))
+        self.assertNotEqual(fingerprint(duplicated), expected)
+        changed_config = copy.deepcopy(detail)
+        changed_config['HostConfig']['NetworkMode'] = 'host'
+        self.assertNotEqual(fingerprint(changed_config), expected)
+
     def fixture(self, directory, engine):
         root = Path(directory)
         release = root / 'release'
