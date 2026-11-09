@@ -1,4 +1,6 @@
 import copy
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import importlib.util
 import itertools
 import json
@@ -6,12 +8,51 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
+import threading
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('cutover', Path(__file__).with_name('cutover-mobilesci-v6.py'))
 cutover = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cutover)
+
+
+@contextmanager
+def gateway_server(status=200, delayed=False):
+    activate = threading.Event()
+    serving = threading.Event()
+    requests = []
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            self.send_response(status)
+            self.end_headers()
+            self.wfile.write(b'gateway index')
+
+        def log_message(self, *_):
+            pass
+    server = HTTPServer(('127.0.0.1', 0), Handler, bind_and_activate=False)
+    server.server_bind()
+    if not delayed:
+        activate.set()
+    def worker():
+        activate.wait()
+        server.server_activate()
+        serving.set()
+        server.serve_forever(poll_interval=0.01)
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    try:
+        if not delayed:
+            assert serving.wait(2)
+        yield server.server_address[1], activate, requests
+    finally:
+        activate.set()
+        if serving.wait(2):
+            server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 class Engine:
@@ -145,6 +186,7 @@ class CutoverTests(unittest.TestCase):
              patch.object(cutover, 'backup_databases'), \
              patch.object(cutover.time, 'sleep'), \
              patch.object(cutover.subprocess, 'run', return_value=type('Result', (), {'returncode': 0})()), \
+             patch.object(cutover, 'wait_public_entry'), \
              patch.object(cutover, 'public_checks', side_effect=check):
             cutover.apply(state, 'reviewed')
         return release, backups, state, compose
@@ -202,6 +244,42 @@ class CutoverTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'Reviewed plan changed'):
                 cutover.apply({'fingerprint': 'changed'}, 'reviewed')
             run.assert_not_called()
+
+    def test_gateway_retries_real_connection_refusal_until_listener_starts(self):
+        actual_fetch = cutover.fetch
+        failures = []
+        with gateway_server(delayed=True) as (port, activate, requests):
+            def fetch(_url, timeout=10):
+                try:
+                    return actual_fetch('http://127.0.0.1:' + str(port) + '/', timeout)
+                except urllib.error.URLError:
+                    failures.append(True)
+                    activate.set()
+                    raise
+            with patch.object(cutover, 'fetch', side_effect=fetch), \
+                 patch.object(cutover, 'inspect', return_value={'State': {'Running': True}}):
+                cutover.wait_public_entry()
+            self.assertTrue(failures)
+            self.assertEqual(requests, ['/'])
+
+    def test_gateway_http_rejection_is_not_treated_as_startup_delay(self):
+        actual_fetch = cutover.fetch
+        with gateway_server(status=403) as (port, _activate, requests):
+            with patch.object(cutover, 'fetch', side_effect=lambda _url, timeout=10:
+                              actual_fetch('http://127.0.0.1:' + str(port) + '/', timeout)), \
+                 patch.object(cutover, 'inspect', return_value={'State': {'Running': True}}):
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    cutover.wait_public_entry()
+            self.assertEqual(error.exception.code, 403)
+            self.assertEqual(requests, ['/'])
+
+    def test_gateway_unavailable_wait_has_a_deadline(self):
+        with patch.object(cutover, 'fetch', side_effect=urllib.error.URLError('unavailable')), \
+             patch.object(cutover, 'inspect', return_value={'State': {'Running': True}}), \
+             patch.object(cutover.time, 'monotonic', side_effect=[0, 0, 31, 31]), \
+             patch.object(cutover.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'readiness timeout'):
+                cutover.wait_public_entry()
 
     def test_configuration_drift_during_staging_keeps_production_running(self):
         engine = Engine()
