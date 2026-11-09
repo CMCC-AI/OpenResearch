@@ -1,11 +1,21 @@
+import { prepareQuotaExecutor } from "./quota-executor-config.mjs";
 import { spawn } from "node:child_process";
-import { mkdir, unlink, cp, access } from "node:fs/promises";
+import { mkdir, unlink, cp, access, readFile } from "node:fs/promises";
 // This entrypoint is for a dedicated container; neither API port is published.
 await mkdir("/home/node/.runner-state", { recursive: true });
 // The previous connector cannot survive a container restart; remove only its lock.
 await unlink("/home/node/.runner-state/connector.lock").catch((error) => {
   if (error.code !== "ENOENT") throw error;
 });
+if (process.env.TOKEN_QUOTAS_ENABLED === "true") {
+  if (process.env.MANAGED_CONFIG_SEED_DIR || process.env.MANAGED_AUTH_SEED_FILE)
+    throw new Error("Quota mode cannot expose shared provider credentials");
+  await prepareQuotaExecutor({
+    home: process.env.HOME,
+    base: process.env.PLATFORM_CONNECT_URL || process.env.PLATFORM_ORIGIN,
+    secret: (await readFile(process.env.RUNNER_TOKEN_FILE, "utf8")).trim(),
+  });
+}
 // Seed settings once into this user's writable home; never overwrite personal data.
 if (process.env.MANAGED_CONFIG_SEED_DIR) {
   const destination = "/home/node/.config/opencode";

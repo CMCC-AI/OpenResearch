@@ -1,0 +1,19 @@
+# Opt in only after migrating credentials; never mount this secret file in executors.
+services:
+  platform:
+    environment:
+      OPENCODE_ADMIN_URL: ""
+      TOKEN_QUOTAS_ENABLED: "true"
+      TOKEN_QUOTA_DEFAULT_MONTHLY_TOKENS: ${TOKEN_QUOTA_DEFAULT_MONTHLY_TOKENS:-2000000}
+      TOKEN_QUOTA_MODELS_FILE: /run/secrets/quota-models.json
+    volumes:
+      - ${TOKEN_QUOTA_MODELS_PATH:?Set absolute path to gateway-only models JSON}:/run/secrets/quota-models.json:ro
+  provisioner:
+    environment:
+      TOKEN_QUOTAS_ENABLED: "true"
+  # The legacy unauthenticated configuration service must be unreachable by executors.
+  opencode-admin:
+    networks: [quota-model-admin]
+networks:
+  quota-model-admin:
+    internal: true

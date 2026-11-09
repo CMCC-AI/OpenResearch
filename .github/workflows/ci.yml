@@ -237,6 +237,10 @@ jobs:
         timeout-minutes: 10
         run: node --experimental-strip-types scripts/test-workspace-browser.mjs
 
+      - name: Account token quota browser acceptance
+        timeout-minutes: 2
+        run: node scripts/test-token-quota-browser.mjs
+
       - name: Stop the acceptance slot
         if: always()
         run: |

@@ -1,4 +1,11 @@
 import {
+  quotaConfiguration,
+  loadQuotaModels,
+  modelGateway,
+} from "./model-gateway.mjs";
+import { tokenQuotas, ensureTokenQuota } from "./token-quotas.mjs";
+import { tokenQuotaRoutes } from "./token-quota-routes.mjs";
+import {
   ensurePersonalSpace,
   preparePersonalSpace,
 } from "./personal-spaces.mjs";
@@ -134,6 +141,7 @@ export function configuration(env = process.env) {
     );
   return {
     origin,
+    tokenQuota: quotaConfiguration(env),
     opencodeConfigFile: env.OPENCODE_ADMIN_CONFIG_FILE || "",
     opencodeAdminUrl: env.OPENCODE_ADMIN_URL || "",
     sendPasswordReset: resetMailer(env),
@@ -188,6 +196,17 @@ export async function createPlatform(
   config,
   pool = createPool(config.database),
 ) {
+  config.tokenQuota ||= { enabled: false, monthlyTokens: 2000000 };
+  if (config.tokenQuota.enabled)
+    await loadQuotaModels(config.tokenQuota.modelsFile);
+  const quota = tokenQuotas(pool, config.tokenQuota.monthlyTokens);
+  const quotaRoutes = tokenQuotaRoutes({ config, pool, quota, input, json });
+  const gateway = modelGateway({
+    pool,
+    quota,
+    settings: config.tokenQuota,
+    limit,
+  });
   const tunnels = new Map();
   const wss = new WebSocketServer({
     noServer: true,
@@ -409,6 +428,11 @@ export async function createPlatform(
     const path = new URL(req.url, config.origin).pathname;
     if (path === "/api/platform/admin/opencode") {
       check(s.is_admin, 403, "仅系统管理员可配置 OpenCode 模型");
+      check(
+        !config.tokenQuota.enabled,
+        409,
+        "额度模式的模型由网关清单管理，请更新 TOKEN_QUOTA_MODELS_FILE",
+      );
       check(["GET", "POST"].includes(req.method), 405);
       if (req.method === "GET") return json(res, await modelSettings.read());
       const settings = await input(req);
@@ -456,6 +480,7 @@ export async function createPlatform(
       );
     try {
       const path = new URL(req.url, config.origin).pathname;
+      if (await gateway(req, res, path)) return;
       const ssoServicePath = [
         "/api/auth/sso/exchange",
         "/api/auth/sso/session",
@@ -887,6 +912,8 @@ export async function createPlatform(
               [user, address, name, encoded],
             );
             await ensurePersonalSpace(db, user);
+            if (config.tokenQuota.enabled)
+              await ensureTokenQuota(db, user, config.tokenQuota.monthlyTokens);
             const created = await newSession(db, user, req.headers.host);
             await audit(db, user, null, "account.register");
             return created;
@@ -907,6 +934,7 @@ export async function createPlatform(
         check(req.method === "GET", 405, "服务器存储仅支持查看");
         return json(res, await storageSettings(config, s));
       }
+      if (await quotaRoutes(req, res, path, s)) return;
       if (await accounts.admin(req, res, path, s)) return;
       if (path === "/api/platform/capabilities" && req.method === "GET")
         return json(res, {
@@ -1282,7 +1310,25 @@ export async function createPlatform(
       if (error.status === 429) res.setHeader("retry-after", "60");
       json(
         res,
-        { error: error instanceof HttpError ? error.message : "服务暂不可用" },
+        failedPath.startsWith("/api/platform/model-gateway/")
+          ? {
+              error: {
+                message:
+                  error instanceof HttpError
+                    ? error.message
+                    : "模型网关暂不可用",
+                type:
+                  error.status === 402
+                    ? "insufficient_quota"
+                    : "model_gateway_error",
+                code:
+                  error.status === 402 ? "insufficient_quota" : "gateway_error",
+              },
+            }
+          : {
+              error:
+                error instanceof HttpError ? error.message : "服务暂不可用",
+            },
         error.status || 500,
       );
       if (!error.status)

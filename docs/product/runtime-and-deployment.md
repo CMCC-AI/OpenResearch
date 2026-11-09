@@ -74,3 +74,7 @@ OpenCode、Claude 和 Codex 共用闲置策略。有效内存不超过 8 GiB 时
 “断开此供应商”清空共享配置中的 API Key、通过官方认证 API 删除配置服务中的登录凭据，并将供应商加入 `disabled_providers`，防止执行器环境变量或历史认证 seed 再次启用它；指向它的默认模型及小模型同时清空。此操作不撤销供应商平台签发的密钥，且不会中断正在使用旧配置的会话。重新填写密钥并保存会解除禁用；新启动的 OpenCode 进程读取新配置。其他供应商保持原配置。
 
 2026-11-02 服务器接入验收：`moonshotai-cn/kimi-k2.6` 与 `research-relay/deepseek-v4-flash-0731` 均通过实际 OpenCode 调用，默认使用后者。Kimi 密钥在 Coding 接口返回 401，在 Moonshot 中国接口可用；中转站不提供 `deepseekv4-flash`，必须使用目录中的精确 ID。该服务器的 WireGuard `~.` DNS 路由导致 Kimi 解析超时，已通过 `mobilesci-kimi-dns.service` 仅将 `moonshot.cn` 交由 eth0 原有云 DNS 解析；未改动 VPN 默认路由。平台增量镜像及 Compose、模型配置、静态资源回滚备份保存在服务器 `/opt/mobilesci/patches/model-access-20261102/`，其中模型配置备份含凭据，禁止公开。
+
+## 注册用户 token 月额度
+
+平台模型的用户级月额度见[配置与实施边界](user-token-quotas.md)：默认每月 200 万、管理员逐用户设置、上海自然月重置。默认关闭，必须完成旧凭据撤销与执行器迁移后才能启用；源码交付不改变当前生产暂停决定。

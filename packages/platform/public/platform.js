@@ -269,7 +269,8 @@ function administrationUrl(capabilities) {
 
 function renderAccount(capabilities) {
   document.body.classList.remove("auth-page");
-  account.innerHTML = `<span class="muted">${esc(me.name)}</span> ${me.isAdmin ? `<a class="admin-link" href="${esc(administrationUrl(capabilities))}">系统管理</a>` : ""} <button id="password">修改密码</button> <button id="logout">退出</button>`;
+  account.innerHTML = `<span class="muted">${esc(me.name)}</span> ${me.isAdmin ? `<a class="admin-link" href="${esc(administrationUrl(capabilities))}">系统管理</a>` : ""} <button id="token-quota">Token 额度</button> <button id="password">修改密码</button> <button id="logout">退出</button>`;
+  document.querySelector("#token-quota").onclick = quotaDialog;
   document.querySelector("#password").onclick = passwordDialog;
   document.querySelector("#logout").onclick = async () => {
     await api("/logout", "POST");
@@ -324,6 +325,85 @@ async function load() {
     return;
   }
   renderAccount(capabilities);
+}
+
+function quotaRequestKey() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 15) | 64;
+  bytes[8] = (bytes[8] & 63) | 128;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(
+    "",
+  );
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+async function quotaDialog() {
+  dialog.showModal();
+  detail.innerHTML = '<p role="status">正在加载额度…</p>';
+  try {
+    const own = await api("/token-quota");
+    if (!own.enabled) {
+      detail.innerHTML =
+        "<h2>Token 额度</h2><p>当前部署尚未启用平台模型额度。</p>";
+      return;
+    }
+    const usage = (q) =>
+      `<dl class="account-details"><div><dt>当前月份</dt><dd>${esc(q.period)}（上海时间）</dd></div><div><dt>月额度</dt><dd>${esc(q.monthlyLimit.toLocaleString())}</dd></div><div><dt>已用</dt><dd>${esc(q.used.toLocaleString())}</dd></div><div><dt>在途及待确认</dt><dd>${esc(q.reserved.toLocaleString())}</dd></div><div><dt>可用</dt><dd>${esc(q.available.toLocaleString())}</dd></div></dl>`;
+    detail.innerHTML = `<h2>Token 额度</h2>${usage(own)}<p>每月重置，余额不累积。仅计入平台提供的模型；在途请求按发起月份结算。调用前按模型上下文和输出上限预占，完成后退回差额；余额不足预占时需要调整额度或选择上限较小的模型。</p>${me.isAdmin ? '<hr><h3>配置用户月额度</h3><form id="quota-user" class="stack"><label>用户邮箱<input name="email" type="email" required></label><button type="submit">查询用户</button></form><section id="quota-user-result"></section>' : ""}`;
+    if (me.isAdmin)
+      bindForm("#quota-user", async (value) => {
+        const load = () =>
+          api("/admin/token-quotas?email=" + encodeURIComponent(value.email));
+        const show = async () => {
+          const q = await load();
+          const result = document.querySelector("#quota-user-result");
+          result.innerHTML = `<h3>${esc(q.user.name)} · ${esc(q.user.email)}</h3>${usage(q)}<form id="quota-config" class="stack"><label>每月 token 额度<input name="monthlyLimit" type="number" min="0" max="9007199254740991" step="1" value="${q.monthlyLimit}" required></label><label>调整原因<input name="reason" maxlength="500" required></label><button type="submit">保存月额度</button></form><h3>待确认请求</h3><p>请先核实供应商用量，再补账；填 0 表示确认未产生用量。不会自动退回不明消费。</p><div id="quota-pending"></div>`;
+          const key = quotaRequestKey();
+          bindForm("#quota-config", async (data) => {
+            await api("/admin/token-quotas", "POST", {
+              email: q.user.email,
+              monthlyLimit: Number(data.monthlyLimit),
+              reason: data.reason,
+              idempotencyKey: key,
+            });
+            await show();
+            notice("月额度已保存，已用和在途消费保留");
+          });
+          const pending = result.querySelector("#quota-pending");
+          for (const request of q.requests.filter(
+            (r) => r.state !== "settled",
+          )) {
+            const form = document.createElement("form");
+            form.className = "stack";
+            form.innerHTML = `<p class="quota-request">${esc(request.period)} · ${esc(request.model)} · ${esc(request.id)} · 上游 ${esc(request.upstream_request_id || "未返回")} · 预占 ${esc(request.reserved)}</p><label>实际 token<input name="actualTokens" type="number" min="0" step="1" max="9007199254740991" required></label><label>补账依据<input name="reason" maxlength="500" required></label><button type="submit">确认并补账</button>`;
+            form.onsubmit = async (event) => {
+              event.preventDefault();
+              const button = form.querySelector("button");
+              button.disabled = true;
+              try {
+                const data = Object.fromEntries(new FormData(form));
+                await api("/admin/token-quotas/reconcile", "POST", {
+                  email: q.user.email,
+                  requestId: request.id,
+                  actualTokens: Number(data.actualTokens),
+                  reason: data.reason,
+                });
+                await show();
+              } catch (error) {
+                notice(error.message);
+                button.disabled = false;
+              }
+            };
+            pending.append(form);
+          }
+          if (!pending.children.length) pending.textContent = "暂无待确认请求";
+        };
+        await show();
+      });
+  } catch (error) {
+    detail.textContent = error.message;
+  }
 }
 
 (resetToken ? Promise.resolve(recovery("reset")) : load()).catch((error) =>
