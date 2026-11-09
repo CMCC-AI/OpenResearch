@@ -63,6 +63,16 @@ test("quota executors never mount provider credentials and cannot reuse old runt
     `orx-managed-${workspace}:/home/node`,
   ]);
   assert.ok(config.Env.includes("TOKEN_QUOTAS_ENABLED=true"));
+  for (const network of [
+    "host",
+    "container:existing",
+    "project_quota-model-admin",
+  ])
+    assert.throws(
+      () => runtimeConfig(workspace, { ...env, MANAGED_NETWORK: network }),
+      /networks/,
+    );
+
   assert.throws(() =>
     runtimeConfig(workspace, { ...env, MANAGED_LEGACY_WORKSPACE: workspace }),
   );

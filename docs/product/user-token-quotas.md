@@ -45,7 +45,7 @@ API（沿用账号会话与 Origin/管理员校验）：
 
 清单格式见 `packages/platform/quota-models.example.json`。每项提供对外别名 `id`、真实 `model`、上游 `baseUrl`/`apiKey`、可信 `contextTokens`、`maxOutputTokens`。需要新式输出参数的模型可设置 `outputParameter:"max_completion_tokens"`；默认 `max_tokens`。上游需支持文本/工具、流式 usage。更换模型清单需原子替换文件；额度模式下旧网页 OpenCode 配置写入口明确拒绝，避免误认为它会改变网关模型。
 
-自托管配置顺序：`compose.yaml + compose.hosted.yaml + compose.quotas.yaml`。最后一个文件将真实模型清单仅挂入平台，把旧无鉴权 opencode-admin 服务隔离到独立内部网络；执行器不应加入该网络，也不能访问其他中转管理接口。网关请求走现有平台 Origin；无需额外开放端口或放宽 CORS。
+自托管配置顺序：`compose.yaml + compose.hosted.yaml + compose.quotas.yaml`。最后一个文件将真实模型清单仅挂入平台，把旧无鉴权 opencode-admin 服务隔离到独立内部网络；执行器不得使用 host/container 网络或加入该管理网络（供给配置会拒绝常见错误设置），也不能访问其他中转管理接口。网关请求走现有平台 Origin；无需额外开放端口或放宽 CORS。
 
 执行器启动时通过自己的 runner 凭据取得仅含平台网关模型的配置；上游 Key 不进入执行器，旧 seed/live 配置和 auth 文件不挂载。网关凭据随 runner 轮换，账号停用/凭据过期后不能继续调用。必须使用包含本功能的新平台和执行器镜像。
 

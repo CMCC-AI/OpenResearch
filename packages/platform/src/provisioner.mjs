@@ -100,6 +100,17 @@ export function runtimeConfig(workspace, env) {
   if (!env.MANAGED_EXECUTOR_IMAGE)
     throw new Error("MANAGED_EXECUTOR_IMAGE is required");
   const quotaMode = env.TOKEN_QUOTAS_ENABLED === "true";
+  if (
+    quotaMode &&
+    env.MANAGED_NETWORK &&
+    (env.MANAGED_NETWORK === "host" ||
+      env.MANAGED_NETWORK.startsWith("container:") ||
+      /(?:^|_)quota-model-admin$/.test(env.MANAGED_NETWORK))
+  )
+    throw new Error(
+      "Quota executors must not share host or model-admin networks",
+    );
+
   const liveConfigDirectory =
     !quotaMode && env.MANAGED_OPENCODE_LIVE_CONFIG_DIR;
   const configFile = !quotaMode && env.MANAGED_OPENCODE_CONFIG_FILE;
