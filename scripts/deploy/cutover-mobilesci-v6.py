@@ -316,10 +316,28 @@ def wait_ready(name):
     raise RuntimeError('Readiness timeout: ' + name)
 
 
-def fetch(url):
+def fetch(url, timeout=10):
     request = urllib.request.Request(url, headers={'Host': '49.232.238.110:20281'})
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return response.read()
+
+
+def wait_public_entry():
+    deadline = time.monotonic() + 30
+    while True:
+        if not inspect(GATEWAY)['State']['Running']:
+            raise RuntimeError('Gateway exited before readiness')
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError('Gateway entry readiness timeout')
+        try:
+            fetch('http://127.0.0.1:20281/mobilesci/', timeout=min(2, remaining))
+            return
+        except urllib.error.HTTPError:
+            # An HTTP rejection is a real routing/auth failure, not a bind delay.
+            raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            time.sleep(min(0.25, max(0, deadline - time.monotonic())))
 
 
 def public_checks(expected):
@@ -505,6 +523,7 @@ def apply(state, expected):
         if not inspect(PROVISIONER)['State']['Running']:
             raise RuntimeError('Provisioner exited')
         run('docker', 'start', GATEWAY)
+        wait_public_entry()
         public_checks(state['ui'])
         journal['result'] = 'healthy'
         save_journal(backup, journal)
