@@ -10,7 +10,9 @@ import { useRuntime } from "./RemoteRuntime";
 
 import { globalResumeLocation, projectResumeLocation } from "./routeResume";
 import { m } from "./paraglide/messages.js";
-import { createChatSession, type Project } from "./api";
+import { createChatSession, sendChatMessage, getChatSubmission, type Project } from "./api";
+import { createClientTurnId } from "./clientTurnId";
+import { canStartQuestionDirectly, submitHomeQuestion, type HomeQuestionAttempt } from "./homeConversationStart";
 import { getHarnessesQuery } from "./queries/settings";
 import { listChatSessionsQuery } from "./queries/chat";
 import { defaultSelection } from "./components/ModelPicker";
@@ -89,6 +91,7 @@ export function ProjectsPage() {
   const openProject = (projectId: string) => void navigate({ to: "/projects/$projectId", params: { projectId } });
   const startingRef = useRef(false);
   const [starting, setStarting] = useState(false);
+  const questionAttempts = useRef(new Map<string, HomeQuestionAttempt & { generation: number }>());
 
   async function beginResearch(project: Project, draft: ComposerStash) {
     if (startingRef.current) return;
@@ -107,17 +110,41 @@ export function ProjectsPage() {
       }
       if (generation !== getWorkspaceGeneration()) return;
       const mode = draft.workMode ?? "normal";
-      const session = await createChatSession(project.id, selection.harness, {
+      const options = {
         ...selection,
         autonomy: state?.preferredAutonomy ?? undefined,
         ...(mode !== "normal" ? { research: { mode, objective: draft.draft.trim() || researchModes[mode] } } : {}),
-      });
+      };
+      const direct = canStartQuestionDirectly(draft);
+      const signature = JSON.stringify([project.id, draft.draft.trim(), mode]);
+      const savedAttempt = questionAttempts.current.get(project.id);
+      const previous = savedAttempt?.generation === generation ? savedAttempt : null;
+      if (previous && (!direct || previous.signature !== signature)) {
+        throw new Error("上次问题的发送结果尚未确认，请先重试原问题，再继续其他研究。");
+      }
+      const session = previous?.session ?? await createChatSession(project.id, selection.harness, options);
       if (generation !== getWorkspaceGeneration()) return;
-      getComposerStashStore(generation).set(session.id, draft);
-      getResearchSubmissionStore(generation).set(session.id, draft);
-      setScopedQueryData(listChatSessionsQuery(project.id).queryKey, (rows) => [session, ...(rows ?? []).filter((row) => row.id !== session.id)]);
+      // Register before sending so busy/title SSE updates can find the session.
+      // Keep that live row when navigating rather than overwriting it with the
+      // empty snapshot returned at session creation.
+      const rememberSession = () => setScopedQueryData(listChatSessionsQuery(project.id).queryKey, (rows) => [rows?.find((row) => row.id === session.id) ?? session, ...(rows ?? []).filter((row) => row.id !== session.id)]);
+      rememberSession();
+      if (direct) {
+        const attempt = previous ?? { signature, session, clientTurnId: createClientTurnId(), options, generation };
+        questionAttempts.current.set(project.id, attempt);
+        await submitHomeQuestion(attempt, draft.draft, {
+          send: (id, text, opts, turnId) => sendChatMessage(id, text, opts, undefined, undefined, turnId),
+          receipt: (id, turnId) => getChatSubmission(id, turnId, AbortSignal.timeout(3000)),
+          isCurrent: () => generation === getWorkspaceGeneration(),
+        });
+      } else {
+        getComposerStashStore(generation).set(session.id, draft);
+        getResearchSubmissionStore(generation).set(session.id, draft);
+      }
+      rememberSession();
       getComposerStashStore(generation).delete(`${project.id}:new`);
       await navigate({ to: "/projects/$projectId/tasks/$sessionId", params: { projectId: project.id, sessionId: session.id } });
+      questionAttempts.current.delete(project.id);
     } catch (error) {
       if (generation === getWorkspaceGeneration()) {
         getComposerStashStore(generation).set(`${project.id}:new`, draft);
