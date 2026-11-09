@@ -8,6 +8,7 @@ import { resetMailer } from "./mail.mjs";
 import { featuredCaseRoutes } from "./featured-cases.mjs";
 import { storageAccess, storageSettings } from "./storage.mjs";
 import { researchLimit } from "./research-limits.mjs";
+import { leaseRuntime } from "./runtime-pool.mjs";
 import http from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
@@ -610,6 +611,13 @@ export async function createPlatform(
           );
           const tunnel = tunnels.get(workspace);
           check(tunnel, 503, "执行器离线，请联系工作空间管理员");
+          if (path !== "/api/events")
+            await leaseRuntime(
+              pool,
+              workspace,
+              res,
+              !["GET", "HEAD"].includes(req.method),
+            );
           if (!["GET", "HEAD"].includes(req.method))
             await audit(
               pool,
@@ -636,6 +644,13 @@ export async function createPlatform(
         const { s, workspace } = await personalAccess(req);
         const tunnel = tunnels.get(workspace);
         check(tunnel, 503, "正在准备你的研究环境，请稍候再试");
+        if (path !== "/api/events")
+          await leaseRuntime(
+            pool,
+            workspace,
+            res,
+            !["GET", "HEAD"].includes(req.method),
+          );
         const policy = researchLimit(req.method, path);
         await limit(
           `api-${policy.bucket}:${workspace}:${s.user_id}`,
@@ -856,7 +871,7 @@ export async function createPlatform(
       if (path === "/api/platform/register" && req.method === "POST") {
         await limit(
           `register-ip:${hash(req.socket.remoteAddress || "")}`,
-          10,
+          120,
           3600,
         );
         const b = await input(req);
@@ -937,6 +952,10 @@ export async function createPlatform(
         });
         const result = await pool.query(
           "SELECT status,error FROM workspace_runtimes WHERE workspace_id=$1 AND desired='running'",
+          [workspace],
+        );
+        await pool.query(
+          "UPDATE workspace_runtimes SET last_requested_at=now() WHERE workspace_id=$1 AND status='waiting'",
           [workspace],
         );
         return json(res, {
@@ -1324,6 +1343,7 @@ export async function createPlatform(
         check(/\/terminal(?:\?|$)/.test(req.url), 403, "仅允许科研终端连接");
         const tunnel = tunnels.get(workspace);
         check(tunnel, 503);
+        await leaseRuntime(pool, workspace, socket, true);
         wss.handleUpgrade(req, socket, head, (ws) => {
           try {
             tunnel.socket(req, ws, s.token_hash, authorize);

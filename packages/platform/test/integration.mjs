@@ -1047,13 +1047,13 @@ test(
                   data: {},
                 })
               ).status,
-              409,
+              200,
             );
             const again = await request("/api/platform/personal-space", {
               cookie: created.cookie,
             });
             assert.equal(again.data.id, initial.data.id);
-            assert.equal(again.data.status, "not_started");
+            assert.equal(again.data.status, "waiting");
             const ws = new WebSocket(
               `ws://127.0.0.1:${port}/api/projects/p/terminal`,
               {

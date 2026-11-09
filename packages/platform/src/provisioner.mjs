@@ -2,6 +2,7 @@ import http from "node:http";
 import { pathToFileURL } from "node:url";
 import { createPool, transaction } from "./db.mjs";
 import { hash, token, id } from "./security.mjs";
+import { scheduleRuntimes } from "./runtime-pool.mjs";
 
 // This process alone owns access to Docker. No user-defined images or paths.
 export function docker(method, path, body, binary = false) {
@@ -286,8 +287,9 @@ async function main() {
     let workspace;
     try {
       await transaction(pool, async (db) => {
+        await scheduleRuntimes(db, process.env, docker);
         const { rows } = await db.query(
-          "SELECT * FROM workspace_runtimes WHERE status<>'deleted' AND (status<>'failed' OR desired='deleted') AND (checked_at IS NULL OR checked_at<now()-interval '10 seconds') ORDER BY checked_at NULLS FIRST LIMIT 1 FOR UPDATE SKIP LOCKED",
+          "SELECT * FROM workspace_runtimes WHERE ((desired='deleted' AND status<>'deleted') OR status IN ('queued','starting','ready')) AND (checked_at IS NULL OR checked_at<now()-interval '10 seconds') ORDER BY checked_at NULLS FIRST LIMIT 1 FOR UPDATE SKIP LOCKED",
         );
         if (!rows.length) return;
         workspace = rows[0].workspace_id;

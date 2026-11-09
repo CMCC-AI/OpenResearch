@@ -163,6 +163,8 @@ def main(package, capacity):
         'MANAGED_CONNECT_URL': 'http://host.docker.internal:20281',
         'MANAGED_LEGACY_CONNECT_URL': 'http://127.0.0.1:5300',
         'MANAGED_EXECUTOR_IMAGE': executor_image,
+        'MANAGED_CAPACITY': str(capacity),
+        'MANAGED_IDLE_SECONDS': existing.get('MANAGED_IDLE_SECONDS', '120'),
         'MANAGED_EXECUTOR_MEMORY': existing.get('MANAGED_EXECUTOR_MEMORY', '2684354560'),
         'MANAGED_EXECUTOR_MEMORY_SWAP': existing.get('MANAGED_EXECUTOR_MEMORY_SWAP', '4831838208'),
         'MANAGED_CONNECTOR_IMAGE': old['Config']['Image'],
