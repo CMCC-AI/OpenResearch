@@ -250,3 +250,17 @@ ssh -p 20280 ubuntu@61.136.101.179 \
 已备份并补齐 `/opt/mobilesci/current/compose.yaml`，备份文件为同目录 `compose.yaml.before-literature-sso-1792340211121`；使用原镜像替换账号平台容器，仅添加回调路径配置，其他 env、HostConfig 和数据挂载逐项核对一致。回退容器为 `mobilesci-remote-platform-1-backup-20261018T161653Z`，私有元数据保存在 `/home/ubuntu/.mobilesci-service-rollbacks/`。没有修改账号密码、文献程序或研究数据。部署升级脚本增加回调配置预检，缺失或错误路径会在构建、替换服务前明确拒绝升级，避免把这种错误配置继续带入新发布。
 
 按用户明确授权，使用服务器保存的原管理员凭据在服务器内验证完整登录链路：文献登录发起、账号平台授权、带前缀回调均返回 303，最终文库页面返回 200；文献身份接口确认已登录，原研究 API 仍返回 200。文献退出返回 200，联动撤销平台会话后平台退出返回 401。未输出密码、授权码或会话 cookie。Linux 部署脚本 26 项测试全部通过；Windows 全套测试受 Linux 专用 `fcntl` 限制，故在服务器临时目录执行同套测试，测试未改动生产服务。
+
+## 2026-11-09：新对话入口缓存校验
+
+通过 `root@10.7.0.18` 核对，公网 `49.232.238.110:20281` 当前入口引用 `index-CQXUZg0q.js`，已包含真实会话创建、首条消息一次发送和 `/tasks/new` 向新版科研首页的兼容跳转；旧欢迎页文案已不在该包中。服务器保留的旧哈希资源不代表当前入口使用它们，已打开的浏览器标签仍可能运行旧包。
+
+原静态入口没有显式缓存策略。已对当前网关 `/mobilesci/` 增加 `Cache-Control: no-cache`，要求后续加载重新校验入口；部署模板同步此策略。修改前备份到 `/opt/mobilesci/backups/ui-cache-20261109T024638Z/nginx.conf`，`nginx -t` 通过后平滑重载，容器未更换，研究服务未重启。已打开的旧标签需要刷新一次才能加载新版脚本。
+
+从公网验证首页、带项目参数的新对话页和旧 `/tasks/new` 地址均返回新版入口与 `no-cache`；JS SHA-256 为 `99fb27e403b71f7f8c1753784a5414d8fcedaa6c6b94beaed9c7ba802be8c566`，健康检查通过。47 项提交与路由测试、46 项部署测试通过；本次未登录浏览器发送模型消息，未将缓存推断视为浏览器实测结论。
+
+## 2026-11-09：恢复论文发现的 arXiv 显示名称
+
+线上入口已换成 `index-CQXUZg0q.js`，该包的学术数据源配置及来源名称映射仍显示 `alphaXiv`，覆盖了 11 月 4 日的静态更名。通过 `root@10.7.0.18` 备份当前入口及脚本后，仅替换这两处显示名称为 `arXiv`，保留检索标识、接口和其他线上功能；新入口引用 `index-arxiv-bb9ada5d0c55.js`。回退文件位于 `/opt/mobilesci/patches/arxiv-label-20261109T031223Z/`，未重启研究服务。
+
+内网与公网 `/mobilesci/discover` 均返回新资源入口及 `Cache-Control: no-cache`，脚本 SHA-256 均为 `bb9ada5d0c55839df9007c58ecf39a3e01acf07fa5e25209b7b582777f4139d2`，两处名称断言及健康检查通过；未进行登录后的浏览器视觉验收。后续发布应从包含 `ui/src/literatureSources.ts` 与 `ui/src/components/LitSourceLogo.tsx` 更名的源码构建，并从公网核对新入口及脚本内容，避免旧构建包再次覆盖。
