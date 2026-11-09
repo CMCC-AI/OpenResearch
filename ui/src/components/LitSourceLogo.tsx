@@ -14,7 +14,7 @@ import type { LitSource } from "../orxCommand";
 export { parseOrxLit, type LitSource, type OrxLitCall } from "../orxCommand";
 
 export const LIT_SOURCE_NAME: Record<LitSource, string> = {
-  alphaxiv: "alphaXiv",
+  alphaxiv: "arXiv",
   openalex: "OpenAlex",
   biorxiv: "bioRxiv",
   pubmed: "PubMed",
