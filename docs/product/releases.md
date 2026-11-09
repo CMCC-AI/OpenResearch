@@ -1,6 +1,8 @@
 # MobileSci 版本发布
 
-当前源码候选产品版本为 `0.2.23-mobilesci.5`，范围见[发布说明](../../release-notes/v0.2.23-mobilesci.5.md)，最终集成与发行 CI 尚待完成。最近已发布版本仍为 `.4`；既有 `.1`–`.4` 标签与附件保持不变。源码候选、已发布和已部署分别记录。官方 .23 选择性回移见[固定台账](../ai-for-science/upstream-v0.2.23-backports.md)，.24 评估见[逐提交分析](../ai-for-science/upstream-v0.2.24-review-2026-11-06.md)。
+最新已发布源码为 [v0.2.23-mobilesci.6](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.6)，固定提交 `ba641033954d7a5a92cc099ee63106b788d8f2ba`，自身完整发行 [CI 42342582854](https://github.com/CMCC-AI/OpenResearch/actions/runs/42342582854) 成功，范围见[发布说明](../../release-notes/v0.2.23-mobilesci.6.md)与[发行证据](../ai-for-science/release-v0.2.23-mobilesci.6-evidence.md)。既有标签与附件不可变；PR #15/#16 只是发行后源码合入，PR #17 保留草稿，不混入 `.6`。
+
+2026-11-09 第二次生产切换已有 `.6` 的脚本 healthy 回执，其后用户确认保留 `.6` 并暂停后续操作；独立切换后复核及实际登录业务验收未完成，本轮不连接生产。当前源码/验收边界、待办与 M0/M1 完成标准以[收尾里程碑](../ai-for-science/closeout-milestone-2026-11-09.md)为准。官方真实合并祖先仍为 .19；[.23 选择性回移](../ai-for-science/upstream-v0.2.23-backports.md)、[.24 已选适配](../ai-for-science/upstream-v0.2.24-backports.md)、[.25 的 45 项评估](../ai-for-science/upstream-v0.2.25-review-2026-11-09.md)分别记录，未回移不等于待补债务。
 
 ## 源码版本
 
@@ -12,7 +14,7 @@
 
 这是源码发行路径。它不调用安装包签名流程，不更新产品的官方升级通道，不执行生产部署。部署仍遵循 [运行与部署约定](runtime-and-deployment.md) 中的备份、固定镜像、升级与恢复验收。既有多平台安装包发行流程保留独立门禁。
 
-## 本轮范围
+## `.5` 历史集成范围（已完成）
 
 - 工作区恢复、材料读取范围界面和只读案例快照，旧未知记录不补造，窄屏结果可滚动查看。
 - 历史归档保留、操作员显式受保护回收及有界续页；总配额和材料/Run 删除不在本批范围。
@@ -20,8 +22,8 @@
 - 环境/遥测测试子进程隔离、官方原生测试夹具及 .24 工作区适配。
 - 保留三系统源码摘要一致性与 ARM 原生门禁，纯归档任务改用 macOS Intel。
 
-五个待合入候选及其依赖在同一集成提交中验证，原 PR/分支保留到集成成功并确认提交已纳入后再清理。早期候选的局部成功不替代 `.5` 自身的完整模拟合并和发行 CI。生产升级仍需要本版本的固定镜像、恢复、活动准入及真实账号/上传/重连验收。
+五个原候选及依赖已由 PR #12 统一验证合入并发行 `.5`，随后纳入 `.6`，详见[历史集成证据](../ai-for-science/followup-integration-2026-11-07.md)。该节只记录当时范围，不再是待合入列表；当前后续安排以收尾里程碑为准。
 
-## 已发布状态（2026-11-06）
+## `.4` 历史发布状态（2026-11-06）
 
 [`.4` 源码](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.4) 已发布，固定提交 `d959cf82`，[发行 CI 42205071962](https://github.com/CMCC-AI/OpenResearch/actions/runs/42205071962) 成功；四个实际附件摘要、清单和本地字节重现性已核验。本版服务器隔离构建与备份恢复也已独立通过，尚未切换生产，详见[执行台账](../ai-for-science/followup-execution-2026-11-06.md)。

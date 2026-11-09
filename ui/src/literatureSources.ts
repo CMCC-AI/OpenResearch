@@ -1,7 +1,7 @@
 import type { LitSource } from "./orxCommand";
 
 export const literatureSources: { id: LitSource; name: string; description: string; url: string }[] = [
-  { id: "alphaxiv", name: "alphaXiv", description: "发现 arXiv 论文、社区评价与全文相关片段。", url: "https://www.alphaxiv.org/" },
+  { id: "alphaxiv", name: "arXiv", description: "发现 arXiv 论文、社区评价与全文相关片段。", url: "https://www.alphaxiv.org/" },
   { id: "openalex", name: "OpenAlex", description: "覆盖跨学科论文、作者、机构与引用关系。", url: "https://openalex.org/" },
   { id: "biorxiv", name: "bioRxiv", description: "聚焦生命科学预印本，通过 OpenAlex 检索相关文献。", url: "https://www.biorxiv.org/" },
   { id: "pubmed", name: "PubMed", description: "通过 NCBI 检索生物医学与生命科学文献、摘要及原文链接。", url: "https://pubmed.ncbi.nlm.nih.gov/" },
