@@ -254,7 +254,10 @@ function administrationUrl(capabilities) {
 
 function personalSettingsUrl(capabilities) {
   const destination = new URL(capabilities.openResearchAppUrl);
-  destination.pathname = destination.pathname.replace(/\/projects\/?$/, "/settings/account");
+  destination.pathname = destination.pathname.replace(
+    /\/projects\/?$/,
+    "/settings/account",
+  );
   destination.search = "";
   destination.hash = "";
   return destination.href;

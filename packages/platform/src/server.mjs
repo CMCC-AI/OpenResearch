@@ -413,43 +413,48 @@ export async function createPlatform(
     config.opencodeAdminUrl,
   );
   async function changePassword(req, res, s) {
-        const b = await input(req);
-        await limit(`password:${s.user_id}`, 5, 900);
-        const next = await passwordHash(b.password);
-        const revoked = await transaction(pool, async (db) => {
-          const user = await db.query(
-            "SELECT password_hash FROM platform_users WHERE id=$1 AND NOT disabled FOR UPDATE",
-            [s.user_id],
-          );
-          check(
-            user.rows[0] &&
-              (await verifyPassword(b.current, user.rows[0].password_hash)),
-            403,
-            "当前密码错误",
-          );
-          const sessions = await db.query(
-            "SELECT token_hash FROM platform_sessions WHERE user_id=$1",
-            [s.user_id],
-          );
-          await db.query(
-            "UPDATE platform_users SET password_hash=$2,password_version=password_version+1 WHERE id=$1",
-            [s.user_id, next],
-          );
-          await db.query("DELETE FROM platform_sessions WHERE user_id=$1", [
-            s.user_id,
-          ]);
-          await db.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [
-            s.user_id,
-          ]);
-          await audit(db, s.user_id, null, "password.change");
-          return sessions.rows;
-        });
-        for (const tunnel of tunnels.values())
-          for (const row of revoked) tunnel.revokeSession(row.token_hash);
-        res.setHeader("set-cookie", sessionCookie("", config.secure, 0));
-        return json(res, { ok: true });
+    const b = await input(req);
+    await limit(`password:${s.user_id}`, 5, 900);
+    const next = await passwordHash(b.password);
+    const revoked = await transaction(pool, async (db) => {
+      const user = await db.query(
+        "SELECT password_hash FROM platform_users WHERE id=$1 AND NOT disabled FOR UPDATE",
+        [s.user_id],
+      );
+      check(
+        user.rows[0] &&
+          (await verifyPassword(b.current, user.rows[0].password_hash)),
+        403,
+        "当前密码错误",
+      );
+      const sessions = await db.query(
+        "SELECT token_hash FROM platform_sessions WHERE user_id=$1",
+        [s.user_id],
+      );
+      await db.query(
+        "UPDATE platform_users SET password_hash=$2,password_version=password_version+1 WHERE id=$1",
+        [s.user_id, next],
+      );
+      await db.query("DELETE FROM platform_sessions WHERE user_id=$1", [
+        s.user_id,
+      ]);
+      await db.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [
+        s.user_id,
+      ]);
+      await audit(db, s.user_id, null, "password.change");
+      return sessions.rows;
+    });
+    for (const tunnel of tunnels.values())
+      for (const row of revoked) tunnel.revokeSession(row.token_hash);
+    res.setHeader("set-cookie", sessionCookie("", config.secure, 0));
+    return json(res, { ok: true });
   }
-  async function accountBrowserRequests(req, res, origin, currentSession = null) {
+  async function accountBrowserRequests(
+    req,
+    res,
+    origin,
+    currentSession = null,
+  ) {
     browserSessionOrigin(req, origin);
     res.setHeader("access-control-allow-origin", origin);
     res.setHeader("access-control-allow-credentials", "true");
