@@ -1,7 +1,6 @@
 import { droppedMaterials, pendingMaterials, validateMaterialFiles } from "../materialUploads";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
 import { reasoningFor, updateUiState, type AgentSelection, type Project, type ProjectActivity, type SkillInfo } from "../api";
 import { getHarnessesQuery, getSkillsQuery } from "../queries/settings";
 import { getUiStateQuery } from "../queries/projects";
@@ -26,7 +25,6 @@ export function ResearchStartPanel({ starting = false, draft, onDraftChange, att
   workMode: WorkMode; onWorkModeChange: (mode: WorkMode) => void;
   onStart: () => void; onError: (message: string) => void;
 }) {
-  const navigate = useNavigate();
   const { data: harnesses = [] } = useQuery(getHarnessesQuery());
   const selection = defaultSelection(harnesses, preferredAgent);
   const harness = harnesses.find((item) => item.id === selection?.harness);
@@ -103,7 +101,7 @@ export function ResearchStartPanel({ starting = false, draft, onDraftChange, att
         <IconButton type="button" className="composer-attach" title="上传文件或 ZIP（支持多选）" aria-label="上传文件或 ZIP（支持多选）" onClick={() => picker.current?.click()}><FileUp size={16} /></IconButton>
         <IconButton type="button" title="上传整个文件夹" aria-label="上传整个文件夹" onClick={() => folderPicker.current?.click()}><FolderUp size={16} /></IconButton>
         <div className="min-w-0 flex-1" />
-        <ModelPicker value={selection} onSelect={(preferredAgent) => saveSelection.mutate({ preferredAgent })} onOpenSettings={() => void navigate({ to: "/settings/$tab", params: { tab: "harnesses" } })} permissionChoices={harness?.options.permissionModes} defaultPermissionId={harness?.options.defaultPermissionMode} onSelectPermission={(permissionMode) => { if (selection) saveSelection.mutate({ preferredAgent: { ...selection, permissionMode } }); }} reasoningChoices={reasoning.choices} defaultReasoningId={reasoning.defaultId} onSelectReasoning={(reasoningLevel) => { if (selection) saveSelection.mutate({ preferredAgent: { ...selection, reasoningLevel } }); }} openRequest={modelRequest} autonomy={uiState?.preferredAutonomy ?? undefined} onSelectAutonomy={(preferredAutonomy) => saveSelection.mutate({ preferredAutonomy })} />
+        <ModelPicker value={selection} onSelect={(preferredAgent) => saveSelection.mutate({ preferredAgent })} permissionChoices={harness?.options.permissionModes} defaultPermissionId={harness?.options.defaultPermissionMode} onSelectPermission={(permissionMode) => { if (selection) saveSelection.mutate({ preferredAgent: { ...selection, permissionMode } }); }} reasoningChoices={reasoning.choices} defaultReasoningId={reasoning.defaultId} onSelectReasoning={(reasoningLevel) => { if (selection) saveSelection.mutate({ preferredAgent: { ...selection, reasoningLevel } }); }} openRequest={modelRequest} autonomy={uiState?.preferredAutonomy ?? undefined} onSelectAutonomy={(preferredAutonomy) => saveSelection.mutate({ preferredAutonomy })} />
         <WorkModeSwitch value={workMode} onChange={onWorkModeChange} compact />
         <IconButton type="submit" variant="primary" className="send-btn ms-auto" title={draft.trim() || attachments.length ? "发送消息" : "创建空白项目"} aria-label={draft.trim() || attachments.length ? "发送消息" : "创建空白项目"} disabled={starting || saveSelection.isPending}>{starting ? <Spinner /> : <CornerDownLeft size={16} />}</IconButton>
       </div>

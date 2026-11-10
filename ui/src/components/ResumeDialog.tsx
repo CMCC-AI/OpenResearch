@@ -6,8 +6,7 @@ import { ltr } from "../i18n";
 import { m } from "../paraglide/messages.js";
 import { listAllChatSessionsQuery, listNativeChatsQuery } from "../queries/chat";
 import { listProjectsQuery } from "../queries/projects";
-import { HarnessLogo } from "./HarnessLogo";
-import { HARNESS_LABELS } from "./ModelPicker";
+import { MessageSquare } from "lucide-react";
 import { Input, LoadingRow, MenuItem, Spinner } from "./ui";
 import { useDialogFocus } from "./useDialogFocus";
 
@@ -69,10 +68,10 @@ export function ResumeDialog({
     const own: ResumeEntry[] = (sessions ?? [])
       .filter((session) => session.id !== activeSessionId)
       .filter((session) =>
-        hit(`${session.title ?? ""} ${projectNames.get(session.projectId) ?? ""} ${HARNESS_LABELS[session.harness]}`))
+        hit(`${session.title ?? ""} ${projectNames.get(session.projectId) ?? ""}`))
       .map((session) => ({ kind: "session", key: session.id, session }));
     const native: ResumeEntry[] = nativeChats
-      .filter((chat) => hit(`${chat.title ?? ""} ${chat.cwd ?? ""} ${HARNESS_LABELS[chat.harness]}`))
+      .filter((chat) => hit(`${chat.title ?? ""} ${chat.cwd ?? ""}`))
       .map((chat) => ({ kind: "native", key: `${chat.harness}:${chat.nativeId}`, chat }));
     return [...own, ...native];
   }, [sessions, nativeChats, filter, activeSessionId, projectNames]);
@@ -168,7 +167,7 @@ export function ResumeDialog({
                   onMouseEnter={() => setActiveIndex(index)}
                   onClick={() => pick(entry)}
                 >
-                  <HarnessLogo harness={native?.harness ?? session?.harness ?? "claude-code"} />
+                  <MessageSquare size={16} className="shrink-0 text-muted" aria-hidden="true" />
                   <span dir="auto" className="min-w-0 flex-1 truncate">
                     {(native?.title ?? session?.title)?.trim() || m.chat_untitled()}
                   </span>

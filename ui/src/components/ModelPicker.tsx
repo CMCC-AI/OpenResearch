@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getHarnessesQuery } from "../queries/settings";
 import { m } from "../paraglide/messages.js";
 import { ltr } from "../i18n";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Lock, Plus, Settings, Zap } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Lock, Plus, Sparkles, Zap } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   fmtNumber,
@@ -23,7 +23,6 @@ import {
   DEFAULT_AUTONOMY,
 } from "../api";
 import { renderNote } from "./agentNote";
-import { HarnessLogo } from "./HarnessLogo";
 
 import { IconButton, MenuItem } from "./ui";
 import { cn } from "./ui/cn";
@@ -47,7 +46,7 @@ export type ModelSelection = AgentSelection;
 export const HARNESS_LABELS: Record<HarnessId, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
-  opencode: "OpenCode",
+  opencode: "MobileSci",
   cursor: "Cursor",
   antigravity: "Google Antigravity",
 };
@@ -109,7 +108,7 @@ export function usePopover(triggerRef?: RefObject<HTMLButtonElement | null>) {
 export function ModelPicker({
   value,
   onSelect,
-  onOpenSettings,
+  onOpenSettings: _onOpenSettings,
   permissionChoices = [],
   defaultPermissionId,
   onSelectPermission,
@@ -124,7 +123,7 @@ export function ModelPicker({
 }: {
   value: ModelSelection | null;
   onSelect: (value: ModelSelection) => void;
-  onOpenSettings: () => void;
+  onOpenSettings?: () => void;
   permissionChoices?: OptionChoice[];
   defaultPermissionId?: string | null;
   onSelectPermission?: (id: string) => void;
@@ -191,6 +190,13 @@ export function ModelPicker({
     }
   }, [open, page]);
 
+  const activeModelRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (open && page === "models") {
+      activeModelRef.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [open, page]);
+
   const groups = useMemo(() => {
     const q = filter.trim().toLowerCase();
     // Locked to the open session's harness: only offer that one.
@@ -199,8 +205,6 @@ export function ModelPicker({
     return shown.map((h) => {
       let models = h.models;
       if (q) models = models.filter((m) => `${m.id} ${harnessModelLabel(m)}`.toLowerCase().includes(q));
-      // Large catalogs stay behind the filter box.
-      else if (h.id === "opencode" || h.id === "cursor" || h.id === "antigravity") models = models.slice(0, 5);
       return { harness: h, models, hidden: q ? 0 : h.models.length - models.length };
     });
   }, [harnesses, filter, lockHarness, value]);
@@ -332,16 +336,6 @@ export function ModelPicker({
         <ChevronLeft size={15} />
       </IconButton>
       <span className="min-w-0 flex-1 text-sm font-medium text-text">{title}</span>
-      {page === "models" && (
-        <IconButton
-          type="button"
-          size="small"
-          aria-label={m.settings_page_harnesses()}
-          onClick={() => { close(); onOpenSettings(); }}
-        >
-          <Settings size={15} aria-hidden="true" />
-        </IconButton>
-      )}
     </div>
   );
 
@@ -351,7 +345,7 @@ export function ModelPicker({
     defaultId: string | null | undefined,
     choose: (id: string) => void,
   ) => (
-    <div className="model-menu-list min-h-0 overflow-y-auto p-1.5">
+    <div className="model-menu-list min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5 [scrollbar-width:thin] [scrollbar-color:var(--muted)_transparent] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted/40 hover:[&::-webkit-scrollbar-thumb]:bg-muted/70 active:[&::-webkit-scrollbar-thumb]:bg-muted">
       {choices.map((choice) => (
         <MenuItem key={choice.id} onClick={() => choose(choice.id)}>
           <span className="flex min-w-0 flex-col items-start gap-0.5">
@@ -395,9 +389,9 @@ export function ModelPicker({
       >
         {effectiveServiceTier === "priority" ? (
           <Zap size={14} fill="currentColor" aria-hidden="true" />
-        ) : value?.harness ? (
-          <HarnessLogo harness={value.harness} size={14} />
-        ) : null}
+        ) : (
+          <Sparkles size={14} className="shrink-0 text-muted" aria-hidden="true" />
+        )}
         {effectiveServiceTier === "priority" && <span className="sr-only">{m.model_picker_fast_speed()} </span>}
         <span className="model-picker-label min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
           {label}
@@ -408,7 +402,7 @@ export function ModelPicker({
       {open && createPortal(
         <div ref={rootRef} style={menuPosition ?? { visibility: "hidden" }} className="model-menu fixed flex flex-col bg-background border border-border rounded-md shadow-dropdown z-1000 overflow-hidden [&_input]:rounded-none [&_input]:border-0 [&_input]:border-b [&_input]:border-b-border-variant [&_input]:bg-none [&_input]:bg-transparent [&_input]:py-2 [&_input]:px-2.5 [&_input]:text-sm [&_input]:outline-none align-right">
           {page === "root" && (
-            <div className="model-root-menu min-h-0 overflow-y-auto p-1">
+            <div className="model-root-menu min-h-0 flex-1 overflow-y-auto overscroll-contain p-1 [scrollbar-width:thin] [scrollbar-color:var(--muted)_transparent] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted/40 hover:[&::-webkit-scrollbar-thumb]:bg-muted/70 active:[&::-webkit-scrollbar-thumb]:bg-muted">
               {menuRow(m.model_picker_model(), label, "models")}
               {reasoningChoices.length > 0 && menuRow(reasoningAxisLabel, reasoningLabel, "reasoning")}
               {speedChoices.length > 0 && menuRow(m.model_picker_speed(), speedLabel, "speed")}
@@ -426,20 +420,9 @@ export function ModelPicker({
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
               />
-              <div className="model-menu-list min-h-0 overflow-y-auto p-1.5">
+              <div className="model-menu-list min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5 [scrollbar-width:thin] [scrollbar-color:var(--muted)_transparent] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted/40 hover:[&::-webkit-scrollbar-thumb]:bg-muted/70 active:[&::-webkit-scrollbar-thumb]:bg-muted">
                 {groups.map(({ harness, models, hidden }) => (
-                  <div key={harness.id} className="[&_.model-item]:ps-6">
-                    <div className={MODEL_GROUP_CLASS_NAME}>
-                      <span className="inline-flex items-center gap-1.5">
-                        <HarnessLogo harness={harness.id} size={14} />
-                        {harness.name}
-                      </span>
-                      {!harness.agentReady && (
-                        <span className="model-group-status inline-flex items-center gap-1 text-accent-amber font-normal">
-                          {harness.catalogPending ? m.onboarding_checking() : <><Lock size={10} /> {m.model_picker_unavailable()}</>}
-                        </span>
-                      )}
-                    </div>
+                  <div key={harness.id}>
                     {!harness.agentReady ? (
                       <div className="model-more [&_code]:font-mono [&_code]:text-xs [&_code]:bg-surface [&_code]:border [&_code]:border-border-variant [&_code]:rounded-xs [&_code]:py-px [&_code]:px-[5px] [&_code]:whitespace-nowrap pt-1 px-2 pb-2 text-sm text-muted model-unavailable leading-normal border-b border-b-border-variant">
                         {harness.catalogPending ? m.onboarding_checking() : harness.agentNote ? renderNote(harness.agentNote) : m.model_picker_not_available()}
@@ -447,7 +430,10 @@ export function ModelPicker({
                     ) : (
                       <>
                         {!filter.trim() && (
-                          <MenuItem onClick={() => pick(harness, null)}>
+                          <MenuItem
+                            ref={value?.harness === harness.id && value?.model === null ? activeModelRef : undefined}
+                            onClick={() => pick(harness, null)}
+                          >
                             <span>{m.model_picker_default_model()}</span>
                             {value?.harness === harness.id && value?.model === null && (
                               <Check size={13} />
@@ -460,7 +446,7 @@ export function ModelPicker({
                         {models.map((m) => (
                           <MenuItem
                             key={m.id}
-
+                            ref={value?.harness === harness.id && value?.model === m.id ? activeModelRef : undefined}
                             title={m.id}
                             onClick={() => pick(harness, m.id)}
                           >
@@ -676,7 +662,7 @@ export function OptionPicker({
           className={`option-menu absolute bottom-[calc(100%_+_8px)] start-0 max-h-95 flex flex-col bg-background border border-border rounded-lg shadow-menu z-50 overflow-hidden min-w-47.5 p-1.5 [&.align-right]:start-auto [&.align-right]:end-0 [&.drop-down]:bottom-auto [&.drop-down]:top-[calc(100%_+_4px)] [&.session-menu]:start-auto [&.session-menu]:end-1.5 [&.session-menu]:top-[calc(100%_-_2px)] [&.session-menu]:min-w-35 ${choices.some((choice) => choice.description) ? "min-w-80" : ""} ${variant === "field" ? "min-w-full text-text" : ""} ${align === "right" ? "align-right" : ""} ${dropDown ? "drop-down" : ""}`}>
           {header && <div className={MODEL_GROUP_CLASS_NAME}>{header}</div>}
           {searchPlaceholder && <input autoFocus aria-label={searchPlaceholder} placeholder={searchPlaceholder} value={filter} onChange={(e) => setFilter(e.target.value)} className="shrink-0 border-b border-border bg-background px-2 py-2 text-sm outline-none" />}
-          <div className="min-h-0 overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-width:thin] [scrollbar-color:var(--muted)_transparent] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted/40 hover:[&::-webkit-scrollbar-thumb]:bg-muted/70 active:[&::-webkit-scrollbar-thumb]:bg-muted">
           {pinned && (
             <>
               <MenuItem type="button" onClick={() => choose(pinned.id)}>
