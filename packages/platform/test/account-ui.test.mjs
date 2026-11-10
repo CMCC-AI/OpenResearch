@@ -139,6 +139,9 @@ test("administrator lands on user management and normal users have no management
   );
   const ordinary = browser({
     "/api/platform/me": { name: "Reader", isAdmin: false },
+    "/api/platform/capabilities": {
+      openResearchAppUrl: "http://localhost:4791/projects",
+    },
   });
   ordinary.context.location.search = "?admin=1";
   await ordinary.ui.load();
@@ -146,102 +149,24 @@ test("administrator lands on user management and normal users have no management
   assert.deepEqual(ordinary.redirects, []);
 });
 
-test("account management links use canonical admin routes for root and prefixed apps", async () => {
-  for (const prefix of ["", "/mobilesci"]) {
-    const b = browser({
-      "/api/platform/me": { name: "Admin", isAdmin: true },
-      "/api/platform/capabilities": {
-        openResearchAppUrl: `http://localhost:4791${prefix}/projects?from=old#section`,
-      },
-    });
-    b.context.location.search = "?account=1";
-    await b.ui.load();
-    assert.ok(
-      b
-        .node("#account")
-        .innerHTML.includes(
-          `href="http://localhost:4791${prefix}/admin/users"`,
-        ),
-    );
-    assert.ok(!b.node("#account").innerHTML.includes("admin=1"));
-    assert.deepEqual(b.redirects, []);
-    assert.equal(
-      b.calls.filter((path) => path === "/api/platform/capabilities").length,
-      1,
-    );
-  }
-});
-
-test("account quota dialog shows monthly balances and hides administrator controls for ordinary users", async () => {
-  const balance = {
-    enabled: true,
-    period: "2026-11",
-    monthlyLimit: 2000000,
-    granted: 2000000,
-    used: 100,
-    reserved: 50,
-    available: 1999850,
-  };
-  const b = browser({
-    "/api/platform/me": {
-      name: "Researcher",
-      email: "user@example.com",
-      isAdmin: false,
-    },
-    "/api/platform/capabilities": {},
-    "/api/platform/token-quota": balance,
-  });
-  b.context.location.search = "?account=1";
-  await b.ui.load();
-  await b.node("#token-quota").onclick();
-  const html = b.node("#detail-body").innerHTML;
-  assert.match(html, /2026-11/);
-  assert.match(html, /2,000,000/);
-  assert.match(html, /1,999,850/);
-  assert.doesNotMatch(html, /id="quota-user"/);
-});
-test("administrator quota form configures the selected user with an idempotency key", async () => {
-  const balance = {
-    enabled: true,
-    period: "2026-11",
-    monthlyLimit: 2000000,
-    granted: 2000000,
-    used: 100,
-    reserved: 0,
-    available: 1999900,
-  };
-  const target = {
-    ...balance,
-    user: { name: "<target>", email: "target@example.com" },
-    requests: [],
-  };
-  let posted;
-  const b = browser({
-    "/api/platform/me": { name: "Admin", isAdmin: true },
-    "/api/platform/capabilities": {
-      openResearchAppUrl: "http://localhost:4791/projects",
-    },
-    "/api/platform/token-quota": balance,
-    "/api/platform/admin/token-quotas?email=target%40example.com": target,
-    "/api/platform/admin/token-quotas": (options) => {
-      posted = JSON.parse(options.body);
-      return target;
-    },
-  });
-  b.context.location.search = "?account=1";
-  await b.ui.load();
-  await b.node("#token-quota").onclick();
-  const form = b.node("#quota-user");
-  form.fields = { email: "target@example.com" };
-  await form.onsubmit({ preventDefault() {}, currentTarget: form });
-  assert.match(b.node("#quota-user-result").innerHTML, /&lt;target&gt;/);
-  const config = b.node("#quota-config");
-  config.fields = {
-    monthlyLimit: "3000000",
-    reason: "verified monthly allowance",
-  };
-  await config.onsubmit({ preventDefault() {}, currentTarget: config });
-  assert.equal(posted.email, "target@example.com");
-  assert.equal(posted.monthlyLimit, 3000000);
-  assert.match(posted.idempotencyKey, /^[0-9a-f-]{36}$/);
+test("legacy account URLs redirect into workspace settings for ordinary and admin users", async () => {
+  for (const prefix of ["", "/mobilesci"])
+    for (const isAdmin of [false, true]) {
+      const b = browser({
+        "/api/platform/me": { name: "Researcher", isAdmin },
+        "/api/platform/capabilities": {
+          openResearchAppUrl: `http://localhost:4791${prefix}/projects?old=1#section`,
+        },
+      });
+      b.context.location.search = "?account=1";
+      await b.ui.load();
+      assert.deepEqual(b.redirects, [
+        `http://localhost:4791${prefix}/settings/account`,
+      ]);
+      assert.equal(b.node("#account").innerHTML, "");
+      assert.equal(
+        b.calls.filter((path) => path.includes("token-quota")).length,
+        0,
+      );
+    }
 });
