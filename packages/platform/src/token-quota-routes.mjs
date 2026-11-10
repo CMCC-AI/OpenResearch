@@ -1,7 +1,7 @@
 import { check, sameOrigin } from "./security.mjs";
 import { tokenInteger } from "./token-quotas.mjs";
 export function tokenQuotaRoutes({ config, pool, quota, input, json }) {
-  return async (req, res, path, s) => {
+  return async (req, res, path, s, trustedOrigin = config.origin.origin) => {
     if (path === "/api/platform/token-quota") {
       check(req.method === "GET", 405);
       json(
@@ -21,7 +21,7 @@ export function tokenQuotaRoutes({ config, pool, quota, input, json }) {
       req.method === "GET"
         ? Object.fromEntries(new URL(req.url, config.origin).searchParams)
         : await input(req);
-    if (req.method === "POST") sameOrigin(req, config.origin.origin);
+    if (req.method === "POST") sameOrigin(req, trustedOrigin);
     check(
       typeof value.email === "string" && value.email.length <= 254,
       400,

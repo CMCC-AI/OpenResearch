@@ -133,7 +133,7 @@ test(
         });
         return {
           status: res.status,
-          data: await res.json(),
+          data: res.status === 204 ? null : await res.json(),
           cookie: res.headers.get("set-cookie")?.split(";")[0],
           headers: res.headers,
         };
@@ -613,6 +613,122 @@ test(
             [workspace],
           );
           assert.equal((await call("json")).status, 401);
+        },
+      );
+      await t.test(
+        "workspace settings accept only the configured frontend origin for quota and password management",
+        async () => {
+          const newcomer = await signup("frontend-settings@example.com");
+          assert.equal(newcomer.status, 201);
+          const appOrigin = "http://localhost:5173";
+          const previousOrigin = config.appOrigin;
+          config.appOrigin = appOrigin;
+          try {
+            const own = await request("/api/platform/token-quota", {
+              cookie: newcomer.cookie,
+              source: appOrigin,
+            });
+            assert.equal(own.status, 200);
+            assert.equal(own.data.monthlyLimit, 2000000);
+            assert.equal(
+              own.headers.get("access-control-allow-origin"),
+              appOrigin,
+            );
+            assert.equal(
+              (
+                await request("/api/platform/token-quota", {
+                  cookie: newcomer.cookie,
+                  source: "http://evil.invalid",
+                })
+              ).status,
+              403,
+            );
+            assert.equal(
+              (
+                await request("/api/platform/admin/token-quotas", {
+                  method: "OPTIONS",
+                  source: appOrigin,
+                })
+              ).status,
+              204,
+            );
+            const payload = {
+              email: "frontend-settings@example.com",
+              monthlyLimit: 1234,
+              reason: "trusted frontend",
+              idempotencyKey: id(),
+            };
+            assert.equal(
+              (
+                await request("/api/platform/admin/token-quotas", {
+                  method: "POST",
+                  cookie: two.cookie,
+                  source: "http://evil.invalid",
+                  data: payload,
+                })
+              ).status,
+              403,
+            );
+            assert.equal(
+              (
+                await request("/api/platform/admin/token-quotas", {
+                  method: "POST",
+                  cookie: two.cookie,
+                  source: appOrigin,
+                  data: payload,
+                })
+              ).status,
+              200,
+            );
+            assert.equal(
+              (
+                await request("/api/platform/token-quota", {
+                  cookie: newcomer.cookie,
+                  source: appOrigin,
+                })
+              ).data.monthlyLimit,
+              1234,
+            );
+            assert.equal(
+              (
+                await request("/api/platform/password", {
+                  method: "POST",
+                  cookie: newcomer.cookie,
+                  source: "http://evil.invalid",
+                  data: {
+                    current: "Synthetic password 2026!",
+                    password: "Trusted frontend password 2026!",
+                  },
+                })
+              ).status,
+              403,
+            );
+            assert.equal(
+              (
+                await request("/api/platform/password", {
+                  method: "POST",
+                  cookie: newcomer.cookie,
+                  source: appOrigin,
+                  data: {
+                    current: "Synthetic password 2026!",
+                    password: "Trusted frontend password 2026!",
+                  },
+                })
+              ).status,
+              200,
+            );
+            assert.equal(
+              (
+                await request("/api/platform/token-quota", {
+                  cookie: newcomer.cookie,
+                  source: appOrigin,
+                })
+              ).status,
+              401,
+            );
+          } finally {
+            config.appOrigin = previousOrigin;
+          }
         },
       );
     } finally {
