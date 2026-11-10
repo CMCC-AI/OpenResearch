@@ -6,8 +6,8 @@
 - 以 **Asia/Shanghai 自然月**计额，每月重新获得该用户配置的月额度，未用余额不累积。不需要定时重置任务：数据库在新月份第一次访问时创建独立账期。
 - 管理员可以为每个用户设置非负整数月额度，包括设为 0。设置同时作用于本月和以后月份，保留本月已用及预占；不取消已发出的请求。默认值变化不覆盖已配置用户。
 - 跨月在途请求仍结算到发起月份，不占用或返还新月份额度。用户新建项目、会话和重启执行器不会重置额度。
-- 范围是平台供给的 OpenAI-compatible Chat Completions 模型，首先覆盖托管 OpenCode 的文本/工具调用；子代理、压缩、重试及脚本调用同一网关时均按相同账号计额。自带 Key/订阅的直接调用不消耗平台额度；未提供平台上游 Key，也不能绕过平台消费限制。
-- 输入加输出计数，已包含缓存输入、推理输出，明细不重复累加。首版不包含图片/音频、Responses 或 Anthropic/Google 原生协议，不将这些路径宣称为已受控。
+- 范围是平台供给的 OpenAI-compatible Chat Completions 模型，覆盖托管 OpenCode 的文本、工具及供应商声明支持的多模态调用；子代理、压缩、重试及脚本调用同一网关时均按相同账号计额。自带 Key/订阅的直接调用不消耗平台额度；未提供平台上游 Key，也不能绕过平台消费限制。
+- 输入加输出计数，已包含缓存输入、推理输出，明细不重复累加。保留模型目录中的思考、交错推理、多模态和工具能力；未接入 Responses 或 Anthropic/Google 原生协议，不将这些路径宣称为已受控。
 
 ## 用户和管理员入口
 
@@ -36,14 +36,14 @@ API（沿用账号会话与 Origin/管理员校验）：
 
 默认关闭，**代码合入不等于生产启用**。相关变量：
 
-| 配置 | 含义 |
-| --- | --- |
-| `TOKEN_QUOTAS_ENABLED=true` | 平台与 provisioner 同时启用 |
+| 配置                                         | 含义                         |
+| -------------------------------------------- | ---------------------------- |
+| `TOKEN_QUOTAS_ENABLED=true`                  | 平台与 provisioner 同时启用  |
 | `TOKEN_QUOTA_DEFAULT_MONTHLY_TOKENS=2000000` | 仅用于新额度账户的默认月额度 |
-| `TOKEN_QUOTA_MODELS_FILE` | 仅账号平台可读的模型清单文件 |
-| `TOKEN_QUOTA_MODELS_PATH` | Compose 所需的宿主机清单路径 |
+| `TOKEN_QUOTA_MODELS_FILE`                    | 仅账号平台可读的模型清单文件 |
+| `TOKEN_QUOTA_MODELS_PATH`                    | Compose 所需的宿主机清单路径 |
 
-清单格式见 `packages/platform/quota-models.example.json`。每项提供对外别名 `id`、真实 `model`、上游 `baseUrl`/`apiKey`、可信 `contextTokens`、`maxOutputTokens`。需要新式输出参数的模型可设置 `outputParameter:"max_completion_tokens"`；默认 `max_tokens`。上游需支持文本/工具、流式 usage。更换模型清单需原子替换文件；额度模式下旧网页 OpenCode 配置写入口明确拒绝，避免误认为它会改变网关模型。
+清单格式见 `packages/platform/quota-models.example.json`。每项提供对外别名 `id`、真实 `model`、上游 `baseUrl`/`apiKey`、可信 `contextTokens`、`maxOutputTokens`。需要新式输出参数的模型可设置 `outputParameter:"max_completion_tokens"`；默认 `max_tokens`。可选 `providerId` 保留原 OpenCode 供应商标识，`opencode` 仅接受公开的能力/变体元数据，`headers` 仅在平台向上游发请求时使用，不下发给执行器。网关保留真实客户端 User-Agent、思考参数和 Chat Completions 内容块。生成配置同时固定供应商级及模型级网关地址，防止原生模型沿用目录中的供应商地址。上游需支持 Chat Completions 与流式 usage。更换模型清单需原子替换文件；额度模式下旧网页 OpenCode 配置写入口明确拒绝，避免误认为它会改变网关模型。
 
 自托管配置顺序：`compose.yaml + compose.hosted.yaml + compose.quotas.yaml`。最后一个文件将真实模型清单仅挂入平台，把旧无鉴权 opencode-admin 服务隔离到独立内部网络；执行器不得使用 host/container 网络或加入该管理网络（供给配置会拒绝常见错误设置），也不能访问其他中转管理接口。网关请求走现有平台 Origin；无需额外开放端口或放宽 CORS。
 
@@ -51,14 +51,14 @@ API（沿用账号会话与 Origin/管理员校验）：
 
 ## 存量迁移与发布限制
 
-本次不连接、不替换生产。启用前必须独立安排空闲窗口和迁移验收：
+启用生产前必须完成空闲窗口和迁移验收；功能提交、CI 通过与生产启用应分别记录：
 
 1. 在线备份平台库和私人数据；迁移 010 增加额度策略、账期、配置审计与请求表，不改旧迁移。
-2. **撤销或轮换曾进入旧执行器的上游平台 Key**。仅取消挂载不能收回已复制的凭据；只读挂载也不能隐藏 Key。
+2. 清理执行器可访问的旧平台 Key 副本；只读挂载也不能隐藏 Key。若旧 Key 曾被导出平台外，网关无法约束那部分直接调用，需要确认使用范围后轮换专用 Key。不得擅自停用可能仍被其他项目使用的供应商凭据。
 3. 显式迁移存量 HOME 的旧模型配置/auth，保留研究数据和用户自有凭据备份。程序遇到未迁移的 HOME 会拒绝启动，不自动删除任何文件。旧 connector 不支持额度模式，必须迁移；provisioner 也拒绝静默复用旧容器，不取消科研活动。
 4. 统一启用平台及 provisioner 变量，验证网关和新的生成配置，确认执行器及其网络无法读取原始 Key、访问旧配置服务。
 5. 用合成调用验证两用户独立额度、并发准入、用尽拒绝、断流补账及月界结算，再经批准切换；回退不删除账本，不把未知消费当 0。
 
 ## 验证交付
 
-新增配额测试覆盖默认 200 万、注册幂等、管理员/Origin 边界、并发预占、重复结算、文本与 SSE、缺失用量、客户端取消、上游拒绝/重定向、月度策略下调、旧账期结算和账号/runner 失效。集成测试使用独立 PostgreSQL schema 与本机合成供应商，不调用真实模型。CI 的 `test:integration` 已纳入新文件。账号页面测试执行额度展示及管理员配置事件；默认关闭时原有平台功能继续通过回归。
+新增配额测试覆盖默认 200 万、注册幂等、管理员/Origin 边界、并发预占、重复结算、文本、多模态/思考参数与 SSE、缺失用量、客户端取消、上游拒绝/重定向、月度策略下调、旧账期结算和账号/runner 失效。集成测试使用独立 PostgreSQL schema 与本机合成供应商，不调用真实模型。CI 的 `test:integration` 已纳入新文件。账号页面测试执行额度展示及管理员配置事件；默认关闭时原有平台功能继续通过回归。

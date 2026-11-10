@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { once } from "node:events";
 import { hash, check, HttpError } from "./security.mjs";
-import { body } from "./tunnel.mjs";
+import { body, MAX_BODY } from "./tunnel.mjs";
 import { tokenInteger } from "./token-quotas.mjs";
 
 export function quotaConfiguration(env) {
@@ -30,6 +30,32 @@ export function quotaConfiguration(env) {
     modelsFile: env.TOKEN_QUOTA_MODELS_FILE || "",
   };
 }
+const modelFields = new Set([
+  "reasoning",
+  "attachment",
+  "temperature",
+  "tool_call",
+  "modalities",
+  "interleaved",
+  "variants",
+]);
+const secretFields = new Set([
+  "apikey",
+  "api_key",
+  "authorization",
+  "cookie",
+  "headers",
+  "baseurl",
+  "secret",
+  "password",
+]);
+function safeMetadata(value) {
+  if (value === null || typeof value !== "object") return true;
+  if (Array.isArray(value)) return value.every(safeMetadata);
+  return Object.entries(value).every(
+    ([key, item]) => !secretFields.has(key.toLowerCase()) && safeMetadata(item),
+  );
+}
 export async function loadQuotaModels(file) {
   let document;
   try {
@@ -55,6 +81,61 @@ export async function loadQuotaModels(file) {
       "模型别名无效或重复",
     );
     seen.add(model.id);
+    check(
+      !model.providerId ||
+        (/^[a-zA-Z0-9_-]{1,100}$/.test(model.providerId) &&
+          !["__proto__", "prototype", "constructor"].includes(
+            model.providerId,
+          )),
+      503,
+      "模型供应商标识无效",
+    );
+    if (model.opencode !== undefined) {
+      check(
+        model.opencode &&
+          typeof model.opencode === "object" &&
+          !Array.isArray(model.opencode) &&
+          Object.keys(model.opencode).every((k) => modelFields.has(k)) &&
+          JSON.stringify(model.opencode).length <= 32768 &&
+          safeMetadata(model.opencode),
+        503,
+        "公开模型能力配置无效或包含认证字段",
+      );
+      for (const key of ["reasoning", "attachment", "temperature", "tool_call"])
+        check(
+          model.opencode[key] === undefined ||
+            typeof model.opencode[key] === "boolean",
+          503,
+          "模型能力格式无效",
+        );
+    }
+    if (model.headers !== undefined)
+      check(
+        model.headers &&
+          typeof model.headers === "object" &&
+          !Array.isArray(model.headers) &&
+          Object.entries(model.headers).every(
+            ([key, value]) =>
+              /^[a-zA-Z0-9!#$%&'*+.^_`|~-]+$/.test(key) &&
+              ![
+                "authorization",
+                "host",
+                "cookie",
+                "proxy-authorization",
+                "content-length",
+                "content-type",
+                "connection",
+                "transfer-encoding",
+                "x-client-request-id",
+              ].includes(key.toLowerCase()) &&
+              typeof value === "string" &&
+              value.length <= 2048 &&
+              !/[\r\n]/.test(value),
+          ),
+        503,
+        "供应商请求头配置无效",
+      );
+
     check(
       typeof model.model === "string" &&
         model.model.length > 0 &&
@@ -117,29 +198,38 @@ export function nativeUsage(value) {
   return input + output;
 }
 export function publicModelConfig(models, base, secret) {
-  return {
-    enabled_providers: ["mobilesci"],
-    model: `mobilesci/${models[0].id}`,
-    small_model: `mobilesci/${models[0].id}`,
-    provider: {
-      mobilesci: {
-        name: "平台额度模型",
+  const groups = new Map();
+  for (const model of models) {
+    const id = model.providerId || "mobilesci";
+    if (!groups.has(id))
+      groups.set(id, {
+        name: model.providerName || "平台额度模型",
         npm: "@ai-sdk/openai-compatible",
         options: {
           baseURL: `${base.replace(/\/$/, "")}/api/platform/model-gateway/v1`,
           apiKey: secret,
         },
-        models: Object.fromEntries(
-          models.map((m) => [
-            m.id,
-            {
-              name: m.name || m.id,
-              limit: { context: m.contextTokens, output: m.maxOutputTokens },
-            },
-          ]),
-        ),
+        whitelist: [],
+        models: {},
+      });
+    const group = groups.get(id);
+    group.whitelist.push(model.id);
+    group.models[model.id] = {
+      ...structuredClone(model.opencode || {}),
+      name: model.name || model.id,
+      provider: {
+        npm: "@ai-sdk/openai-compatible",
+        api: `${base.replace(/\/$/, "")}/api/platform/model-gateway/v1`,
       },
-    },
+      limit: { context: model.contextTokens, output: model.maxOutputTokens },
+    };
+  }
+  const selected = `${models[0].providerId || "mobilesci"}/${models[0].id}`;
+  return {
+    enabled_providers: [...groups.keys()],
+    model: selected,
+    small_model: selected,
+    provider: Object.fromEntries(groups),
   };
 }
 export function modelGateway({ pool, quota, settings, limit }) {
@@ -194,7 +284,7 @@ export function modelGateway({ pool, quota, settings, limit }) {
     );
     let input;
     try {
-      input = JSON.parse((await body(req, 2 * 1024 * 1024)).toString());
+      input = JSON.parse((await body(req, MAX_BODY)).toString());
     } catch (error) {
       if (error instanceof HttpError) throw error;
       throw new HttpError(400, "模型请求 JSON 无效");
@@ -218,12 +308,16 @@ export function modelGateway({ pool, quota, settings, limit }) {
             m.content === null ||
             (Array.isArray(m.content) &&
               m.content.every(
-                (c) => c?.type === "text" && typeof c.text === "string",
+                (c) =>
+                  c &&
+                  typeof c === "object" &&
+                  !Array.isArray(c) &&
+                  typeof c.type === "string",
               ))) &&
           !("audio" in m),
       ),
       400,
-      "当前额度网关仅支持文本与工具消息",
+      "模型消息内容格式无效",
     );
     check(
       input.stream === undefined || typeof input.stream === "boolean",
@@ -267,22 +361,31 @@ export function modelGateway({ pool, quota, settings, limit }) {
         "parallel_tool_calls",
         "stop",
         "seed",
+        "thinking",
+        "reasoning_effort",
+        "reasoning",
+        "enable_thinking",
       ])
         if (input[key] !== undefined) payload[key] = input[key];
       payload.model = model.model;
       payload[model.outputParameter || "max_tokens"] = requested;
       payload.stream = !!input.stream;
       if (payload.stream) payload.stream_options = { include_usage: true };
+      const headers = new Headers(model.headers || {});
+      headers.set("authorization", `Bearer ${model.apiKey}`);
+      headers.set("content-type", "application/json");
+      headers.set("x-client-request-id", request);
+      if (!headers.has("user-agent"))
+        headers.set(
+          "user-agent",
+          req.headers["user-agent"] || "MobileSci-Quota",
+        );
       const upstream = await fetch(
         `${model.baseUrl.replace(/\/$/, "")}/chat/completions`,
         {
           method: "POST",
           redirect: "error",
-          headers: {
-            authorization: `Bearer ${model.apiKey}`,
-            "content-type": "application/json",
-            "x-client-request-id": request,
-          },
+          headers,
           body: JSON.stringify(payload),
           signal: AbortSignal.any([abort.signal, AbortSignal.timeout(180000)]),
         },

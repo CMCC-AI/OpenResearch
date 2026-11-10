@@ -54,16 +54,36 @@ export async function prepareQuotaExecutor({
   );
   if (!response.ok) throw new Error("Quota model configuration unavailable");
   const config = await response.json();
+  const providers = config?.enabled_providers;
   if (
-    !config?.provider?.mobilesci ||
-    config.enabled_providers?.length !== 1 ||
-    config.enabled_providers[0] !== "mobilesci"
+    !Array.isArray(providers) ||
+    providers.length === 0 ||
+    providers.length > 100 ||
+    !config.provider ||
+    Object.keys(config.provider).length !== providers.length ||
+    new Set(providers).size !== providers.length
   )
     throw new Error("Invalid quota model configuration");
-  config.provider.mobilesci.options = {
-    baseURL: new URL("/api/platform/model-gateway/v1", origin).href,
-    apiKey: secret,
-  };
+  for (const id of providers) {
+    const provider = config.provider[id];
+    if (
+      !provider ||
+      provider.npm !== "@ai-sdk/openai-compatible" ||
+      !Array.isArray(provider.whitelist) ||
+      !provider.models
+    )
+      throw new Error("Invalid quota model configuration");
+    for (const model of Object.values(provider.models)) {
+      model.provider = {
+        npm: "@ai-sdk/openai-compatible",
+        api: new URL("/api/platform/model-gateway/v1", origin).href,
+      };
+    }
+    provider.options = {
+      baseURL: new URL("/api/platform/model-gateway/v1", origin).href,
+      apiKey: secret,
+    };
+  }
   const directory = join(home, ".config/opencode");
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const target = join(directory, "opencode.json"),

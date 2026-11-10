@@ -95,6 +95,7 @@ test(
               id: "research",
               model: "upstream-model",
               apiKey: "UPSTREAM_KEY",
+              headers: { "x-provider-secret": "PRIVATE_HEADER" },
               baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`,
               contextTokens: 100,
               maxOutputTokens: 20,
@@ -122,6 +123,7 @@ test(
         const res = await fetch(origin + path, {
           method,
           headers: {
+            "user-agent": "OpenCode/quota-test",
             ...(source ? { origin: source } : {}),
             ...(data ? { "content-type": "application/json" } : {}),
             ...(cookie ? { cookie } : {}),
@@ -507,6 +509,49 @@ test(
           assert.equal((await call("json")).status, 402);
           assert.equal(calls, before);
           await q.configure(user, admin, 321, "monthly policy", id());
+        },
+      );
+      await t.test(
+        "gateway preserves multimodal content and thinking controls without exporting private headers",
+        async () => {
+          const messages = [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "describe" },
+                {
+                  type: "image_url",
+                  image_url: { url: "data:image/png;base64,AA==" },
+                },
+              ],
+            },
+          ];
+          const result = await request(
+            "/api/platform/model-gateway/v1/chat/completions",
+            {
+              method: "POST",
+              source: null,
+              secret,
+              data: {
+                model: "research",
+                messages,
+                max_tokens: 20,
+                thinking: { type: "enabled" },
+                reasoning_effort: "high",
+              },
+            },
+          );
+          assert.equal(result.status, 200);
+          assert.deepEqual(lastPayload.messages, messages);
+          assert.deepEqual(lastPayload.thinking, { type: "enabled" });
+          assert.equal(lastPayload.reasoning_effort, "high");
+          assert.equal(lastHeaders["user-agent"], "OpenCode/quota-test");
+          assert.equal(lastHeaders["x-provider-secret"], "PRIVATE_HEADER");
+          const cfg = await request("/api/platform/runner/model-config", {
+            source: null,
+            secret,
+          });
+          assert.ok(!JSON.stringify(cfg.data).includes("PRIVATE_HEADER"));
         },
       );
       await t.test(

@@ -189,3 +189,112 @@ test("model registry requires trusted bounds and never accepts redirect credenti
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("quota model configuration preserves native providers, reasoning and multimodal capabilities without exporting private headers", async () => {
+  const models = [
+    {
+      id: "kimi-k2.6",
+      model: "kimi-k2.6",
+      providerId: "moonshotai-cn",
+      providerName: "Moonshot",
+      apiKey: "PRIVATE_MODEL_KEY",
+      headers: {
+        "User-Agent": "OpenCode/1.18.32",
+        "X-Vendor-Secret": "PRIVATE_HEADER",
+      },
+      contextTokens: 262144,
+      maxOutputTokens: 8192,
+      opencode: {
+        reasoning: true,
+        attachment: true,
+        tool_call: true,
+        interleaved: { field: "reasoning_content" },
+        modalities: { input: ["text", "image", "video"], output: ["text"] },
+        variants: { high: { reasoningEffort: "high" } },
+      },
+    },
+    {
+      id: "k3",
+      model: "k3",
+      providerId: "kimi-code-plan-cn",
+      apiKey: "PRIVATE_MODEL_KEY",
+      contextTokens: 1048576,
+      maxOutputTokens: 131072,
+    },
+  ];
+  const cfg = publicModelConfig(models, "http://gateway", "user-token");
+  assert.deepEqual(cfg.enabled_providers, [
+    "moonshotai-cn",
+    "kimi-code-plan-cn",
+  ]);
+  assert.deepEqual(cfg.provider["moonshotai-cn"].whitelist, ["kimi-k2.6"]);
+  assert.equal(
+    cfg.provider["moonshotai-cn"].models["kimi-k2.6"].interleaved.field,
+    "reasoning_content",
+  );
+  assert.deepEqual(
+    cfg.provider["moonshotai-cn"].models["kimi-k2.6"].modalities.input,
+    ["text", "image", "video"],
+  );
+  assert.ok(!JSON.stringify(cfg).includes("PRIVATE_"));
+  const home = await mkdtemp(join(tmpdir(), "quota-native-home-"));
+  try {
+    await prepareQuotaExecutor({
+      home,
+      base: "http://platform:5300",
+      secret: "user-key",
+      fetcher: async () => ({
+        ok: true,
+        json: async () => structuredClone(cfg),
+      }),
+    });
+    const generated = JSON.parse(
+      await readFile(join(home, ".config/opencode/opencode.json")),
+    );
+    for (const provider of Object.values(generated.provider)) {
+      for (const model of Object.values(provider.models))
+        assert.equal(
+          model.provider.api,
+          "http://platform:5300/api/platform/model-gateway/v1",
+        );
+      assert.deepEqual(provider.options, {
+        baseURL: "http://platform:5300/api/platform/model-gateway/v1",
+        apiKey: "user-key",
+      });
+    }
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("public model metadata cannot smuggle authentication or override the metered endpoint", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "quota-unsafe-metadata-"));
+  const base = {
+    id: "safe",
+    model: "upstream",
+    apiKey: "PRIVATE_KEY",
+    baseUrl: "https://provider.invalid/v1",
+    contextTokens: 100,
+    maxOutputTokens: 10,
+  };
+  try {
+    const file = join(dir, "models.json");
+    for (const extension of [
+      { opencode: { apiKey: "PRIVATE_KEY" } },
+      {
+        opencode: {
+          variants: { high: { headers: { authorization: "PRIVATE_KEY" } } },
+        },
+      },
+      { headers: { Host: "other.invalid" } },
+    ]) {
+      await writeFile(
+        file,
+        JSON.stringify({ models: [{ ...base, ...extension }] }),
+      );
+      await assert.rejects(loadQuotaModels(file));
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
