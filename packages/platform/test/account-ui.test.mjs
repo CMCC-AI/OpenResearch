@@ -1,3 +1,4 @@
+import { webcrypto } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
@@ -13,6 +14,11 @@ function browser(routes = {}) {
         innerHTML: "",
         textContent: "",
         disabled: false,
+        children: [],
+        showModal() {},
+        append(child) {
+          this.children.push(child);
+        },
         classList: { add() {}, remove() {} },
         querySelector: () => node("submit"),
         setAttribute(name, value) {
@@ -27,6 +33,7 @@ function browser(routes = {}) {
   const context = vm.createContext({
     URL,
     URLSearchParams,
+    crypto: { getRandomValues: (bytes) => webcrypto.getRandomValues(bytes) },
     AbortSignal,
     setTimeout,
     clearTimeout,
@@ -163,4 +170,78 @@ test("account management links use canonical admin routes for root and prefixed 
       1,
     );
   }
+});
+
+test("account quota dialog shows monthly balances and hides administrator controls for ordinary users", async () => {
+  const balance = {
+    enabled: true,
+    period: "2026-11",
+    monthlyLimit: 2000000,
+    granted: 2000000,
+    used: 100,
+    reserved: 50,
+    available: 1999850,
+  };
+  const b = browser({
+    "/api/platform/me": {
+      name: "Researcher",
+      email: "user@example.com",
+      isAdmin: false,
+    },
+    "/api/platform/capabilities": {},
+    "/api/platform/token-quota": balance,
+  });
+  b.context.location.search = "?account=1";
+  await b.ui.load();
+  await b.node("#token-quota").onclick();
+  const html = b.node("#detail-body").innerHTML;
+  assert.match(html, /2026-11/);
+  assert.match(html, /2,000,000/);
+  assert.match(html, /1,999,850/);
+  assert.doesNotMatch(html, /id="quota-user"/);
+});
+test("administrator quota form configures the selected user with an idempotency key", async () => {
+  const balance = {
+    enabled: true,
+    period: "2026-11",
+    monthlyLimit: 2000000,
+    granted: 2000000,
+    used: 100,
+    reserved: 0,
+    available: 1999900,
+  };
+  const target = {
+    ...balance,
+    user: { name: "<target>", email: "target@example.com" },
+    requests: [],
+  };
+  let posted;
+  const b = browser({
+    "/api/platform/me": { name: "Admin", isAdmin: true },
+    "/api/platform/capabilities": {
+      openResearchAppUrl: "http://localhost:4791/projects",
+    },
+    "/api/platform/token-quota": balance,
+    "/api/platform/admin/token-quotas?email=target%40example.com": target,
+    "/api/platform/admin/token-quotas": (options) => {
+      posted = JSON.parse(options.body);
+      return target;
+    },
+  });
+  b.context.location.search = "?account=1";
+  await b.ui.load();
+  await b.node("#token-quota").onclick();
+  const form = b.node("#quota-user");
+  form.fields = { email: "target@example.com" };
+  await form.onsubmit({ preventDefault() {}, currentTarget: form });
+  assert.match(b.node("#quota-user-result").innerHTML, /&lt;target&gt;/);
+  const config = b.node("#quota-config");
+  config.fields = {
+    monthlyLimit: "3000000",
+    reason: "verified monthly allowance",
+  };
+  await config.onsubmit({ preventDefault() {}, currentTarget: config });
+  assert.equal(posted.email, "target@example.com");
+  assert.equal(posted.monthlyLimit, 3000000);
+  assert.match(posted.idempotencyKey, /^[0-9a-f-]{36}$/);
 });

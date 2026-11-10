@@ -35,7 +35,7 @@ dirs = "5"
 glob = "0.3"
 # bundled: compiles SQLite from source so the static musl builds link cleanly
 # (same reasoning as rustls above — no system library dependency).
-rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "backup", "fallible_uint"] }
 urlencoding = "2"
 httpdate = "1"
 uuid = { version = "1", features = ["v4"] }

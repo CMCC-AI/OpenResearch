@@ -458,7 +458,11 @@ impl DatabaseLease {
                 options.mode(0o600);
             }
             let file = options.open(&backup)?;
-            open_readonly(&self.path)?.backup(rusqlite::DatabaseName::Main, &backup, None)?;
+            open_readonly(&self.path)?.backup(
+                "main",
+                &backup,
+                None::<fn(rusqlite::backup::Progress)>,
+            )?;
             check_integrity(&backup)?;
             file.sync_all()?;
             sync_parent(&backup)?;

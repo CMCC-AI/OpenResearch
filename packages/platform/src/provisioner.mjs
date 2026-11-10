@@ -99,15 +99,32 @@ export function runtimeConfig(workspace, env) {
   if (!/^[0-9a-f-]{36}$/.test(workspace)) throw new Error("Invalid workspace");
   if (!env.MANAGED_EXECUTOR_IMAGE)
     throw new Error("MANAGED_EXECUTOR_IMAGE is required");
-  const liveConfigDirectory = env.MANAGED_OPENCODE_LIVE_CONFIG_DIR;
-  const configFile = env.MANAGED_OPENCODE_CONFIG_FILE;
+  const quotaMode = env.TOKEN_QUOTAS_ENABLED === "true";
+  if (
+    quotaMode &&
+    env.MANAGED_NETWORK &&
+    (env.MANAGED_NETWORK === "host" ||
+      env.MANAGED_NETWORK.startsWith("container:") ||
+      /(?:^|_)quota-model-admin$/.test(env.MANAGED_NETWORK))
+  )
+    throw new Error(
+      "Quota executors must not share host or model-admin networks",
+    );
+
+  const liveConfigDirectory =
+    !quotaMode && env.MANAGED_OPENCODE_LIVE_CONFIG_DIR;
+  const configFile = !quotaMode && env.MANAGED_OPENCODE_CONFIG_FILE;
   if (configFile && (!configFile.startsWith("/") || /[:\n\r]/.test(configFile)))
     throw new Error(
       "MANAGED_OPENCODE_CONFIG_FILE must be an absolute host path",
     );
   const legacy = workspace === env.MANAGED_LEGACY_WORKSPACE;
-  const sharedDirectory = env.MANAGED_OPENCODE_CONFIG_DIR;
-  const authFile = env.MANAGED_OPENCODE_AUTH_FILE;
+  if (quotaMode && legacy)
+    throw new Error(
+      "Token quota mode does not support legacy connectors; migrate credentials and data first",
+    );
+  const sharedDirectory = !quotaMode && env.MANAGED_OPENCODE_CONFIG_DIR;
+  const authFile = !quotaMode && env.MANAGED_OPENCODE_AUTH_FILE;
   for (const path of [sharedDirectory, authFile, liveConfigDirectory])
     if (path && (!path.startsWith("/") || /[:\n\r]/.test(path)))
       throw Error("Managed configuration must be an absolute host path");
@@ -136,6 +153,9 @@ export function runtimeConfig(workspace, env) {
       "RUNNER_STATE_DIR=/home/node/.runner-state",
       "RUNNER_ISOLATION_ACK=dedicated-workspace",
       "OPENCODE_DISABLE_AUTOUPDATE=1",
+      ...(quotaMode
+        ? ["TOKEN_QUOTAS_ENABLED=true", "OPENCODE_CONFIG_PROJECT_DISABLE=1"]
+        : []),
       `ORX_ACCOUNT_URL=${env.PLATFORM_ORIGIN}`,
       "RUNNER_TOKEN_FILE=/home/node/.platform-token",
       ...(!legacy && sharedDirectory && !liveConfigDirectory
@@ -219,6 +239,17 @@ export async function reconcile(db, job, env = process.env, call = docker) {
     );
     return;
   }
+  if (
+    container &&
+    env.TOKEN_QUOTAS_ENABLED === "true" &&
+    (!container.Config.Env?.includes("TOKEN_QUOTAS_ENABLED=true") ||
+      container.Mounts?.some((m) =>
+        /opencode|orx-seed/.test(m.Destination || ""),
+      ))
+  )
+    throw new Error(
+      "Existing executor must be migrated to quota mode before reuse; no running work was stopped",
+    );
   if (!container) {
     await call(
       "POST",
