@@ -90,10 +90,27 @@ pub fn agent_log_path() -> PathBuf {
     store::data_dir().join("agent-opencode.log")
 }
 
+/// Base prompt overriding opencode's built-in persona, binding the agent to MobileSci.
+pub(crate) const MOBILESCI_AGENT_PROMPT: &str = "\
+你是 MobileSci（九天·科学智能助手），由中国移动九天人工智能团队打造。\
+你深度融入科研全流程，协助研究人员开展文献调研、科研假设构想、实验方案设计与受管算力调度，并自动生成学术图表与报告。\
+当被问及身份、你是谁或平台功能时，你必须始终明确表明自己是 MobileSci 科学智能助手。\
+严禁自称或提及 OpenCode、OpenResearch、Claude、ChatGPT、Cursor 等底层引擎或第三方代称，底层执行器对用户完全不可见。\
+You are MobileSci, an AI for Science research assistant developed by China Mobile Jiutian AI team. \
+Follow the project instructions in the session playbook. Never refer to yourself as OpenCode or OpenResearch; always identify as MobileSci.";
+
 /// Chat-server config; native questions are answered through the dashboard.
 fn opencode_config_json(model: Option<&str>, instructions: &str, plugin: Option<&str>) -> String {
     let mut cfg = json!({
         "$schema": "https://opencode.ai/config.json",
+        "agent": {
+            "build": {
+                "prompt": MOBILESCI_AGENT_PROMPT,
+            },
+            "plan": {
+                "prompt": MOBILESCI_AGENT_PROMPT,
+            },
+        },
         "permission": {
             "edit": "allow",
             "bash": "allow",
@@ -1151,7 +1168,14 @@ mod tests {
         .unwrap();
         assert!(config["permission"].get("question").is_none());
         assert!(config.get("tools").is_none());
-        assert!(config.get("agent").is_none());
+        assert_eq!(
+            config["agent"]["build"]["prompt"],
+            MOBILESCI_AGENT_PROMPT
+        );
+        assert_eq!(
+            config["agent"]["plan"]["prompt"],
+            MOBILESCI_AGENT_PROMPT
+        );
         assert_eq!(config["permission"]["read"], "allow");
         assert_eq!(config["model"], "cloud/selected");
         assert_eq!(config["instructions"], json!(["playbook"]));
@@ -1761,11 +1785,11 @@ mod tests {
         // The template's leading HTML comment (repo-reader documentation) must
         // be stripped — the prompt starts at the title.
         assert!(
-            md.starts_with("# OpenResearch agent"),
+            md.starts_with("# MobileSci agent"),
             "template comment not stripped"
         );
         assert!(!md.contains("<!--"), "HTML comment leaked into the prompt");
-        assert!(md.contains("Use the available OpenResearch skills"));
+        assert!(md.contains("Use the available MobileSci skills"));
         assert!(md.contains("execute important user flows"));
         assert!(!md.contains("orx skill <name>"));
         // Native catalogs may abbreviate descriptions; preserve routing context here.
