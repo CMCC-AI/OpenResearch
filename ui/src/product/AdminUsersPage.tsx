@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "../components/ui";
@@ -218,6 +219,7 @@ export function AdminUsersPage() {
                         {date(item.last_login_at)}
                       </td>
                       <td className="whitespace-nowrap p-3">
+                        <Link to="/admin/quotas" search={{ email: item.email }} className="me-3 text-primary">Token 额度</Link>
                         <Button
                           size="small"
                           onClick={() => {

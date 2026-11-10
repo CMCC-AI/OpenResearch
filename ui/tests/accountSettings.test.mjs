@@ -34,8 +34,8 @@ test("account settings open without reading a project or remembered location", (
   clicks[2]();
   assert.deepEqual(navigations, [
     { to: "/" },
-    { to: "/settings/$tab", params: { tab: "compute" } },
-    { to: "/settings/$tab", params: { tab: "settings" } },
+    { to: "/settings/quota" },
+    { to: "/settings/account" },
   ]);
 });
 
@@ -51,6 +51,8 @@ test("workspace settings render with no project and retain compute history navig
       "../workspaceState": { isSettingsSection: () => true },
       "../paraglide/messages.js": { m: { settings_page_compute: () => "Compute", settings_page_settings: () => "Settings" } },
       "./ProductNav": { PlatformFrame: ({ children }) => children },
+      "./PersonalSettingsPage": { PersonalSettingsNav: () => null },
+      "./AuthSession": { useOptionalAuthSession: () => null },
     });
     assert.match(renderToStaticMarkup(React.createElement(WorkspaceSettingsPage)), new RegExp(tab));
     assert.equal(settings.project, null);

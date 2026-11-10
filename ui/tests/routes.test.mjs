@@ -43,6 +43,8 @@ function loadModule(filename, api = {}, remembered = null) {
       if (id === "../product/AdminLayout") return { AdminLayout: () => null };
       if (id === "../product/AdminOpenCodePage") return { AdminOpenCodePage: () => null };
       if (id === "../product/AdminUsersPage") return { AdminUsersPage: () => null };
+      if (id === "../product/AdminTokenQuotasPage") return { AdminTokenQuotasPage: () => null };
+      if (id === "../product/PersonalSettingsPage") return { PersonalSettingsPage: () => null };
       if (id === "../product/ManageCasesPage") return { ManageCasesPage: () => null };
       if (id.startsWith("./routes/")) return load(new URL(`${id}.tsx`, url));
       throw new Error(`Unexpected dependency: ${id}`);

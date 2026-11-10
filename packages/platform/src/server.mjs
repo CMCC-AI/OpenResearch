@@ -412,7 +412,44 @@ export async function createPlatform(
     config.opencodeConfigFile,
     config.opencodeAdminUrl,
   );
-  async function adminUsers(req, res, origin, currentSession = null) {
+  async function changePassword(req, res, s) {
+        const b = await input(req);
+        await limit(`password:${s.user_id}`, 5, 900);
+        const next = await passwordHash(b.password);
+        const revoked = await transaction(pool, async (db) => {
+          const user = await db.query(
+            "SELECT password_hash FROM platform_users WHERE id=$1 AND NOT disabled FOR UPDATE",
+            [s.user_id],
+          );
+          check(
+            user.rows[0] &&
+              (await verifyPassword(b.current, user.rows[0].password_hash)),
+            403,
+            "当前密码错误",
+          );
+          const sessions = await db.query(
+            "SELECT token_hash FROM platform_sessions WHERE user_id=$1",
+            [s.user_id],
+          );
+          await db.query(
+            "UPDATE platform_users SET password_hash=$2,password_version=password_version+1 WHERE id=$1",
+            [s.user_id, next],
+          );
+          await db.query("DELETE FROM platform_sessions WHERE user_id=$1", [
+            s.user_id,
+          ]);
+          await db.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [
+            s.user_id,
+          ]);
+          await audit(db, s.user_id, null, "password.change");
+          return sessions.rows;
+        });
+        for (const tunnel of tunnels.values())
+          for (const row of revoked) tunnel.revokeSession(row.token_hash);
+        res.setHeader("set-cookie", sessionCookie("", config.secure, 0));
+        return json(res, { ok: true });
+  }
+  async function accountBrowserRequests(req, res, origin, currentSession = null) {
     browserSessionOrigin(req, origin);
     res.setHeader("access-control-allow-origin", origin);
     res.setHeader("access-control-allow-credentials", "true");
@@ -426,6 +463,11 @@ export async function createPlatform(
     const s = currentSession || (await session(req));
     await limit(`admin-users:${s.user_id}`, 180, 60);
     const path = new URL(req.url, config.origin).pathname;
+    if (await quotaRoutes(req, res, path, s, origin)) return;
+    if (path === "/api/platform/password") {
+      check(req.method === "POST", 405);
+      return await changePassword(req, res, s);
+    }
     if (path === "/api/platform/admin/opencode") {
       check(s.is_admin, 403, "仅系统管理员可配置 OpenCode 模型");
       check(
@@ -535,11 +577,11 @@ export async function createPlatform(
         const s = await session(req);
         await spaceOwner(s.user_id, workspace);
         if (
-          /^\/api\/platform\/admin\/(?:users(?:\/[0-9a-f-]{36}\/(?:password|role|delete))?|opencode)$/.test(
+          /^\/api\/platform\/(?:token-quota|password|admin\/(?:token-quotas(?:\/reconcile)?|users(?:\/[0-9a-f-]{36}\/(?:password|role|delete))?|opencode))$/.test(
             path,
           )
         )
-          return await adminUsers(
+          return await accountBrowserRequests(
             req,
             res,
             workspaceOrigin(config, workspace),
@@ -778,7 +820,7 @@ export async function createPlatform(
         return json(res, { code: 200, data: { ok: true } });
       }
       if (
-        /^\/api\/platform\/admin\/(?:users(?:\/[0-9a-f-]{36}\/(?:password|role|delete))?|opencode)$/.test(
+        /^\/api\/platform\/(?:token-quota|password|admin\/(?:token-quotas(?:\/reconcile)?|users(?:\/[0-9a-f-]{36}\/(?:password|role|delete))?|opencode))$/.test(
           path,
         )
       ) {
@@ -786,7 +828,7 @@ export async function createPlatform(
           !req.headers.origin || req.headers.origin === config.origin.origin
             ? config.origin.origin
             : config.appOrigin;
-        return await adminUsers(req, res, origin);
+        return await accountBrowserRequests(req, res, origin);
       }
       const browserSessionPath = [
         "/api/platform/catalog-session",
@@ -1006,43 +1048,7 @@ export async function createPlatform(
         res.setHeader("set-cookie", sessionCookie("", config.secure, 0));
         return json(res, { ok: true });
       }
-      if (path === "/api/platform/password" && req.method === "POST") {
-        const b = await input(req);
-        await limit(`password:${s.user_id}`, 5, 900);
-        const next = await passwordHash(b.password);
-        const revoked = await transaction(pool, async (db) => {
-          const user = await db.query(
-            "SELECT password_hash FROM platform_users WHERE id=$1 AND NOT disabled FOR UPDATE",
-            [s.user_id],
-          );
-          check(
-            user.rows[0] &&
-              (await verifyPassword(b.current, user.rows[0].password_hash)),
-            403,
-            "当前密码错误",
-          );
-          const sessions = await db.query(
-            "SELECT token_hash FROM platform_sessions WHERE user_id=$1",
-            [s.user_id],
-          );
-          await db.query(
-            "UPDATE platform_users SET password_hash=$2,password_version=password_version+1 WHERE id=$1",
-            [s.user_id, next],
-          );
-          await db.query("DELETE FROM platform_sessions WHERE user_id=$1", [
-            s.user_id,
-          ]);
-          await db.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [
-            s.user_id,
-          ]);
-          await audit(db, s.user_id, null, "password.change");
-          return sessions.rows;
-        });
-        for (const tunnel of tunnels.values())
-          for (const row of revoked) tunnel.revokeSession(row.token_hash);
-        res.setHeader("set-cookie", sessionCookie("", config.secure, 0));
-        return json(res, { ok: true });
-      }
+
       if (path === "/api/platform/workspaces") {
         if (req.method === "GET") {
           const { rows } = await pool.query(

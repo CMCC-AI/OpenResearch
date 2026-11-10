@@ -39,7 +39,7 @@ export function ProductSidebar({ children, connectionInfo, onCollapse }: { child
       const active = pathname === to || pathname.startsWith(`${to}/`);
       return <Link key={to} to={to} title={label} aria-label={label} aria-current={active ? "page" : undefined} className="product-nav-item flex h-9 items-center gap-2.5 rounded-xl px-3 text-sm font-medium text-text no-underline">{image ? <img src={image} width={18} height={18} alt="" className="shrink-0" /> : <Star size={18} className="shrink-0" />}<span className="research-nav-label">{label}</span></Link>;
     })}</nav>
-    <div aria-label="OpenResearch 项目与会话" className="product-research-navigation flex min-h-0 flex-1 flex-col border-t border-border-variant pt-2">{children ?? (canAccessResearch ? <ResearchProjectNavigation enabled={Boolean(user)} /> : <p className="px-2 text-xs text-subtext">浏览管理员发布的公共案例，原项目保持独立访问权限。</p>)}</div>
+    <div aria-label="OpenResearch 项目与会话" className="product-research-navigation flex min-h-0 flex-1 flex-col border-t border-border-variant pt-2">{children ?? (canAccessResearch ? <ResearchProjectNavigation enabled={Boolean(user) && pathname !== "/settings/account" && pathname !== "/settings/quota"} /> : <p className="px-2 text-xs text-subtext">浏览管理员发布的公共案例，原项目保持独立访问权限。</p>)}</div>
     <AccountMenu connectionInfo={connectionInfo} />
   </aside>;
 }
