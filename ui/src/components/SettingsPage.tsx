@@ -386,7 +386,7 @@ function AuthLabel({ h }: { h: Harness }) {
 }
 
 
-function HarnessesTab({ remote }: { remote: boolean }) {
+export function HarnessesTab({ remote }: { remote: boolean }) {
   const authSession = useOptionalAuthSession();
   const canConfigureModels = (!appBasePath && !isCloudWorkspace()) || !!authSession?.user?.isAdmin;
   const harnessesOptions = getHarnessesQuery();
@@ -3754,7 +3754,7 @@ type SettingsNavItem = {
   activeTabs: Tab[];
 };
 
-const SETTINGS_SECTIONS: Tab[] = ["projects", "harnesses", "storage"];
+const SETTINGS_SECTIONS: Tab[] = ["projects", "storage"];
 
 /** Primary rail entries. Configuration sections share the Settings entry. */
 export const SETTINGS_NAV: SettingsNavItem[] = [
@@ -3823,9 +3823,6 @@ export function SettingsView({
             </section>
             <section ref={tab === "projects" ? sectionRef : undefined} className={SETTINGS_STACK_SECTION_CLASS_NAME}>
               <ProjectDefaultsTab remote={remote} />
-            </section>
-            <section ref={tab === "harnesses" ? sectionRef : undefined} className={SETTINGS_STACK_SECTION_CLASS_NAME}>
-              <HarnessesTab remote={remote} />
             </section>
             {!remote && (
               <section ref={tab === "storage" ? sectionRef : undefined} className={SETTINGS_STACK_SECTION_CLASS_NAME}>
