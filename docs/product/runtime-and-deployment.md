@@ -1,6 +1,6 @@
 # 运行形态、入口与部署配置
 
-本文是当前运行形态和配置约定的统一入口，更新于 2026-11-09。具体安装步骤引用下方指南；历史团队设计不作为当前私人托管版的权限或部署依据。
+本文是当前运行形态和配置约定的统一入口，更新于 2026-11-10。具体安装步骤引用下方指南；历史团队设计不作为当前私人托管版的权限或部署依据。
 
 ## 运行形态
 
@@ -15,7 +15,7 @@
 
 ## 统一入口
 
-- 科研主页 `/projects`；论文发现 `/discover`；论文精读 `/literature`；系统管理 `/admin/users`；案例管理 `/admin/cases`。
+- 科研主页 `/projects`；论文发现 `/discover`；论文精读 `/literature`；系统管理 `/admin/users`；用户额度 `/admin/quotas`；案例管理 `/admin/cases`；个人账户 `/settings/account`；个人额度 `/settings/quota`。
 - `/mobilesci` 部署使用同一组路由加前缀，例如 `/mobilesci/admin/users`。前端资源及导航通过 `appHref` 等现有基路径工具生成，不能硬编码网站根路径。
 - 账号门户从 `/api/platform/capabilities` 返回的 `openResearchAppUrl` 计算管理地址，保留部署前缀，不再内部生成 `/_account/login?admin=1`。
 - `/_account/login?admin=1` 和 `/cases/manage` 仅作为旧链接兼容入口；登录与管理员权限检查仍有效。新链接统一指向现行路由。
@@ -30,6 +30,8 @@
 | provisioner 运行环境 | `MANAGED_OPENCODE_LIVE_CONFIG_DIR` | 由 Compose 输入或既有服务器部署路径生成，向 executor 只读挂载整个配置目录 |
 | 可选认证文件 | `MANAGED_OPENCODE_AUTH_FILE` | 既有认证 seed，属于凭据链路；不能因清理配置复制参数而一并删除 |
 | 执行镜像 | `MANAGED_EXECUTOR_IMAGE`；迁移中的原工作台另有 `MANAGED_CONNECTOR_IMAGE` | 同步维护现有实例、未来实例与持久化配置，保留各自数据卷 |
+
+上表描述未启用用户 Token 配额时的模型接入兼容链路；启用配额后改用下方用户级模型网关，执行器不再挂载共享 live/seed 认证文件。
 
 `compose.yaml + compose.hosted.yaml` 是通用服务器私人托管版入口；`compose.dev.yaml` 用于本地开发账号服务；`compose.managed.yaml` 是历史原型参考，不与 hosted 叠加作为新的生产基线。
 
@@ -77,4 +79,4 @@ OpenCode、Claude 和 Codex 共用闲置策略。有效内存不超过 8 GiB 时
 
 ## 注册用户 token 月额度
 
-平台模型的用户级月额度见[配置与实施边界](user-token-quotas.md)：默认每月 200 万、管理员逐用户设置、上海自然月重置。默认关闭，必须完成旧凭据撤销与执行器迁移后才能启用；源码交付不改变当前生产暂停决定。
+平台模型的用户级月额度见[配置与实施边界](user-token-quotas.md)：默认每月 200 万、管理员逐用户设置、上海自然月重置。源码默认关闭；当前 MobileSci 私人托管实例已完成迁移并启用，平台默认每月 200 万。真实 Key 不挂入用户执行器，历史外部副本须确认范围后再评估轮换，不能擅自停用共享凭据。个人设置和额度由账户服务提供，查看这些页面不唤醒科研执行器。当前运行时升级与发行门禁见[`.7` 计划](release-v0.2.23-mobilesci.7-plan.md)。

@@ -2,7 +2,9 @@
 
 最新已发布源码为 [v0.2.23-mobilesci.6](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.6)，固定提交 `ba641033954d7a5a92cc099ee63106b788d8f2ba`，自身完整发行 [CI 42342582854](https://github.com/CMCC-AI/OpenResearch/actions/runs/42342582854) 成功，范围见[发布说明](../../release-notes/v0.2.23-mobilesci.6.md)与[发行证据](../ai-for-science/release-v0.2.23-mobilesci.6-evidence.md)。既有标签与附件不可变；PR #15/#16 只是发行后源码合入，PR #17 保留草稿，不混入 `.6`。
 
-2026-11-09 第二次生产切换已有 `.6` 的脚本 healthy 回执，其后用户确认保留 `.6` 并暂停后续操作；独立切换后复核及实际登录业务验收未完成，本轮不连接生产。当前源码/验收边界、待办与 M0/M1 完成标准以[收尾里程碑](../ai-for-science/closeout-milestone-2026-11-09.md)为准。官方真实合并祖先仍为 .19；[.23 选择性回移](../ai-for-science/upstream-v0.2.23-backports.md)、[.24 已选适配](../ai-for-science/upstream-v0.2.24-backports.md)、[.25 的 45 项评估](../ai-for-science/upstream-v0.2.25-review-2026-11-09.md)分别记录，未回移不等于待补债务。
+2026-11-10 已完成用户 Token 配额与工作台个人设置交付：PR #24/#25 已部署并通过真实账号 API 验收，原生 CLI 仍为 `.6`；PR #26 的前端增量已合入并通过完整 CI，本轮已对齐线上界面与账户平台，327 个前端文件及账号／额度 API 验收通过，详见[部署回执](release-v0.2.23-mobilesci.7-plan.md#m7-0-执行回执)。当前用户授权以本轮同步前端／账户平台、CLI 随 `.7` 统一升级为准，历史暂停记录不再代表当前生产状态。
+
+下一版采用[`.7` 发布计划](release-v0.2.23-mobilesci.7-plan.md)，尚未冻结发行提交或发布标签。版本、部署和验收分别记录；PR #17 保留草稿，不阻塞本轮收尾，也不纳入 `.7`。官方真实合并祖先仍为 .19；[.23 选择性回移](../ai-for-science/upstream-v0.2.23-backports.md)、[.24 已选适配](../ai-for-science/upstream-v0.2.24-backports.md)、[.25 的 45 项评估](../ai-for-science/upstream-v0.2.25-review-2026-11-09.md)分别记录，未回移不等于待补债务。历史 M0/M1 记录见[旧收尾里程碑](../ai-for-science/closeout-milestone-2026-11-09.md)，当前发布安排以本计划和最新部署回执为准。
 
 ## 源码版本
 
