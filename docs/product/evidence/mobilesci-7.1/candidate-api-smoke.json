@@ -1,0 +1,18 @@
+{
+  "passwordChangeAndSessionRevocation": true,
+  "productionApi": false,
+  "isolatedDatabase": true,
+  "registrationDefault": 2000000,
+  "clientCannotOverrideDefaultOrRole": true,
+  "ordinaryAdminAccess": 403,
+  "adminConfiguredMonthlyLimit": 3000000,
+  "configurationIdempotent": true,
+  "zeroQuotaGatewayStatus": 402,
+  "timezone": "Asia/Shanghai",
+  "modelsCalled": false,
+  "cleanup": {
+    "testAccountsRemoved": 2,
+    "supplierRequests": 0,
+    "executorsCreated": 0
+  }
+}

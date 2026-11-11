@@ -1,0 +1,12 @@
+{
+  "revision": "47571b04bb074703f43764d7387f98c218f2b88b",
+  "actualOpenCodeSdk": true,
+  "supplier": "local-reset-fixture",
+  "supplierAttempts": 1,
+  "quotaRequests": 1,
+  "uncertainUsagePreserved": true,
+  "automaticRetryObserved": false,
+  "realModelsCalled": false,
+  "productionModified": false,
+  "fixtureCleaned": true
+}

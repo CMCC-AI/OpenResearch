@@ -1,0 +1,14 @@
+{
+  "revision": "47571b04bb074703f43764d7387f98c218f2b88b",
+  "scopedActualProvisionerColdStart": true,
+  "authenticatedResearchBridge": true,
+  "nativeHealthVersion": "0.2.23-mobilesci.7.1",
+  "futureImageVerified": true,
+  "projectsApi": 200,
+  "modelsCalled": false,
+  "experimentsStarted": false,
+  "researchSessionsCreated": 0,
+  "testAccountAndRuntimeRemoved": true,
+  "testVolumeRemoved": true,
+  "originalFourExecutorsUntouched": true
+}

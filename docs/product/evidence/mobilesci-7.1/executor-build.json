@@ -1,0 +1,11 @@
+{
+  "revision": "47571b04bb074703f43764d7387f98c218f2b88b",
+  "image": "sha256:37511fdc1b991750af6bafbf5e1d2d3e475f1f07f49747414b39b60eecf7d287",
+  "baseImage": "sha256:e3b1027373f30fc8e2ffb091dc3526f2a434450c863d018d2cf8031b3fcd4e9e",
+  "binarySha256": "842cd23f89f03221cd1f7cd0ed3947441bd930bc6c1029fc376e371fa29b9764",
+  "buildNetwork": "none",
+  "nativeCliVersion": "0.2.23-mobilesci.7.1",
+  "sourceArchiveSha256": "2c3b3a5f413c21497558509a7af8e5fd068a736eaa79922295f9309f77c3d54c",
+  "buildCompiler": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+  "runtimeToolsCheck": true
+}

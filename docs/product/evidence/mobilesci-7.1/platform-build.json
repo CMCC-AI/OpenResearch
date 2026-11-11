@@ -1,0 +1,7 @@
+{
+  "revision": "47571b04bb074703f43764d7387f98c218f2b88b",
+  "image": "sha256:e6b575a7611062979a61c7050e194fb66849e3d7923b432395b3d17e8e43f582",
+  "baseImage": "sha256:15a19cfe455ed052f075f0e69c43b1bba808b5409e4692dbeaa17d871c853d7d",
+  "buildNetwork": "none",
+  "dependenciesUnchanged": true
+}
