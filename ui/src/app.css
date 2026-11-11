@@ -424,3 +424,28 @@
     display: none;
   }
 }
+
+/* 工作流画布：默认连接触点只有 6px，难点中；放大为 14px 并半悬出节点边缘。 */
+.workflow-canvas .react-flow__handle {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--base);
+  background: var(--primary);
+  opacity: 0.4;
+  transition: opacity 150ms ease;
+}
+
+.workflow-canvas .react-flow__handle-top {
+  top: -7px;
+}
+
+.workflow-canvas .react-flow__handle-bottom {
+  bottom: -7px;
+}
+
+.workflow-canvas .react-flow__node:hover .react-flow__handle,
+.workflow-canvas .react-flow__handle:hover,
+.workflow-canvas .react-flow__handle.connectionindicator,
+.workflow-canvas .react-flow__handle.valid {
+  opacity: 1;
+}

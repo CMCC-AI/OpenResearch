@@ -37,6 +37,7 @@ mod telemetry;
 mod test_support;
 mod updates;
 mod verified_file;
+mod workflow;
 mod workspace_state;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};

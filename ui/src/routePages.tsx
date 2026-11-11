@@ -131,7 +131,7 @@ export function ProjectsPage() {
   }
 
   return (
-    <PlatformFrame title="新对话 · AI 原生科研工作台">
+    <PlatformFrame title="新对话 · AI 原生科研工作台" projectId={projects?.some((project) => project.id === start.project) ? start.project : undefined}>
     <div className="app flex flex-col flex-1 min-h-0">
       {runtime.kind === "local" && !isCloudWorkspace() && <><OfflineBanner /><UpdateBanner status={status} /></>}
       {error && (!projects || !state) ? <RouteFailure error={error} reset={retry} />

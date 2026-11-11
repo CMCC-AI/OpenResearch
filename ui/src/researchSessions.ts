@@ -25,7 +25,7 @@ export function expertSessionContext(session: ChatSession | undefined, study: Re
   const task = study?.plans.slice().reverse().flatMap((plan) => plan.tasks).find((task) => task.sessionId === session.id);
   return {
     mainSessionId: study?.sessionId ?? session.parentSessionId,
-    name: task ? expertRoles[task.role] ?? "专家子对话" : "专家子对话",
+    name: task ? task.agent?.name ?? expertRoles[task.role] ?? "专家子对话" : "专家子对话",
     task: task?.brief ?? null,
   };
 }

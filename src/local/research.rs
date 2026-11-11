@@ -144,6 +144,24 @@ pub fn role(id: &str) -> Result<&'static str> {
         .map(|(_, prompt)| *prompt)
         .ok_or_else(|| anyhow!("未知专家角色: {id}"))
 }
+
+pub fn role_for_store(store: &Store, id: &str) -> Result<String> {
+    if let Ok(prompt) = role(id) {
+        return Ok(prompt.to_string());
+    }
+    store
+        .workflow_agent(id)?
+        .map(|agent| agent.prompt)
+        .ok_or_else(|| anyhow!("未知专家角色: {id}"))
+}
+
+pub fn task_role(store: &Store, task: &crate::store::research::ResearchTask) -> Result<String> {
+    match &task.agent {
+        Some(agent) => Ok(agent.prompt.clone()),
+        None => role_for_store(store, &task.spec.role),
+    }
+}
+
 pub fn turn_context(store: &Store, session: &str) -> Result<Option<String>> {
     let Some(study) = store.research_for_session(session)? else {
         return Ok(None);
@@ -159,7 +177,7 @@ pub fn turn_context(store: &Store, session: &str) -> Result<Option<String>> {
         format!(
             "你是独立专家，任务 {}。角色规范：\n{}\n任务契约：{}",
             task_id,
-            role(&task.spec.role)?,
+            task_role(store, task)?,
             serde_json::to_string(task)?
         )
     } else {

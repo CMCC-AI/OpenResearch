@@ -29,11 +29,18 @@ test("administrators share user and case navigation independently of research ac
   assert.match(layout({id:"admin",isAdmin:true},true),/返回科研工作台/);
 });
 
-function researchSidebar(user, canAccessResearch = true) {
+function researchSidebar(user, canAccessResearch = true, projectId, pathname = "/mobilesci/projects") {
   const code = ts.transpileModule(readFileSync(new URL("../src/product/ProductNav.tsx", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
   const exports = {};
   const mocks = {
-    "@tanstack/react-router": { Link: ({ to, children, ...props }) => React.createElement("a", { href: to, ...props }, children), useRouterState: ({ select }) => select({ location: { pathname: "/mobilesci/projects" } }) },
+    "@tanstack/react-router": {
+      Link: ({ to, params, search, children, ...props }) => {
+        const path = to.replace("$projectId", encodeURIComponent(params?.projectId ?? ""));
+        const query = search && Object.keys(search).length ? `?${new URLSearchParams(search)}` : "";
+        return React.createElement("a", { href: `${path}${query}`, ...props }, children);
+      },
+      useRouterState: ({ select }) => select({ location: { pathname } }),
+    },
     "./AuthSession": { useAuthSession: () => ({ user, canAccessResearch }) },
     "../appBasePath": { stripAppBase: (path) => path.replace(/^\/mobilesci/, "") },
     "../components/Wordmark": { BrandMark: () => null },
@@ -42,7 +49,7 @@ function researchSidebar(user, canAccessResearch = true) {
     "../components/AccountMenu": { AccountMenu: () => null },
   };
   new Function("require", "exports", code)((id) => id in mocks ? mocks[id] : /\.(svg|png)$/.test(id) ? { default: id } : require(id), exports);
-  return renderToStaticMarkup(React.createElement(exports.ProductSidebar));
+  return renderToStaticMarkup(React.createElement(exports.ProductSidebar, { projectId }));
 }
 
 test("research sidebar keeps administration inside the account menu", () => {
@@ -60,4 +67,17 @@ test("product navigation uses the consolidated new conversation entry", () => {
   const html = researchSidebar({ id: "researcher" });
   assert.equal((html.match(/aria-label="新对话"/g) ?? []).length, 1);
   assert.ok(!html.includes('aria-label="新建项目"'));
+});
+
+test("workflow navigation opens the selected project and marks only the workflow active", () => {
+  const html = researchSidebar({ id: "researcher" }, true, "project-id", "/mobilesci/projects/project-id/workflows");
+  assert.match(html, /href="\/projects\/project-id\/workflows" title="工作流编排" aria-label="工作流编排" aria-current="page"/);
+  assert.doesNotMatch(html, /aria-label="新对话" aria-current="page"/);
+});
+
+test("workflow navigation opens the global studio without a project and remains private", () => {
+  const html = researchSidebar({ id: "researcher" }, true, undefined, "/mobilesci/workflows");
+  assert.match(html, /href="\/workflows" title="工作流编排" aria-label="工作流编排" aria-current="page"/);
+  assert.ok(!html.includes('/projects?new=true'));
+  assert.ok(!researchSidebar({ id: "reader" }, false).includes("工作流编排"));
 });

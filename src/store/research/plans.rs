@@ -4,23 +4,83 @@ use std::collections::HashMap;
 
 use super::files::PreparedArtifact;
 use super::*;
+use crate::workflow::AgentSnapshot;
 
 pub(super) struct PreparedPlan {
     study: Study,
     input: PlanInput,
     artifacts: HashMap<String, Vec<PreparedArtifact>>,
+    agents: HashMap<String, AgentSnapshot>,
+    deduplicate: bool,
+}
+
+fn same_agent(
+    previous: &ResearchTask,
+    role: &str,
+    agents: &HashMap<String, AgentSnapshot>,
+) -> bool {
+    match agents.get(role) {
+        Some(agent) => previous.agent.as_ref() == Some(agent),
+        None => previous.agent.is_none(),
+    }
 }
 
 impl Store {
     pub fn research_set_plan(&self, id: &str, input: PlanInput) -> Result<()> {
         let prepared =
             self.research_prepare_plan_with_inspector(id, input, PreparedArtifact::inspect)?;
+        self.research_commit_plan(prepared).map(|_| ())
+    }
+
+    pub fn research_set_plan_idempotent(&self, id: &str, input: PlanInput) -> Result<(u32, bool)> {
+        let study = self.research_study(id)?;
+        let agents = self.research_agent_snapshots(&input)?;
+        if self.research_plan_equivalent(&study, &input, &agents)? {
+            return Ok((study.plan()?.version, true));
+        }
+        let mut prepared =
+            self.research_prepare_plan_with_inspector(id, input, PreparedArtifact::inspect)?;
+        prepared.deduplicate = true;
         self.research_commit_plan(prepared)
+    }
+
+    fn research_agent_snapshots(
+        &self,
+        input: &PlanInput,
+    ) -> Result<HashMap<String, AgentSnapshot>> {
+        let mut agents = HashMap::new();
+        for task in &input.tasks {
+            if let Some(agent) = self.workflow_agent(&task.role)? {
+                agents.insert(task.role.clone(), AgentSnapshot::from(&agent));
+            }
+        }
+        Ok(agents)
+    }
+
+    fn research_plan_equivalent(
+        &self,
+        study: &Study,
+        input: &PlanInput,
+        agents: &HashMap<String, AgentSnapshot>,
+    ) -> Result<bool> {
+        let Ok(plan) = study.plan() else {
+            return Ok(false);
+        };
+        let material_ids = crate::local::materials::session_ids(self, &study.session_id)?;
+        Ok(plan.summary == input.summary
+            && plan.workflow == input.workflow
+            && plan.material_ids.as_ref() == Some(&material_ids)
+            && plan.tasks.len() == input.tasks.len()
+            && plan.tasks.iter().zip(&input.tasks).all(|(previous, spec)| {
+                previous.spec == *spec && same_agent(previous, &spec.role, agents)
+            }))
     }
 
     fn research_validate_plan_revision(&self, study: &Study, input: &PlanInput) -> Result<()> {
         study.ensure_active()?;
-        validate_plan(input, &study.mode)?;
+        validate_plan_with_roles(input, &study.mode, |role| {
+            crate::local::research::role_for_store(self, role).map(|_| ())
+        })?;
         if study.claim_revision.is_some() || study.metric_citation_revision.is_some() {
             claims::require_review_roles(input.tasks.iter().map(|task| task.role.as_str()))?;
         }
@@ -50,6 +110,7 @@ impl Store {
     ) -> Result<PreparedPlan> {
         let study = self.research_study(id)?;
         self.research_validate_plan_revision(&study, &input)?;
+        let agents = self.research_agent_snapshots(&input)?;
         let mut artifacts = HashMap::new();
         if input.workflow.as_deref().unwrap_or(&study.mode) == study.workflow_mode() {
             if let (Some(previous), Ok(root)) = (study.plans.last(), self.research_root(&study)) {
@@ -65,6 +126,7 @@ impl Store {
                         || prev.spec.brief != spec.brief
                         || prev.spec.outputs != spec.outputs
                         || prev.spec.depends_on != spec.depends_on
+                        || !same_agent(prev, &spec.role, &agents)
                     {
                         continue;
                     }
@@ -88,15 +150,25 @@ impl Store {
             study,
             input,
             artifacts,
+            agents,
+            deduplicate: false,
         })
     }
 
-    pub(super) fn research_commit_plan(&self, prepared: PreparedPlan) -> Result<()> {
+    pub(super) fn research_commit_plan(&self, prepared: PreparedPlan) -> Result<(u32, bool)> {
+        let mut submission = None;
         self.research_update(&prepared.study.id, |study| {
             if !study.same_document(&prepared.study) {
                 return Err(anyhow!("研究状态在产物核验期间发生变化，请刷新后重新提交计划"));
             }
+            if prepared.deduplicate
+                && self.research_plan_equivalent(study, &prepared.input, &prepared.agents)?
+            {
+                submission = Some((study.plan()?.version, true));
+                return Ok(());
+            }
             let input = prepared.input;
+            let agents = prepared.agents;
             self.research_validate_plan_revision(study, &input)?;
             let version = study.plans.last().map_or(1, |p| p.version + 1);
             // Compare effective routes: legacy manual plans may omit workflow,
@@ -153,6 +225,7 @@ impl Store {
                         || prev.spec.brief != spec.brief
                         || prev.spec.outputs != spec.outputs
                         || prev.spec.depends_on != spec.depends_on
+                        || !same_agent(prev, &spec.role, &agents)
                         || !spec.depends_on.iter().all(|d| inherited_ids.contains(d))
                     {
                         continue;
@@ -214,10 +287,12 @@ impl Store {
                             run_ids: prev.run_ids.clone(),
                             previous_run_ids: prev.previous_run_ids.clone(),
                             evidence_digest: prev.evidence_digest.clone(),
+                            agent: prev.agent.clone(),
                         });
                         continue;
                     }
                 }
+                let agent = agents.get(&spec.role).cloned();
                 tasks.push(ResearchTask {
                     spec,
                     state: "pending".into(),
@@ -234,6 +309,7 @@ impl Store {
                     run_ids: vec![],
                     previous_run_ids: vec![],
                     evidence_digest: None,
+                    agent,
                 });
             }
             study.delivery_error = None;
@@ -244,7 +320,10 @@ impl Store {
                 summary: input.summary,
                 tasks,
             });
-            study.request_gate("G1", study.plan_scope()?)
-        })
+            study.request_gate("G1", study.plan_scope()?)?;
+            submission = Some((version, false));
+            Ok(())
+        })?;
+        Ok(submission.expect("research plan update must return a submission"))
     }
 }

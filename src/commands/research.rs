@@ -70,13 +70,16 @@ fn read_request<T: serde::de::DeserializeOwned>(reader: impl Read) -> Result<T> 
     Ok(serde_json::from_slice(&bytes)?)
 }
 pub async fn run(args: ResearchArgs) -> Result<()> {
+    let store = Store::open()?;
     if matches!(args.command, ResearchCommand::Roles) {
         for (id, prompt) in crate::local::research::ROLES {
             println!("{}: {}", id, prompt.lines().next().unwrap_or(id));
         }
+        for agent in store.list_workflow_agents()? {
+            println!("{}: {} (custom v{})", agent.id, agent.name, agent.version);
+        }
         return Ok(());
     }
-    let store = Store::open()?;
     let session = crate::local::chat::launching_chat_session()
         .ok_or_else(|| anyhow!("请在本地研究会话内使用 orx research"))?;
     let study = store
@@ -104,7 +107,7 @@ pub async fn run(args: ResearchArgs) -> Result<()> {
                 task,
                 store.research_root(&study)?.display(),
                 entry.spec.brief,
-                crate::local::research::role(&entry.spec.role)?
+                crate::local::research::task_role(&store, entry)?
             );
             crate::commands::research_dispatch::spawn(
                 &store,

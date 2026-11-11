@@ -5,7 +5,7 @@ import { statusLabel } from "./StatusBadge";
 import { getComputeSettingsQuery } from "../queries/settings";
 import { TARGET_LABELS } from "../computeTargets";
 import { useEffect, useMemo, useRef } from "react";
-import { FlaskConical, FolderOpen, Package, GitBranch, Cpu, MoreHorizontal, Terminal } from "lucide-react";
+import { FlaskConical, FolderOpen, Package, GitBranch, Cpu, MoreHorizontal, Terminal, Trophy, Workflow as WorkflowIcon } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { getSessionWorktreeQuery } from "../queries/files";
 import { countChanges, parseDiffFiles } from "./GitDiff";
@@ -16,7 +16,7 @@ import { ResearchPanel } from "./ResearchPanel";
 import { usePopover } from "./ModelPicker";
 import { SideChatMenu } from "./SideChatMenu";
 
-export function WorkspaceTools({ placement = "floating", expanded, experiments, runs, onOpenExperiment, rightOffset, activeView, projectId, onCompute, sessionId, busy, onChanges, onFiles, onTerminal, onArtifacts, onExperiments, onSideChat, onOpenSession, onResearch, onMaterials, sessions, onSelectSideChat }: {
+export function WorkspaceTools({ placement = "floating", expanded, experiments, runs, onOpenExperiment, rightOffset, activeView, projectId, onCompute, sessionId, busy, onChanges, onFiles, onTerminal, onArtifacts, onExperiments, onSideChat, onOpenSession, onResearch, onMaterials, onWorkflow, onDeliverables, sessions, onSelectSideChat }: {
   placement?: "floating" | "header";
   expanded: boolean;
   experiments: Experiment[];
@@ -28,6 +28,8 @@ export function WorkspaceTools({ placement = "floating", expanded, experiments, 
   onCompute: () => void;
   onResearch: () => void;
   onMaterials: () => void;
+  onWorkflow: () => void;
+  onDeliverables: () => void;
   sessionId: string | null;
   busy: boolean;
   onChanges: () => void;
@@ -49,6 +51,10 @@ export function WorkspaceTools({ placement = "floating", expanded, experiments, 
   const defaultBackend = compute.data?.configuredDefaultBackend ?? compute.data?.defaultBackend;
   const computeLabel = defaultBackend ? TARGET_LABELS[defaultBackend]() : compute.isPending ? "…" : compute.isError ? m.model_picker_unavailable() : m.settings_not_set();
   const items = [
+    ...(readOnly ? [] : [
+      { id: "workflow", label: "科研工作流", Icon: WorkflowIcon, onClick: onWorkflow },
+      { id: "deliverables", label: "研究成果", Icon: Trophy, onClick: onDeliverables },
+    ]),
     { id: "materials", label: "研究材料", Icon: FolderOpen, onClick: onMaterials },
     { id: "files", label: m.app_files(), Icon: FolderOpen, onClick: onFiles },
     { id: "artifacts", label: m.app_artifacts(), Icon: Package, onClick: onArtifacts },
@@ -58,7 +64,7 @@ export function WorkspaceTools({ placement = "floating", expanded, experiments, 
     <div className={placement === "header" ? "workspace-tools relative" : `workspace-tools absolute end-3.5 top-23 z-30 ${rightOffset === undefined ? "win-titlebar:top-26" : ""}`} style={placement === "header" ? undefined : { insetInlineEnd: rightOffset }}>
       {!expanded ? (
         <nav aria-label={m.workspace_tools_heading()} className="flex items-center justify-end gap-3">
-          <ResearchPanel key={sessionId ?? "new"} onOpenResearch={onResearch} active={activeView === "research"} placement="workspace" sessionId={sessionId} disabled={false} onOpenSession={onOpenSession} />
+          <ResearchPanel key={sessionId ?? "new"} onOpenResearch={onResearch} active={activeView === "research"} placement="workspace" sessionId={sessionId} disabled={false} onOpenSession={onOpenSession} onOpenDeliverables={onDeliverables} />
           {items.map(({ id, label, Icon, onClick }) => (
             <IconButton key={id} active={activeView === id} className="text-text [&.active]:text-text" data-tip={label} data-tip-align={id === "experiments" ? "end" : undefined} aria-label={label} aria-pressed={activeView === id} onClick={onClick}>
               <Icon size={15} />
@@ -85,7 +91,7 @@ export function WorkspaceTools({ placement = "floating", expanded, experiments, 
       ) : (
         <nav aria-label={m.workspace_tools_heading()} className="workspace-tools-card flex w-60 flex-col gap-0.5 rounded-xl border border-border bg-background px-1.5 py-2 shadow-elevated">
           <h2 className="m-0 px-2 pt-1 pb-2 text-sm font-normal text-subtext">{m.workspace_tools_heading()}</h2>
-          <ResearchPanel key={sessionId ?? "new"} onOpenResearch={onResearch} active={activeView === "research"} placement="workspace" expanded sessionId={sessionId} disabled={false} onOpenSession={onOpenSession} />
+          <ResearchPanel key={sessionId ?? "new"} onOpenResearch={onResearch} active={activeView === "research"} placement="workspace" expanded sessionId={sessionId} disabled={false} onOpenSession={onOpenSession} onOpenDeliverables={onDeliverables} />
           {items.filter((item) => item.id !== "files").map(({ id, label: itemLabel, Icon, onClick }) => (
             <MenuItem key={id} className="min-h-7 py-1"
               data-onboarding={id === "artifacts" ? "nav-artifacts" : undefined}

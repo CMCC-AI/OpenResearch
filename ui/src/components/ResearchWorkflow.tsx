@@ -58,7 +58,7 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
   const selectedTask = tasks.find((task) => task.id === selected);
   const nodes = useMemo(() => researchDagLayout(tasks).map((position): TaskNode => {
     const task = tasks.find((task) => task.id === position.id)!;
-    return { id: task.id, type: "researchTask", position: { x: position.x, y: position.y }, data: { task, ...researchTaskStatus(study, task), onSelect: setSelected }, selected: task.id === selected, ariaLabel: `${expertRoles[task.role] ?? task.role} · ${task.id} · ${researchTaskStatus(study, task).label}` };
+    return { id: task.id, type: "researchTask", position: { x: position.x, y: position.y }, data: { task, ...researchTaskStatus(study, task), onSelect: setSelected }, selected: task.id === selected, ariaLabel: `${task.agent?.name ?? expertRoles[task.role] ?? task.role} · ${task.id} · ${researchTaskStatus(study, task).label}` };
   }), [study, tasks, selected]);
   const edges = useMemo(() => tasks.flatMap((task) => task.dependsOn.map((id) => ({
     id: `${id}->${task.id}`, source: id, target: task.id,
@@ -86,7 +86,7 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
           {!tasks.length ? <p className="rounded-lg border border-dashed border-border p-5 text-sm text-subtext">暂无计划</p> : <>
             <p className="text-xs text-subtext">本次安排 {coverage.roles.length} 类专家、{coverage.total} 个任务。</p>
             <div className="rounded-lg border border-border bg-surface p-3"><h4 className="text-sm font-medium">安排依据与研究范围</h4><p className="mt-2 whitespace-pre-wrap text-sm text-subtext">{study.plans.at(-1)?.summary}</p></div>
-            <ol className="grid gap-2 sm:grid-cols-2">{tasks.map((task) => <li key={task.id} className="rounded-lg border border-border p-3 text-sm"><strong>{expertRoles[task.role] ?? task.role}</strong><span className="ms-2 text-xs text-muted">{task.id}</span><p className="mt-2 whitespace-pre-wrap">{task.brief}</p><p className="mt-2 text-xs text-subtext">前置任务：{task.dependsOn.map((id) => { const parent = tasks.find((entry) => entry.id === id); return parent ? `${expertRoles[parent.role] ?? parent.role}（${id}）` : id; }).join("、") || "无，可独立开始"}</p><p className="mt-1 text-xs text-subtext">交付要求：{task.outputs.join("、")}</p></li>)}</ol>
+            <ol className="grid gap-2 sm:grid-cols-2">{tasks.map((task) => <li key={task.id} className="rounded-lg border border-border p-3 text-sm"><strong>{task.agent?.name ?? expertRoles[task.role] ?? task.role}</strong><span className="ms-2 text-xs text-muted">{task.id}</span><p className="mt-2 whitespace-pre-wrap">{task.brief}</p><p className="mt-2 text-xs text-subtext">前置任务：{task.dependsOn.map((id) => { const parent = tasks.find((entry) => entry.id === id); return parent ? `${parent.agent?.name ?? expertRoles[parent.role] ?? parent.role}（${id}）` : id; }).join("、") || "无，可独立开始"}</p><p className="mt-1 text-xs text-subtext">交付要求：{task.outputs.join("、")}</p></li>)}</ol>
             {coverage.unselected.length > 0 && <details className="rounded-lg border border-border p-3"><summary className="cursor-pointer text-xs text-subtext">本次未安排专家（{coverage.unselected.length} 类）</summary><p className="mt-2 text-xs leading-relaxed text-subtext">{coverage.unselected.map((role) => expertRoles[role] ?? role).join("、")}</p></details>}
           </>}
           {decisionCards}
@@ -115,7 +115,7 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
               <ReactFlow key={`${study.id}-${study.plans.at(-1)?.version}`} nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView minZoom={0.3} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} onNodeClick={(_, node) => setSelected(node.id)} proOptions={{ hideAttribution: true }}><Background /><Controls showInteractive={false} /></ReactFlow>
             </div> : <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">{tasks.map((task) => {
               const status = researchTaskStatus(study, task);
-              return <li key={task.id}><button type="button" aria-pressed={selected === task.id} onClick={() => setSelected(task.id)} className={`w-full rounded-lg border p-3 text-start ${workflowTone[status.state]} ${selected === task.id ? "ring-2 ring-primary" : ""}`}><strong className="text-sm">{expertRoles[task.role] ?? task.role}</strong><p className="mt-1 text-xs">{task.id} · {status.label}</p><p className="mt-1 text-xs text-subtext">前置：{task.dependsOn.join("、") || "无"}</p></button></li>;
+              return <li key={task.id}><button type="button" aria-pressed={selected === task.id} onClick={() => setSelected(task.id)} className={`w-full rounded-lg border p-3 text-start ${workflowTone[status.state]} ${selected === task.id ? "ring-2 ring-primary" : ""}`}><strong className="text-sm">{task.agent?.name ?? expertRoles[task.role] ?? task.role}</strong><p className="mt-1 text-xs">{task.id} · {status.label}</p><p className="mt-1 text-xs text-subtext">前置：{task.dependsOn.join("、") || "无"}</p></button></li>;
             })}</ul>}
             {selectedTask ? <TaskDetails study={study} task={selectedTask} runs={runs} onOpenSession={onOpenSession ? (id) => { onClose(); onOpenSession(id); } : undefined} /> : null}
           </>}
@@ -130,7 +130,7 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
 }
 export function TaskDetails({ study, task, runs, onOpenSession }: { study: ResearchStudy; task: ResearchTask; runs: { id: string; status: string; cancelRequested?: boolean }[]; onOpenSession?: (sessionId: string) => void }) {
   return <section className="mt-3 rounded-lg border border-primary bg-primary-subtle p-4 text-sm" aria-label={`任务详情 ${task.id}`}>
-    <div className="flex flex-wrap justify-between gap-2"><strong>{expertRoles[task.role] ?? task.role} · {task.id}</strong><span className="text-primary">{researchTaskStatus(study, task).label}</span></div>
+    <div className="flex flex-wrap justify-between gap-2"><strong>{task.agent?.name ?? expertRoles[task.role] ?? task.role} · {task.id}</strong><span className="text-primary">{researchTaskStatus(study, task).label}</span></div>
     <p className="mt-2 whitespace-pre-wrap">{task.brief}</p>
     <p className="mt-2 flex items-center gap-1 text-xs text-subtext"><ArrowRight size={12} />前置任务：{task.dependsOn.join("、") || "无"}</p>
     <p className="mt-1 text-xs text-subtext">要求产物：{task.outputs.join("、")}</p>

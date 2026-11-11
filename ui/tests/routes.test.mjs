@@ -44,6 +44,8 @@ function loadModule(filename, api = {}, remembered = null) {
       if (id === "../product/AdminOpenCodePage") return { AdminOpenCodePage: () => null };
       if (id === "../product/AdminUsersPage") return { AdminUsersPage: () => null };
       if (id === "../product/ManageCasesPage") return { ManageCasesPage: () => null };
+      if (id === "../product/ProductNav") return { PlatformFrame: () => null };
+      if (id === "../workflow/WorkflowStudio") return { WorkflowStudio: () => null };
       if (id.startsWith("./routes/")) return load(new URL(`${id}.tsx`, url));
       throw new Error(`Unexpected dependency: ${id}`);
     }, exports);
@@ -65,6 +67,9 @@ test("real file routes distinguish task/new, task IDs, project index, and settin
     ["/capabilities", "/capabilities"],
     ["/discover", "/discover"],
     ["/literature", "/literature"],
+    ["/workflows", "/workflows"],
+    ["/projects/p/workflows", "/projects/$projectId/workflows"],
+    ["/projects/p/deliverables", "/projects/$projectId/deliverables"],
     ["/projects", "/projects/"],
     ["/projects/p", "/projects/$projectId/"],
     ["/projects/p/tasks/old", "/projects/$projectId/tasks/$sessionId"],

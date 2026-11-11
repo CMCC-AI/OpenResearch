@@ -1,7 +1,7 @@
 import { stripAppBase } from "../appBasePath";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
-import { PanelLeft, Star } from "lucide-react";
+import { PanelLeft, Star, Workflow } from "lucide-react";
 import brand from "../assets/workbench/brand.svg";
 import newChat from "../assets/workbench/new-chat.svg";
 import discover from "../assets/workbench/discover.svg";
@@ -17,8 +17,15 @@ const productLinks = [
   { to: "/discover" as const, label: "论文发现", image: discover },
   { to: "/literature" as const, label: "论文精读", image: literature },
   { to: "/capabilities" as const, label: "能力中心", image: capabilities },
-  { to: "/cases" as const, label: "精选案例", image: null },
 ];
+
+function WorkflowNavigationLink({ projectId, active }: { projectId?: string; active: boolean }) {
+  const content = <><Workflow size={18} className="shrink-0" /><span className="research-nav-label">工作流编排</span></>;
+  const props = { title: "工作流编排", "aria-label": "工作流编排", "aria-current": active ? "page" as const : undefined, className: "product-nav-item flex h-9 items-center gap-2.5 rounded-xl px-3 text-sm font-medium text-text no-underline" };
+  return projectId
+    ? <Link to="/projects/$projectId/workflows" params={{ projectId }} {...props}>{content}</Link>
+    : <Link to="/workflows" {...props}>{content}</Link>;
+}
 
 export function ProductWordmark({ compact = false, heading = false }: { compact?: boolean; heading?: boolean }) {
   return <Link to="/projects" className="no-underline text-text" aria-label="MobileSci 科研首页">
@@ -29,16 +36,20 @@ export function ProductWordmark({ compact = false, heading = false }: { compact?
   </Link>;
 }
 
-export function ProductSidebar({ children, connectionInfo, onCollapse }: { children?: ReactNode; connectionInfo?: ReactNode; onCollapse?: () => void }) {
+export function ProductSidebar({ children, connectionInfo, onCollapse, projectId }: { children?: ReactNode; connectionInfo?: ReactNode; onCollapse?: () => void; projectId?: string }) {
   const pathname = useRouterState({ select: (state) => stripAppBase(state.location.pathname) });
   const { user, canAccessResearch } = useAuthSession();
   const [mobileOpen, setMobileOpen] = useState(false);
   return <aside className={`product-sidebar session-rail [&_.rail-body]:ps-1 [&_.rail-body]:pe-1 flex w-70 min-h-0 shrink-0 flex-col px-3 py-4 mac-titlebar:pt-10 win-titlebar:pt-10 ${mobileOpen ? "[@media((max-width:_820px))]:absolute [@media((max-width:_820px))]:inset-y-0 [@media((max-width:_820px))]:start-0 [@media((max-width:_820px))]:z-40" : ""} ${children || mobileOpen ? "" : "[@media((max-width:_820px))]:w-16 [@media((max-width:_820px))]:px-2 [@media((max-width:_820px))]:[&_.product-brand-text]:hidden [@media((max-width:_820px))]:[&_.research-nav-label]:hidden [@media((max-width:_820px))]:[&_.research-projects]:hidden"}`}>
     <div className={`flex shrink-0 items-center justify-between gap-1 px-2 pb-4 ${!children && !mobileOpen ? "[@media((max-width:_820px))]:flex-col [@media((max-width:_820px))]:px-0 [@media((max-width:_820px))]:gap-2" : ""}`}><ProductWordmark />{!children && <button type="button" aria-label={mobileOpen ? "收起项目导航" : "展开历史项目"} aria-expanded={mobileOpen} onClick={() => setMobileOpen((value) => !value)} className="hidden [@media((max-width:_820px))]:block"><PanelLeft size={17} /></button>}{onCollapse && <IconButton size="small" aria-label="收起导航" title="收起导航" onClick={onCollapse}><PanelLeft size={17} /></IconButton>}</div>
-    <nav aria-label="MobileSci 菜单" className="product-navigation flex shrink-0 flex-col gap-1 pb-4">{productLinks.filter(({ to }) => canAccessResearch || to === "/cases").map(({ to, label, image }) => {
-      const active = pathname === to || pathname.startsWith(`${to}/`);
-      return <Link key={to} to={to} title={label} aria-label={label} aria-current={active ? "page" : undefined} className="product-nav-item flex h-9 items-center gap-2.5 rounded-xl px-3 text-sm font-medium text-text no-underline">{image ? <img src={image} width={18} height={18} alt="" className="shrink-0" /> : <Star size={18} className="shrink-0" />}<span className="research-nav-label">{label}</span></Link>;
-    })}</nav>
+    <nav aria-label="MobileSci 菜单" className="product-navigation flex shrink-0 flex-col gap-1 pb-4">
+      {productLinks.filter(() => canAccessResearch).map(({ to, label, image }) => {
+        const active = to === "/projects" ? pathname === to : pathname === to || pathname.startsWith(`${to}/`);
+        return <Link key={to} to={to} title={label} aria-label={label} aria-current={active ? "page" : undefined} className="product-nav-item flex h-9 items-center gap-2.5 rounded-xl px-3 text-sm font-medium text-text no-underline"><img src={image} width={18} height={18} alt="" className="shrink-0" /><span className="research-nav-label">{label}</span></Link>;
+      })}
+      {canAccessResearch && <WorkflowNavigationLink projectId={projectId} active={pathname === "/workflows" || pathname === `/projects/${encodeURIComponent(projectId ?? "")}/workflows`} />}
+      <Link to="/cases" title="精选案例" aria-label="精选案例" aria-current={pathname === "/cases" || pathname.startsWith("/cases/") ? "page" : undefined} className="product-nav-item flex h-9 items-center gap-2.5 rounded-xl px-3 text-sm font-medium text-text no-underline"><Star size={18} className="shrink-0" /><span className="research-nav-label">精选案例</span></Link>
+    </nav>
     <div aria-label="OpenResearch 项目与会话" className="product-research-navigation flex min-h-0 flex-1 flex-col border-t border-border-variant pt-2">{children ?? (canAccessResearch ? <ResearchProjectNavigation enabled={Boolean(user)} /> : <p className="px-2 text-xs text-subtext">浏览管理员发布的公共案例，原项目保持独立访问权限。</p>)}</div>
     <AccountMenu connectionInfo={connectionInfo} />
   </aside>;
@@ -51,9 +62,9 @@ export function ProductHeader({ title, actions }: { title: ReactNode; actions?: 
   </header>;
 }
 
-export function PlatformFrame({ title, children }: { title: string; children: ReactNode }) {
+export function PlatformFrame({ title, children, projectId }: { title: string; children: ReactNode; projectId?: string }) {
   return <div className="product-frame flex h-full min-h-0 overflow-hidden">
-    <ProductSidebar />
+    <ProductSidebar projectId={projectId} />
     <div className="flex min-w-0 flex-1 flex-col"><ProductHeader title={title} />{children}</div>
   </div>;
 }

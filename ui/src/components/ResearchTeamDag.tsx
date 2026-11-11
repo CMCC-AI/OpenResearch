@@ -13,14 +13,14 @@ import { useDialogFocus } from "./useDialogFocus";
 import { reconcileFlowNodes } from "../flowNodes";
 import "./ResearchTeamDag.css";
 
-type ExpertNode = Node<{ role: string; state: WorkflowState; label: string; onSelect: (id: string) => void }, "expert">;
+type ExpertNode = Node<{ role: string; roleName: string; state: WorkflowState; label: string; onSelect: (id: string) => void }, "expert">;
 function ExpertPill({ id, data, selected }: NodeProps<ExpertNode>) {
-  return <button type="button" aria-pressed={selected} onClick={() => data.onSelect(id)} title={`${expertRoles[data.role] ?? data.role} · ${data.label}`} className={`nodrag flex h-12 w-56 items-center gap-2 rounded-full border px-2 text-start shadow-sm ${workflowTone[data.state]} ${data.state === "running" ? "ring-2 ring-primary" : ""} ${selected ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : ""}`}>
+  return <button type="button" aria-pressed={selected} onClick={() => data.onSelect(id)} title={`${data.roleName} · ${data.label}`} className={`nodrag flex h-12 w-56 items-center gap-2 rounded-full border px-2 text-start shadow-sm ${workflowTone[data.state]} ${data.state === "running" ? "ring-2 ring-primary" : ""} ${selected ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : ""}`}>
     <Handle id="up" type="target" position={Position.Top} className="opacity-0" />
     <Handle id="side-target" type="target" position={Position.Left} className="opacity-0" />
     <Handle id="side-source" type="source" position={Position.Right} className="opacity-0" />
     <img src={appHref(`/research-experts/${data.role}.png`)} alt="" className="h-9 w-9 shrink-0 rounded-full border border-border bg-background object-cover" />
-    <span className="min-w-0 flex-1"><strong className="block truncate text-xs text-text">{expertRoles[data.role] ?? data.role}</strong><span className="mt-0.5 block truncate text-xs">{data.label}</span></span>
+    <span className="min-w-0 flex-1"><strong className="block truncate text-xs text-text">{data.roleName}</strong><span className="mt-0.5 block truncate text-xs">{data.label}</span></span>
     {data.state === "running" && <CircleDot size={15} className="shrink-0 text-primary" />}
     <Handle id="down" type="source" position={Position.Bottom} className="opacity-0" />
   </button>;
@@ -39,7 +39,7 @@ function ExpertGraph({ nodes: incoming, edges, currentIds, onSelect }: { nodes: 
   return <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.08, minZoom: 0.25, maxZoom: 1 }} minZoom={0.25} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} onNodeClick={(_, node) => onSelect(node.id)} proOptions={{ hideAttribution: true }}><Background /><Controls showInteractive={false} /><div className="absolute right-3 top-3 z-10"><LocateCurrent ids={currentIds} /></div></ReactFlow>;
 }
 
-export function ResearchTeamDagDialog({ study, runs, metrics, onClose, confirmationContent, onOpenSession, embedded = false }: {
+export function ResearchTeamDagDialog({ study, runs, metrics, onClose, confirmationContent, onOpenSession, onOpenDeliverables, embedded = false }: {
   embedded?: boolean;
   metrics?: ResearchMetrics | null;
   study: ResearchStudy | null;
@@ -47,6 +47,7 @@ export function ResearchTeamDagDialog({ study, runs, metrics, onClose, confirmat
   onClose: () => void;
   confirmationContent: ReactNode;
   onOpenSession?: (id: string) => void;
+  onOpenDeliverables?: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
@@ -65,7 +66,10 @@ export function ResearchTeamDagDialog({ study, runs, metrics, onClose, confirmat
   }, [metrics?.running, metrics?.activeDurationMs, metrics?.measuredAt]);
   const graph = useMemo(() => researchTeamGraph(study, actual), [study, actual]);
   const expertCurrentIds = graph.nodes.filter((node) => node.state === "running" || node.state === "blocked").map((node) => node.id);
-  const expertNodes = useMemo<ExpertNode[]>(() => graph.nodes.map((node) => ({ id: node.id, type: "expert", position: { x: node.x, y: node.y }, selected: selected === node.id, ariaLabel: `${expertRoles[node.role]} · ${node.id} · ${node.label}`, data: { role: node.role, state: node.state, label: actual ? `${node.id} · ${node.label}` : node.label, onSelect: setSelected } })), [graph, selected, actual]);
+  const expertNodes = useMemo<ExpertNode[]>(() => graph.nodes.map((node) => {
+    const roleName = node.tasks[0]?.agent?.name ?? expertRoles[node.role] ?? node.role;
+    return { id: node.id, type: "expert", position: { x: node.x, y: node.y }, selected: selected === node.id, ariaLabel: `${roleName} · ${node.id} · ${node.label}`, data: { role: node.role, roleName, state: node.state, label: actual ? `${node.id} · ${node.label}` : node.label, onSelect: setSelected } };
+  }), [graph, selected, actual]);
   const expertEdges = graph.edges.map((edge) => {
     const source = graph.nodes.find((node) => node.id === edge.source);
     const target = graph.nodes.find((node) => node.id === edge.target);
@@ -85,12 +89,15 @@ export function ResearchTeamDagDialog({ study, runs, metrics, onClose, confirmat
           { label: "研究时长", value: !study ? "0分00秒" : !metrics ? "暂不可用" : metrics.activeDurationMs == null ? "未记录" : researchDuration(metrics, metrics.measuredAt + Math.max(0, now - metricClock.current.receivedAt)), description: !study ? "尚未开始研究" : !metrics ? "服务尚未返回统计数据，更新服务后重试。" : metrics.activeDurationMs == null ? "历史对话缺少计时记录；后续执行将记录有效研究时长。" : metrics.activeDurationComplete === false ? "仅包含已记录的有效执行时长，历史缺失部分未计入；并行执行不重复累计。" : "累计有效执行时长，排除等待确认的时间；并行执行不重复累计。", tone: "duration" },
           { label: "Token消耗", value: !study ? "0" : !metrics ? "暂不可用" : metrics.tokenCount == null ? "未上报" : `${metrics.tokenCountComplete ? "" : "≥"}${fmtTokens(metrics.tokenCount)}`, description: !study ? "尚未开始研究" : !metrics ? "服务尚未返回统计数据，更新服务后重试。" : metrics.tokenCount == null ? "智能体尚未上报 Token 用量。" : metrics.tokenCountComplete ? "主对话及专家子对话累计上报的输入与输出 Token。" : "仅包含已上报用量，尚未上报的部分未计入。", tone: "tokens" },
           { label: "科研产物", value: `${artifacts} 个文件`, tone: "artifacts" },
-          { label: "专家数量", value: `${new Set(tasks.map((task) => task.role)).size}/20`, tone: "experts" },
+          { label: "专家数量", value: `${new Set(tasks.map((task) => task.role)).size}${tasks.some((task) => task.agent) ? "" : "/20"}`, tone: "experts" },
         ].map((stat) => <div key={stat.label} data-tone={stat.tone} title={stat.description} className="research-team-stat min-w-0 rounded-xl"><dt className="text-xs text-subtext">{stat.label}</dt><dd className="mt-1 truncate text-sm font-semibold tabular-nums">{stat.value}</dd></div>)}</dl>
         {!embedded && <IconButton data-initial-focus className="self-start" aria-label="关闭专家团 DAG" onClick={onClose}><X size={18} /></IconButton>}
       </header>
       <div className="research-team-toolbar flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border">
-        {packageUrl && <ButtonLink size="small" href={projectAssetUrl(packageUrl)} download>下载已确认研究包</ButtonLink>}
+        {packageUrl && <div className="flex flex-wrap gap-2">
+          <ButtonLink size="small" href={projectAssetUrl(packageUrl)} download>下载已确认研究包</ButtonLink>
+          {onOpenDeliverables && <Button size="small" variant="primary" onClick={() => { onClose(); onOpenDeliverables(); }}>查看研究成果</Button>}
+        </div>}
         <div className="flex flex-wrap gap-1" role="group" aria-label="专家团页面">{[
           { label: "专家团全景", active: view === "overview", select: () => setView("overview") },
           { label: "本次任务依赖", active: actual, select: () => setView("tasks") },

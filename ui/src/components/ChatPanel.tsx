@@ -4088,8 +4088,8 @@ export function ChatPanel({
   /** Run a harness setup command (`path` is its setup route) in the right panel's terminal tab. */
   onRunSetup?: (command: string, path: string) => void;
   /** Settings sections replace chat; Artifacts remains a right-panel tool. */
-  mainView: "chat" | "skills" | SettingsTab;
-  onSelectMainView: (view: "chat" | "skills" | SettingsTab) => void;
+  mainView: "chat" | "skills" | "workflows" | "deliverables" | SettingsTab;
+  onSelectMainView: (view: "chat" | "skills" | "workflows" | "deliverables" | SettingsTab) => void;
   /** Open a project file in the right pane (chat tool rows are clickable).
    * `sessionId` is the chat session the click came from, so relative paths
    * can resolve against that session's worktree. */
@@ -6259,7 +6259,7 @@ export function ChatPanel({
   }, [sidebarGrouping, railOpen, embedded, lastVisibleIndex, sidebarRows.length, flatSessions.hasNextPage, flatSessions.isFetching, flatSessions.isError, flatSessions.fetchNextPage]);
 
   const rail = readOnly ? <ProductSidebar onCollapse={onCollapseRail} /> : (
-    <ProductSidebar onCollapse={onCollapseRail} connectionInfo={<WorkspaceConnection runtime={runtime} />}>
+    <ProductSidebar onCollapse={onCollapseRail} connectionInfo={<WorkspaceConnection runtime={runtime} />} projectId={projectId}>
       <div className={sidebarClasses.heading}>
         <div className={sidebarClasses.label}>
           {sidebarGrouping === "projects" ? m.projects_home_projects() : m.chat_all_sessions()}

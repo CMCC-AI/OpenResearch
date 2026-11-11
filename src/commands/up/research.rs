@@ -32,6 +32,54 @@ pub(super) async fn package(Path(id): Path<String>) -> std::result::Result<Respo
     Ok((headers, axum::body::Body::from_stream(stream)).into_response())
 }
 
+/// 研究成果页：列举项目内已通过交付确认（默认 G4）的研究及其最终产物清单。
+/// 产物内容仍走既有的项目文件端点，这里只提供元数据与下载入口。
+pub(super) async fn deliveries(Path(project): Path<String>) -> ApiResult {
+    blocking_api(move || {
+        let store = Store::open()?;
+        store
+            .get_local_project(&project)?
+            .ok_or_else(|| not_found("project"))?;
+        let deliveries = store
+            .research_delivered_studies(&project)?
+            .iter()
+            .map(|study| -> Result<serde_json::Value> {
+                let plan = study.plan()?;
+                let snapshot = study
+                    .delivery_snapshot
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("交付快照缺失"))?;
+                let gate = crate::local::research::delivery_gate(study.workflow_mode());
+                let decided_at = study
+                    .decisions
+                    .iter()
+                    .filter(|d| d.gate == gate && d.status == "approved")
+                    .filter_map(|d| d.decided_at)
+                    .max();
+                Ok(json!({
+                    "studyId": study.id,
+                    "sessionId": study.session_id,
+                    "objective": study.objective,
+                    "mode": study.workflow_mode(),
+                    "planVersion": plan.version,
+                    "summary": plan.summary,
+                    "scopeHash": snapshot.scope_hash,
+                    "decidedAt": decided_at,
+                    "artifacts": plan.tasks.iter().flat_map(|t| &t.artifacts).map(|a| json!({
+                        "path": a.path,
+                        "sha256": a.sha256,
+                        "bytes": a.bytes,
+                    })).collect::<Vec<_>>(),
+                    "packageUrl": format!("/api/research/studies/{}/package", study.id),
+                }))
+            })
+            .collect::<Result<Vec<_>>>()
+            .map_err(bad_request)?;
+        Ok(Json(json!({"deliveries":deliveries})))
+    })
+    .await
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct NewResearch {

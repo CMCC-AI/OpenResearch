@@ -371,3 +371,59 @@ fn plan_inheritance_accepts_full_output_budget_with_low_descriptor_limit() {
         .all(|t| t.state == "completed" && t.artifacts.len() == 30));
 }
 
+#[test]
+fn custom_agents_are_snapshotted_and_duplicate_submissions_share_a_version() {
+    let (_dir, store, study) = setup();
+    let agent = store
+        .create_workflow_agent(crate::workflow::AgentInput {
+            name: "Evidence statistician".into(),
+            description: "Check quantitative claims".into(),
+            prompt: "Use only traceable quantitative evidence.".into(),
+        })
+        .unwrap();
+    let mut input = plan();
+    input.tasks[0].role = agent.id.clone();
+    let (version, duplicate) = store
+        .research_set_plan_idempotent(&study.id, input.clone())
+        .unwrap();
+    assert_eq!((version, duplicate), (1, false));
+    let saved = store.research_study(&study.id).unwrap();
+    assert_eq!(saved.plan().unwrap().tasks[0].agent.as_ref().unwrap().version, 1);
+    assert!(saved.plan_scope().unwrap().contains("agentDefinitions"));
+    let (same_version, duplicate) = store
+        .research_set_plan_idempotent(&study.id, input.clone())
+        .unwrap();
+    assert_eq!((same_version, duplicate), (1, true));
+    assert_eq!(store.research_study(&study.id).unwrap().plans.len(), 1);
+
+    store
+        .update_workflow_agent(
+            &agent.id,
+            crate::workflow::AgentInput {
+                name: "Evidence statistician".into(),
+                description: "Check quantitative claims".into(),
+                prompt: "Use only traceable quantitative evidence and report uncertainty.".into(),
+            },
+        )
+        .unwrap();
+    let (next_version, duplicate) = store
+        .research_set_plan_idempotent(&study.id, input)
+        .unwrap();
+    assert_eq!((next_version, duplicate), (2, false));
+    assert_eq!(
+        store.research_study(&study.id).unwrap().plan().unwrap().tasks[0]
+            .agent
+            .as_ref()
+            .unwrap()
+            .version,
+        2
+    );
+    assert!(store.delete_workflow_agent(&agent.id).unwrap());
+    let saved = store.research_study(&study.id).unwrap();
+    assert!(
+        crate::local::research::task_role(&store, &saved.plan().unwrap().tasks[0])
+            .unwrap()
+            .contains("report uncertainty")
+    );
+}
+

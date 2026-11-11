@@ -98,6 +98,8 @@ pub struct ResearchTask {
     pub previous_run_ids: Vec<String>,
     #[serde(default)]
     pub evidence_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<crate::workflow::AgentSnapshot>,
 }
 impl ResearchTask {
     pub fn run_gate_scope(&self) -> Result<String> {
@@ -340,6 +342,19 @@ impl Study {
             &self.mode
         }
     }
+    /// 当前交付快照是否已通过交付门（默认 G4）人工确认；研究成果页与下载入口共用这一判定。
+    pub fn delivery_approved(&self) -> bool {
+        let Some(snapshot) = self.delivery_snapshot.as_ref() else {
+            return false;
+        };
+        let gate = crate::local::research::delivery_gate(self.workflow_mode());
+        self.decisions.iter().any(|d| {
+            d.version == self.plans.last().map_or(0, |p| p.version)
+                && d.gate == gate
+                && d.status == "approved"
+                && d.scope_hash == snapshot.scope_hash
+        })
+    }
     pub fn plan_scope(&self) -> Result<String> {
         let plan = self.plan()?;
         let mut scope = serde_json::json!({"objective":self.objective,"version":plan.version,"summary":plan.summary,"tasks":plan.tasks.iter().map(|t| &t.spec).collect::<Vec<_>>()});
@@ -349,6 +364,22 @@ impl Study {
         }
         if let Some(ids) = &plan.material_ids {
             scope["materialIds"] = serde_json::json!(ids);
+        }
+        let agents: Vec<_> = plan
+            .tasks
+            .iter()
+            .filter_map(|task| {
+                task.agent.as_ref().map(|agent| {
+                    serde_json::json!({
+                        "role": task.spec.role,
+                        "version": agent.version,
+                        "promptSha256": digest(agent.prompt.as_bytes()),
+                    })
+                })
+            })
+            .collect();
+        if !agents.is_empty() {
+            scope["agentDefinitions"] = serde_json::json!(agents);
         }
         Ok(serde_json::to_string(&scope)?)
     }
@@ -390,7 +421,18 @@ pub fn inspect_artifact(root: &Path, relative: &str) -> Result<Artifact> {
         bytes: source.bytes(),
     })
 }
+#[cfg(test)]
 pub fn validate_plan(input: &PlanInput, mode: &str) -> Result<()> {
+    validate_plan_with_roles(input, mode, |role| {
+        crate::local::research::role(role).map(|_| ())
+    })
+}
+
+fn validate_plan_with_roles(
+    input: &PlanInput,
+    mode: &str,
+    mut validate_role: impl FnMut(&str) -> Result<()>,
+) -> Result<()> {
     if let Some(workflow) = &input.workflow {
         if !crate::local::research::workflows().contains_key(workflow)
             || (mode != "team" && mode != workflow)
@@ -421,7 +463,7 @@ pub fn validate_plan(input: &PlanInput, mode: &str) -> Result<()> {
         {
             return Err(anyhow!("任务 ID 仅允许字母、数字、横线和下划线"));
         }
-        crate::local::research::role(&task.role)?;
+        validate_role(&task.role)?;
         if task.brief.trim().is_empty()
             || task.brief.len() > 24000
             || task.outputs.is_empty()
@@ -1145,6 +1187,22 @@ impl Store {
         for row in rows {
             if let Ok(study) = serde_json::from_str::<Study>(&row?) {
                 if study.status == "active" {
+                    studies.push(study);
+                }
+            }
+        }
+        Ok(studies)
+    }
+    /// 项目内已通过交付确认的研究，按更新时间倒序，供项目研究成果页列举。
+    pub fn research_delivered_studies(&self, project_id: &str) -> Result<Vec<Study>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT document FROM research_studies WHERE project_id=?1 ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map([project_id], |r| r.get::<_, String>(0))?;
+        let mut studies = Vec::new();
+        for row in rows {
+            if let Ok(study) = serde_json::from_str::<Study>(&row?) {
+                if study.delivery_approved() {
                     studies.push(study);
                 }
             }
@@ -2139,6 +2197,7 @@ mod tests {
                 run_ids: vec!["run".into()],
                 previous_run_ids: vec![],
                 evidence_digest: None,
+                agent: None,
             }],
         });
         store.conn.execute("INSERT INTO runs(id,experiment_id,project_id,status,backend_json,created_at,updated_at) VALUES('run','exp','project','running','{}',2000,2500)",[]).unwrap();

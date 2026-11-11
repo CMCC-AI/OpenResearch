@@ -18,6 +18,7 @@ export interface ResearchTask {
   id: string; role: string; brief: string; dependsOn: string[]; outputs: string[];
   state: string; sessionId: string | null; summary: string | null;
   runContract?: { experimentId: string } | null;
+  agent?: { id: string; name: string; version: number; prompt: string } | null;
   artifacts: { path: string; sha256: string; bytes: number }[]; runIds: string[];
 }
 export interface ResearchDecision {
@@ -50,6 +51,27 @@ export interface ResearchMetrics {
   tokenCountComplete: boolean;
   measuredAt: number;
   running: boolean;
+}
+/** 研究成果页条目：已通过交付确认（默认 G4）的研究精简视图，由后端 /research/deliveries 返回。 */
+export interface ResearchDeliveryEntry {
+  studyId: string;
+  sessionId: string;
+  objective: string;
+  mode: string;
+  planVersion: number;
+  summary: string;
+  scopeHash: string;
+  decidedAt: number | null;
+  artifacts: { path: string; sha256: string; bytes: number }[];
+  packageUrl: string;
+}
+
+/** 成果页主报告：优先综述正文，缺失时回退到字节数最大的 Markdown 产物。 */
+export function deliverableReportPath(delivery: ResearchDeliveryEntry): string | null {
+  if (delivery.artifacts.some((artifact) => artifact.path === "writing/review.md")) return "writing/review.md";
+  const markdown = delivery.artifacts.filter((artifact) => artifact.path.endsWith(".md"));
+  if (!markdown.length) return null;
+  return markdown.reduce((best, artifact) => (artifact.bytes > best.bytes ? artifact : best)).path;
 }
 
 export function researchDuration(metrics: ResearchMetrics | null | undefined, now = Date.now()): string {

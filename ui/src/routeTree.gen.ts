@@ -17,6 +17,7 @@ import { Route as DiscoverRouteImport } from './routes/discover'
 import { Route as LiteratureRouteImport } from './routes/literature'
 import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as RemoteLaunchRouteImport } from './routes/remote-launch'
+import { Route as WorkflowsRouteImport } from './routes/workflows'
 import { Route as AdminIndexRouteImport } from './routes/admin.index'
 import { Route as AdminCasesRouteImport } from './routes/admin.cases'
 import { Route as AdminOpencodeRouteImport } from './routes/admin.opencode'
@@ -28,7 +29,9 @@ import { Route as ProjectsIndexRouteImport } from './routes/projects.index'
 import { Route as ProjectsProjectIdRouteImport } from './routes/projects.$projectId'
 import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
 import { Route as ProjectsProjectIdIndexRouteImport } from './routes/projects.$projectId.index'
+import { Route as ProjectsProjectIdDeliverablesRouteImport } from './routes/projects.$projectId.deliverables'
 import { Route as ProjectsProjectIdSkillsRouteImport } from './routes/projects.$projectId.skills'
+import { Route as ProjectsProjectIdWorkflowsRouteImport } from './routes/projects.$projectId.workflows'
 import { Route as ProjectsProjectIdSettingsTabRouteImport } from './routes/projects.$projectId.settings.$tab'
 import { Route as ProjectsProjectIdTasksSessionIdRouteImport } from './routes/projects.$projectId.tasks.$sessionId'
 import { Route as ProjectsProjectIdTasksNewRouteImport } from './routes/projects.$projectId.tasks.new'
@@ -71,6 +74,11 @@ const ProjectsRoute = ProjectsRouteImport.update({
 const RemoteLaunchRoute = RemoteLaunchRouteImport.update({
   id: '/remote-launch',
   path: '/remote-launch',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const WorkflowsRoute = WorkflowsRouteImport.update({
+  id: '/workflows',
+  path: '/workflows',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AdminIndexRoute = AdminIndexRouteImport.update({
@@ -128,11 +136,23 @@ const ProjectsProjectIdIndexRoute = ProjectsProjectIdIndexRouteImport.update({
   path: '/',
   getParentRoute: () => ProjectsProjectIdRoute,
 } as any)
+const ProjectsProjectIdDeliverablesRoute =
+  ProjectsProjectIdDeliverablesRouteImport.update({
+    id: '/deliverables',
+    path: '/deliverables',
+    getParentRoute: () => ProjectsProjectIdRoute,
+  } as any)
 const ProjectsProjectIdSkillsRoute = ProjectsProjectIdSkillsRouteImport.update({
   id: '/skills',
   path: '/skills',
   getParentRoute: () => ProjectsProjectIdRoute,
 } as any)
+const ProjectsProjectIdWorkflowsRoute =
+  ProjectsProjectIdWorkflowsRouteImport.update({
+    id: '/workflows',
+    path: '/workflows',
+    getParentRoute: () => ProjectsProjectIdRoute,
+  } as any)
 const ProjectsProjectIdSettingsTabRoute =
   ProjectsProjectIdSettingsTabRouteImport.update({
     id: '/settings/$tab',
@@ -161,6 +181,7 @@ export interface FileRoutesByFullPath {
   '/literature': typeof LiteratureRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/remote-launch': typeof RemoteLaunchRoute
+  '/workflows': typeof WorkflowsRoute
   '/admin/cases': typeof AdminCasesRoute
   '/admin/opencode': typeof AdminOpencodeRoute
   '/admin/users': typeof AdminUsersRoute
@@ -171,7 +192,9 @@ export interface FileRoutesByFullPath {
   '/admin/': typeof AdminIndexRoute
   '/cases/': typeof CasesIndexRoute
   '/projects/': typeof ProjectsIndexRoute
+  '/projects/$projectId/deliverables': typeof ProjectsProjectIdDeliverablesRoute
   '/projects/$projectId/skills': typeof ProjectsProjectIdSkillsRoute
+  '/projects/$projectId/workflows': typeof ProjectsProjectIdWorkflowsRoute
   '/projects/$projectId/': typeof ProjectsProjectIdIndexRoute
   '/projects/$projectId/settings/$tab': typeof ProjectsProjectIdSettingsTabRoute
   '/projects/$projectId/tasks/$sessionId': typeof ProjectsProjectIdTasksSessionIdRoute
@@ -183,6 +206,7 @@ export interface FileRoutesByTo {
   '/discover': typeof DiscoverRoute
   '/literature': typeof LiteratureRoute
   '/remote-launch': typeof RemoteLaunchRoute
+  '/workflows': typeof WorkflowsRoute
   '/admin/cases': typeof AdminCasesRoute
   '/admin/opencode': typeof AdminOpencodeRoute
   '/admin/users': typeof AdminUsersRoute
@@ -192,7 +216,9 @@ export interface FileRoutesByTo {
   '/admin': typeof AdminIndexRoute
   '/cases': typeof CasesIndexRoute
   '/projects': typeof ProjectsIndexRoute
+  '/projects/$projectId/deliverables': typeof ProjectsProjectIdDeliverablesRoute
   '/projects/$projectId/skills': typeof ProjectsProjectIdSkillsRoute
+  '/projects/$projectId/workflows': typeof ProjectsProjectIdWorkflowsRoute
   '/projects/$projectId': typeof ProjectsProjectIdIndexRoute
   '/projects/$projectId/settings/$tab': typeof ProjectsProjectIdSettingsTabRoute
   '/projects/$projectId/tasks/$sessionId': typeof ProjectsProjectIdTasksSessionIdRoute
@@ -208,6 +234,7 @@ export interface FileRoutesById {
   '/literature': typeof LiteratureRoute
   '/projects': typeof ProjectsRouteWithChildren
   '/remote-launch': typeof RemoteLaunchRoute
+  '/workflows': typeof WorkflowsRoute
   '/admin/cases': typeof AdminCasesRoute
   '/admin/opencode': typeof AdminOpencodeRoute
   '/admin/users': typeof AdminUsersRoute
@@ -218,7 +245,9 @@ export interface FileRoutesById {
   '/admin/': typeof AdminIndexRoute
   '/cases/': typeof CasesIndexRoute
   '/projects/': typeof ProjectsIndexRoute
+  '/projects/$projectId/deliverables': typeof ProjectsProjectIdDeliverablesRoute
   '/projects/$projectId/skills': typeof ProjectsProjectIdSkillsRoute
+  '/projects/$projectId/workflows': typeof ProjectsProjectIdWorkflowsRoute
   '/projects/$projectId/': typeof ProjectsProjectIdIndexRoute
   '/projects/$projectId/settings/$tab': typeof ProjectsProjectIdSettingsTabRoute
   '/projects/$projectId/tasks/$sessionId': typeof ProjectsProjectIdTasksSessionIdRoute
@@ -235,6 +264,7 @@ export interface FileRouteTypes {
     | '/literature'
     | '/projects'
     | '/remote-launch'
+    | '/workflows'
     | '/admin/cases'
     | '/admin/opencode'
     | '/admin/users'
@@ -245,7 +275,9 @@ export interface FileRouteTypes {
     | '/admin/'
     | '/cases/'
     | '/projects/'
+    | '/projects/$projectId/deliverables'
     | '/projects/$projectId/skills'
+    | '/projects/$projectId/workflows'
     | '/projects/$projectId/'
     | '/projects/$projectId/settings/$tab'
     | '/projects/$projectId/tasks/$sessionId'
@@ -257,6 +289,7 @@ export interface FileRouteTypes {
     | '/discover'
     | '/literature'
     | '/remote-launch'
+    | '/workflows'
     | '/admin/cases'
     | '/admin/opencode'
     | '/admin/users'
@@ -266,7 +299,9 @@ export interface FileRouteTypes {
     | '/admin'
     | '/cases'
     | '/projects'
+    | '/projects/$projectId/deliverables'
     | '/projects/$projectId/skills'
+    | '/projects/$projectId/workflows'
     | '/projects/$projectId'
     | '/projects/$projectId/settings/$tab'
     | '/projects/$projectId/tasks/$sessionId'
@@ -281,6 +316,7 @@ export interface FileRouteTypes {
     | '/literature'
     | '/projects'
     | '/remote-launch'
+    | '/workflows'
     | '/admin/cases'
     | '/admin/opencode'
     | '/admin/users'
@@ -291,7 +327,9 @@ export interface FileRouteTypes {
     | '/admin/'
     | '/cases/'
     | '/projects/'
+    | '/projects/$projectId/deliverables'
     | '/projects/$projectId/skills'
+    | '/projects/$projectId/workflows'
     | '/projects/$projectId/'
     | '/projects/$projectId/settings/$tab'
     | '/projects/$projectId/tasks/$sessionId'
@@ -307,6 +345,7 @@ export interface RootRouteChildren {
   LiteratureRoute: typeof LiteratureRoute
   ProjectsRoute: typeof ProjectsRouteWithChildren
   RemoteLaunchRoute: typeof RemoteLaunchRoute
+  WorkflowsRoute: typeof WorkflowsRoute
   SettingsTabRoute: typeof SettingsTabRoute
 }
 
@@ -366,6 +405,13 @@ declare module '@tanstack/react-router' {
       path: '/remote-launch'
       fullPath: '/remote-launch'
       preLoaderRoute: typeof RemoteLaunchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/workflows': {
+      id: '/workflows'
+      path: '/workflows'
+      fullPath: '/workflows'
+      preLoaderRoute: typeof WorkflowsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/admin/': {
@@ -445,11 +491,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsProjectIdIndexRouteImport
       parentRoute: typeof ProjectsProjectIdRoute
     }
+    '/projects/$projectId/deliverables': {
+      id: '/projects/$projectId/deliverables'
+      path: '/deliverables'
+      fullPath: '/projects/$projectId/deliverables'
+      preLoaderRoute: typeof ProjectsProjectIdDeliverablesRouteImport
+      parentRoute: typeof ProjectsProjectIdRoute
+    }
     '/projects/$projectId/skills': {
       id: '/projects/$projectId/skills'
       path: '/skills'
       fullPath: '/projects/$projectId/skills'
       preLoaderRoute: typeof ProjectsProjectIdSkillsRouteImport
+      parentRoute: typeof ProjectsProjectIdRoute
+    }
+    '/projects/$projectId/workflows': {
+      id: '/projects/$projectId/workflows'
+      path: '/workflows'
+      fullPath: '/projects/$projectId/workflows'
+      preLoaderRoute: typeof ProjectsProjectIdWorkflowsRouteImport
       parentRoute: typeof ProjectsProjectIdRoute
     }
     '/projects/$projectId/settings/$tab': {
@@ -507,7 +567,9 @@ const CasesRouteChildren: CasesRouteChildren = {
 const CasesRouteWithChildren = CasesRoute._addFileChildren(CasesRouteChildren)
 
 interface ProjectsProjectIdRouteChildren {
+  ProjectsProjectIdDeliverablesRoute: typeof ProjectsProjectIdDeliverablesRoute
   ProjectsProjectIdSkillsRoute: typeof ProjectsProjectIdSkillsRoute
+  ProjectsProjectIdWorkflowsRoute: typeof ProjectsProjectIdWorkflowsRoute
   ProjectsProjectIdIndexRoute: typeof ProjectsProjectIdIndexRoute
   ProjectsProjectIdSettingsTabRoute: typeof ProjectsProjectIdSettingsTabRoute
   ProjectsProjectIdTasksSessionIdRoute: typeof ProjectsProjectIdTasksSessionIdRoute
@@ -515,7 +577,9 @@ interface ProjectsProjectIdRouteChildren {
 }
 
 const ProjectsProjectIdRouteChildren: ProjectsProjectIdRouteChildren = {
+  ProjectsProjectIdDeliverablesRoute: ProjectsProjectIdDeliverablesRoute,
   ProjectsProjectIdSkillsRoute: ProjectsProjectIdSkillsRoute,
+  ProjectsProjectIdWorkflowsRoute: ProjectsProjectIdWorkflowsRoute,
   ProjectsProjectIdIndexRoute: ProjectsProjectIdIndexRoute,
   ProjectsProjectIdSettingsTabRoute: ProjectsProjectIdSettingsTabRoute,
   ProjectsProjectIdTasksSessionIdRoute: ProjectsProjectIdTasksSessionIdRoute,
@@ -548,6 +612,7 @@ const rootRouteChildren: RootRouteChildren = {
   LiteratureRoute: LiteratureRoute,
   ProjectsRoute: ProjectsRouteWithChildren,
   RemoteLaunchRoute: RemoteLaunchRoute,
+  WorkflowsRoute: WorkflowsRoute,
   SettingsTabRoute: SettingsTabRoute,
 }
 export const routeTree = rootRouteImport

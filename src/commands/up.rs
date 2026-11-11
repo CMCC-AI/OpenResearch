@@ -60,6 +60,7 @@ mod submission_tests;
 use event_stream::forward_chat_events;
 use event_stream::{events, log_size, read_log_from, UPDATE_SAMPLE_INTERVAL};
 mod research;
+mod workflow;
 use compute_settings::*;
 
 pub async fn run(args: UpArgs) -> Result<()> {
@@ -511,6 +512,30 @@ impl ProjectLifecycle {
 fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
     let app = Router::new()
         .route("/api/health", get(health))
+        .route(
+            "/api/workflow/agents",
+            get(workflow::agents).post(workflow::create_agent),
+        )
+        .route(
+            "/api/workflow/agents/{id}",
+            axum::routing::put(workflow::update_agent).delete(workflow::delete_agent),
+        )
+        .route(
+            "/api/workflow/draft",
+            get(workflow::global_draft).put(workflow::save_global_draft),
+        )
+        .route(
+            "/api/projects/{project}/workflow/draft",
+            get(workflow::draft).put(workflow::save_draft),
+        )
+        .route(
+            "/api/projects/{project}/research/deliveries",
+            get(research::deliveries),
+        )
+        .route(
+            "/api/research/sessions/{id}/workflow-plan",
+            post(workflow::submit_draft),
+        )
         .route("/api/research/sessions/{id}", get(research::session))
         .route("/api/research/studies/{id}/end", post(research::end))
         .route("/api/research/studies/{id}/package", get(research::package))

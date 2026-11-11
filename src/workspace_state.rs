@@ -266,6 +266,7 @@ fn valid_location(location: &str) -> bool {
     let valid_path = match parts.as_slice() {
         ["", "projects"] => true,
         ["", "projects", project, "skills"] => valid_id(project),
+        ["", "projects", project, "workflows"] => valid_id(project),
         ["", "projects", project, "tasks", task] => valid_id(project) && valid_id(task),
         ["", "projects", project, "settings", tab] => {
             valid_id(project)
@@ -404,6 +405,7 @@ mod tests {
             urlencoding::encode(&pane.to_string())
         );
         assert!(valid_location(&location));
+        assert!(valid_location("/projects/demo/workflows"));
         assert!(valid_location("/projects/demo/settings/%67it"));
         assert!(valid_location(&format!(
             "/projects/demo/tasks/new?%70ane={}&",

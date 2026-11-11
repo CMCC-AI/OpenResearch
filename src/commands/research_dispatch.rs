@@ -146,7 +146,7 @@ pub(crate) fn dispatch_study_task_sync(
         entry.spec.outputs.join("、"),
         existing_runs_note,
         entry.spec.brief,
-        crate::local::research::role(&entry.spec.role)?
+        crate::local::research::task_role(store, entry)?
     );
     let harness = parent.harness.clone();
     let plan_permission =

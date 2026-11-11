@@ -11,8 +11,8 @@ import { Users, ArrowRight } from "lucide-react";
 import { ResearchModulePreview } from "./ResearchModulePreview";
 import { ResearchTeamDagDialog } from "./ResearchTeamDag";
 
-export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSession, placement = "composer", expanded = false, onOpenResearch, active = false }: {
-  sessionId: string | null; onStartWorkflow?: (mode: ResearchMode) => Promise<void>; disabled: boolean; onOpenSession?: (sessionId: string) => void; placement?: "composer" | "workspace" | "pane"; expanded?: boolean; onOpenResearch?: () => void; active?: boolean;
+export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSession, onOpenDeliverables, placement = "composer", expanded = false, onOpenResearch, active = false }: {
+  sessionId: string | null; onStartWorkflow?: (mode: ResearchMode) => Promise<void>; disabled: boolean; onOpenSession?: (sessionId: string) => void; onOpenDeliverables?: () => void; placement?: "composer" | "workspace" | "pane"; expanded?: boolean; onOpenResearch?: () => void; active?: boolean;
 }) {
   const readOnly = useReadOnlyWorkspace();
   const query = useQuery({ queryKey: workspaceKey("researchStudy", sessionId), queryFn: ({ signal }) => getResearchStudy(sessionId!, signal), enabled: Boolean(sessionId), refetchInterval: (query) => query.state.data?.study?.status === "active" ? 2500 : false });
@@ -53,10 +53,10 @@ export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSess
     {decided.length > 0 && <details><summary className="cursor-pointer text-xs text-subtext">确认记录（{decided.length}）</summary><div className="mt-2 flex flex-col gap-2">{decided.map(renderDecision)}</div></details>}
     {error && <p role="alert" className="text-sm text-accent-red">{error}</p>}
   </>;
-  const dagDialog = dagOpen && (sessionId && (queryError || pending) ? <ResearchStateErrorDialog loading={pending} error={queryError?.message ?? ""} onRetry={() => void query.refetch()} onClose={() => setDagOpen(false)} /> : <ResearchTeamDagDialog metrics={data?.metrics} study={study ?? null} runs={data?.runs ?? []} onClose={() => setDagOpen(false)} confirmationContent={decisionCards} onOpenSession={onOpenSession} />);
+  const dagDialog = dagOpen && (sessionId && (queryError || pending) ? <ResearchStateErrorDialog loading={pending} error={queryError?.message ?? ""} onRetry={() => void query.refetch()} onClose={() => setDagOpen(false)} /> : <ResearchTeamDagDialog metrics={data?.metrics} study={study ?? null} runs={data?.runs ?? []} onClose={() => setDagOpen(false)} confirmationContent={decisionCards} onOpenSession={onOpenSession} onOpenDeliverables={onOpenDeliverables} />);
   const openResearch = () => onOpenResearch ? onOpenResearch() : setDagOpen(true);
   if (readOnly && !study && placement === "composer") return null;
-  if (placement === "pane") return <div className="flex h-full min-h-0 flex-col">{pending && sessionId ? <p className="p-4 text-sm text-subtext">正在读取专家团状态…</p> : queryError ? <div role="alert" className="p-4 text-sm text-accent-red">研究状态读取失败：{queryError.message}<Button onClick={() => void query.refetch()}>重试</Button></div> : <ResearchTeamDagDialog embedded metrics={data?.metrics} study={study ?? null} runs={data?.runs ?? []} onClose={() => {}} confirmationContent={decisionCards} onOpenSession={onOpenSession} />}</div>;
+  if (placement === "pane") return <div className="flex h-full min-h-0 flex-col">{pending && sessionId ? <p className="p-4 text-sm text-subtext">正在读取专家团状态…</p> : queryError ? <div role="alert" className="p-4 text-sm text-accent-red">研究状态读取失败：{queryError.message}<Button onClick={() => void query.refetch()}>重试</Button></div> : <ResearchTeamDagDialog embedded metrics={data?.metrics} study={study ?? null} runs={data?.runs ?? []} onClose={() => {}} confirmationContent={decisionCards} onOpenSession={onOpenSession} onOpenDeliverables={onOpenDeliverables} />}</div>;
   if (placement === "workspace") return <>
     {expanded ? <MenuItem className="min-h-7 py-1" aria-label="科研专家团流程" onClick={openResearch} disabled={Boolean(sessionId) && pending}><span className="flex min-w-0 flex-col gap-0.5"><span className="flex items-center gap-4"><Users size={15} className="shrink-0 text-primary" />科研专家团</span><span className="truncate ps-[31px] text-menu text-subtext">{study ? researchAttention(study) : queryError ? "状态读取失败 · 点击重试" : readOnly ? "已结束 · 未保存流程" : "预设流程与执行"}</span></span></MenuItem> : <IconButton aria-label="科研专家团流程" data-tip="科研专家团 · 流程与执行" aria-pressed={active} active={active} disabled={Boolean(sessionId) && pending} onClick={openResearch}><Users size={15} /></IconButton>}
     {dagDialog}

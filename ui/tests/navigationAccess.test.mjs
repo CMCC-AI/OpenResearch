@@ -99,3 +99,10 @@ test("logout revokes the account recovery records before ending the browser sess
     ["navigate", "/"],
   ]);
 });
+
+test("global workflow studio retains login, research access, and private runtime gates", () => {
+  assert.equal(authGate("/workflows", null).props.to, "/");
+  assert.equal(authGate("/mobilesci/workflows", { id: "reader" }, false, false).props.to, "/cases");
+  assert.equal(authGate("/workflows", { id: "user" }, false, true, true).props.children.type, "PersonalResearchGate");
+  assert.equal(authGate("/workflows", { id: "user" }).props.children, "page");
+});

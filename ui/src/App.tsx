@@ -110,6 +110,8 @@ import {
 } from "./api";
 import { ResearchPanel } from "./components/ResearchPanel";
 const MaterialWorkspace = lazy(() => import("./components/MaterialWorkspace"));
+const WorkflowStudio = lazy(() => import("./workflow/WorkflowStudio").then(module => ({ default: module.WorkflowStudio })));
+const ResearchDeliverables = lazy(() => import("./components/ResearchDeliverables").then(module => ({ default: module.ResearchDeliverables })));
 
 import { WorkspaceTools } from "./components/WorkspaceTools";
 const ProjectTerminal = lazy(() => import("./components/ProjectTerminal").then(module => ({ default: module.ProjectTerminal })));
@@ -277,7 +279,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   const location = useRouterState({ select: (state) => state.location });
   const searchSession = new URLSearchParams(location.searchStr).get("session");
   const destination = readOnly?.native ? { kind: "task" as const, projectId, sessionId: searchSession || readOnly.initialSessionId } : parseDestination(location.pathname);
-  const mainView = destination?.kind === "skills" ? "skills" : destination?.kind === "settings" ? destination.section ?? "settings" : "chat";
+  const mainView = destination?.kind === "skills" ? "skills" : destination?.kind === "workflows" ? "workflows" : destination?.kind === "deliverables" ? "deliverables" : destination?.kind === "settings" ? destination.section ?? "settings" : "chat";
   const rememberedSessionRef = useRef<string | null>(null);
   const rememberedProjectRef = useRef(projectId);
   if (rememberedProjectRef.current !== projectId) {
@@ -324,11 +326,15 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   const setProjectId = useCallback((id: string | null) => {
     void router.navigate({ href: id ? `/projects/${encodeURIComponent(id)}` : "/projects" });
   }, [router]);
-  const setMainView = useCallback((view: "chat" | "skills" | SettingsTab) => {
+  const setMainView = useCallback((view: "chat" | "skills" | "workflows" | "deliverables" | SettingsTab) => {
     if (!projectId || view === "skills" || view === "environment") return;
     if (view === "chat") {
       const id = rememberedSessionRef.current;
       void router.navigate({ href: taskLocation(projectId, id, getTaskWorkspace(workspaceRef.current, id ?? "new")?.active) });
+    } else if (view === "workflows") {
+      void router.navigate({ href: `/projects/${encodeURIComponent(projectId)}/workflows` });
+    } else if (view === "deliverables") {
+      void router.navigate({ href: `/projects/${encodeURIComponent(projectId)}/deliverables` });
     } else void router.navigate({ href: `/projects/${encodeURIComponent(projectId)}/settings/${view}` });
   }, [router, projectId]);
 
@@ -1781,6 +1787,8 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     projectId={activeProject.id}
     onMaterials={() => openMaterialsTab()}
     onResearch={openResearchTab}
+    onWorkflow={() => selectMainView("workflows")}
+    onDeliverables={() => selectMainView("deliverables")}
     onCompute={() => selectMainView("compute")}
     onOpenSession={(id) => onActiveSessionChange(id)}
     sessionId={activeSessionId}
@@ -1802,7 +1810,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
       {runtime.kind === "local" && <UpdateBanner status={updateStatus} />}
       {workspaceError && <div role="alert" className="flex items-center gap-2 px-4 mac-titlebar:ps-20 win-titlebar:pe-36 py-2 text-subtext"><span>{workspaceError}</span><Button onClick={retryWorkspace}>{m.app_retry()}</Button></div>}
       <div className={`app-body workspace-body relative grid flex-1 min-h-0 grid-rows-[4rem_minmax(0,1fr)] [&>.product-sidebar]:row-span-2 [&>.product-sidebar]:row-start-1 [&>.chat-pane]:row-start-2 [&>.right-pane]:row-start-2 ${railOpen ? readOnly ? "grid-cols-[auto_minmax(0,1fr)_auto]" : "grid-cols-[17.5rem_minmax(0,1fr)_auto]" : "grid-cols-[minmax(0,1fr)_auto]"} ${workspaceCardVisible ? "workspace-card-visible" : ""}`}>
-        <div className="workspace-global-header min-w-0" style={{ gridColumn: railOpen ? "2 / -1" : "1 / -1", gridRow: 1 }}><ProductHeader actions={!workspaceCardVisible ? workspaceTools : undefined} title={<nav aria-label="当前位置" className="flex min-w-0 items-center gap-2"><Link to="/projects" className="shrink-0 text-subtext no-underline hover:text-primary">科研首页</Link><span aria-hidden="true">/</span>{readOnly ? <Link to="/cases" className="truncate text-subtext no-underline hover:text-primary">精选案例 · {activeProject.name}</Link> : <Link to="/projects/$projectId" params={{ projectId }} className="truncate text-subtext no-underline hover:text-primary">{activeProject.name}</Link>}<span aria-hidden="true">/</span><span className="shrink-0 text-text">{mainView === "chat" ? "研究工作区" : mainView === "skills" ? "自定义能力" : "项目设置"}</span></nav>} /></div>
+        <div className="workspace-global-header min-w-0" style={{ gridColumn: railOpen ? "2 / -1" : "1 / -1", gridRow: 1 }}><ProductHeader actions={!workspaceCardVisible ? workspaceTools : undefined} title={<nav aria-label="当前位置" className="flex min-w-0 items-center gap-2"><Link to="/projects" className="shrink-0 text-subtext no-underline hover:text-primary">科研首页</Link><span aria-hidden="true">/</span>{readOnly ? <Link to="/cases" className="truncate text-subtext no-underline hover:text-primary">精选案例 · {activeProject.name}</Link> : <Link to="/projects/$projectId" params={{ projectId }} className="truncate text-subtext no-underline hover:text-primary">{activeProject.name}</Link>}<span aria-hidden="true">/</span><span className="shrink-0 text-text">{mainView === "chat" ? "研究工作区" : mainView === "workflows" ? "科研工作流" : mainView === "deliverables" ? "研究成果" : mainView === "skills" ? "自定义能力" : "项目设置"}</span></nav>} /></div>
         {projectId && (
           <ChatPanel
             projectId={projectId}
@@ -1838,7 +1846,11 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             preferredAutonomy={uiState.preferredAutonomy ?? DEFAULT_AUTONOMY}
             onPreferredAutonomyChange={persistPreferredAutonomy}
           >
-            {mainView === "skills" ? (
+            {mainView === "workflows" ? (
+              <Suspense fallback={<div role="status" className="flex h-full items-center justify-center"><Spinner /></div>}><WorkflowStudio projectId={projectId} onOpenSession={(id) => onActiveSessionChange(id)} /></Suspense>
+            ) : mainView === "deliverables" ? (
+              <Suspense fallback={<div role="status" className="flex h-full items-center justify-center"><Spinner /></div>}><ResearchDeliverables projectId={projectId} onOpenWorkflow={() => selectMainView("workflows")} /></Suspense>
+            ) : mainView === "skills" ? (
               <SkillsTab />
             ) : mainView !== "chat" ? (
               <Suspense fallback={<div role="status" className="flex h-full items-center justify-center"><Spinner /></div>}><SettingsView
@@ -1938,7 +1950,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             ) : rightTab === "materials" ? (
               <TabBody><Suspense fallback={<p role="status" className="p-4 text-sm text-subtext">正在打开材料…</p>}><MaterialWorkspace key={`${activeProject.id}:${activeSessionId}:${materialTarget?.nonce ?? 0}`} sessionId={activeSessionId} requestedId={materialTarget?.session === activeSessionId ? materialTarget.id : undefined} /></Suspense></TabBody>
             ) : rightTab === "research" ? (
-              <TabBody><ResearchPanel key={researchSessionId ?? "preview"} placement="pane" sessionId={researchSessionId} disabled={false} onOpenSession={(id) => onActiveSessionChange(id, { preservePane: true })} /></TabBody>
+              <TabBody><ResearchPanel key={researchSessionId ?? "preview"} placement="pane" sessionId={researchSessionId} disabled={false} onOpenSession={(id) => onActiveSessionChange(id, { preservePane: true })} onOpenDeliverables={() => selectMainView("deliverables")} /></TabBody>
             ) : rightTab === "artifacts" ? (
               <TabBody>
                 {activeProject && (

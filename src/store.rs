@@ -17,6 +17,7 @@ mod schema;
 pub(crate) mod steering;
 pub(crate) mod storage_usage;
 mod telemetry;
+pub(crate) mod workflow;
 pub(crate) use telemetry::{InvocationIdentity, TokenUsage};
 
 use std::path::{Path, PathBuf};
@@ -1103,6 +1104,7 @@ impl Store {
         material_reads::migrate(&conn)?;
         metric_evidence::migrate(&conn)?;
         input_sets::migrate(&conn)?;
+        workflow::migrate(&conn)?;
         migrate_chat_spawns(&conn)?;
         phase("research-and-spawns");
         Ok(Self {

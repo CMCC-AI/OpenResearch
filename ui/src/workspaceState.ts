@@ -86,7 +86,7 @@ export function parsePane(value: unknown): Pane | undefined {
 }
 
 export interface Destination {
-  kind: "home" | "resume" | "task" | "skills" | "settings";
+  kind: "home" | "resume" | "task" | "skills" | "settings" | "workflows" | "deliverables";
   projectId?: string;
   sessionId?: string;
   section?: SettingsSection;
@@ -105,6 +105,8 @@ export function parseDestination(pathname: string): Destination | null {
   if (parts.length === 3 || (parts.length === 4 && parts[3] === "")) return { kind: "resume", projectId };
   // Hidden configuration pages must not be restored or reached by a bookmarked URL.
   if (parts.length === 4 && parts[3] === "skills") return null;
+  if (parts.length === 4 && parts[3] === "workflows") return { kind: "workflows", projectId };
+  if (parts.length === 4 && parts[3] === "deliverables") return { kind: "deliverables", projectId };
   if (parts.length === 5 && parts[3] === "tasks" && validId(leaf)) return { kind: "task", projectId, ...(leaf === "new" ? {} : { sessionId: leaf }) };
   if (parts.length === 5 && parts[3] === "settings" && isSettingsSection(leaf)) return { kind: "settings", projectId, section: leaf };
   return null;
