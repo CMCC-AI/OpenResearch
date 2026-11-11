@@ -41,3 +41,29 @@ test("workflow routes work at root and under the MobileSci prefix without reopen
   assert.deepEqual(parseDestination("/mobilesci/projects/project/deliverables"), { kind: "deliverables", projectId: "project" });
   assert.equal(parseDestination("/projects/project/skills"), null);
 });
+
+test("W1 template enables task approval and verdict gating by default", () => {
+  const draft = createLiteratureDraft();
+  assert.equal(draft.tasks.find((task) => task.id === "search-strategy").requiresApproval, true);
+  const review = draft.tasks.find((task) => task.id === "independent-review");
+  assert.equal(review.gateDownstream, true);
+  assert.equal(review.maxRework, 2);
+  assert.equal(draft.tasks.find((task) => task.id === "citation-audit").gateDownstream, true);
+});
+
+test("input bindings and rework limits are validated against direct dependencies", () => {
+  const draft = createLiteratureDraft();
+  const write = draft.tasks.find((task) => task.id === "review-writing");
+  // review-writing 的直接前置是 review-outline，其产物 outline/outline.md 是合法输入。
+  write.inputs = ["outline/outline.md"];
+  assert.deepEqual(validateWorkflowDraft(draft, agentsFor(draft)), []);
+  write.inputs = ["synthesis/themes.md"];
+  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((error) => error.includes("review-writing 的输入必须来自直接前置任务的产物")));
+  write.inputs = [];
+  const review = draft.tasks.find((task) => task.id === "independent-review");
+  review.gateDownstream = false;
+  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((error) => error.includes("设置返工上限需要同时开启结论门控")));
+  review.gateDownstream = true;
+  review.maxRework = 4;
+  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((error) => error.includes("返工上限需为 0–3 的整数")));
+});

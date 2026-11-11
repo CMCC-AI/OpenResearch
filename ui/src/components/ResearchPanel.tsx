@@ -83,13 +83,17 @@ export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSess
 
 function GateCard({ decision, disabled, onDecide, readOnly = false }: { readOnly?: boolean; decision: ResearchDecision; disabled: boolean; onDecide: (approved: boolean, reason: string) => Promise<void> }) {
   const [reason, setReason] = useState("");
-  let scope: { summary?: string; command?: string; revision?: string; options?: { backend?: string; flavor?: string; host?: string; timeout?: string }; plan?: { summary?: string } } = {};
+  let scope: { summary?: string; command?: string; revision?: string; options?: { backend?: string; flavor?: string; host?: string; timeout?: string }; plan?: { summary?: string }; taskId?: string; artifacts?: { path: string; sha256: string }[] } = {};
   try { const parsed: unknown = JSON.parse(decision.scope); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) scope = parsed; } catch { /* old text scopes remain readable */ }
-  const gateName = decision.gate === "G3" && !scope.command ? "实验方案确认" : gateNames[decision.gate];
-  return <section className="rounded border border-border p-3" aria-label={`${decision.gate} ${gateName}`}>
-    <strong>{decision.gate} · {gateName} · {decision.status === "approved" ? "已批准" : decision.status === "rejected" ? "已拒绝" : "等待确认"}</strong>
+  const taskApproval = decision.gate.startsWith("G5:");
+  const gateName = taskApproval ? "任务确认" : decision.gate === "G3" && !scope.command ? "实验方案确认" : gateNames[decision.gate] ?? decision.gate;
+  const gateLabel = taskApproval ? `任务确认 · ${scope.taskId ?? decision.gate.slice(3)}` : decision.gate;
+  return <section className="rounded border border-border p-3" aria-label={`${gateLabel} ${gateName}`}>
+    <strong>{gateLabel} · {gateName} · {decision.status === "approved" ? "已批准" : decision.status === "rejected" ? "已拒绝" : "等待确认"}</strong>
     <p className="whitespace-pre-wrap py-1">{scope.summary ?? scope.plan?.summary}</p>
+    {taskApproval && scope.artifacts?.length ? <p className="text-xs text-subtext break-all">已验收产物：{scope.artifacts.map((artifact) => artifact.path).join("、")}</p> : null}
     {scope.command && <><p>执行位置：{scope.options?.backend} {scope.options?.host} {scope.options?.flavor} {scope.options?.timeout}</p><pre className="whitespace-pre-wrap break-all text-xs">{scope.command}</pre><p className="text-xs text-subtext break-all">代码版本：{scope.revision}</p></>}
+    {taskApproval && <p className="text-subtext">该任务已通过产物验收；批准后才会派发其下游任务。拒绝则下游保持暂停，需修订计划后重新执行。</p>}
     {decision.gate === "G3" && !scope.command && <p className="text-subtext">确认实验方案的假设、指标、基线、预算与停止条件；此项确认不授权运行实验。</p>}
     {decision.gate === "G4" && <p className="text-subtext">确认当前研究包的结论、证据与局限。此操作生成批准记录，公开发布需另行操作。</p>}
     <details className="mt-2"><summary className="cursor-pointer text-subtext">查看完整审批范围</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(scope, null, 2)}</pre><p className="text-xs text-subtext break-all">范围校验：{decision.scopeHash}</p></details>

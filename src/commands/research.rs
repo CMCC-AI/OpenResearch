@@ -102,13 +102,8 @@ pub async fn run(args: ResearchArgs) -> Result<()> {
         ResearchCommand::Dispatch { task } => {
             require_lead(lead)?;
             let entry = study.task(&task)?;
-            let prompt = format!(
-                "执行研究任务 {}。独立完成角色职责，读取声明的依赖产物，全部输出写入 {}。\n{}\n{}",
-                task,
-                store.research_root(&study)?.display(),
-                entry.spec.brief,
-                crate::local::research::task_role(&store, entry)?
-            );
+            let prompt =
+                crate::commands::research_dispatch::task_dispatch_prompt(&store, &study, entry)?;
             crate::commands::research_dispatch::spawn(
                 &store,
                 crate::commands::research_dispatch::SpawnRequest {

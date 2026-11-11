@@ -31,6 +31,10 @@ async fn research_settlement_source_errors_preserve_helper_and_do_not_starve_oth
                         _ => vec!["review".into()],
                     },
                     force_rerun: false,
+                    inputs: vec![],
+                    requires_approval: false,
+                    gate_downstream: false,
+                    max_rework: 0,
                 })
                 .collect(),
             },

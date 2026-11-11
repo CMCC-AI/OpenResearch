@@ -181,6 +181,15 @@ impl Store {
         if plan.tasks.iter().any(|t| t.state != "completed") {
             return Err(anyhow!("全部计划任务必须通过验收后才能申请交付确认"));
         }
+        if plan
+            .tasks
+            .iter()
+            .any(|t| t.verdict.as_ref().is_some_and(|v| v.status == "blocked"))
+        {
+            return Err(anyhow!(
+                "存在结论为阻塞的任务，需先修订计划重新审阅后才能申请交付确认"
+            ));
+        }
         if !self.conn.is_autocommit() {
             return Err(anyhow!("交付准备必须在 SQLite 写事务外执行"));
         }

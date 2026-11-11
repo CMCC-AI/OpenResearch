@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Connection, type Edge, type EdgeChange, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
-import { Bot, CircleHelp, FileText, Plus, Trash2, X } from "lucide-react";
+import { Bot, CircleHelp, FileText, Plus, RefreshCw, ShieldCheck, Split, Trash2, X } from "lucide-react";
 import { Button } from "../components/ui";
-import { addAgentTask, connectWorkflowTasks, removeWorkflowTask, type FlowPoint, type WorkflowAgent, type WorkflowDraftInput, type WorkflowTask } from "./model";
+import { Switch } from "../components/ui/Switch";
+import { addAgentTask, connectWorkflowTasks, removeWorkflowTask, MAX_REWORK, type FlowPoint, type WorkflowAgent, type WorkflowDraftInput, type WorkflowTask } from "./model";
 
 type AgentNodeData = {
   taskId: string;
@@ -10,6 +11,9 @@ type AgentNodeData = {
   brief: string;
   outputCount: number;
   dependencyCount: number;
+  requiresApproval: boolean;
+  gateDownstream: boolean;
+  maxRework: number;
   onDelete: () => void;
 };
 type AgentNode = Node<AgentNodeData, "agent">;
@@ -28,6 +32,10 @@ function AgentNodeCard({ data, selected }: NodeProps<AgentNode>) {
       </button>
     </div>
     {data.brief && <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">{data.brief}</p>}
+    {(data.requiresApproval || data.gateDownstream) && <div className="flex flex-wrap gap-1 px-3 pb-1.5">
+      {data.requiresApproval && <span className="flex items-center gap-1 rounded bg-accent-amber-subtle px-1.5 py-0.5 text-xs text-accent-amber" title="完成后需主理人确认才放行下游"><ShieldCheck size={11} aria-hidden="true" />需主理人确认</span>}
+      {data.gateDownstream && <span className="flex items-center gap-1 rounded bg-primary-subtle px-1.5 py-0.5 text-xs text-primary" title={data.maxRework > 0 ? `结论阻塞时拦截下游，自动返工上限 ${data.maxRework} 轮` : "结论阻塞时拦截下游派发"}><Split size={11} aria-hidden="true" />结论门控{data.maxRework > 0 && <span className="flex items-center gap-0.5"><RefreshCw size={10} aria-hidden="true" />≤{data.maxRework}轮</span>}</span>}
+    </div>}
     <div className="flex items-center gap-3 border-t border-border px-3 py-1.5 text-xs text-subtext">
       <span className="flex items-center gap-1"><FileText size={12} aria-hidden="true" />{data.outputCount} 个产物</span>
       <span>{data.dependencyCount ? `前置 ${data.dependencyCount} 项` : "无前置"}</span>
@@ -81,6 +89,9 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
       brief: task.brief,
       outputCount: task.outputs.length,
       dependencyCount: task.dependsOn.length,
+      requiresApproval: !!task.requiresApproval,
+      gateDownstream: !!task.gateDownstream,
+      maxRework: task.maxRework ?? 0,
       onDelete: () => {
         onChange(removeWorkflowTask(draft, task.id));
         setSelected(null);
@@ -96,6 +107,9 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
     markerEnd: { type: MarkerType.ArrowClosed },
   }))), [draft.tasks]);
   const selectedTask = draft.tasks.find((task) => task.id === selected) ?? null;
+  const depOutputs = useMemo(() => (selectedTask
+    ? [...new Set(selectedTask.dependsOn.flatMap((dependency) => draft.tasks.find((task) => task.id === dependency)?.outputs ?? []))]
+    : []), [selectedTask, draft.tasks]);
 
   function updateTask(id: string, update: Partial<WorkflowTask>) {
     onChange({ ...draft, tasks: draft.tasks.map((task) => task.id === id ? { ...task, ...update } : task) });
@@ -196,6 +210,36 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
         <label className="flex flex-col gap-1.5 text-sm">Agent<select className="h-8 rounded-md border border-border bg-background px-2 text-sm text-text" value={selectedTask.role} onChange={(event) => updateTask(selectedTask.id, { role: event.target.value })}>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
         <label className="flex flex-col gap-1.5 text-sm">任务简报<textarea className="min-h-40 resize-y rounded-md border border-border bg-background p-2.5 text-sm text-text outline-none focus:border-text" value={selectedTask.brief} maxLength={24000} onChange={(event) => updateTask(selectedTask.id, { brief: event.target.value })} /></label>
         <label className="flex flex-col gap-1.5 text-sm">声明产物（每行一个相对路径）<textarea className="min-h-24 resize-y rounded-md border border-border bg-background p-2.5 font-mono text-sm text-text outline-none focus:border-text" value={selectedTask.outputs.join("\n")} onChange={(event) => updateTask(selectedTask.id, { outputs: event.target.value.split("\n") })} /></label>
+        <div className="flex flex-col gap-1.5 text-sm">
+          <span>输入产物（勾选后派发时自动注入开工指令）</span>
+          {depOutputs.length ? <div className="flex flex-col gap-1.5 rounded-md border border-border p-2.5">
+            {depOutputs.map((output) => <label key={output} className="flex items-center gap-2 text-subtext">
+              <input type="checkbox" className="accent-primary" checked={(selectedTask.inputs ?? []).includes(output)} onChange={(event) => {
+                const current = selectedTask.inputs ?? [];
+                updateTask(selectedTask.id, { inputs: event.target.checked ? [...current, output] : current.filter((path) => path !== output) });
+              }} />
+              <span className="min-w-0 truncate font-mono text-xs">{output}</span>
+            </label>)}
+          </div> : <span className="text-subtext">还没有直接前置任务：先连线，再从这里勾选要读取的上游产物。</span>}
+        </div>
+        <div className="flex flex-col gap-2.5 rounded-md border border-border p-3">
+          <span className="text-sm text-text">流程控制</span>
+          <label className="flex items-center justify-between gap-2 text-sm text-subtext">
+            完成后需主理人确认
+            <Switch checked={!!selectedTask.requiresApproval} aria-label="完成后需主理人确认" title="该任务完成后暂停，主理人在人工确认页批准后才派发下游任务" onClick={() => updateTask(selectedTask.id, { requiresApproval: !selectedTask.requiresApproval })} />
+          </label>
+          <label className="flex items-center justify-between gap-2 text-sm text-subtext">
+            结论门控：阻塞时拦截下游
+            <Switch checked={!!selectedTask.gateDownstream} aria-label="结论门控" title="完成时读取结论文件（通过/阻塞），阻塞时暂停下游派发并通知主理人" onClick={() => updateTask(selectedTask.id, { gateDownstream: !selectedTask.gateDownstream, maxRework: selectedTask.gateDownstream ? 0 : selectedTask.maxRework })} />
+          </label>
+          {selectedTask.gateDownstream && <label className="flex items-center justify-between gap-2 text-sm text-subtext">
+            阻塞时自动返工上限
+            <select className="h-8 rounded-md border border-border bg-background px-2 text-sm text-text" value={selectedTask.maxRework ?? 0} onChange={(event) => updateTask(selectedTask.id, { maxRework: Number(event.target.value) })}>
+              {Array.from({ length: MAX_REWORK + 1 }, (_, rounds) => <option key={rounds} value={rounds}>{rounds === 0 ? "不自动返工" : `最多 ${rounds} 轮`}</option>)}
+            </select>
+          </label>}
+          <p className="m-0 text-xs leading-4 text-subtext">开启返工后，结论为阻塞时系统自动带上阻塞原因重跑直接前置任务及下游，每轮独立留档；上限会计入 G1 确认范围。</p>
+        </div>
         <div className="rounded-md border border-border bg-surface p-3 text-sm leading-5 text-subtext">前置任务：{selectedTask.dependsOn.length ? selectedTask.dependsOn.join("、") : "无"}<br />产物必须位于研究目录内，且不能与其他任务重复。</div>
       </div> : <div className="p-3 text-sm text-subtext"><h2 className="m-0 mb-2 text-base font-normal text-text">任务属性</h2><p>选择画布中的节点，编辑 Agent、任务简报和声明产物。</p><p>提交后进入现有 G1 确认；批准前不会派发专家。</p></div>}
     </aside>

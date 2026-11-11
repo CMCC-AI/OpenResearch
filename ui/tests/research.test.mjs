@@ -70,6 +70,34 @@ test("plan revision and non-experimental consultations do not inherit obsolete p
   assert.match(researchAttention(value), /G1/);
 });
 
+test("verdict gating, task approval, and bounded rework surface as task states", async () => {
+  const { gateDisplayName } = await import("../src/research.ts");
+  assert.equal(gateDisplayName("G5:review"), "任务确认 · review");
+  assert.equal(gateDisplayName("G1"), "研究范围与目标");
+  const write = task("write", "as-evidence-writer", [], "pending");
+  write.reworkCount = 1;
+  write.maxRework = 2;
+  const review = task("review", "as-independent-reviewer", ["write"], "completed");
+  review.verdict = { status: "blocked", reasons: ["缺少对照"], path: "review.md.verdict.json", sha256: "abc" };
+  const strategy = task("strategy", "as-literature-strategist", [], "completed");
+  strategy.requiresApproval = true;
+  const next = task("next", "as-research-synthesizer", ["strategy"]);
+  const value = study([write, review, strategy, next], [gate("G1", "approved")]);
+  assert.equal(researchTaskStatus(value, review).state, "blocked");
+  assert.match(researchTaskStatus(value, review).label, /结论阻塞/);
+  assert.equal(researchTaskStatus(value, write).state, "running");
+  assert.match(researchTaskStatus(value, write).label, /返工修订中 · 第 1 轮/);
+  assert.equal(researchTaskStatus(value, strategy).state, "blocked");
+  assert.match(researchTaskStatus(value, strategy).label, /待主理人放行/);
+  assert.match(researchTaskStatus(value, next).label, /等待主理人确认 strategy/);
+  value.decisions.push({ id: "g5", gate: "G5:strategy", status: "approved", version: 2, scope: "{}" });
+  assert.equal(researchTaskStatus(value, strategy).label, "产物已验收");
+  assert.match(researchTaskStatus(value, next).label, /已就绪/);
+  // 结论通过后阻塞解除。
+  review.verdict = { status: "pass", reasons: [], path: "review.md.verdict.json", sha256: "abc" };
+  assert.match(researchTaskStatus(value, review).label, /已验收/);
+});
+
 
 const { consultationModules, consultationCoverage } = await import("../src/research.ts");
 test("consultation previews distinguish mandatory review from optional roles without authorizing experiments", () => {

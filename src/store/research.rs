@@ -1,6 +1,6 @@
 //! Durable research orchestration. One versioned aggregate is updated under a
 //! SQLite write transaction; native chats, experiments and runs remain canonical.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use rusqlite::{params, OptionalExtension};
@@ -45,6 +45,72 @@ pub struct TaskSpec {
     pub outputs: Vec<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub force_rerun: bool,
+    /// 声明要读取的上游产物路径；派发时注入子会话提示词并核对哈希。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<String>,
+    /// 完成后需主理人在人工确认页批准（G5:{任务id}）才放行下游。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub requires_approval: bool,
+    /// 结论门控：完成时读取 `<首个产物>.verdict.json`，结论为阻塞时拦截下游派发。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gate_downstream: bool,
+    /// 结论为阻塞时自动带意见返工上游的轮数上限（0–3）。
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub max_rework: u32,
+}
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+/// 结论门控任务的机器可读验收结论，来自产物旁的 `<首个产物>.verdict.json`。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskVerdict {
+    /// `pass` 或 `blocked`。
+    pub status: String,
+    pub reasons: Vec<String>,
+    pub path: String,
+    pub sha256: String,
+}
+pub const MAX_REWORK: u32 = 3;
+/// 结论文件与产物一一对应：`review/independent.md` → `review/independent.md.verdict.json`。
+pub fn verdict_path_for(output: &str) -> String {
+    format!("{output}.verdict.json")
+}
+pub fn parse_verdict(path: &str, sha256: String, bytes: &[u8]) -> Result<TaskVerdict> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct VerdictFile {
+        verdict: String,
+        #[serde(default)]
+        reasons: Vec<String>,
+    }
+    let file: VerdictFile = serde_json::from_slice(bytes)
+        .map_err(|error| anyhow!("结论文件 {path} 不是有效的结论 JSON: {error}"))?;
+    let status = match file.verdict.as_str() {
+        "pass" => "pass",
+        "blocked" => "blocked",
+        other => {
+            return Err(anyhow!(
+                "结论文件 {path} 的 verdict 必须是 pass 或 blocked，当前为 {other}"
+            ))
+        }
+    };
+    if file.reasons.len() > 20 || file.reasons.iter().any(|r| r.len() > 500) {
+        return Err(anyhow!(
+            "结论文件 {path} 的 reasons 最多 20 条且每条不超过 500 字"
+        ));
+    }
+    if status == "blocked" && file.reasons.iter().all(|r| r.trim().is_empty()) {
+        return Err(anyhow!(
+            "结论文件 {path} 结论为阻塞，需要在 reasons 中给出具体修订意见"
+        ));
+    }
+    Ok(TaskVerdict {
+        status: status.into(),
+        reasons: file.reasons,
+        path: path.into(),
+        sha256,
+    })
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -100,6 +166,15 @@ pub struct ResearchTask {
     pub evidence_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<crate::workflow::AgentSnapshot>,
+    /// 结论门控任务最近一次验收结论；返工期间保留供界面展示，下一次验收覆盖。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<TaskVerdict>,
+    /// 结论阻塞触发的自动返工已用轮数（上限为 spec.max_rework）。
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rework_count: u32,
+    /// 返工时附加给直接上游的修订意见，派发时注入提示词，验收后清空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rework_feedback: Option<String>,
 }
 impl ResearchTask {
     pub fn run_gate_scope(&self) -> Result<String> {
@@ -383,13 +458,41 @@ impl Study {
         }
         Ok(serde_json::to_string(&scope)?)
     }
+    /// 任务确认门的范围：同一任务产物或摘要变化后哈希随之变化，旧的批准自动失效。
+    pub fn task_gate_scope(&self, task_id: &str) -> Result<String> {
+        let task = self.task(task_id)?;
+        let scope = serde_json::json!({
+            "kind": "taskApproval",
+            "taskId": task_id,
+            "version": self.plan()?.version,
+            "artifacts": task.artifacts,
+            "summary": task.summary,
+        });
+        Ok(serde_json::to_string(&scope)?)
+    }
+    pub fn task_gate_id(task_id: &str) -> String {
+        format!("G5:{task_id}")
+    }
     pub fn ready(&self, id: &str) -> Result<()> {
         self.ensure_active()?;
         self.require_gate("G1", &self.plan_scope()?)?;
         let task = self.task(id)?;
         for dep in &task.spec.depends_on {
-            if self.task(dep)?.state != "completed" {
+            let dep_task = self.task(dep)?;
+            if dep_task.state != "completed" {
                 return Err(anyhow!("前置任务 {dep} 未通过产物验收"));
+            }
+            if dep_task.spec.requires_approval {
+                let scope = self.task_gate_scope(dep)?;
+                self.require_gate(&Self::task_gate_id(dep), &scope)?;
+            }
+            if dep_task.spec.gate_downstream
+                && dep_task
+                    .verdict
+                    .as_ref()
+                    .is_some_and(|verdict| verdict.status == "blocked")
+            {
+                return Err(anyhow!("前置任务 {dep} 结论为阻塞，需主理人处理后再派发"));
             }
         }
         if task.spec.role == "as-experiment-operator" {
@@ -399,6 +502,60 @@ impl Study {
         }
         Ok(())
     }
+}
+/// 结论阻塞触发的有界返工：重置门控任务的直接上游及其全部传递下游。
+/// 只重置已验收/已失败的任务（归档其会话回到待执行），运行中的任务不动；
+/// 实验执行任务保持原状，避免已批准的 G2/G3 运行契约被作废。
+/// 直接上游附带本轮返工意见，派发时注入提示词。
+fn rework_upstream_tasks(study: &mut Study, gate_task_id: &str, reasons: &[String]) -> Result<()> {
+    let (round, deps) = {
+        let gate_task = study.task(gate_task_id)?;
+        (
+            gate_task.rework_count + 1,
+            gate_task.spec.depends_on.clone(),
+        )
+    };
+    let feedback = format!("第 {round} 轮返工意见：{}", reasons.join("；"));
+    // 重置范围 = 直接上游 ∪ 其全部传递下游（含门控任务自身）。
+    let mut reset_ids: HashSet<String> = deps.iter().cloned().collect();
+    loop {
+        let before = reset_ids.len();
+        for task in study.plan()?.tasks.iter() {
+            if task
+                .spec
+                .depends_on
+                .iter()
+                .any(|dep| reset_ids.contains(dep))
+            {
+                reset_ids.insert(task.spec.id.clone());
+            }
+        }
+        if reset_ids.len() == before {
+            break;
+        }
+    }
+    for task_id in &reset_ids {
+        let task = study.task_mut(task_id)?;
+        if task.spec.role == "as-experiment-operator"
+            || !matches!(task.state.as_str(), "completed" | "failed")
+        {
+            continue;
+        }
+        if let Some(old_session) = task.session_id.take() {
+            task.previous_sessions.push(old_session);
+        }
+        task.pending_nudge = None;
+        task.pending_nudge_turn_id = None;
+        task.summary = None;
+        task.rework_feedback = None;
+        task.state = "pending".into();
+        if deps.contains(task_id) {
+            task.rework_feedback = Some(feedback.clone());
+        }
+    }
+    let task = study.task_mut(gate_task_id)?;
+    task.rework_count = round;
+    Ok(())
 }
 pub fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -453,6 +610,11 @@ fn validate_plan_with_roles(
         return Err(anyhow!("任务 ID 重复"));
     }
     let mut paths = HashSet::new();
+    let outputs_by_id: HashMap<&str, &Vec<String>> = input
+        .tasks
+        .iter()
+        .map(|task| (task.id.as_str(), &task.outputs))
+        .collect();
     for task in &input.tasks {
         if task.id.is_empty()
             || task.id.len() > 80
@@ -490,6 +652,40 @@ fn validate_plan_with_roles(
             return Err(anyhow!(
                 "所选流程不运行实验；需要真实复现请新建论文复现流程"
             ));
+        }
+        if task.inputs.iter().any(|path| !safe_relative(path)) {
+            return Err(anyhow!("任务 {} 的输入路径越界", task.id));
+        }
+        if task.inputs.iter().collect::<HashSet<_>>().len() != task.inputs.len() {
+            return Err(anyhow!("任务 {} 的输入存在重复路径", task.id));
+        }
+        let dep_outputs = task
+            .depends_on
+            .iter()
+            .flat_map(|dep| outputs_by_id[dep.as_str()].iter())
+            .collect::<HashSet<_>>();
+        if let Some(missing) = task.inputs.iter().find(|path| !dep_outputs.contains(path)) {
+            return Err(anyhow!(
+                "任务 {} 的输入必须来自直接前置任务的产物: {missing}",
+                task.id
+            ));
+        }
+        if task.gate_downstream {
+            if task.role == "as-experiment-operator" {
+                return Err(anyhow!("实验执行任务不支持结论门控: {}", task.id));
+            }
+            if task.depends_on.is_empty() {
+                return Err(anyhow!("结论门控任务需要至少一个前置任务: {}", task.id));
+            }
+        }
+        if task.max_rework > MAX_REWORK {
+            return Err(anyhow!(
+                "任务 {} 的返工上限不能超过 {MAX_REWORK} 轮",
+                task.id
+            ));
+        }
+        if task.max_rework > 0 && !task.gate_downstream {
+            return Err(anyhow!("任务 {} 设置返工上限需要同时开启结论门控", task.id));
         }
     }
     let mut visited = HashSet::new();
@@ -1369,8 +1565,49 @@ impl Store {
             }
             task.pending_nudge = None;
             task.pending_nudge_turn_id = None;
+            task.rework_feedback = None;
             task.state = if success { "completed" } else { "failed" }.into();
             task.summary = Some(summary);
+            task.verdict = None;
+            if success && task.spec.gate_downstream {
+                let sidecar = verdict_path_for(&task.spec.outputs[0]);
+                let (canonical, mut source) = files::open_artifact(&root, &sidecar)?;
+                let sha256 = source.hash()?;
+                let bytes = std::fs::read(&canonical)?;
+                task.verdict = Some(parse_verdict(&sidecar, sha256, &bytes)?);
+            }
+            if !success {
+                return Ok(());
+            }
+            // 先汇总本轮验收结果，结束任务的可变借用后再执行编排动作。
+            let verdict = task.verdict.clone();
+            let (requires_approval, count, max) =
+                (task.spec.requires_approval, task.rework_count, task.spec.max_rework);
+            if requires_approval {
+                let scope = study.task_gate_scope(task_id)?;
+                study.request_gate(&Study::task_gate_id(task_id), scope)?;
+            }
+            let blocked = verdict.as_ref().is_some_and(|v| v.status == "blocked");
+            if !blocked {
+                return Ok(());
+            }
+            if max > 0 && count < max {
+                let reasons = verdict.map(|v| v.reasons).unwrap_or_default();
+                rework_upstream_tasks(study, task_id, &reasons)?;
+                return Ok(());
+            }
+            let note = if max > 0 {
+                format!("返工上限（{max} 轮）已用完，结论仍为阻塞：需主理人修订计划（对相关任务设置 forceRerun）后重新审阅。")
+            } else {
+                "结论为阻塞：下游任务已暂停，需主理人修订计划（对相关任务设置 forceRerun）后重新审阅。".to_string()
+            };
+            let task = study.task_mut(task_id)?;
+            if let Some(text) = task.summary.as_mut() {
+                if !text.contains(&note) {
+                    text.push('\n');
+                    text.push_str(&note);
+                }
+            }
             Ok(())
         })
     }
@@ -1594,6 +1831,10 @@ mod tests {
             depends_on: deps.iter().map(|d| (*d).into()).collect(),
             outputs: vec![format!("{id}.md")],
             force_rerun: false,
+            inputs: vec![],
+            requires_approval: false,
+            gate_downstream: false,
+            max_rework: 0,
         }
     }
     fn plan() -> PlanInput {
@@ -2198,6 +2439,9 @@ mod tests {
                 previous_run_ids: vec![],
                 evidence_digest: None,
                 agent: None,
+                verdict: None,
+                rework_count: 0,
+                rework_feedback: None,
             }],
         });
         store.conn.execute("INSERT INTO runs(id,experiment_id,project_id,status,backend_json,created_at,updated_at) VALUES('run','exp','project','running','{}',2000,2500)",[]).unwrap();
@@ -2935,4 +3179,5 @@ mod tests {
     include!("research_file_tests.rs");
     include!("research_aggregate_tests.rs");
     include!("research_settlement_tests.rs");
+    include!("research_orchestration_tests.rs");
 }

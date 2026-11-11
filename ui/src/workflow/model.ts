@@ -31,7 +31,18 @@ export interface WorkflowTask {
   dependsOn: string[];
   outputs: string[];
   forceRerun?: boolean;
+  /** 声明要读取的上游产物路径，派发时自动注入专家开工指令。 */
+  inputs?: string[];
+  /** 完成后需主理人在人工确认页批准才放行下游。 */
+  requiresApproval?: boolean;
+  /** 结论门控：完成时读取 <首个产物>.verdict.json，阻塞时拦截下游派发。 */
+  gateDownstream?: boolean;
+  /** 结论为阻塞时自动带意见返工上游的轮数上限（0–3）。 */
+  maxRework?: number;
 }
+
+/** 结论门控允许的最大自动返工轮数，与 Rust 侧 MAX_REWORK 保持一致。 */
+export const MAX_REWORK = 3;
 
 export interface FlowPoint { x: number; y: number }
 export interface FlowViewport { x: number; y: number; zoom: number }
@@ -68,12 +79,19 @@ const literatureTasks = [
 ] as const;
 
 export function createLiteratureDraft(): WorkflowDraftInput {
+  // W1 模板默认展示三种控制属性：检索策略需主理人确认，审稿阻塞时自动返工写作，审计阻塞时拦截下游。
+  const controls: Partial<Record<string, Pick<WorkflowTask, "requiresApproval" | "gateDownstream" | "maxRework">>> = {
+    "search-strategy": { requiresApproval: true },
+    "independent-review": { gateDownstream: true, maxRework: 2 },
+    "citation-audit": { gateDownstream: true },
+  };
   const tasks: WorkflowTask[] = literatureTasks.map(([role, id, brief, output], index) => ({
     id,
     role,
     brief,
     dependsOn: index ? [literatureTasks[index - 1][1]] : [],
     outputs: [output],
+    ...controls[id],
   }));
   return {
     name: "系统文献综述",
@@ -171,6 +189,17 @@ export function validateWorkflowDraft(draft: WorkflowDraftInput, agents: Workflo
       outputs.add(output);
     }
     for (const dependency of task.dependsOn) if (!ids.has(dependency)) errors.push(`${task.id} 依赖未知任务 ${dependency}`);
+    const depOutputs = new Set(task.dependsOn.flatMap((dependency) => draft.tasks.find((t) => t.id === dependency)?.outputs ?? []));
+    const seenInputs = new Set<string>();
+    for (const input of task.inputs ?? []) {
+      if (!depOutputs.has(input)) errors.push(`${task.id} 的输入必须来自直接前置任务的产物：${input}`);
+      if (seenInputs.has(input)) errors.push(`${task.id} 的输入重复：${input}`);
+      seenInputs.add(input);
+    }
+    const maxRework = task.maxRework ?? 0;
+    if (!Number.isInteger(maxRework) || maxRework < 0 || maxRework > MAX_REWORK) errors.push(`${task.id} 的返工上限需为 0–${MAX_REWORK} 的整数`);
+    if (maxRework > 0 && !task.gateDownstream) errors.push(`${task.id} 设置返工上限需要同时开启结论门控`);
+    if (task.gateDownstream && !task.dependsOn.length) errors.push(`${task.id} 开启结论门控需要至少一个前置任务`);
   }
   const visiting = new Set<string>();
   const visited = new Set<string>();

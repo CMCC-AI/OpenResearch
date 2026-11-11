@@ -14,12 +14,30 @@ export const researchStates: Record<string, string> = {
   pending: "待执行", running: "执行中 / 待验收", completed: "产物已验收", failed: "未通过", cancelled: "已取消",
 };
 export const gateNames: Record<string, string> = { G1: "研究范围与目标", G2: "资源与权限", G3: "实验方案与执行", G4: "研究包交付" };
+/** G5:{任务id} 是任务确认门：任务完成后需主理人批准才放行下游。 */
+export function gateDisplayName(gate: string): string {
+  if (gate.startsWith("G5:")) return `任务确认 · ${gate.slice(3)}`;
+  return gateNames[gate] ?? gate;
+}
+export interface ResearchTaskVerdict {
+  status: "pass" | "blocked";
+  reasons: string[];
+  path: string;
+  sha256: string;
+}
 export interface ResearchTask {
   id: string; role: string; brief: string; dependsOn: string[]; outputs: string[];
   state: string; sessionId: string | null; summary: string | null;
   runContract?: { experimentId: string } | null;
   agent?: { id: string; name: string; version: number; prompt: string } | null;
   artifacts: { path: string; sha256: string; bytes: number }[]; runIds: string[];
+  inputs?: string[];
+  requiresApproval?: boolean;
+  gateDownstream?: boolean;
+  maxRework?: number;
+  verdict?: ResearchTaskVerdict | null;
+  reworkCount?: number;
+  reworkFeedback?: string | null;
 }
 export interface ResearchDecision {
   id: string; gate: string; version: number; scope: string; scopeHash: string;
@@ -163,9 +181,9 @@ export function researchAttention(study: ResearchStudy) {
   if (study.status === "stopped") return "研究已停止";
   const decisions = currentDecisions(study);
   const rejected = decisions.filter((decision) => decision.status === "rejected");
-  if (rejected.length) return `${[...new Set(rejected.map((decision) => decision.gate))].join(" / ")} 已拒绝 · 等待调整计划`;
+  if (rejected.length) return `${[...new Set(rejected.map((decision) => decision.gate.startsWith("G5:") ? gateDisplayName(decision.gate) : decision.gate))].join(" / ")} 已拒绝 · 等待调整计划`;
   const pending = decisions.filter((decision) => decision.status === "pending");
-  if (pending.length) return `等待你确认 ${[...new Set(pending.map((decision) => decision.gate))].join(" / ")}`;
+  if (pending.length) return `等待你确认 ${[...new Set(pending.map((decision) => decision.gate.startsWith("G5:") ? gateDisplayName(decision.gate) : decision.gate))].join(" / ")}`;
   if (study.evidenceReviewRequired) return "证据已修订 · 等待重新审查与交付确认";
   const tasks = study.plans.at(-1)?.tasks ?? [];
   const failed = tasks.filter((task) => ["failed", "cancelled"].includes(task.state));
@@ -180,14 +198,24 @@ export function researchAttention(study: ResearchStudy) {
 
 export function researchTaskStatus(study: ResearchStudy, task: ResearchTask): { state: WorkflowState; label: string } {
   if (study.staleReviewTaskIds?.includes(task.id) && task.state === "completed") return { state: "blocked", label: "证据已修订 · 等待重新审查" };
-  if (task.state === "completed") return { state: "completed", label: "产物已验收" };
+  if (task.state === "completed") {
+    if (task.verdict?.status === "blocked") return { state: "blocked", label: "结论阻塞 · 等待主理人处理" };
+    if (task.requiresApproval && !currentDecisions(study).some((decision) => decision.gate === `G5:${task.id}` && decision.status === "approved")) return { state: "blocked", label: "已验收 · 待主理人放行" };
+    return { state: "completed", label: "产物已验收" };
+  }
   if (study.status === "stopped") return { state: "stopped", label: "已停止" };
   if (task.state === "running") return { state: "running", label: "执行中 / 待验收" };
   if (["failed", "cancelled"].includes(task.state)) return { state: "blocked", label: researchStates[task.state] };
+  if (task.state === "pending" && (task.reworkCount ?? 0) > 0) return { state: "running", label: `返工修订中 · 第 ${task.reworkCount} 轮（上限 ${task.maxRework ?? 0} 轮）` };
   const decisions = currentDecisions(study);
   if (!decisions.some((decision) => decision.gate === "G1" && decision.status === "approved")) return { state: "blocked", label: "等待 G1 范围确认" };
   const tasks = study.plans.at(-1)?.tasks ?? [];
-  if (task.dependsOn.some((id) => tasks.find((entry) => entry.id === id)?.state !== "completed")) return { state: "waiting", label: "等待前置任务" };
+  const depTasks = task.dependsOn.map((id) => tasks.find((entry) => entry.id === id));
+  if (depTasks.some((dep) => dep?.state !== "completed")) return { state: "waiting", label: "等待前置任务" };
+  const blockedDep = depTasks.find((dep) => dep?.verdict?.status === "blocked");
+  if (blockedDep) return { state: "blocked", label: `前置结论阻塞 · ${blockedDep.id}` };
+  const unapprovedDep = depTasks.find((dep) => dep?.requiresApproval && !decisions.some((decision) => decision.gate === `G5:${dep.id}` && decision.status === "approved"));
+  if (unapprovedDep) return { state: "blocked", label: `等待主理人确认 ${unapprovedDep.id}` };
   if (task.role === "as-experiment-operator") {
     const contract = task.runContract;
     if (!contract) return { state: "waiting", label: "等待准备运行契约" };

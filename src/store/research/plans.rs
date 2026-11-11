@@ -225,6 +225,7 @@ impl Store {
                         || prev.spec.brief != spec.brief
                         || prev.spec.outputs != spec.outputs
                         || prev.spec.depends_on != spec.depends_on
+                        || prev.spec.inputs != spec.inputs
                         || !same_agent(prev, &spec.role, &agents)
                         || !spec.depends_on.iter().all(|d| inherited_ids.contains(d))
                     {
@@ -288,6 +289,9 @@ impl Store {
                             previous_run_ids: prev.previous_run_ids.clone(),
                             evidence_digest: prev.evidence_digest.clone(),
                             agent: prev.agent.clone(),
+                            verdict: prev.verdict.clone(),
+                            rework_count: prev.rework_count,
+                            rework_feedback: prev.rework_feedback.clone(),
                         });
                         continue;
                     }
@@ -310,6 +314,9 @@ impl Store {
                     previous_run_ids: vec![],
                     evidence_digest: None,
                     agent,
+                    verdict: None,
+                    rework_count: 0,
+                    rework_feedback: None,
                 });
             }
             study.delivery_error = None;
@@ -321,6 +328,22 @@ impl Store {
                 tasks,
             });
             study.request_gate("G1", study.plan_scope()?)?;
+            // 继承下来的需确认任务在新版本下重新生成任务确认门，随 G1 一起出现在人工确认页。
+            let approval_ids: Vec<String> = study
+                .plan()?
+                .tasks
+                .iter()
+                .filter(|task| {
+                    task.state == "completed"
+                        && task.spec.requires_approval
+                        && !task.artifacts.is_empty()
+                })
+                .map(|task| task.spec.id.clone())
+                .collect();
+            for task_id in &approval_ids {
+                let scope = study.task_gate_scope(task_id)?;
+                study.request_gate(&Study::task_gate_id(task_id), scope)?;
+            }
             submission = Some((version, false));
             Ok(())
         })?;

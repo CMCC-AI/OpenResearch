@@ -114,6 +114,76 @@ pub(crate) enum ResearchWakeAction {
     WakeLead(String),
 }
 
+/// 组装专家任务的派发提示词：职责与产物要求之外，按需注入
+/// 输入绑定清单、结论门控写作要求与返工意见，自动派发与 CLI 手动派发共用。
+pub(crate) fn task_dispatch_prompt(
+    store: &Store,
+    study: &crate::store::research::Study,
+    entry: &crate::store::research::ResearchTask,
+) -> Result<String> {
+    let existing_runs_note = if entry.spec.role == "as-experiment-operator"
+        && !entry.run_ids.is_empty()
+    {
+        format!(
+                "\n注意：该任务的真实实验运行已完成（Run ID: {}），请勿重复执行 `orx exp run`；请直接读取已有运行日志与结果并生成上述声明产物文件。",
+                entry.run_ids.join(", ")
+            )
+    } else {
+        String::new()
+    };
+    let mut inputs_note = String::new();
+    if !entry.spec.inputs.is_empty() {
+        let mut lines = Vec::new();
+        for path in &entry.spec.inputs {
+            let artifact = study
+                .plan()?
+                .tasks
+                .iter()
+                .flat_map(|task| task.artifacts.iter())
+                .find(|artifact| &artifact.path == path);
+            match artifact {
+                Some(artifact) => lines.push(format!(
+                    "- {}（sha256 前 12 位：{}）",
+                    artifact.path,
+                    &artifact.sha256[..artifact.sha256.len().min(12)]
+                )),
+                None => lines.push(format!("- {path}（上游尚未登记产物哈希）")),
+            }
+        }
+        inputs_note = format!(
+            "\n必须读取的上游输入产物（研究根目录相对路径，验收会核对未被改动）：\n{}",
+            lines.join("\n")
+        );
+    }
+    let verdict_note = if entry.spec.gate_downstream {
+        let sidecar = crate::store::research::verdict_path_for(&entry.spec.outputs[0]);
+        format!(
+            "\n本任务启用结论门控：完成全部声明产物后，必须另外生成结论文件 {sidecar}（研究根目录相对路径，UTF-8 JSON），内容为 {{\"verdict\":\"pass\",\"reasons\":[]}} 或 {{\"verdict\":\"blocked\",\"reasons\":[\"具体阻塞项…\"]}}；结论为 blocked 时 reasons 必须给出可执行的修订意见，否则无法通过验收。"
+        )
+    } else {
+        String::new()
+    };
+    let rework_note = entry
+        .rework_feedback
+        .as_ref()
+        .map(|feedback| {
+            format!("\n上一轮结论为阻塞，本轮为返工修订。返工意见（请针对性修改）：{feedback}")
+        })
+        .unwrap_or_default();
+    Ok(format!(
+        "执行研究任务 {}。独立完成角色职责，读取声明的依赖产物，全部输出写入 {}（必须生成以下相对路径文件：{}），完成后调用 `orx research finish --file <json-path>` 登记验收。{}{}{}{}\n{}\n{}",
+        entry.spec.id,
+        store.research_root(study)?.display(),
+        entry.spec.outputs.join("、"),
+        existing_runs_note,
+        inputs_note,
+        verdict_note,
+        rework_note,
+        entry.spec.brief,
+        crate::local::research::task_role(store, entry)?
+    ))
+}
+
 pub(crate) fn dispatch_study_task_sync(
     store: &Store,
     study_id: &str,
@@ -129,25 +199,7 @@ pub(crate) fn dispatch_study_task_sync(
     let parent = store
         .get_chat_session(&study.session_id)?
         .ok_or_else(|| anyhow!("The current chat session no longer exists."))?;
-    let existing_runs_note = if entry.spec.role == "as-experiment-operator"
-        && !entry.run_ids.is_empty()
-    {
-        format!(
-                "\n注意：该任务的真实实验运行已完成（Run ID: {}），请勿重复执行 `orx exp run`；请直接读取已有运行日志与结果并生成上述声明产物文件。",
-                entry.run_ids.join(", ")
-            )
-    } else {
-        String::new()
-    };
-    let prompt = format!(
-        "执行研究任务 {}。独立完成角色职责，读取声明的依赖产物，全部输出写入 {}（必须生成以下相对路径文件：{}），完成后调用 `orx research finish --file <json-path>` 登记验收。{}\n{}\n{}",
-        task_id,
-        store.research_root(&study)?.display(),
-        entry.spec.outputs.join("、"),
-        existing_runs_note,
-        entry.spec.brief,
-        crate::local::research::task_role(store, entry)?
-    );
+    let prompt = task_dispatch_prompt(store, &study, entry)?;
     let harness = parent.harness.clone();
     let plan_permission =
         crate::local::harness::permission_id_for_mode(&harness, PermissionMode::Plan);
@@ -465,6 +517,17 @@ pub(crate) fn on_research_spawn_finished(
         return Ok(Some(ResearchWakeAction::RetireSilently));
     }
     let plan = study.plan()?;
+    // 结论阻塞触发自动返工时，让主理人及时知道返工已启动而不是静默等待。
+    if study
+        .task(&task_id)
+        .is_ok_and(|t| t.state == "pending" && t.rework_count > 0)
+    {
+        let task = study.task(&task_id)?;
+        return Ok(Some(ResearchWakeAction::WakeLead(format!(
+            "[orx 研究编排] 任务 `{task_id}` 的结论为阻塞，已自动启动第 {} 轮返工（上限 {} 轮）：直接上游及其下游已重置并携带修订意见重新派发。请等待返工完成；期间请勿修订计划或重复派发。",
+            task.rework_count, task.spec.max_rework
+        ))));
+    }
     let any_running = plan.tasks.iter().any(|t| t.state == "running") || !dispatched.is_empty();
     let any_failed = plan.tasks.iter().any(|t| t.state == "failed");
     if any_running && !any_failed {
@@ -509,6 +572,55 @@ fn research_wakeup_text(
             completed.len(),
             total,
             completed.join(", ")
+        ));
+    }
+    let awaiting: Vec<&str> = plan
+        .tasks
+        .iter()
+        .filter(|t| t.state == "completed" && t.spec.requires_approval)
+        .filter(|t| {
+            study
+                .task_gate_scope(&t.spec.id)
+                .ok()
+                .map(|scope| crate::store::research::digest(scope.as_bytes()))
+                .is_some_and(|hash| {
+                    !study.decisions.iter().any(|d| {
+                        d.version == plan.version
+                            && d.gate == crate::store::research::Study::task_gate_id(&t.spec.id)
+                            && d.scope_hash == hash
+                            && d.status == "approved"
+                    })
+                })
+        })
+        .map(|t| t.spec.id.as_str())
+        .collect();
+    if !awaiting.is_empty() {
+        return Ok(format!(
+            "[orx 研究编排] 任务 {} 已完成并通过产物验收，正在等待主理人在人工确认页批准任务确认后才会派发其下游任务（进度 {}/{}）。请向用户说明该任务的核心产出与批准影响，并提示其到研究面板处理；请勿擅自派发任务或修订计划。",
+            awaiting.join("、"),
+            completed.len(),
+            total
+        ));
+    }
+    let blocked: Vec<String> = plan
+        .tasks
+        .iter()
+        .filter(|t| {
+            t.state == "completed" && t.verdict.as_ref().is_some_and(|v| v.status == "blocked")
+        })
+        .map(|t| {
+            let reasons = t
+                .verdict
+                .as_ref()
+                .map(|v| v.reasons.join("；"))
+                .unwrap_or_default();
+            format!("{}（原因：{reasons}）", t.spec.id)
+        })
+        .collect();
+    if !blocked.is_empty() {
+        return Ok(format!(
+            "[orx 研究编排] 任务 {} 的结论为阻塞，其下游任务已暂停。请向用户转述阻塞原因，等待其决定：修订计划（对相关任务设置 forceRerun）后重新审阅，或接受当前结论；请勿擅自派发任务。",
+            blocked.join("；")
         ));
     }
     if completed.len() == total {
