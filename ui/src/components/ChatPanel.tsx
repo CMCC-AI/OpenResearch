@@ -34,7 +34,7 @@ import {
   getWorkspaceGeneration,
   getWorkspaceIdentity,
 } from "../queries/client";
-import { LOCAL_PREFIX, SHELL_TOOL } from "../queries/chatState";
+import { LOCAL_PREFIX } from "../queries/chatState";
 import { CancelledError, useInfiniteQuery, useMutation, useQueries, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatState } from "../queries/chatStore";
@@ -162,6 +162,8 @@ import { getLocale } from "../paraglide/runtime.js";
 import { activePath, forkPositions } from "../transcriptTree";
 import {
   splitTurnParts,
+  shellExchangePart,
+  pendingPlanForTurn,
   isUsageLimitPart,
   isModelAccessLimitPart,
   unreadAfterBusyChange,
@@ -3276,11 +3278,6 @@ function AssistantTurn({ message, parts, options }: {
   );
 }
 
-function shellExchangePart(message: ChatMessage): ChatPart | null {
-  const part = message.parts.length === 1 ? message.parts[0] : undefined;
-  return message.role === "user" && part?.type === "tool" && part.tool === SHELL_TOOL ? part : null;
-}
-
 /** A composer `!` command and what it printed: the user's own shell run, shown
  * where it happened on the branch. */
 function ShellExchangeCard({ part }: { part: ChatPart }) {
@@ -5186,23 +5183,7 @@ export function ChatPanel({
   // Nonce while the open session's title is mid-reveal; undefined = static.
   const activeTitleReveal = activeSession ? titleReveals.get(activeSession.id) : undefined;
 
-  // The newest unresolved plan prompt, if any — it drives the docked strip
-  // above the composer. Resolution re-emits the message over SSE, so this
-  // recomputes to null and the strip disappears on its own.
-  const pendingPlan = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      for (const part of messages[i].parts) {
-        if (part.type === "prompt" && part.prompt?.kind === "plan" && !part.prompt.resolved) {
-          return {
-            promptId: part.id,
-            plan: part.prompt.plan ?? "",
-            synthesized: !!part.prompt.synthesized,
-          };
-        }
-      }
-    }
-    return null;
-  }, [messages]);
+  const pendingPlan = useMemo(() => pendingPlanForTurn(messages), [messages]);
 
   // Native questions own the composer only while their turn is still running.
   const pendingQuestion = useMemo(
