@@ -9,14 +9,13 @@ import { gunzipSync } from 'node:zlib'
 import { prepareSourceRelease, canonicalGzipHeader } from './source-release.mjs'
 import { Readable } from 'node:stream'
 
-async function fixture(t) {
+async function fixture(t, version = '0.2.22-mobilesci.1') {
   const base = await mkdtemp(join(tmpdir(), 'mobilesci-source-release-'))
   t.after(() => rm(base, { recursive: true, force: true }))
   const root = join(base, 'repo')
   await mkdir(join(root, 'release-notes'), { recursive: true })
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim()
   git('init', '-q')
-  const version = '0.2.22-mobilesci.1'
   await writeFile(join(root, 'Cargo.toml'), `[package]\nname = "openresearch-cli"\nversion = "${version}"\n`)
   await writeFile(join(root, 'Cargo.lock'), `[[package]]\nname = "openresearch-cli"\nversion = "${version}"\n`)
   await writeFile(join(root, 'product-upstream.json'), JSON.stringify({
@@ -96,4 +95,18 @@ test('gzip producer OS metadata is normalized even across split headers', async 
   assert.equal(mac[9], 255)
   assert.deepEqual(mac.subarray(10), fixture.subarray(10))
   await assert.rejects(async () => { for await (const _ of Readable.from([Buffer.from('short')]).pipe(canonicalGzipHeader())) {} }, /Truncated/)
+})
+
+
+test('numeric product hotfix versions produce archives while unsupported suffixes stay rejected', async t => {
+  const { base, root, version, revision } = await fixture(t, '0.2.22-mobilesci.1.1')
+  const manifest = await prepareSourceRelease(root, join(base, 'hotfix'), revision)
+  assert.equal(manifest.version, version)
+  assert.equal(manifest.tag, `v${version}`)
+  const tar = gunzipSync(await readFile(join(base, 'hotfix', manifest.artifacts[0])))
+  assert.ok(tar.includes(Buffer.from(`MobileSci-${version}/Cargo.toml`)))
+  for (const invalid of ['0.2.22-mobilesci.1.fix', '0.2.22-mobilesci.1.1.1']) {
+    const fixtureInvalid = await fixture(t, invalid)
+    await assert.rejects(prepareSourceRelease(fixtureInvalid.root, join(fixtureInvalid.base, 'invalid'), fixtureInvalid.revision), /Expected a MobileSci product version/)
+  }
 })

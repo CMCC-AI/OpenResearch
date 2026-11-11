@@ -1,6 +1,44 @@
-import { readFile, writeFile, mkdir, rename, stat } from "node:fs/promises";
+import {
+  readFile,
+  writeFile,
+  mkdir,
+  rename,
+  lstat,
+  readdir,
+  link,
+  unlink,
+} from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+
+const migrationRequired = () =>
+  new Error(
+    "Quota mode requires a fresh or explicitly migrated executor HOME; existing credentials were preserved",
+  );
+async function entry(path) {
+  return lstat(path).catch((error) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+}
+async function freshHome(home) {
+  const parent = await entry(join(home, ".config"));
+  if (parent && !parent.isDirectory()) throw migrationRequired();
+  const directory = join(home, ".config/opencode");
+  const existing = await entry(directory);
+  // Fresh Docker volumes inherit this empty directory from the image.
+  // Symlinks and any existing contents still require explicit migration.
+  if (
+    existing &&
+    (!existing.isDirectory() || (await readdir(directory)).length)
+  )
+    throw migrationRequired();
+  for (const path of [
+    ".local/share/opencode/auth.json",
+    ".local/share/opencode/.auth",
+  ])
+    if (await entry(join(home, path))) throw migrationRequired();
+}
 
 // Never delete old credentials as a side effect of enabling quotas.
 // An existing executor must be explicitly migrated before opting in.
@@ -11,29 +49,14 @@ export async function prepareQuotaExecutor({
   fetcher = fetch,
 }) {
   const marker = join(home, ".quota-model-config");
+  const markerEntry = await entry(marker);
+  if (markerEntry && !markerEntry.isFile()) throw migrationRequired();
   const managed = await readFile(marker, "utf8").then(
     (v) => v === "v1\n",
     () => false,
   );
-  if (!managed)
-    for (const path of [
-      ".config/opencode",
-      ".local/share/opencode/auth.json",
-      ".local/share/opencode/.auth",
-    ]) {
-      if (
-        await stat(join(home, path)).then(
-          () => true,
-          (err) => {
-            if (err.code === "ENOENT") return false;
-            throw err;
-          },
-        )
-      )
-        throw new Error(
-          "Quota mode requires a fresh or explicitly migrated executor HOME; existing credentials were preserved",
-        );
-    }
+  if (markerEntry && !managed) throw migrationRequired();
+  if (!managed) await freshHome(home);
   const origin = new URL(base);
   if (
     !["http:", "https:"].includes(origin.protocol) ||
@@ -86,12 +109,24 @@ export async function prepareQuotaExecutor({
   }
   const directory = join(home, ".config/opencode");
   await mkdir(directory, { recursive: true, mode: 0o700 });
+  if (!managed) await freshHome(home);
   const target = join(directory, "opencode.json"),
     temporary = target + "." + randomUUID() + ".tmp";
   await writeFile(temporary, JSON.stringify(config) + "\n", {
     mode: 0o600,
     flag: "wx",
   });
-  await rename(temporary, target);
-  await writeFile(marker, "v1\n", { mode: 0o600 });
+  try {
+    if (managed) await rename(temporary, target);
+    else {
+      // Exclusive installation cannot replace credentials created concurrently.
+      await link(temporary, target);
+      await unlink(temporary);
+      await writeFile(marker, "v1\n", { mode: 0o600, flag: "wx" });
+    }
+  } finally {
+    await unlink(temporary).catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+  }
 }
