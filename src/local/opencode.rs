@@ -1168,14 +1168,8 @@ mod tests {
         .unwrap();
         assert!(config["permission"].get("question").is_none());
         assert!(config.get("tools").is_none());
-        assert_eq!(
-            config["agent"]["build"]["prompt"],
-            MOBILESCI_AGENT_PROMPT
-        );
-        assert_eq!(
-            config["agent"]["plan"]["prompt"],
-            MOBILESCI_AGENT_PROMPT
-        );
+        assert_eq!(config["agent"]["build"]["prompt"], MOBILESCI_AGENT_PROMPT);
+        assert_eq!(config["agent"]["plan"]["prompt"], MOBILESCI_AGENT_PROMPT);
         assert_eq!(config["permission"]["read"], "allow");
         assert_eq!(config["model"], "cloud/selected");
         assert_eq!(config["instructions"], json!(["playbook"]));

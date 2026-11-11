@@ -283,6 +283,66 @@ try {
     [],
     "account settings and administration must never wake an executor",
   );
+  // Load a real project into the workspace cache, then switch through all
+  // personal tabs. Passive tabs must retain navigation without refreshing projects.
+  const cached = await normal.newPage();
+  const executorReads = [];
+  const sidebarReads = () => executorReads.filter((path) => path.startsWith("/api/projects") || path.startsWith("/api/chat"));
+  cached.on("pageerror", (e) => errors.push(e.message));
+  await cached.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/platform/personal-space")
+      return route.fulfill({ json: { status: "ready", online: true } });
+    if (path.startsWith("/api/platform/")) return route.continue();
+    executorReads.push(path);
+    const fixtures = {
+      "/api/projects": { projects: [{ id: "cached-project", name: "Cached research project", repoPath: "/research", updatedAt: 1 }] },
+      "/api/projects/activity": { activity: [] },
+      "/api/chat/sessions": { sessions: [] },
+    };
+    return path in fixtures
+      ? route.fulfill({ json: fixtures[path] })
+      : route.fulfill({ status: 503, json: { error: "synthetic unavailable settings" } });
+  });
+  await cached.goto(origin + "/mobilesci/settings/settings");
+  await cached.getByLabel("项目 Cached research project", { exact: true }).waitFor();
+  const navBox = await cached.getByRole("navigation", { name: "设置导航" }).boundingBox();
+  await cached.locator(".settings-stack").waitFor();
+  await cached.waitForLoadState("networkidle");
+  for (const label of ["账户与安全", "Token 额度", "工作区设置"]) {
+    await cached.getByRole("navigation", { name: "设置导航" }).getByRole("link", { name: label, exact: true }).click();
+    await cached.waitForURL(`**/settings/${label === "账户与安全" ? "account" : label === "Token 额度" ? "quota" : "settings"}`);
+    if (label !== "工作区设置") await cached.locator(".settings-stack").waitFor({ state: "detached" });
+    await cached.getByRole("heading", { name: "个人设置", exact: true }).waitFor();
+    await cached.getByLabel("项目 Cached research project", { exact: true }).waitFor();
+    const box = await cached.getByRole("navigation", { name: "设置导航" }).boundingBox();
+    assert.equal(box.x, navBox.x);
+    assert.equal(box.y, navBox.y);
+    assert.equal(box.width, navBox.width);
+    assert.equal(await cached.getByText("登录后查看研究项目", { exact: true }).count(), 0);
+    if (label !== "工作区设置") {
+      await cached.waitForLoadState("networkidle");
+      const reads = sidebarReads();
+      // Refocusing also exercises disabled-query refetch behavior.
+      await cached.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await cached.waitForTimeout(150);
+      assert.deepEqual(sidebarReads(), reads, "passive tabs must not refresh project/session data");
+    }
+  }
+  await cached.screenshot({ path: fileURLToPath(new URL("settings-cached-wide.png", artifacts)), fullPage: true });
+  for (const width of [760, 390]) {
+    await cached.setViewportSize({ width, height: 844 });
+    let previous;
+    for (const label of ["账户与安全", "Token 额度", "工作区设置"]) {
+      await cached.getByRole("navigation", { name: "设置导航" }).getByRole("link", { name: label, exact: true }).click();
+      const box = await cached.getByRole("navigation", { name: "设置导航" }).boundingBox();
+      if (previous) assert.deepEqual(box, previous, "settings navigation must align at every viewport");
+      previous = box;
+      assert.ok(await cached.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    }
+    await cached.screenshot({ path: fileURLToPath(new URL(`settings-cached-${width}.png`, artifacts)), fullPage: true });
+  }
+  await cached.close();
   assert.deepEqual(errors, []);
   await writeFile(
     new URL("proof.json", artifacts),

@@ -52,12 +52,13 @@ test("workspace settings render with no project and retain compute history navig
       "../RemoteRuntime": { useRuntime: () => ({ kind: "local" }) },
       "../workspaceState": { isSettingsSection: () => true },
       "../paraglide/messages.js": { m: { settings_page_compute: () => "Compute", settings_page_settings: () => "Settings" } },
-      "./PersonalSettingsPage": { PersonalSettingsNav: () => null },
+      "./PersonalSettingsPage": { PersonalSettingsFrame: ({ children }) => React.createElement("main", { "aria-label": "个人设置" }, children) },
       "./AuthSession": { useOptionalAuthSession: () => ({ user: { id: "user" } }) },
       "./ProductNav": { PlatformFrame: ({ children }) => children },
     });
     assert.match(renderToStaticMarkup(React.createElement(WorkspaceSettingsPage)), new RegExp(tab));
     assert.equal(settings.project, null);
+    assert.equal(settings.embedded, tab === "settings");
     settings.onSelectTab("instances");
     assert.deepEqual(navigation, { to: "/settings/$tab", params: { tab: "instances" } });
   }
