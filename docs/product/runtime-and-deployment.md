@@ -45,6 +45,10 @@
 
 临时目录 `/tmp/opencode` 曾被构建时的 root 进程创建为 `0755`，使 UID 1000 的 Agent 无法写入。镜像在 root 安装完成后执行 `orx-prepare-executor`，将该目录及已有构建缓存归属设为 `1000:1000`，目录权限设为 `0700`；运行进程仍为非 root。其他临时脚本优先放在 worktree 或 `mktemp -d` 创建的目录。
 
+同样检查 `/home/node/.npm`：历史 HOME 卷可能保留 root 所有的 npm 缓存，导致 OpenCode 安装 `@opencode-ai/plugin` 时出现 `EACCES` 并阻塞初始化。`orx-prepare-executor` 同时规范 npm 缓存归属，`orx-check-executor-tools` 以 UID 1000 验证写入权限。镜像构建不能覆盖已有 HOME 卷；部署修复须先备份并核实空闲，再对存量卷执行同一准备步骤。只处理缓存，不递归更改整个 HOME 的权限。
+
+2026-11-11 已上线 `9ddca788` 的设置页与缓存修复：平台静态资源、4 个现用私人执行器、provisioner 的未来镜像引用及持久化 Compose 已同步。备份及成功回执位于服务器 `/opt/mobilesci/backups/settings-cache-20261111t015948z/`，静态资源和 OpenCode 验收位于 `/opt/mobilesci/staging/settings-cache-9ddca788/`。原报错用户完成插件依赖安装后，独立进程约 3 秒就绪、有效 Agent 配置约 206 毫秒返回，title/compaction 均匹配 `moonshotai-cn/kimi-k2.6`；未发送模型请求，原有 4 笔待确认预占与已用量保持不变。切换前的失败尝试均已自动回滚；健康探针须携带配置的 Host，执行器启动须在平台与网关就绪之后，因为额度配置通过网关获取。
+
 每次镜像构建以 UID 1000 执行 `orx-check-executor-tools`，检查预装库导入、临时脚本写入、Python venv/pip 和 uv 离线建环境，并以合成 PDF 验证真实 Poppler 的分页、越界页、损坏/图片页及失败恢复。部署后也可运行：
 
 ```bash
@@ -76,6 +80,8 @@ OpenCode、Claude 和 Codex 共用闲置策略。有效内存不超过 8 GiB 时
 “断开此供应商”清空共享配置中的 API Key、通过官方认证 API 删除配置服务中的登录凭据，并将供应商加入 `disabled_providers`，防止执行器环境变量或历史认证 seed 再次启用它；指向它的默认模型及小模型同时清空。此操作不撤销供应商平台签发的密钥，且不会中断正在使用旧配置的会话。重新填写密钥并保存会解除禁用；新启动的 OpenCode 进程读取新配置。其他供应商保持原配置。
 
 2026-11-02 服务器接入验收：`moonshotai-cn/kimi-k2.6` 与 `research-relay/deepseek-v4-flash-0731` 均通过实际 OpenCode 调用，默认使用后者。Kimi 密钥在 Coding 接口返回 401，在 Moonshot 中国接口可用；中转站不提供 `deepseekv4-flash`，必须使用目录中的精确 ID。该服务器的 WireGuard `~.` DNS 路由导致 Kimi 解析超时，已通过 `mobilesci-kimi-dns.service` 仅将 `moonshot.cn` 交由 eth0 原有云 DNS 解析；未改动 VPN 默认路由。平台增量镜像及 Compose、模型配置、静态资源回滚备份保存在服务器 `/opt/mobilesci/patches/model-access-20261102/`，其中模型配置备份含凭据，禁止公开。
+
+2026-11-11 经用户授权修复 DNS 并移除失败入口：`api.moonshot.cn` 的 CNAME 为 `rp68jmko8a6qpuee.aliyunddos1022.com`，原规则未覆盖别名，其 AAAA 查询走回 WireGuard DNS 并超时。`mobilesci-kimi-dns.service` 现同时将 `~moonshot.cn` 与该精确别名交由 eth0 解析，保留原云 DNS `183.60.83.19/183.60.82.98` 和 VPN 默认路由；重启服务后国内模型目录返回 200。若供应商更换 CNAME，需复核并更新对应精确规则。同一 Key 在 `api.kimi.com/coding/v1/models` 返回 401，在 `api.moonshot.cn/v1/models` 返回 200，故从平台有效模型清单移除 `kimi-code-plan-cn/k3`，保留国内 `moonshotai-cn/kimi-k2.6` 及其他供应商。备份、原模型配置和修复回执位于 `/opt/mobilesci/backups/kimi-dns-20261111t032906z/`；模型配置备份含凭据，禁止公开。验证未调用模型生成，也未变更待确认额度。
 
 ## 注册用户 token 月额度
 

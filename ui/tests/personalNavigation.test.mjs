@@ -234,7 +234,12 @@ test("the real home SessionRow opens the personal session with its saved pane",a
   });
   globalThis.fetch=async()=>Response.json({version:1,tasks:{s:{active:{kind:"side",sessionId:"own-side"}}}});
   try{
-    renderToStaticMarkup(React.createElement(ResearchProjectNavigation,{enabled:true}));assert.equal(typeof open,"function");
+    for (const enabled of [true, false]) {
+      const html = renderToStaticMarkup(React.createElement(ResearchProjectNavigation, { enabled }));
+      assert.match(html, /Personal session/, "cached sessions remain visible on passive settings pages");
+      assert.doesNotMatch(html, /登录后查看研究项目/);
+    }
+    assert.equal(typeof open,"function");
     open();await settleNavigation();assert.deepEqual(routes,[{href:workspace.taskLocation("source","s",{kind:"side",sessionId:"own-side"})}]);
     assert.equal(routes[0].href.startsWith("/projects/"),true);
   }finally{n.cleanup();globalThis.fetch=originalFetch;f.cleanup();}

@@ -3783,8 +3783,10 @@ export function SettingsView({
   onProjectUpdate,
   onSelectTab,
   remote = false,
+  embedded = false,
 }: {
   tab: Tab;
+  embedded?: boolean;
   project: Project | null;
   onProjectUpdate: (project: Project) => void;
   onSelectTab: (tab: Tab) => void;
@@ -3813,10 +3815,10 @@ export function SettingsView({
   if (!isAvailableSettingsTab(tab)) return <p role="alert" className="p-6 text-subtext">该配置页面暂不开放。</p>;
 
   return (
-    <div className="settings-view max-w-readable my-0 mx-auto pt-6 px-8 pb-15 [&_h1]:mt-0 [&_h1]:mx-0 [&_h1]:mb-1.5 [&_h1]:text-3xl [&_>_.error]:text-accent-red [&_>_.error]:text-base [&_>_.error]:whitespace-pre-wrap [&_>_.error]:mt-0 [&_>_.error]:mx-0 [&_>_.error]:mb-3">
+    <div className={`settings-view ${embedded ? "min-w-0" : "max-w-readable my-0 mx-auto pt-6 px-8 pb-15"} [&_h1]:mt-0 [&_h1]:mx-0 [&_h1]:mb-1.5 [&_h1]:text-3xl [&_>_.error]:text-accent-red [&_>_.error]:text-base [&_>_.error]:whitespace-pre-wrap [&_>_.error]:mt-0 [&_>_.error]:mx-0 [&_>_.error]:mb-3`}>
       {showsSettings && (
         <>
-          <h1>{m.settings_page_settings()}</h1>
+          {!embedded && <h1>{m.settings_page_settings()}</h1>}
           <div className="settings-stack mt-4.5">
             <section className={SETTINGS_STACK_SECTION_CLASS_NAME}>
               <AppearanceTab />

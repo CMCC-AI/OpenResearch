@@ -1,7 +1,7 @@
 import { useCasesBase } from "./FeaturedCases";
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import { Button } from "../components/ui";
 import { useAuthSession } from "./AuthSession";
 import { PlatformFrame } from "./ProductNav";
@@ -199,11 +199,25 @@ function PersonalQuota() {
             每月按上海时间重置，余额不累积；仅计入平台提供的模型。在途请求按发起月份结算。
           </p>
           <p className="mt-2 text-sm text-subtext">
-            请求先按模型上下文和输出上限预占，结束后按实际用量退回差额。余额不足预占时也会拒绝请求，可选择上限较小的模型或联系管理员。
+            “在途及待确认”是尚未结算的预占额度，包括执行中的请求，以及断流、超时后未取得用量回执的请求，并非已用量。请求先按模型上下文和输出上限预占，取得实际用量后退回差额；未确认的请求需核实后补账。余额不足预占时也会拒绝请求，可选择上限较小的模型或联系管理员。
           </p>
         </>
       )}
     </section>
+  );
+}
+
+export function PersonalSettingsFrame({ children }: { children: ReactNode }) {
+  return (
+    <PlatformFrame title="个人设置">
+      <main className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+        <div className="mx-auto flex max-w-2xl flex-col gap-5">
+          <h1 className="m-0 text-2xl font-semibold">个人设置</h1>
+          <PersonalSettingsNav />
+          {children}
+        </div>
+      </main>
+    </PlatformFrame>
   );
 }
 
@@ -213,14 +227,8 @@ export function PersonalSettingsPage({
   section: "account" | "quota";
 }) {
   return (
-    <PlatformFrame title="个人设置">
-      <main className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
-        <div className="mx-auto flex max-w-2xl flex-col gap-5">
-          <h1 className="text-2xl font-semibold">个人设置</h1>
-          <PersonalSettingsNav />
-          {section === "account" ? <AccountSecurity /> : <PersonalQuota />}
-        </div>
-      </main>
-    </PlatformFrame>
+    <PersonalSettingsFrame>
+      {section === "account" ? <AccountSecurity /> : <PersonalQuota />}
+    </PersonalSettingsFrame>
   );
 }
