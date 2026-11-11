@@ -47,6 +47,8 @@
 
 同样检查 `/home/node/.npm`：历史 HOME 卷可能保留 root 所有的 npm 缓存，导致 OpenCode 安装 `@opencode-ai/plugin` 时出现 `EACCES` 并阻塞初始化。`orx-prepare-executor` 同时规范 npm 缓存归属，`orx-check-executor-tools` 以 UID 1000 验证写入权限。镜像构建不能覆盖已有 HOME 卷；部署修复须先备份并核实空闲，再对存量卷执行同一准备步骤。只处理缓存，不递归更改整个 HOME 的权限。
 
+2026-11-11 已上线 `9ddca788` 的设置页与缓存修复：平台静态资源、4 个现用私人执行器、provisioner 的未来镜像引用及持久化 Compose 已同步。备份及成功回执位于服务器 `/opt/mobilesci/backups/settings-cache-20261111t015948z/`，静态资源和 OpenCode 验收位于 `/opt/mobilesci/staging/settings-cache-9ddca788/`。原报错用户完成插件依赖安装后，独立进程约 3 秒就绪、有效 Agent 配置约 206 毫秒返回，title/compaction 均匹配 `moonshotai-cn/kimi-k2.6`；未发送模型请求，原有 4 笔待确认预占与已用量保持不变。切换前的失败尝试均已自动回滚；健康探针须携带配置的 Host，执行器启动须在平台与网关就绪之后，因为额度配置通过网关获取。
+
 每次镜像构建以 UID 1000 执行 `orx-check-executor-tools`，检查预装库导入、临时脚本写入、Python venv/pip 和 uv 离线建环境，并以合成 PDF 验证真实 Poppler 的分页、越界页、损坏/图片页及失败恢复。部署后也可运行：
 
 ```bash
