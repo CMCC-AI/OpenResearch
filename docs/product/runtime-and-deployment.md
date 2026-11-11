@@ -81,6 +81,8 @@ OpenCode、Claude 和 Codex 共用闲置策略。有效内存不超过 8 GiB 时
 
 2026-11-02 服务器接入验收：`moonshotai-cn/kimi-k2.6` 与 `research-relay/deepseek-v4-flash-0731` 均通过实际 OpenCode 调用，默认使用后者。Kimi 密钥在 Coding 接口返回 401，在 Moonshot 中国接口可用；中转站不提供 `deepseekv4-flash`，必须使用目录中的精确 ID。该服务器的 WireGuard `~.` DNS 路由导致 Kimi 解析超时，已通过 `mobilesci-kimi-dns.service` 仅将 `moonshot.cn` 交由 eth0 原有云 DNS 解析；未改动 VPN 默认路由。平台增量镜像及 Compose、模型配置、静态资源回滚备份保存在服务器 `/opt/mobilesci/patches/model-access-20261102/`，其中模型配置备份含凭据，禁止公开。
 
+2026-11-11 经用户授权修复 DNS 并移除失败入口：`api.moonshot.cn` 的 CNAME 为 `rp68jmko8a6qpuee.aliyunddos1022.com`，原规则未覆盖别名，其 AAAA 查询走回 WireGuard DNS 并超时。`mobilesci-kimi-dns.service` 现同时将 `~moonshot.cn` 与该精确别名交由 eth0 解析，保留原云 DNS `183.60.83.19/183.60.82.98` 和 VPN 默认路由；重启服务后国内模型目录返回 200。若供应商更换 CNAME，需复核并更新对应精确规则。同一 Key 在 `api.kimi.com/coding/v1/models` 返回 401，在 `api.moonshot.cn/v1/models` 返回 200，故从平台有效模型清单移除 `kimi-code-plan-cn/k3`，保留国内 `moonshotai-cn/kimi-k2.6` 及其他供应商。备份、原模型配置和修复回执位于 `/opt/mobilesci/backups/kimi-dns-20261111t032906z/`；模型配置备份含凭据，禁止公开。验证未调用模型生成，也未变更待确认额度。
+
 ## 注册用户 token 月额度
 
 平台模型的用户级月额度见[配置与实施边界](user-token-quotas.md)：默认每月 200 万、管理员逐用户设置、上海自然月重置。源码默认关闭；当前 MobileSci 私人托管实例已完成迁移并启用，平台默认每月 200 万。真实 Key 不挂入用户执行器，历史外部副本须确认范围后再评估轮换，不能擅自停用共享凭据。个人设置和额度由账户服务提供，查看这些页面不唤醒科研执行器。当前运行时升级与发行门禁见[`.7` 计划](release-v0.2.23-mobilesci.7-plan.md)。
