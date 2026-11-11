@@ -1,0 +1,35 @@
+{
+  "revision": "47571b04bb074703f43764d7387f98c218f2b88b",
+  "tag": "v0.2.23-mobilesci.7.1",
+  "releaseCiRun": 42999983526,
+  "releaseCiConclusion": "success",
+  "published": true,
+  "publishedAt": "2026-11-11T10:20:33Z",
+  "tagCommitVerified": true,
+  "prCiRun": 42997046673,
+  "prCiConclusion": "success",
+  "sourceAttachmentsVerified": true,
+  "assets": [
+    {
+      "name": "MobileSci-0.2.23-mobilesci.7.1.tar.gz",
+      "sha256": "d8c6f7052514a2947295b93d2c3d17cce92939a2c683eea8666068770fac9359",
+      "matchesLocalRebuild": true
+    },
+    {
+      "name": "MobileSci-0.2.23-mobilesci.7.1.zip",
+      "sha256": "027917dc1c4f90b6d6849f5e7373aecdee9467e258de3081bccb535565f3ef64",
+      "matchesLocalRebuild": true
+    },
+    {
+      "name": "SHA256SUMS",
+      "sha256": "ac4691f685c24c6540fd76471f58cb7beebd8397c049d64d543c2b7d36777641",
+      "matchesLocalRebuild": true
+    },
+    {
+      "name": "source-release.json",
+      "sha256": "03d490e762df40a51fb0e9159ab40a7125909b618d70f86f7e73c857de42c2a8",
+      "matchesLocalRebuild": true
+    }
+  ],
+  "verifiedAt": "2026-11-11T10:21:33.747793+00:00"
+}

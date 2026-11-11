@@ -1,0 +1,34 @@
+{
+  "revision": "47571b04bb074703f43764d7387f98c218f2b88b",
+  "actualProductionDataOpenedWithCandidateCli": true,
+  "executorsVerified": 4,
+  "integrityAndForeignKeys": true,
+  "modelsCalled": false,
+  "experimentsStarted": false,
+  "checks": [
+    {
+      "executor": "orx-managed-0530872b-9889-46c5-b2bd-cc228ab0cf28",
+      "projectsReturned": 0,
+      "allExistingRowsPreserved": true,
+      "matchesFreshPreCutoverBackup": true
+    },
+    {
+      "executor": "orx-managed-76ab2832-1a72-4a2d-bcfc-12f65565a14b",
+      "projectsReturned": 6,
+      "allExistingRowsPreserved": true,
+      "matchesFreshPreCutoverBackup": true
+    },
+    {
+      "executor": "orx-managed-9dc6ff5b-91fb-413e-b335-c15f07cffaca",
+      "projectsReturned": 1,
+      "allExistingRowsPreserved": true,
+      "matchesFreshPreCutoverBackup": true
+    },
+    {
+      "executor": "orx-managed-d07040f0-0368-4793-b65d-d383b4e62e8c",
+      "projectsReturned": 1,
+      "allExistingRowsPreserved": true,
+      "matchesFreshPreCutoverBackup": true
+    }
+  ]
+}
