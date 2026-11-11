@@ -446,7 +446,7 @@ test(
         "known provider rejection releases reservation without leaking provider errors",
         async () => {
           const result = await call("reject");
-          assert.equal(result.status, 502);
+          assert.equal(result.status, 424);
           assert.ok(!JSON.stringify(result.data).includes("UPSTREAM_KEY"));
           assert.equal((await q.balance(user)).reserved, 0);
         },
@@ -455,7 +455,7 @@ test(
         "redirects are not followed; uncertain requests remain reserved",
         async () => {
           const result = await call("redirect");
-          assert.equal(result.status, 500); // transport failure is sanitized by the platform
+          assert.equal(result.status, 424); // uncertain failures must not trigger automatic retries
           const pending = (await q.requests(user)).find(
             (r) => r.state === "pending",
           );

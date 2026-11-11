@@ -232,7 +232,28 @@ export function publicModelConfig(models, base, secret) {
     provider: Object.fromEntries(groups),
   };
 }
-export function modelGateway({ pool, quota, settings, limit }) {
+function connectionNotEstablished(error) {
+  const safe = new Set([
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "ECONNREFUSED",
+    "ENETUNREACH",
+    "EHOSTUNREACH",
+    "UND_ERR_CONNECT_TIMEOUT",
+  ]);
+  const cause = error?.cause;
+  if (Array.isArray(cause?.errors) && cause.errors.length)
+    return cause.errors.every((item) => safe.has(item?.code));
+  return safe.has(cause?.code);
+}
+
+export function modelGateway({
+  pool,
+  quota,
+  settings,
+  limit,
+  fetcher = fetch,
+}) {
   async function identity(req) {
     check(!req.headers.origin, 403, "模型网关不接受浏览器来源");
     const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(
@@ -380,7 +401,7 @@ export function modelGateway({ pool, quota, settings, limit }) {
           "user-agent",
           req.headers["user-agent"] || "MobileSci-Quota",
         );
-      const upstream = await fetch(
+      const upstream = await fetcher(
         `${model.baseUrl.replace(/\/$/, "")}/chat/completions`,
         {
           method: "POST",
@@ -389,7 +410,29 @@ export function modelGateway({ pool, quota, settings, limit }) {
           body: JSON.stringify(payload),
           signal: AbortSignal.any([abort.signal, AbortSignal.timeout(180000)]),
         },
-      );
+      ).catch(async (error) => {
+        // These errors prove that no upstream connection was established.
+        // Resets, body/header timeouts and client cancellation do not.
+        if (connectionNotEstablished(error)) {
+          await quota.settle(request, 0, null, "connection_not_established");
+          settled = true;
+        }
+        console.warn(
+          "Model gateway connection failed",
+          JSON.stringify({
+            request,
+            model: model.id,
+            code: error?.cause?.code || "unknown",
+            connected: settled ? false : "unconfirmed",
+          }),
+        );
+        throw new HttpError(
+          424,
+          settled
+            ? `模型连接未建立，本次预占已释放。请稍后重试。请求标识：${request}`
+            : `模型连接中断，用量待确认，请勿连续重试。请求标识：${request}`,
+        );
+      });
       await quota.upstream(
         request,
         upstream.headers.get("x-request-id") ||
@@ -402,7 +445,7 @@ export function modelGateway({ pool, quota, settings, limit }) {
           settled = true;
         }
         throw new HttpError(
-          502,
+          424,
           "上游模型拒绝请求，请联系管理员并提供配额请求标识",
         );
       }
@@ -481,6 +524,13 @@ export function modelGateway({ pool, quota, settings, limit }) {
         res.end();
       }
       return true;
+    } catch (error) {
+      if (!settled && !res.headersSent && error.status !== 424)
+        throw new HttpError(
+          424,
+          `模型请求未完成，用量待确认，请勿连续重试。请求标识：${request}`,
+        );
+      throw error;
     } finally {
       res.removeListener("close", close);
       if (!settled) await quota.pending(request, "usage_unconfirmed");
