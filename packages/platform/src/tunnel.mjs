@@ -17,6 +17,17 @@ export function requestBodyLimit(method, path) {
     ? MAX_MATERIAL_UPLOAD
     : MAX_BODY;
 }
+// File previews and case exports allow the same 128 MiB artifact limit.
+// Ordinary JSON responses retain their independent 64 MiB bound.
+export function responseBodyLimit(method, path) {
+  const pathname = new URL(path, "http://localhost").pathname;
+  return ["GET", "HEAD"].includes(method) &&
+    /^\/api\/(?:projects\/[^/]+\/(?:files\/file|file\/raw)|files\/abs\/raw|chat\/attachments\/[^/]+|materials\/[^/]+\/[^/]+\/download|research\/studies\/[^/]+\/package)$/.test(
+      pathname,
+    )
+    ? 128 * 1024 * 1024
+    : 64 * 1024 * 1024;
+}
 export function send(ws, message) {
   if (
     ws.readyState !== WebSocket.OPEN ||
@@ -105,6 +116,8 @@ export class Tunnel {
     let count = 0;
     let started = false;
     let stream = false;
+    let flowControlled = false;
+    let sequence = 0;
     let id;
     let timeout;
     let recheck;
@@ -123,6 +136,7 @@ export class Tunnel {
     id = this.open(
       {
         type: "http",
+        flowControl: "ack-v1",
         path: req.url,
         method: req.method,
         headers: {
@@ -144,6 +158,7 @@ export class Tunnel {
                 msg.status <= 599,
             );
             started = true;
+            flowControlled = msg.flowControl === "ack-v1";
             stream = (msg.headers?.["content-type"] || "").includes(
               "text/event-stream",
             );
@@ -171,9 +186,27 @@ export class Tunnel {
             check(started);
             const chunk = decoded(msg.body);
             count += chunk.length;
-            check(stream || count <= 64 * 1024 * 1024);
+            check(stream || count <= responseBodyLimit(req.method, req.url));
             if (res.writableLength > MAX_BODY) return fail();
-            res.write(chunk);
+            if (!stream) timeout.refresh();
+            if (flowControlled) {
+              check(msg.sequence === sequence++);
+              // Acknowledge only once the downstream socket accepts the bytes.
+              // Pausing the runner keeps slow readers from filling this process.
+              res.write(chunk, (error) => {
+                if (error) return fail();
+                if (!this.pending.has(id)) return;
+                try {
+                  send(this.ws, {
+                    type: "http-ack",
+                    id,
+                    sequence: msg.sequence,
+                  });
+                } catch {
+                  fail();
+                }
+              });
+            } else res.write(chunk);
           } else if (msg.type === "end") {
             res.end();
             cleanup();
