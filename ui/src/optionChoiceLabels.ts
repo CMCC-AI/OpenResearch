@@ -57,4 +57,3 @@ export function localizeOptionChoices(choices: OptionChoice[]): OptionChoice[] {
     ...(choice.description ? { description: translate(choice.description) } : {}),
   }));
 }
-
