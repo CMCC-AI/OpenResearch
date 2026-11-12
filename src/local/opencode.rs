@@ -515,12 +515,23 @@ async fn spawn_agent(
 }
 
 pub(crate) async fn verify_generation_models(endpoint: &AgentEndpoint, model: &str) -> Result<()> {
+    verify_generation_models_with_timeout(endpoint, model, Duration::from_secs(120)).await
+}
+
+async fn verify_generation_models_with_timeout(
+    endpoint: &AgentEndpoint,
+    model: &str,
+    initialization_timeout: Duration,
+) -> Result<()> {
     let path = match endpoint.protocol {
         Protocol::V1 => "/agent",
         Protocol::V2 => "/api/agent",
     };
+    let started = Instant::now();
     let mut mismatch = None;
-    tokio::time::timeout(Duration::from_secs(30), async {
+    let mut mismatch_since = None;
+    eprintln!("OpenCode: waiting for effective agent configuration ({path})");
+    tokio::time::timeout(initialization_timeout, async {
         loop {
             let response: Value = endpoint.client.get(format!("{}{path}", endpoint.base_url))
                 .send().await?.error_for_status()?.json().await?;
@@ -548,13 +559,20 @@ pub(crate) async fn verify_generation_models(endpoint: &AgentEndpoint, model: &s
                 }
             }
             if mismatch.is_none() {
+                eprintln!("OpenCode: agent configuration ready after {} ms", started.elapsed().as_millis());
                 return Ok(());
+            }
+            // A responsive configuration with the wrong model is a separate
+            // failure from cold-start dependency installation.
+            let since = mismatch_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= Duration::from_secs(30) {
+                return Err(anyhow!("OpenCode's effective {} model does not match the selected model. Check managed OpenCode settings.", mismatch.unwrap()));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }).await.map_err(|_| match mismatch {
         Some(name) => anyhow!("OpenCode's effective {name} model does not match the selected model. Check managed OpenCode settings."),
-        None => anyhow!("OpenCode agent configuration timed out"),
+        None => anyhow!("OpenCode agent configuration timed out after {} seconds during workspace initialization; check agent-opencode.log for dependency installation, cache permissions, or network failures", initialization_timeout.as_secs()),
     })?
 }
 
@@ -1606,6 +1624,53 @@ mod tests {
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_configuration_waits_for_workspace_and_bounds_stalls() {
+        use axum::{routing::get, Json, Router};
+        for protocol in [Protocol::V1, Protocol::V2] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = AgentEndpoint {
+                base_url: format!("http://{}", listener.local_addr().unwrap()),
+                client: crate::net::loopback_client().build().unwrap(),
+                protocol,
+                legacy_v2_api: false,
+            };
+            let app = Router::new().route(
+                if protocol == Protocol::V1 {
+                    "/agent"
+                } else {
+                    "/api/agent"
+                },
+                get(move || async move {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    let agents = json!([{"name":"build","id":"build"}]);
+                    Json(if protocol == Protocol::V1 {
+                        agents
+                    } else {
+                        json!({"data":agents})
+                    })
+                }),
+            );
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            verify_generation_models_with_timeout(
+                &endpoint,
+                "custom/selected",
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+            let error = verify_generation_models_with_timeout(
+                &endpoint,
+                "custom/selected",
+                Duration::from_millis(20),
+            )
+            .await
+            .unwrap_err();
+            assert!(error.to_string().contains("workspace initialization"));
+            server.abort();
         }
     }
 

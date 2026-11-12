@@ -1,8 +1,11 @@
+import { seedOpenCodeNpmCache } from "./opencode-npm-cache.mjs";
 import { prepareQuotaExecutor } from "./quota-executor-config.mjs";
 import { spawn } from "node:child_process";
 import { mkdir, unlink, cp, access, readFile } from "node:fs/promises";
 // This entrypoint is for a dedicated container; neither API port is published.
 await mkdir("/home/node/.runner-state", { recursive: true });
+await seedOpenCodeNpmCache({ home: process.env.HOME });
+process.env.npm_config_prefer_offline ??= "true";
 // The previous connector cannot survive a container restart; remove only its lock.
 await unlink("/home/node/.runner-state/connector.lock").catch((error) => {
   if (error.code !== "ENOENT") throw error;

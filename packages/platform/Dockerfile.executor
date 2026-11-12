@@ -37,7 +37,12 @@ RUN cargo build --release --locked
 FROM executor-runtime
 USER root
 ARG OPENCODE_VERSION=1.18.33
-RUN npm install --global opencode-ai@${OPENCODE_VERSION} && opencode --version
+# Keep the plugin tarball and its dependencies outside HOME (persisted volumes
+# hide image HOME contents). The entrypoint merges this cache as the runtime user.
+RUN npm install --global opencode-ai@${OPENCODE_VERSION} && opencode --version && \
+    npm install --prefix /opt/opencode-plugin --cache /opt/opencode-npm-cache \
+      --ignore-scripts --no-audit --no-fund @opencode-ai/plugin@${OPENCODE_VERSION} && \
+    chmod -R a+rX /opt/opencode-npm-cache
 WORKDIR /app/platform
 COPY packages/platform/package.json packages/platform/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
