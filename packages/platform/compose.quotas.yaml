@@ -5,9 +5,9 @@ services:
       OPENCODE_ADMIN_URL: ""
       TOKEN_QUOTAS_ENABLED: "true"
       TOKEN_QUOTA_DEFAULT_MONTHLY_TOKENS: ${TOKEN_QUOTA_DEFAULT_MONTHLY_TOKENS:-2000000}
-      TOKEN_QUOTA_MODELS_FILE: /run/secrets/quota-models.json
+      TOKEN_QUOTA_MODELS_FILE: /run/quota-models/models.json
     volumes:
-      - ${TOKEN_QUOTA_MODELS_PATH:?Set absolute path to gateway-only models JSON}:/run/secrets/quota-models.json:ro
+      - ${TOKEN_QUOTA_MODELS_DIR:?Set absolute path to platform-only writable models directory}:/run/quota-models
   provisioner:
     environment:
       TOKEN_QUOTAS_ENABLED: "true"

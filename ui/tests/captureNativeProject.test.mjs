@@ -1,3 +1,4 @@
+import * as caseArtifacts from "../src/product/caseArtifacts.ts";
 import * as runtimeRequest from "../src/runtimeRequest.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -27,6 +28,7 @@ const exports = {};
 new Function("require", "exports", code)((name) => {
   if (name === "../runtimeRequest") return runtimeRequest;
   if (name === "../readOnlyApi") return { canonicalRequest };
+  if (name === "./caseArtifacts") return caseArtifacts;
   if (name === "./sha256") return { sha256Hex };
   throw new Error(`Unexpected import: ${name}`);
 }, exports);
@@ -90,6 +92,46 @@ test("HTTP project capture with uploaded materials passes the server contract an
     assert.equal(replay.asset(`/api/materials/${materialId}/SRC-0001/download`), `/api/platform/cases/case/assets?name=${name}`);
     assert.equal((await replay.read("/api/materials/foreign")).status, 404);
     assert.deepEqual(await (await replay.read(`/api/materials/${materialId}/coverage?source=SRC-0001`)).json(), coverage("SRC-0001"));
+    await t.test("explicit result selection leaves repository, material originals and intermediate files in the source", async () => {
+      const previousFetch = globalThis.fetch;
+      const previousStudy = responses["/api/research/sessions/s"];
+      const selected = "research/study_s/paper";
+      const listing = {scope:"conversation-results",sessionId:"s",dir:"/results",truncated:false,roots:[{path:"research/study_s",title:"Study"}],entries:[{name:"paper",path:selected,isDir:true,size:0,children:[{name:"report.md",path:`${selected}/report.md`,isDir:false,size:bytes.length}]}]};
+      const reads = [];
+      responses["/api/research/sessions/s"] = {study:{id:"study_s",projectId:"p",sessionId:"s",plans:[]}};
+      globalThis.fetch = async (path, init) => {
+        reads.push(path);
+        if (path.startsWith("/api/projects/p/case-artifacts?")) return Response.json(listing);
+        if (path.startsWith("/api/projects/p/files/file?")) return new Response(bytes);
+        assert.ok(!/\/code-tree|\/worktree|\/materials\/[^/]+\/[^/]+\/download|\/projects\/p\/file(?:[/?]|$)/.test(path), `private file was requested: ${path}`);
+        assert.notEqual(path, "/api/projects/p/files");
+        return previousFetch(path, init);
+      };
+      try {
+        const captured = await exports.captureNativeProject("p", undefined, "s", [selected]);
+        assert.deepEqual(captured.workspace.fileScope, {kind:"conversation-results",artifactPaths:[selected]});
+        assert.equal(captured.assets.length, 1);
+        assert.equal(Object.keys(captured.workspace.assets).length, 2);
+        assert.ok(captured.workspace.responses[`/api/materials/${materialId}/coverage`]);
+        assert.deepEqual(validator.normalizeNativeWorkspace(captured.workspace), captured.workspace);
+        for (const change of [
+          value => value.fileScope.artifactPaths.push("research/study_other/paper"),
+          value => value.assets[`/api/materials/${materialId}/SRC-0001/download`] = captured.assets[0].name,
+          value => value.responses["/api/projects/p/code-tree"].entries.push("private.csv"),
+          value => delete value.assets[canonicalRequest(`/api/projects/p/files/file?path=${encodeURIComponent(selected + "/report.md")}`)],
+        ]) {
+          const bad = structuredClone(captured.workspace); change(bad);
+          assert.throws(() => validator.normalizeNativeWorkspace(bad));
+        }
+        reads.length = 0;
+        const transcript = await exports.captureNativeProject("p", undefined, "s", []);
+        assert.equal(transcript.assets.length, 0);
+        assert.deepEqual(transcript.workspace.responses["/api/projects/p/files"].entries, []);
+        assert.deepEqual(validator.normalizeNativeWorkspace(transcript.workspace), transcript.workspace);
+        assert.equal(reads.some(path => path.startsWith("/api/projects/p/files/file?")), false);
+      } finally { globalThis.fetch = previousFetch; responses["/api/research/sessions/s"] = previousStudy; }
+    });
+
     await t.test("old executors preserve missing range snapshots without fabricating zero", async () => {
       missingCoverage = true;
       const legacy = await exports.captureNativeProject("p");

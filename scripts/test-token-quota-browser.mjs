@@ -14,6 +14,9 @@ await mkdir(artifacts, { recursive: true });
 let monthlyLimit = 2000000,
   pending = true,
   origin;
+let modelRevision = 1;
+let models = [{ id: "kimi", name: "Kimi", providerId: "moonshotai-cn", model: "kimi-test", baseUrl: "https://example.invalid/v1", contextTokens: 262144, maxOutputTokens: 8192, hasApiKey: true, opencode: { reasoning: true } }];
+const modelWrites = [];
 const writes = [],
   reconciliations = [],
   errors = [],
@@ -77,6 +80,23 @@ const server = http.createServer(async (req, res) => {
         privateResearch: true,
         deepLiteratureUrl: null,
       });
+    if (path === "/api/platform/admin/opencode" && admin) {
+      if (req.method === "POST") {
+        let body = ""; for await (const part of req) body += part;
+        const data = JSON.parse(body);
+        assert.equal(data.revision, String(modelRevision)); modelWrites.push(data);
+        const index = models.findIndex(m => m.id === data.id);
+        if (data.action === "default") models.unshift(...models.splice(index, 1));
+        else if (data.action === "remove") models.splice(index, 1);
+        else {
+          assert.equal(data.apiKey, index < 0 ? "synthetic-new-key" : "");
+          const { apiKey, revision, ...model } = data;
+          if (index < 0) models.push({ ...model, hasApiKey: true }); else models[index] = model;
+        }
+        modelRevision++;
+      }
+      return send({ enabled: true, backend: "quota", revision: String(modelRevision), models });
+    }
     if (path === "/api/platform/token-quota") return send(balance());
     if (path === "/api/platform/admin/users" && admin)
       return send({
@@ -156,6 +176,39 @@ try {
   );
   const page = await admin.newPage();
   page.on("pageerror", (e) => errors.push(e.message));
+  await page.goto(origin + "/mobilesci/admin/opencode");
+  await page.getByLabel("上游模型 ID").waitFor();
+  assert.equal(await page.getByLabel("API Key", { exact: true }).inputValue(), "");
+  await page.getByLabel("显示名称").fill("Kimi updated");
+  await page.getByRole("button", { name: "保存模型接入", exact: true }).click();
+  await page.getByRole("status").filter({hasText: "网关模型清单已保存"}).waitFor();
+  assert.equal(models[0].name, "Kimi updated");
+  assert.equal(modelWrites.length, 1);
+  assert.equal(monthlyLimit, 2000000);
+  assert.equal(pending, true);
+  assert.equal(await page.getByRole("button", { name: "移除此模型", exact: true }).isDisabled(), true);
+  await page.getByRole("button", { name: "接入其他模型", exact: true }).click();
+  await page.getByLabel("选择供应商").selectOption("deepseek");
+  await page.getByLabel("模型别名").fill("new-model");
+  await page.getByLabel("显示名称").fill("New Model");
+  await page.getByLabel("服务地址（OpenAI 兼容 Base URL）").fill("https://new.example.invalid/v1");
+  await page.getByLabel("API Key", { exact: true }).fill("synthetic-new-key");
+  await page.getByLabel("上游模型 ID").fill("provider-model");
+  await page.getByRole("button", { name: "保存模型接入", exact: true }).click();
+  await page.getByRole("status").filter({hasText: "网关模型清单已保存"}).waitFor();
+  assert.equal(models.length, 2);
+  const newCard = page.getByRole("article", { name: "New Model", exact: true });
+  await newCard.getByRole("button", { name: "设为默认", exact: true }).click();
+  await newCard.getByRole("button", { name: "当前默认", exact: true }).waitFor();
+  assert.equal(models[0].id, "new-model");
+  assert.equal(models[0].providerId, "deepseek");
+  assert.equal(await page.getByLabel("API Key", { exact: true }).inputValue(), "");
+  await page.locator("main").evaluate(el => el.scrollTop = 0);
+  await page.screenshot({path: fileURLToPath(new URL("models-wide.png", artifacts)), fullPage: true});
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.screenshot({path: fileURLToPath(new URL("models-narrow.png", artifacts)), fullPage: true});
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto(origin + "/mobilesci/admin/users");
   await page
     .getByRole("row")

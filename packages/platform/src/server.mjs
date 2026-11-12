@@ -9,6 +9,7 @@ import {
   ensurePersonalSpace,
   preparePersonalSpace,
 } from "./personal-spaces.mjs";
+import { quotaModelSettings } from "./quota-model-settings.mjs";
 import { opencodeSettings } from "./opencode-settings.mjs";
 import { accountRoutes } from "./accounts.mjs";
 import { resetMailer } from "./mail.mjs";
@@ -448,10 +449,9 @@ export async function createPlatform(
     audit,
     limit,
   });
-  const modelSettings = opencodeSettings(
-    config.opencodeConfigFile,
-    config.opencodeAdminUrl,
-  );
+  const modelSettings = config.tokenQuota.enabled
+    ? quotaModelSettings(config.tokenQuota.modelsFile)
+    : opencodeSettings(config.opencodeConfigFile, config.opencodeAdminUrl);
   async function changePassword(req, res, s) {
     const b = await input(req);
     await limit(`password:${s.user_id}`, 5, 900);
@@ -515,17 +515,15 @@ export async function createPlatform(
     }
     if (path === "/api/platform/admin/opencode") {
       check(s.is_admin, 403, "仅系统管理员可配置 OpenCode 模型");
-      check(
-        !config.tokenQuota.enabled,
-        409,
-        "额度模式的模型由网关清单管理，请更新 TOKEN_QUOTA_MODELS_FILE",
-      );
       check(["GET", "POST"].includes(req.method), 405);
       if (req.method === "GET") return json(res, await modelSettings.read());
       const settings = await input(req);
       check(
         settings.action === undefined ||
-          ["disconnect", "verify"].includes(settings.action),
+          (config.tokenQuota.enabled
+            ? ["remove", "default"]
+            : ["disconnect", "verify"]
+          ).includes(settings.action),
         400,
         "不支持的模型配置操作",
       );
@@ -533,18 +531,26 @@ export async function createPlatform(
       const verify = settings.action === "verify";
       if (verify) await limit(`model-verify:${s.user_id}`, 6, 60);
       const saved = await modelSettings[
-        verify ? "verify" : disconnect ? "disconnect" : "save"
+        config.tokenQuota.enabled
+          ? settings.action || "save"
+          : verify
+            ? "verify"
+            : disconnect
+              ? "disconnect"
+              : "save"
       ](settings, async () => {
         await audit(
           pool,
           s.user_id,
           null,
-          verify
-            ? "opencode.model.verify"
-            : disconnect
-              ? "opencode.provider.disconnect"
-              : "opencode.config.update",
-          settings.providerId,
+          config.tokenQuota.enabled
+            ? `quota.model.${settings.action || "save"}`
+            : verify
+              ? "opencode.model.verify"
+              : disconnect
+                ? "opencode.provider.disconnect"
+                : "opencode.config.update",
+          config.tokenQuota.enabled ? settings.id : settings.providerId,
         );
       });
       return json(res, saved);

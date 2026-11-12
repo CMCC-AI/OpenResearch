@@ -3,12 +3,12 @@ import { captureNativeProject } from "./captureNativeProject";
 import { caseRequest, caseWrite, type FeaturedCaseDetail } from "./featuredCasesApi";
 
 /** One user action: preserve the original project page, then make it visible in cases. */
-export async function addProjectToCases(base: string, project: Pick<Project, "id" | "name">, progress: (message: string) => void, existingId?: string, sourceSessionId?: string) {
+export async function addProjectToCases(base: string, project: Pick<Project, "id" | "name">, progress: (message: string) => void, existingId?: string, sourceSessionId?: string, artifactPaths?: string[]) {
   let current = existingId ? await caseRequest<FeaturedCaseDetail>(base, `admin/cases/${existingId}`) : null;
   if (current && (current.snapshot.workspace?.sourceSessionId || undefined) !== sourceSessionId) throw new Error("案例来源对话不匹配，请重新选择。");
   if (current?.status === "published") return current.id;
   // Send the project manifest separately from file bytes so a large archive stays resumable.
-  const native = await captureNativeProject(project.id, () => progress("正在准备项目内容，请稍候…"), sourceSessionId);
+  const native = await captureNativeProject(project.id, () => progress("正在准备项目内容，请稍候…"), sourceSessionId, artifactPaths);
   if (current) {
     await caseWrite(base, `admin/cases/${current.id}/native`, { revision: current.revision, workspace: native.workspace });
   } else {

@@ -20,11 +20,15 @@ function page({ projects = [], projectState = "success", status = "draft", resea
       useQuery: ({ queryKey }) => queryKey[0] === "case-source-projects"
         ? { data: projectState === "success" ? projects : undefined, isSuccess: projectState === "success", error: projectState === "error" ? new Error("offline") : null }
         : queryKey[0] === "case-source-sessions" ? { data: sessions, isSuccess: true }
+        : queryKey[0] === "case-source-artifacts" ? {data: {entries:[], roots:[]}, isSuccess:true}
+        : queryKey[0] === "case-selected-artifacts" ? {isSuccess:true}
         : { data: { cases: [item, ...extraCases] } },
       useQueryClient: () => ({ invalidateQueries: async (key) => invalidations.push(key) }),
     },
     "@tanstack/react-router": { Link: "a" },
-    "../api": { listProjects: async () => projects, listChatSessions: async () => sessions },
+    "./CaseArtifactPicker": { CaseArtifactPicker: "artifact-picker" },
+    "./caseArtifacts": { artifactSelectionSummary: () => ({files:0,bytes:0}) },
+    "../api": { fmtBytes: String, listProjects: async () => projects, listChatSessions: async () => sessions },
     "../components/ui": { Button: "button" },
     "./AuthSession": { useAuthSession: () => ({ user: { id: "admin", isAdmin: true }, canAccessResearch: research }) },
     "./FeaturedCases": { useCasesBase: () => "" },
@@ -49,7 +53,7 @@ test("orphaned drafts explain source availability, disable stale selection, and 
   assert.equal(p.nodes(p.render()).find((node) => node.type === "button" && node.props.type === "submit").props.disabled, true);
   assert.ok(p.button("发布已保存副本"));
   assert.ok(p.button("删除草稿"));
-  assert.equal(p.button("从原项目更新并加入"), undefined);
+  assert.equal(p.button("创建对话案例"), undefined);
 });
 
 test("saved copies publish with reviewed revision without accessing a missing project or research runtime", async () => {
@@ -88,7 +92,7 @@ test("loading and failed project queries do not claim sources are missing", () =
     assert.doesNotMatch(p.text(p.render()), /当前工作空间未找到原项目/);
     assert.ok(p.button("发布已保存副本"));
   }
-  assert.ok(page({ projects: [{ id: "gone", name: "available" }] }).button("从原项目更新并加入"));
+  assert.ok(page({ projects: [{ id: "gone", name: "available" }] }).button("创建对话案例"));
 });
 
 test("incomplete copies and revision conflicts surface server errors and stay unpublished", async () => {
@@ -122,7 +126,9 @@ test("one project's conversations remain separate from its published whole-proje
 
 test("updating a conversation draft retains its original conversation scope", async () => {
   const p = page({ projects: [{ id: "gone", name: "project" }], sourceSessionId: "one" });
-  p.button("从原项目更新并加入").props.onClick();
+  p.button("选择成果并更新").props.onClick();
+  assert.equal(p.calls.length, 0);
+  p.nodes(p.render()).find(node => node.type === "form").props.onSubmit({ preventDefault() {} });
   await settle();
   assert.equal(p.calls[0][4], "saved");
   assert.equal(p.calls[0][5], "one");

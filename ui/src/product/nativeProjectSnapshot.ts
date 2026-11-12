@@ -4,6 +4,7 @@ export interface NativeProjectSnapshot {
   sessionId: string;
   /** Present only for cases scoped to one source conversation. */
   sourceSessionId?: string;
+  fileScope?: { kind: "conversation-results"; artifactPaths: string[] };
   responses: Record<string, unknown>;
   assets: Record<string, string>;
 }

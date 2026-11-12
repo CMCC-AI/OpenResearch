@@ -143,12 +143,14 @@ with sqlite3.connect(sys.argv[1]) as c:
   const require = createRequire(path.join(ui, 'package.json'))
   const ts = require('typescript')
   const { canonicalRequest } = await import(pathToFileURL(path.join(ui, 'src/readOnlyApi.ts')).href)
+  const caseArtifacts = await import(pathToFileURL(path.join(ui, 'src/product/caseArtifacts.ts')).href)
   const source = readFileSync(path.join(ui, 'src/product/captureNativeProject.ts'), 'utf8')
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
   const module = {}
   new Function('require', 'exports', 'fetch', code)(name => {
     if (name === '../runtimeRequest') return { runtimeFetch: read }
     if (name === '../readOnlyApi') return { canonicalRequest }
+    if (name === './caseArtifacts') return caseArtifacts
     if (name === './sha256') return { sha256Hex: async bytes => createHash('sha256').update(bytes).digest('hex') }
     throw new Error(`Unexpected capture dependency ${name}`)
   }, module, read)

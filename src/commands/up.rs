@@ -636,6 +636,10 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
                 .delete(delete_artifact),
         )
         .route("/api/projects/{id}/files/file", get(serve_artifact))
+        .route(
+            "/api/projects/{id}/case-artifacts",
+            get(list_case_artifacts),
+        )
         .route("/api/projects/{id}/terminal", get(project_terminal))
         .route("/api/events", get(events))
         .route("/api/settings/hf", get(hf_settings).post(set_hf_token))
@@ -4903,6 +4907,54 @@ async fn list_artifacts(Path(id): Path<String>) -> ApiResult {
         Ok(Json(json!(listing)))
     })
     .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CaseArtifactsQuery {
+    session_id: String,
+    path: Option<String>,
+    #[serde(default)]
+    recursive: bool,
+}
+
+async fn list_case_artifacts(
+    Path(id): Path<String>,
+    Query(q): Query<CaseArtifactsQuery>,
+) -> ApiResult {
+    blocking_api(move || {
+        let store = Store::open()?;
+        let project = store.get_local_project(&id)?.ok_or_else(|| not_found("project"))?;
+        let session = store.get_chat_session(&q.session_id)?.ok_or_else(|| not_found("session"))?;
+        if session.project_id != id || session.parent_session_id.is_some() || session.side_parent_session_id.is_some() {
+            return Err(bad_request("请选择当前项目的主对话"));
+        }
+        let sessions = store.list_chat_sessions_by_project(&id)?;
+        let mut selected = HashSet::from([q.session_id.clone()]);
+        loop {
+            let before = selected.len();
+            for child in &sessions {
+                if child.parent_session_id.as_ref().is_some_and(|parent| selected.contains(parent)) {
+                    selected.insert(child.id.clone());
+                }
+            }
+            if before == selected.len() { break; }
+        }
+        let mut roots = std::collections::BTreeMap::new();
+        for child in &sessions {
+            if !selected.contains(&child.id) { continue; }
+            if let Some(study) = store.research_for_session(&child.id)? {
+                if study.project_id != id { return Err(bad_request("研究成果不属于当前项目")); }
+                roots.entry(format!("research/{}", study.id)).or_insert_with(|| session.title.clone().unwrap_or_else(|| "研究成果".into()));
+            }
+        }
+        let paths: Vec<String> = roots.keys().cloned().collect();
+        let base = local::files::files_dir(&project);
+        let entries = local::files::case_entries(&base, &paths, q.path.as_deref(), q.recursive).map_err(bad_request)?;
+        Ok(Json(json!({ "scope": "conversation-results", "sessionId": q.session_id,
+            "dir": base.to_string_lossy(), "entries": entries, "truncated": false,
+            "roots": roots.into_iter().map(|(path,title)| json!({"path":path,"title":title})).collect::<Vec<_>>() })))
+    }).await
 }
 
 async fn manage_artifact_file(

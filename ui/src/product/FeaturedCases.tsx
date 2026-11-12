@@ -1,13 +1,10 @@
 import reproductionCover from "../assets/workbench/reproduction.png";
 import experimentCover from "../assets/workbench/experiment.png";
 import reviewCover from "../assets/workbench/review.png";
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, ChevronRight } from "lucide-react";
 import { ReadOnlyProject } from "./ReadOnlyProject";
-import { captureNativeProject } from "./captureNativeProject";
-import { caseWrite } from "./featuredCasesApi";
 import { useAuthSession } from "./AuthSession";
 import { isCloudWorkspace } from "./CloudWorkspace";
 import { PlatformFrame } from "./ProductNav";
@@ -49,21 +46,8 @@ export function CasesPage() {
 export function CaseTranscript({ detail, admin = false, fullPage = false }: { detail: FeaturedCaseDetail; admin?: boolean; fullPage?: boolean }) {
   const base = useCasesBase();
   const { user } = useAuthSession();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [progress, setProgress] = useState("");
-  async function restore() {
-    setBusy(true); setError("");
-    try {
-      const source = await caseRequest<FeaturedCaseDetail>(base, `admin/cases/${detail.id}`);
-      if (!source.source_project_id) throw new Error("该案例没有关联原项目。");
-      const capture = await captureNativeProject(source.source_project_id, setProgress);
-      await caseWrite(base, `admin/cases/${detail.id}/native`, {revision:source.revision,...capture});
-      window.location.reload();
-    } catch (cause) {setError(cause instanceof Error?cause.message:String(cause));} finally {setBusy(false);}
-  }
   if (detail.snapshot.workspace) return <div className={admin && !fullPage ? "h-192 overflow-hidden rounded-xl border border-border" : "h-full min-h-0"}><ReadOnlyProject key={detail.id} id={detail.id} base={base} admin={admin} workspace={detail.snapshot.workspace} /></div>;
-  return <main className="flex h-full flex-col items-start justify-center gap-4 p-8"><h1 className="m-0 text-xl font-semibold">{detail.title}</h1><p className="text-sm text-subtext">这个案例保存的是旧版文本记录，尚未复制原项目的完整工作区。</p>{user?.isAdmin && <Button disabled={busy} onClick={() => void restore()}>从原项目同步完整历史与文件</Button>}{progress && <p role="status" className="text-sm text-subtext">{progress}</p>}{error && <p role="alert" className="text-sm text-accent-red">{error}</p>}</main>;
+  return <main className="flex h-full flex-col items-start justify-center gap-4 p-8"><h1 className="m-0 text-xl font-semibold">{detail.title}</h1><p className="text-sm text-subtext">这个案例保存的是旧版文本记录。可以在案例管理中选择主对话及需要公开的成果，生成新的对话案例。</p>{user?.isAdmin && <Link to="/admin/cases" search={{ project: detail.source_project_id || undefined }} className="text-sm text-primary">选择对话和公开成果</Link>}</main>;
 }
 
 export function CaseDetailPage({ caseId, adminPreview = false }: { caseId: string; adminPreview?: boolean }) {

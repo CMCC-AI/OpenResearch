@@ -1,3 +1,4 @@
+import { AdminQuotaModels, type QuotaModels } from "./AdminQuotaModels";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "../components/ui";
@@ -80,8 +81,8 @@ function ModelForm({ settings, base }: { settings: Settings; base: string }) {
 }
 export function AdminOpenCodePage() {
   const base = useCasesBase();
-  const query = useQuery({ queryKey: ["admin-opencode", base], queryFn: () => caseRequest<Settings>(base, "admin/opencode"), retry: false });
+  const query = useQuery({ queryKey: ["admin-opencode", base], queryFn: () => caseRequest<Settings | QuotaModels>(base, "admin/opencode"), retry: false });
   return <main className="flex-1 overflow-auto p-6"><h1 className="mb-2 text-xl font-semibold">大模型接入</h1><p className="mb-6 text-sm text-subtext">管理员统一配置模型服务，所有私人科研空间自动使用；文件、对话与运行环境保持独立。</p>
-    {query.isPending ? <p role="status">正在读取配置…</p> : query.isError ? <p role="alert">{query.error.message}</p> : !query.data.enabled ? <p role="alert">服务器尚未启用模型配置服务，请联系部署管理员。</p> : <ModelForm settings={query.data} base={base} />}
+    {query.isPending ? <p role="status">正在读取配置…</p> : query.isError ? <p role="alert">{query.error.message}</p> : !query.data.enabled ? <p role="alert">服务器尚未启用模型配置服务，请联系部署管理员。</p> : query.data.backend === "quota" ? <AdminQuotaModels settings={query.data as QuotaModels} base={base} /> : <ModelForm settings={query.data as Settings} base={base} />}
   </main>;
 }

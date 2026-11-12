@@ -43,9 +43,11 @@ API（沿用账号会话与 Origin/管理员校验）：
 | `TOKEN_QUOTAS_ENABLED=true`                  | 平台与 provisioner 同时启用  |
 | `TOKEN_QUOTA_DEFAULT_MONTHLY_TOKENS=2000000` | 仅用于新额度账户的默认月额度 |
 | `TOKEN_QUOTA_MODELS_FILE`                    | 仅账号平台可读的模型清单文件 |
-| `TOKEN_QUOTA_MODELS_PATH`                    | Compose 所需的宿主机清单路径 |
+| `TOKEN_QUOTA_MODELS_DIR`                     | Compose 所需的平台专用可写目录，内含 models.json |
 
-清单格式见 `packages/platform/quota-models.example.json`。每项提供对外别名 `id`、真实 `model`、上游 `baseUrl`/`apiKey`、可信 `contextTokens`、`maxOutputTokens`。需要新式输出参数的模型可设置 `outputParameter:"max_completion_tokens"`；默认 `max_tokens`。可选 `providerId` 保留原 OpenCode 供应商标识，`opencode` 仅接受公开的能力/变体元数据，`headers` 仅在平台向上游发请求时使用，不下发给执行器。网关保留真实客户端 User-Agent、思考参数和 Chat Completions 内容块。生成配置同时固定供应商级及模型级网关地址，防止原生模型沿用目录中的供应商地址。上游需支持 Chat Completions 与流式 usage。更换模型清单需原子替换文件；额度模式下旧网页 OpenCode 配置写入口明确拒绝，避免误认为它会改变网关模型。
+清单格式见 `packages/platform/quota-models.example.json`。每项提供对外别名 `id`、真实 `model`、上游 `baseUrl`/`apiKey`、可信 `contextTokens`、`maxOutputTokens`。需要新式输出参数的模型可设置 `outputParameter:"max_completion_tokens"`；默认 `max_tokens`。可选 `providerId` 保留原 OpenCode 供应商标识，`opencode` 仅接受公开的能力/变体元数据，`headers` 仅在平台向上游发请求时使用，不下发给执行器。网关保留真实客户端 User-Agent、思考参数和 Chat Completions 内容块。生成配置同时固定供应商级及模型级网关地址，防止原生模型沿用目录中的供应商地址。上游需支持 Chat Completions 与流式 usage。管理员通过 **系统管理 → 大模型接入** 管理额度网关清单，可接入、编辑、移除模型及设置默认模型。仅支持 OpenAI 兼容接口；上下文上限必须填写供应商真实限制。留空 API Key 保留该模型凭据，已有私有请求头及能力元数据保留；密钥与私有请求头不会返回浏览器。保存使用版本校验和原子替换，冲突时刷新后重试；移除模型至少保留一项。配置审计记录管理员与模型别名，不记录密钥。修改模型不改变额度策略或历史账本；后续调用读取新清单，新模型和默认模型在私人空间下次唤醒时刷新（执行器启动时拉取清单），仅重新检测不会重写存量运行环境的配置。未启用额度时继续使用原 OpenCode 配置服务。
+
+模型目录仅挂载到平台并允许 UID 1000 写入（目录建议 0700、models.json 0600、归属 1000:1000）；不要挂载到用户执行器。旧单文件只读挂载须迁移到专用目录挂载并重建平台容器，否则网页保存失败；原子替换单文件挂载也不会刷新容器中的旧 inode。
 
 自托管配置顺序：`compose.yaml + compose.hosted.yaml + compose.quotas.yaml`。最后一个文件将真实模型清单仅挂入平台，把旧无鉴权 opencode-admin 服务隔离到独立内部网络；执行器不得使用 host/container 网络或加入该管理网络（供给配置会拒绝常见错误设置），也不能访问其他中转管理接口。网关请求走现有平台 Origin；无需额外开放端口或放宽 CORS。
 

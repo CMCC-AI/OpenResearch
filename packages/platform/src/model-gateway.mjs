@@ -63,6 +63,9 @@ export async function loadQuotaModels(file) {
   } catch {
     throw new HttpError(503, "平台模型配置不可用");
   }
+  return validateQuotaModels(document);
+}
+export function validateQuotaModels(document) {
   check(
     Array.isArray(document.models) &&
       document.models.length > 0 &&
@@ -74,6 +77,7 @@ export async function loadQuotaModels(file) {
   for (const model of document.models) {
     check(
       model &&
+        typeof model.id === "string" &&
         /^[a-zA-Z0-9_.:-]{1,100}$/.test(model.id) &&
         !["__proto__", "prototype", "constructor"].includes(model.id) &&
         !seen.has(model.id),

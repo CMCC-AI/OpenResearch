@@ -2,14 +2,20 @@ import { runtimeFetch } from "../runtimeRequest";
 import type { ChatSession, Project, ProjectArtifacts, CodeTree, Run, Experiment, ProjectFile } from "../api";
 import { canonicalRequest } from "../readOnlyApi";
 import type { NativeProjectSnapshot } from "./nativeProjectSnapshot";
+import { selectedCaseArtifacts, selectedArtifactPaths } from "./caseArtifacts";
 import { sha256Hex } from "./sha256";
 
 export interface NativeCapture { workspace: NativeProjectSnapshot; assets: { name: string; content: string }[] }
 const encode = (bytes: Uint8Array) => { let value = ""; for (let at = 0; at < bytes.length; at += 32768) value += String.fromCharCode(...bytes.subarray(at, at + 32768)); return btoa(value); };
 
 /** Capture the API responses consumed by the actual project page without flattening them. */
-export async function captureNativeProject(projectId: string, progress: (message: string) => void = () => {}, sourceSessionId?: string): Promise<NativeCapture> {
+export async function captureNativeProject(projectId: string, progress: (message: string) => void = () => {}, sourceSessionId?: string, artifactPaths?: string[]): Promise<NativeCapture> {
   const workspace: NativeProjectSnapshot = { version: 1, ...(sourceSessionId ? { sourceSessionId } : {}), projectId, sessionId: "", responses: {}, assets: {} };
+  if (artifactPaths !== undefined) {
+    if (!sourceSessionId) throw new Error("请选择一个主对话后再选择成果。");
+    workspace.fileScope = { kind: "conversation-results", artifactPaths: selectedArtifactPaths(artifactPaths) };
+  }
+  const scopedFiles = workspace.fileScope;
   const assets: NativeCapture["assets"] = [];
   let total = 0;
   async function read<T>(path: string): Promise<T> {
@@ -101,7 +107,10 @@ export async function captureNativeProject(projectId: string, progress: (message
   await read(`/api/skills?project=${projectId}`);
   for (const harness of new Set(before.sessions.map((session) => session.harness))) await read(`/api/skills?${new URLSearchParams({harness,project:projectId})}`);
   await read(`/api/settings/compute?projectId=${projectId}`);
-  const artifacts = await read<ProjectArtifacts>(`/api/projects/${projectId}/files`);
+  const artifacts = scopedFiles
+    ? await selectedCaseArtifacts(projectId, sourceSessionId!, scopedFiles.artifactPaths, runtimeFetch)
+    : await read<ProjectArtifacts>(`/api/projects/${projectId}/files`);
+  workspace.responses[`/api/projects/${projectId}/files`] = artifacts;
   if(artifacts.truncated)throw new Error("原项目成果列表未读取完整，不能省略发布。");
   async function tree(query: string) {
     const listing=await read<CodeTree>(`/api/projects/${projectId}/code-tree${query ? `?${query}` : ""}`);
@@ -120,8 +129,13 @@ export async function captureNativeProject(projectId: string, progress: (message
       }
     }
   }
-  await tree("");
-  await tree(new URLSearchParams({ref:source.baselineBranch}).toString());
+  if (!scopedFiles) {
+    await tree("");
+    await tree(new URLSearchParams({ref:source.baselineBranch}).toString());
+  } else {
+    workspace.responses[`/api/projects/${projectId}/code-tree`] = { path: source.repoPath, entries: [], truncated: false };
+    workspace.responses[canonicalRequest(`/api/projects/${projectId}/code-tree?${new URLSearchParams({ref:source.baselineBranch})}`)] = { path: source.repoPath, entries: [], truncated: false };
+  }
   const copyArtifacts=async(entries:ProjectArtifacts["entries"])=>{for(const entry of entries)if(entry.isDir)await copyArtifacts(entry.children??[]);else {
       const raw=`/api/projects/${projectId}/files/file?path=${encodeURIComponent(entry.path)}`;
       await asset(raw,entry.name);
@@ -135,16 +149,17 @@ export async function captureNativeProject(projectId: string, progress: (message
     const saved = (workspace.responses[canonicalRequest(sessionPath)] as {sessions:ChatSession[]}).sessions.find(row => row.id === session.id)!;
     workspace.responses[`/api/chat/sessions/${session.id}`]={session: saved};
     await read(`/api/research/sessions/${session.id}`);
-    const wt=await read<{exists:boolean}>(`/api/chat/sessions/${session.id}/worktree`);
+    const wt=scopedFiles ? { exists: false } : await read<{exists:boolean}>(`/api/chat/sessions/${session.id}/worktree`);
+    workspace.responses[`/api/chat/sessions/${session.id}/worktree`] = wt;
     if(wt.exists)await tree(new URLSearchParams({sessionId:session.id}).toString());
-    for(const message of messages.messages)for(const part of message.parts)if(part.type==="image"&&part.text&&!part.text.startsWith("data:"))await asset(`/api/chat/attachments/${encodeURIComponent(part.text)}`,part.name||part.text);
+    for(const message of messages.messages)for(const part of message.parts)if(!scopedFiles&&part.type==="image"&&part.text&&!part.text.startsWith("data:"))await asset(`/api/chat/attachments/${encodeURIComponent(part.text)}`,part.name||part.text);
     for (const message of messages.messages) for (const part of message.parts) if (part.type === "material" && part.text) {
       const material = await read<{ id: string; files: { id: string; path: string }[] }>(`/api/materials/${encodeURIComponent(part.text)}`);
-      for (const file of material.files) await asset(`/api/materials/${encodeURIComponent(material.id)}/${encodeURIComponent(file.id)}/download`, file.path.split("/").at(-1) || file.id);
+      if (!scopedFiles) for (const file of material.files) await asset(`/api/materials/${encodeURIComponent(material.id)}/${encodeURIComponent(file.id)}/download`, file.path.split("/").at(-1) || file.id);
       await captureCoverage(material.id, material.files);
     }
   }
-  for(const experiment of experiments){await tree(new URLSearchParams({ref:experiment.branchName}).toString());await read(`/api/experiments/${experiment.id}/diff`);}
+  for(const experiment of experiments){if (!scopedFiles) await tree(new URLSearchParams({ref:experiment.branchName}).toString());await read(`/api/experiments/${experiment.id}/diff`);}
   for(const run of runs){
     await read(`/api/runs/${run.id}/diff`);
     const chunks:Uint8Array[]=[];let offset=0;
