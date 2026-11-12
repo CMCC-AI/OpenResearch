@@ -1,3 +1,4 @@
+import { runtimeFetch } from "./runtimeRequest";
 import { useQuery, queryOptions } from "@tanstack/react-query";
 import { workspaceKey } from "./queries/client";
 
@@ -8,7 +9,7 @@ export const fileVersionQuery = (url: string) => queryOptions({
   refetchOnWindowFocus: "always",
   refetchInterval: 2_000,
   queryFn: async ({ signal }) => {
-    const response = await fetch(url, { method: "HEAD", cache: "no-store", signal });
+    const response = await runtimeFetch(url, { method: "HEAD", cache: "no-store", signal });
     if (response.status === 404) return "missing";
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.headers.get("etag") ?? response.headers.get("content-length");

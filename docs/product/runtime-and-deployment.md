@@ -1,6 +1,6 @@
 # 运行形态、入口与部署配置
 
-本文是当前运行形态和配置约定的统一入口，更新于 2026-11-11。具体安装步骤引用下方指南；历史团队设计不作为当前私人托管版的权限或部署依据。
+本文是当前运行形态和配置约定的统一入口，更新于 2026-11-12。具体安装步骤引用下方指南；历史团队设计不作为当前私人托管版的权限或部署依据。
 
 当前 MobileSci 生产版本为 `.7.1`：平台、provisioner、四个现用私人执行器及未来镜像／Compose 已统一，实际新用户首次供给及认证桥接验收通过，见[交付回执](release-v0.2.23-mobilesci.7-delivery.md)。下述补丁事件属于历史记录，不覆盖此版本状态。
 
@@ -63,7 +63,7 @@ docker exec --user 1000:1000 <执行器容器名> orx-check-executor-tools
 
 新部署重新构建执行镜像即可。MobileSci 增量更新在本地构建 `executor-packages` 阶段，把 `.deb`、uv 和安装/验证脚本一起装入更新包；服务器构建阶段无需访问 apt、PyPI 或 GitHub。已有私人空间须用包含这些文件的新包执行 `--unified-opencode` 更新，替换存量执行器并同步 provisioner 与持久化 Compose 的 `MANAGED_EXECUTOR_IMAGE`；仅更新 platform/workbench 或重启旧执行器不会补齐工具。旧包不包含此能力，必须重新准备。通用 hosted 部署也必须在空闲维护窗口替换存量执行器、保留 HOME 卷，并同步未来镜像引用。
 
-私人执行器的 `MANAGED_EXECUTOR_MEMORY` 与 `MANAGED_EXECUTOR_MEMORY_SWAP` 均为字节数，后者表示内存与 swap 的合计上限。hosted Compose 默认使用 2.5 GiB 内存、4.5 GiB 合计上限和 `MANAGED_CAPACITY=2`；按宿主总内存、平台服务预留量与实际并发负载调整。`MANAGED_CAPACITY` 只限制同时运行的环境，不限制账号与个人数据空间；平台准入改为自动排队，provisioner 在 `MANAGED_IDLE_SECONDS`（默认 120 秒）后通过活动 API、SQLite 任务台账、请求/终端租约及未知进程检查确认闲置，停止容器并保留 HOME 卷。后台轮询和 SSE 不续占名额，界面的人机交互维持使用期，恢复时保留未发送草稿。升级需先应用 `009.sql`，并同步 provisioner 与 Compose 中的池容量。显式配置的配额由 provisioner 同步到已有执行器，后续新建执行器使用相同值；旧 connector 保留独立的小额限制。未显式配置时，provisioner 不覆盖运维热调整的已有容器配额。
+私人执行器的 `MANAGED_EXECUTOR_MEMORY` 与 `MANAGED_EXECUTOR_MEMORY_SWAP` 均为字节数，后者表示内存与 swap 的合计上限。hosted Compose 默认使用 2.5 GiB 内存、4.5 GiB 合计上限和 `MANAGED_CAPACITY=2`；按宿主总内存、平台服务预留量与实际并发负载调整。`MANAGED_CAPACITY` 只限制同时运行的环境，不限制账号与个人数据空间；平台准入改为自动排队，provisioner 在 `MANAGED_IDLE_SECONDS`（默认 120 秒）后通过活动 API、SQLite 任务台账、请求/终端租约及未知进程检查确认闲置，停止容器并保留 HOME 卷。后台轮询和 SSE 不续占名额、不主动唤醒已停止环境，界面的人机交互维持使用期。工作台和首页输入区域立即展示，provisioner 准备、休眠、排队状态不在前端展示；用户进入、返回或提交操作时自动申请运行环境，恢复时保留未发送草稿。尚未转发的业务请求由网关使用 `x-orx-runtime-pending: 1` 标识，客户端保留原始请求并等待后重试；普通 503、网络错误及已转发请求不自动重放，工作台退出后取消待发送请求。SSE 在网关等待计算环境就绪，不持有运行租约，也不显示虚假的断线提示。旧子域名入口采用相同策略，通过当前工作区的 `/_platform/activity` 续期并自动恢复，保留原有身份和来源校验，不再展示执行环境拦截页或额外状态条。真实操作失败仍按业务错误反馈。升级需先应用 `009.sql`，并同步 provisioner 与 Compose 中的池容量。显式配置的配额由 provisioner 同步到已有执行器，后续新建执行器使用相同值；旧 connector 保留独立的小额限制。未显式配置时，provisioner 不覆盖运维热调整的已有容器配额。
 
 OpenCode、Claude 和 Codex 共用闲置策略。有效内存不超过 8 GiB 时，OpenCode 每 30 秒检查一次，闲置两分钟释放进程，超过一个的闲置进程在至少闲置 30 秒后按最近使用顺序释放。运行中的对话、等待权限或问题回复、上下文压缩受使用租约保护；回收同时清理进程组，下次消息从持久化原生会话恢复。Linux 按宿主物理内存与 cgroup v1/v2 配额的较小值选择策略，并重新读取配额以适应在线调整。此策略只限制闲置进程，多个同时活跃的会话仍需合理的内存和并发规划。
 

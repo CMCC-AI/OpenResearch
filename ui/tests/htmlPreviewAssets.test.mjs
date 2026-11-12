@@ -1,3 +1,4 @@
+import * as runtimeRequest from "../src/runtimeRequest.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -9,7 +10,7 @@ const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
 }).outputText + "\nexports.assembleDocument = assembleDocument;";
 const exports = {};
-new Function("require", "exports", compiled)((name) => name === "../markdownTarget" ? markdownTarget : {}, exports);
+new Function("require", "exports", compiled)((name) => name === "../runtimeRequest" ? runtimeRequest : name === "../markdownTarget" ? markdownTarget : {}, exports);
 
 // Just the DOM surface assembleDocument touches: elements selected by `tag[attribute]`.
 function documentOf(elements) {

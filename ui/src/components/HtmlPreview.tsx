@@ -1,3 +1,4 @@
+import { runtimeFetch } from "../runtimeRequest";
 import { useEffect, useRef, useState } from "react";
 import { m } from "../paraglide/messages.js";
 import { ltr } from "../i18n";
@@ -59,7 +60,7 @@ async function inlineAssets(assets: Asset[], signal: AbortSignal) {
     if (signal.aborted) return;
     if (inlined.size >= MAX_INLINE_FILES) continue;
     inlined.set(url, null);
-    const response = await fetch(url, { signal, credentials: "include" }).catch(() => null);
+    const response = await runtimeFetch(url, { signal, credentials: "include" }).catch(() => null);
     if (!response?.ok) continue;
     const type = response.headers.get("content-type") ?? "";
     const size = Number(response.headers.get("content-length"));
@@ -143,7 +144,7 @@ async function completeSource(
   signal: AbortSignal,
 ): Promise<{ text: string; partial: boolean }> {
   if (!truncated) return { text: html, partial: false };
-  const response = await fetch(url, {
+  const response = await runtimeFetch(url, {
     signal,
     credentials: "include",
     headers: { Range: `bytes=0-${MAX_DOCUMENT_BYTES - 1}` },

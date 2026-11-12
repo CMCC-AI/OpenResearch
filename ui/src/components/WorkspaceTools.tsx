@@ -2,21 +2,18 @@ import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { type ChatSession, type Experiment, type Run, runDisplayStatus, fmtNumber } from "../api";
 import { activeWorkspaceRuns } from "../workspaceRuns";
 import { statusLabel } from "./StatusBadge";
-import { getComputeSettingsQuery } from "../queries/settings";
-import { TARGET_LABELS } from "../computeTargets";
 import { useEffect, useMemo, useRef } from "react";
-import { FlaskConical, FolderOpen, Package, GitBranch, Cpu, MoreHorizontal, Terminal } from "lucide-react";
+import { FlaskConical, FolderOpen, Package, GitBranch, MoreHorizontal, Terminal } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { getSessionWorktreeQuery } from "../queries/files";
 import { countChanges, parseDiffFiles } from "./GitDiff";
 import { m } from "../paraglide/messages.js";
-import { BackendLogo } from "./BackendLogos";
 import { IconButton, MenuItem, StatusIndicator } from "./ui";
 import { ResearchPanel } from "./ResearchPanel";
 import { usePopover } from "./ModelPicker";
 import { SideChatMenu } from "./SideChatMenu";
 
-export function WorkspaceTools({ placement = "floating", expanded, experiments, runs, onOpenExperiment, rightOffset, activeView, projectId, onCompute, sessionId, busy, onChanges, onFiles, onTerminal, onArtifacts, onExperiments, onSideChat, onOpenSession, onResearch, onMaterials, sessions, onSelectSideChat }: {
+export function WorkspaceTools({ placement = "floating", expanded, experiments, runs, onOpenExperiment, rightOffset, activeView, sessionId, busy, onChanges, onFiles, onTerminal, onArtifacts, onExperiments, onSideChat, onOpenSession, onResearch, onMaterials, sessions, onSelectSideChat }: {
   placement?: "floating" | "header";
   expanded: boolean;
   experiments: Experiment[];
@@ -45,9 +42,6 @@ export function WorkspaceTools({ placement = "floating", expanded, experiments, 
   const experimentRows = activeWorkspaceRuns(experiments, runs, sessionId);
   const moreTrigger = useRef<HTMLButtonElement>(null);
   const more = usePopover(moreTrigger);
-  const compute = useQuery({ ...getComputeSettingsQuery(projectId), enabled: expanded && (!readOnly || readOnly.native) });
-  const defaultBackend = compute.data?.configuredDefaultBackend ?? compute.data?.defaultBackend;
-  const computeLabel = defaultBackend ? TARGET_LABELS[defaultBackend]() : compute.isPending ? "…" : compute.isError ? m.model_picker_unavailable() : m.settings_not_set();
   const items = [
     { id: "materials", label: "研究材料", Icon: FolderOpen, onClick: onMaterials },
     { id: "files", label: m.app_files(), Icon: FolderOpen, onClick: onFiles },
@@ -93,15 +87,6 @@ export function WorkspaceTools({ placement = "floating", expanded, experiments, 
               <span className="flex items-center gap-4"><Icon size={15} />{itemLabel}</span>
             </MenuItem>
           ))}
-          {<MenuItem disabled={Boolean(readOnly)} className="py-1" onClick={onCompute}>
-            <span className="flex min-w-0 flex-col gap-0.5">
-              <span className="flex items-center gap-4 text-sm text-text"><Cpu size={15} className="shrink-0" />{m.workspace_default_compute()}</span>
-              <span className="flex items-center gap-1.5 ps-[31px] text-menu text-subtext">
-                {defaultBackend && <BackendLogo kind={`${defaultBackend}_job`} size={12} />}
-                <span className="wrap-anywhere">{computeLabel}</span>
-              </span>
-            </span>
-          </MenuItem>}
           <div className="mt-2 border-t border-border/50 pt-3">
             <h2 className="m-0 px-2 pt-1 pb-2 text-sm font-normal text-subtext">{m.workspace_this_worktree()}</h2>
             <MenuItem className="min-h-7 py-1" onClick={onFiles}>

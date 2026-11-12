@@ -116,6 +116,7 @@ function LiveDot() {
 export function ProjectsHome({
   projects,
   starting = false,
+  projectsLoading = false,
   onOpen,
   onCreated,
   onDeleted,
@@ -126,6 +127,7 @@ export function ProjectsHome({
 }: {
   projects: Project[];
   starting?: boolean;
+  projectsLoading?: boolean;
   onOpen: (id: string) => void;
   onCreated: (project: Project, githubPublicationError: string | null, draft?: ComposerStash) => void;
   onDeleted: (id: string) => void;
@@ -157,7 +159,7 @@ export function ProjectsHome({
           <section aria-labelledby="continue-research-title" className="min-w-0">
             <h2 id="continue-research-title" className="product-page-section-title mt-0 mb-5 flex items-center gap-2">继续研究<ChevronRight size={20} className="text-muted" /></h2>
             <div className="research-recent-list flex flex-col gap-1">
-              {projects.length === 0 ? <p className="p-4 text-base text-muted">尚无研究项目，从上方创建第一个项目。</p> : [...projects].sort((a, b) => (activityByProject[b.id]?.lastMessageAt ?? b.updatedAt) - (activityByProject[a.id]?.lastMessageAt ?? a.updatedAt)).map((p) => <div key={p.id} className="research-recent-item group flex items-center gap-2 rounded-xl border border-transparent p-2.5">
+              {projectsLoading ? <div aria-hidden="true" className="flex flex-col gap-2">{[0, 1, 2].map((index) => <div key={index} className="h-16 rounded-xl bg-background animate-pulse" />)}</div> : projects.length === 0 ? <p className="p-4 text-base text-muted">尚无研究项目，从上方创建第一个项目。</p> : [...projects].sort((a, b) => (activityByProject[b.id]?.lastMessageAt ?? b.updatedAt) - (activityByProject[a.id]?.lastMessageAt ?? a.updatedAt)).map((p) => <div key={p.id} className="research-recent-item group flex items-center gap-2 rounded-xl border border-transparent p-2.5">
                 <span className="research-project-icon grid size-10 shrink-0 place-items-center rounded-lg"><Folder size={20} className="text-primary" /></span>
                 <button onClick={() => onOpen(p.id)} className="flex min-w-0 flex-1 flex-col gap-1 text-start"><span className="w-full truncate text-base font-normal">{p.name}</span><span className="text-sm text-muted">更新于 {timeAgo(activityByProject[p.id]?.lastMessageAt ?? p.updatedAt)} · {activityByProject[p.id]?.totalAgents ?? 0} 个研究会话</span></button>
                 {activityByProject[p.id]?.activeAgents > 0 && <LiveDot />}

@@ -35,19 +35,19 @@ export default function MaterialReader({ id, onClose, embedded = false, sessionI
     return () => { disposed = true; controller.abort(); };
   }, [id, attempt]);
   const reader = <div ref={embedded ? undefined : ref} role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-labelledby={titleId} tabIndex={embedded ? undefined : -1} className={`@container flex h-full min-h-0 w-full flex-col bg-background text-text ${embedded ? "" : "max-w-6xl border-l border-border shadow-elevated"}`} onClick={event => event.stopPropagation()}>
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-3">
+      {embedded ? <h2 id={titleId} className="sr-only">研究材料</h2> : <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-3">
         <div className="min-w-0"><h2 id={titleId} className="m-0 flex items-center gap-2 font-semibold"><FolderOpen size={19} className="text-primary" />研究材料{material ? <span className="text-sm font-normal text-subtext">{material.files.length} 个文件</span> : null}</h2><p className="mb-0 mt-1 text-xs text-subtext">浏览原件不代表 AI 已阅读；引用以本次导入版本为准。</p></div>
-        {!embedded && <IconButton aria-label="关闭材料阅读器" onClick={onClose}><X size={18} /></IconButton>}
-      </header>
-      {material && <nav aria-label="材料视图" className="flex shrink-0 gap-2 border-b border-border px-3 py-2"><Button size="small" aria-pressed={view === "original"} onClick={() => setView("original")}>浏览原件</Button><Button size="small" aria-pressed={view === "coverage"} onClick={() => setView("coverage")}>读取范围</Button></nav>}
-      {material ? view === "coverage" ? <MaterialReadCoverage key={material.id} material={material} sessionId={sessionId} /> : <ReaderContent key={material.id} material={material} /> : <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-5">
+        <IconButton aria-label="关闭材料阅读器" onClick={onClose}><X size={18} /></IconButton>
+      </header>}
+      {material && !embedded && <nav aria-label="材料视图" className="flex shrink-0 gap-2 border-b border-border px-3 py-2"><Button size="small" aria-pressed={view === "original"} onClick={() => setView("original")}>浏览原件</Button><Button size="small" aria-pressed={view === "coverage"} onClick={() => setView("coverage")}>读取范围</Button></nav>}
+      {material ? view === "coverage" ? <MaterialReadCoverage key={material.id} material={material} sessionId={sessionId} /> : <ReaderContent key={material.id} material={material} compact={embedded} /> : <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-5">
         {error ? <><p role="alert" className="text-sm text-accent-red">{error}</p><Button data-initial-focus onClick={() => setAttempt(value => value + 1)}>重新加载</Button></> : <><Spinner /><p role="status" className="text-sm text-subtext">正在加载材料目录…</p></>}
       </div>}
     </div>;
   return embedded ? reader : createPortal(<div className="fixed inset-0 z-50 flex justify-end bg-black/30" onClick={onClose}>{reader}</div>, document.body);
 }
 
-function ReaderContent({ material }: { material: MaterialPackage }) {
+function ReaderContent({ material, compact = false }: { material: MaterialPackage; compact?: boolean }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [selected, setSelected] = useState<MaterialFile | null>(null);
@@ -68,10 +68,12 @@ function ReaderContent({ material }: { material: MaterialPackage }) {
   function toggle(path: string) { setExpanded(previous => { const next = new Set(previous); if (next.has(path)) next.delete(path); else next.add(path); return next; }); }
   const download = selected ? projectAssetUrl(materialUrl(material.id, selected.id, "download")) : null;
   return <div className="flex min-h-0 flex-1 flex-col">
-    <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-xs text-subtext">
+    <div className={`${compact ? "flex @2xl:hidden" : "flex"} shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-xs text-subtext`}>
       <Button size="small" className="@2xl:hidden" onClick={() => setDirectory(value => !value)}><PanelLeft size={14} />{directory ? "查看正文" : "目录"}</Button>
-      <span>导入时间：{material.createdAt ? new Date(material.createdAt).toLocaleString("zh-CN") : "未记录"}</span>
-      <span className="truncate">版本 {material.id.slice(0, 8)}</span>
+      {!compact && <>
+        <span>导入时间：{material.createdAt ? new Date(material.createdAt).toLocaleString("zh-CN") : "未记录"}</span>
+        <span className="truncate">版本 {material.id.slice(0, 8)}</span>
+      </>}
     </div>
     <div className="flex min-h-0 flex-1">
       <aside aria-label="材料目录" className={`${directory ? "flex" : "hidden"} w-full shrink-0 flex-col border-r border-border @2xl:flex @2xl:w-64`}>

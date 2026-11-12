@@ -15,7 +15,7 @@ import { resetMailer } from "./mail.mjs";
 import { featuredCaseRoutes } from "./featured-cases.mjs";
 import { storageAccess, storageSettings } from "./storage.mjs";
 import { researchLimit } from "./research-limits.mjs";
-import { leaseRuntime } from "./runtime-pool.mjs";
+import { leaseRuntime, personalRuntimeTunnel } from "./runtime-pool.mjs";
 import http from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
@@ -283,6 +283,46 @@ export async function createPlatform(
     if (websocket || !["GET", "HEAD"].includes(req.method))
       sameOrigin(req, config.origin.origin);
     return { s, workspace };
+  }
+  // Keep the browser connected to the gateway while compute is absent. This
+  // stream owns no compute lease and never wakes an idle container by itself.
+  function pendingEvents(
+    req,
+    res,
+    workspace,
+    authorize = () => personalAccess(req),
+  ) {
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-store",
+      "x-accel-buffering": "no",
+    });
+    res.write(": connected\n\n");
+    let pending = false;
+    const timer = setInterval(async () => {
+      if (pending || res.destroyed || res.writableEnded) return;
+      pending = true;
+      try {
+        await authorize();
+        const { rows } = await pool.query(
+          "SELECT status,desired FROM workspace_runtimes WHERE workspace_id=$1",
+          [workspace],
+        );
+        if (
+          rows[0]?.desired === "deleted" ||
+          rows[0]?.status === "failed" ||
+          (rows[0]?.status === "ready" && tunnels.has(workspace))
+        )
+          res.end();
+        else res.write(": keepalive\n\n");
+      } catch {
+        res.end();
+      } finally {
+        pending = false;
+      }
+    }, 5000);
+    timer.unref();
+    res.once("close", () => clearInterval(timer));
   }
   async function newSession(db, user, host, parent = null) {
     const secret = token();
@@ -594,6 +634,22 @@ export async function createPlatform(
           );
         if (path === "/api/auth/sso/authorize" && req.method === "GET")
           return await authorizeDeepLiterature(req, res, s, workspace);
+        if (path === "/_platform/activity" && req.method === "POST") {
+          check(config.privateSpaces && config.managed, 404);
+          sameOrigin(req, workspaceOrigin(config, workspace));
+          await limit(`runtime:${workspace}:${s.user_id}`, 60, 60);
+          const data = await input(req);
+          await transaction(pool, async (db) => {
+            const prepared = await preparePersonalSpace(
+              db,
+              s.user_id,
+              config.managedCapacity,
+              !!data.retry,
+            );
+            check(prepared === workspace, 403);
+          });
+          return json(res, { ok: true });
+        }
         if (path === "/_platform/context" && req.method === "GET")
           return json(res, {
             workspace,
@@ -675,21 +731,45 @@ export async function createPlatform(
         }
         if (path.startsWith("/api/")) {
           await access(req, workspace);
+          let tunnel;
+          if (config.privateSpaces && config.managed) {
+            try {
+              tunnel = await personalRuntimeTunnel(
+                pool,
+                workspace,
+                tunnels,
+                res,
+                !["GET", "HEAD"].includes(req.method),
+                path === "/api/events",
+              );
+            } catch (error) {
+              if (
+                error.runtimePending &&
+                path === "/api/events" &&
+                req.method === "GET"
+              )
+                return pendingEvents(req, res, workspace, () =>
+                  access(req, workspace),
+                );
+              throw error;
+            }
+          } else {
+            tunnel = tunnels.get(workspace);
+            check(tunnel, 503, "执行器离线，请联系工作空间管理员");
+            if (path !== "/api/events")
+              await leaseRuntime(
+                pool,
+                workspace,
+                res,
+                !["GET", "HEAD"].includes(req.method),
+              );
+          }
           const policy = researchLimit(req.method, path);
           await limit(
             `api-${policy.bucket}:${workspace}:${s.user_id}`,
             policy.maximum,
             60,
           );
-          const tunnel = tunnels.get(workspace);
-          check(tunnel, 503, "执行器离线，请联系工作空间管理员");
-          if (path !== "/api/events")
-            await leaseRuntime(
-              pool,
-              workspace,
-              res,
-              !["GET", "HEAD"].includes(req.method),
-            );
           if (!["GET", "HEAD"].includes(req.method))
             await audit(
               pool,
@@ -714,15 +794,25 @@ export async function createPlatform(
         !path.startsWith("/api/auth/")
       ) {
         const { s, workspace } = await personalAccess(req);
-        const tunnel = tunnels.get(workspace);
-        check(tunnel, 503, "正在准备你的研究环境，请稍候再试");
-        if (path !== "/api/events")
-          await leaseRuntime(
+        let tunnel;
+        try {
+          tunnel = await personalRuntimeTunnel(
             pool,
             workspace,
+            tunnels,
             res,
             !["GET", "HEAD"].includes(req.method),
+            path === "/api/events",
           );
+        } catch (error) {
+          if (
+            error.runtimePending &&
+            path === "/api/events" &&
+            req.method === "GET"
+          )
+            return pendingEvents(req, res, workspace);
+          throw error;
+        }
         const policy = researchLimit(req.method, path);
         await limit(
           `api-${policy.bucket}:${workspace}:${s.user_id}`,
@@ -1317,6 +1407,10 @@ export async function createPlatform(
       ) {
         res.writeHead(303, { location: config.origin.origin });
         return res.end();
+      }
+      if (error.runtimePending) {
+        res.setHeader("x-orx-runtime-pending", "1");
+        res.setHeader("retry-after", "2");
       }
       if (error.status === 429) res.setHeader("retry-after", "60");
       json(

@@ -1,3 +1,4 @@
+import * as runtimeRequest from "../src/runtimeRequest.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -11,7 +12,7 @@ const require = createRequire(import.meta.url);
 function load(path, stubs) {
   const code = ts.transpileModule(readFileSync(new URL(path, import.meta.url), "utf8"), { fileName: path, compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
   const exports = {};
-  new Function("require", "exports", code)((name) => name in stubs ? stubs[name] : require(name), exports);
+  new Function("require", "exports", code)((name) => name === "./runtimeRequest" ? runtimeRequest : name in stubs ? stubs[name] : require(name), exports);
   return exports;
 }
 const messages = new Proxy({}, { get: (_, key) => () => key });

@@ -28,6 +28,9 @@ import { IconButton, MenuItem } from "./ui";
 import { cn } from "./ui/cn";
 
 import { LocalModelSetup } from "./LocalModelSetup";
+import { localizeOptionChoices } from "../optionChoiceLabels";
+
+const EMPTY_CHOICES: OptionChoice[] = [];
 
 const MODEL_GROUP_CLASS_NAME = [
   "model-group flex items-center justify-between gap-2",
@@ -109,10 +112,10 @@ export function ModelPicker({
   value,
   onSelect,
   onOpenSettings: _onOpenSettings,
-  permissionChoices = [],
+  permissionChoices: rawPermissionChoices = EMPTY_CHOICES,
   defaultPermissionId,
   onSelectPermission,
-  reasoningChoices = [],
+  reasoningChoices: rawReasoningChoices = EMPTY_CHOICES,
   defaultReasoningId,
   onSelectReasoning,
   autonomy,
@@ -141,6 +144,8 @@ export function ModelPicker({
   className?: string;
 }) {
   const { data: allHarnesses = EMPTY_HARNESSES } = useQuery(getHarnessesQuery());
+  const permissionChoices = useMemo(() => localizeOptionChoices(rawPermissionChoices), [rawPermissionChoices]);
+  const reasoningChoices = useMemo(() => localizeOptionChoices(rawReasoningChoices), [rawReasoningChoices]);
   const harnesses = useMemo(() => allHarnesses.filter((harness) => harness.id === "opencode"), [allHarnesses]);
   const queryClient = useQueryClient();
   const [addingLocalModel, setAddingLocalModel] = useState(false);

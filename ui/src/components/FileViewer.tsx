@@ -1,3 +1,4 @@
+import { runtimeFetch } from "../runtimeRequest";
 import { structuredPreviewKind } from "../filePreview";
 import { StructuredFilePreview } from "./StructuredFilePreview";
 import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
@@ -450,7 +451,7 @@ export function FileViewer({
     try {
       if (data.truncated && !showingEditor) {
         // WebKit requires the clipboard write to start during the click.
-        const content = fetch(rawFileUrl(filePath), { credentials: "include" }).then(async (response) => {
+        const content = runtimeFetch(rawFileUrl(filePath), { credentials: "include" }).then(async (response) => {
           if (!response.ok) throw new Error();
           return new Blob([await response.text()], { type: "text/plain" });
         });

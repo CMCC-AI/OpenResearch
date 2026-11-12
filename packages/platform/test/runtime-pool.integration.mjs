@@ -8,7 +8,7 @@ import { preparePersonalSpace } from "../src/personal-spaces.mjs";
 import { leaseRuntime, scheduleRuntimes } from "../src/runtime-pool.mjs";
 
 test(
-  "100 registrations queue independently of two compute slots; idle release, leases, fairness and wake preserve ownership",
+  "100 registrations queue independently of two compute slots; idle release, leases, fairness and invisible recovery preserve ownership",
   { timeout: 120000 },
   async () => {
     const schema = `pool_${randomUUID().replaceAll("-", "")}`;
@@ -48,6 +48,7 @@ test(
         });
         return {
           status: res.status,
+          headers: res.headers,
           data: await res.json(),
           cookie: res.headers.get("set-cookie")?.split(";")[0],
         };
@@ -187,6 +188,60 @@ test(
         !calls.some((x) => x.method === "DELETE"),
         "sleep never deletes containers or volumes",
       );
+      const asleepRead = await fetch(origin + "/api/projects", {
+        headers: { cookie: firstUser.cookie },
+      });
+      assert.equal(asleepRead.status, 503);
+      assert.equal(asleepRead.headers.get("x-orx-runtime-pending"), "1");
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT status FROM workspace_runtimes WHERE workspace_id=$1",
+            [first],
+          )
+        ).rows[0].status,
+        "sleeping",
+        "background reads must not wake compute",
+      );
+      const eventsController = new AbortController();
+      const events = await fetch(origin + "/api/events", {
+        headers: { cookie: firstUser.cookie },
+        signal: eventsController.signal,
+      });
+      assert.equal(events.status, 200);
+      assert.match(events.headers.get("content-type"), /text\/event-stream/);
+      assert.match(
+        new TextDecoder().decode((await events.body.getReader().read()).value),
+        /^: connected/,
+      );
+      eventsController.abort();
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT status FROM workspace_runtimes WHERE workspace_id=$1",
+            [first],
+          )
+        ).rows[0].status,
+        "sleeping",
+        "SSE must remain connected without acquiring compute",
+      );
+      const asleepWrite = await post(
+        "/api/projects",
+        { name: "execute only after ready" },
+        firstUser.cookie,
+      );
+      assert.equal(asleepWrite.status, 503);
+      assert.equal(asleepWrite.headers.get("x-orx-runtime-pending"), "1");
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT status FROM workspace_runtimes WHERE workspace_id=$1",
+            [first],
+          )
+        ).rows[0].status,
+        "waiting",
+        "a submitted operation automatically requests compute",
+      );
       const resumed = await post(
         "/api/platform/personal-space",
         {},
@@ -245,6 +300,42 @@ test(
         ),
       );
       assert(repeats.every((x) => x === first));
+      let executed = 0;
+      app.tunnels.set(first, {
+        ws: { terminate() {} },
+        http: async (_req, res) => {
+          executed++;
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        },
+      });
+      await pool.query(
+        "UPDATE workspace_runtimes SET status='ready' WHERE workspace_id=$1",
+        [first],
+      );
+      assert.equal(
+        (
+          await post(
+            "/api/projects",
+            { name: "execute only after ready" },
+            firstUser.cookie,
+          )
+        ).status,
+        200,
+      );
+      assert.equal(executed, 1);
+      await pool.query(
+        "UPDATE workspace_runtimes SET status='failed' WHERE workspace_id=$1",
+        [first],
+      );
+      const failed = await post("/api/projects", {}, firstUser.cookie);
+      assert.equal(failed.status, 503);
+      assert.equal(
+        failed.headers.get("x-orx-runtime-pending"),
+        null,
+        "genuine failures must not be replayed",
+      );
+      assert.equal(executed, 1);
     } finally {
       if (app) await app.close();
       else await pool.end();

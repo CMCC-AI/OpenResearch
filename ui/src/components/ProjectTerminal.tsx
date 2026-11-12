@@ -1,3 +1,4 @@
+import { runtimeFetch } from "../runtimeRequest";
 import { useEffect, useRef, useState } from "react";
 import { m } from "../paraglide/messages.js";
 import { Button } from "./ui";
@@ -25,8 +26,8 @@ export function ProjectTerminal({ projectId, sessionId, active }: {
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const url = new URL(`/api/projects/${encodeURIComponent(projectId)}/terminal`, `${protocol}//${location.host}`);
     if (sessionId) url.searchParams.set("sessionId", sessionId);
-    const socket = new WebSocket(url);
-    socket.binaryType = "arraybuffer";
+    const controller = new AbortController();
+    let connection: WebSocket | null = null;
     let finished = false;
     const finish = (message: string) => {
       if (finished) return;
@@ -38,41 +39,51 @@ export function ProjectTerminal({ projectId, sessionId, active }: {
     };
 
     const input = terminal.onData((data) => {
-      if (socket.readyState === WebSocket.OPEN) socket.send(new TextEncoder().encode(data));
+      if (connection?.readyState === WebSocket.OPEN) connection.send(new TextEncoder().encode(data));
     });
     const resize = terminal.onResize(({ cols, rows }) => {
-      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "resize", cols, rows }));
+      if (connection?.readyState === WebSocket.OPEN) connection.send(JSON.stringify({ type: "resize", cols, rows }));
     });
-    socket.onopen = () => {
-      socket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
-    };
-    socket.onmessage = (event) => {
-      if (event.data instanceof ArrayBuffer) {
-        terminal.write(new Uint8Array(event.data));
-        return;
-      }
-      if (typeof event.data !== "string") return;
-      let value: unknown;
-      try {
-        value = JSON.parse(event.data);
-      } catch {
-        return;
-      }
-      if (!isRecord(value)) return;
-      if (value.type === "exit") finish(m.workspace_terminal_exited({ code: String(value.code) }));
-      else if (value.type === "error" && typeof value.error === "string") finish(value.error);
-    };
-    socket.onclose = () => finish(m.workspace_terminal_disconnected());
-    socket.onerror = () => finish(m.workspace_terminal_disconnected());
+    void (async () => {
+      const response = await runtimeFetch(`/api/projects/${encodeURIComponent(projectId)}`, { signal: controller.signal });
+      if (!response.ok) throw new Error("Terminal unavailable");
+      await response.body?.cancel();
+      controller.signal.throwIfAborted();
+      const socket = new WebSocket(url);
+      connection = socket;
+      socket.binaryType = "arraybuffer";
+      socket.onopen = () => {
+        socket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
+      };
+      socket.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          terminal.write(new Uint8Array(event.data));
+          return;
+        }
+        if (typeof event.data !== "string") return;
+        let value: unknown;
+        try {
+          value = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        if (!isRecord(value)) return;
+        if (value.type === "exit") finish(m.workspace_terminal_exited({ code: String(value.code) }));
+        else if (value.type === "error" && typeof value.error === "string") finish(value.error);
+      };
+      socket.onclose = () => finish(m.workspace_terminal_disconnected());
+      socket.onerror = () => finish(m.workspace_terminal_disconnected());
+    })().catch(() => { if (!controller.signal.aborted) finish(m.workspace_terminal_disconnected()); });
 
     return () => {
-      socket.onopen = null;
-      socket.onmessage = null;
-      socket.onerror = null;
-      socket.onclose = null;
+      controller.abort();
+      if (connection) {
+        connection.onopen = null; connection.onmessage = null;
+        connection.onerror = null; connection.onclose = null;
+      }
       input.dispose();
       resize.dispose();
-      socket.close();
+      connection?.close();
       mountRef.current = null;
       dispose();
     };

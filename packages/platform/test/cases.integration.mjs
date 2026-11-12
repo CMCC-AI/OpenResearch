@@ -113,6 +113,69 @@ test(
         expectedFileCount: 1,
       };
       await t.test(
+        "large team snapshots create and synchronize without truncating expert transcripts",
+        async () => {
+          const content = "完整研究结果".repeat(1024 * 1024);
+          const workspace = {
+            version: 1,
+            projectId: "private-project",
+            sessionId: "source-session",
+            sourceSessionId: "source-session",
+            responses: {
+              "/api/projects": {
+                projects: [{ id: "private-project", name: "研究" }],
+              },
+              "/api/chat/sessions?projectId=private-project": {
+                sessions: [
+                  {
+                    id: "source-session",
+                    projectId: "private-project",
+                    busy: false,
+                  },
+                ],
+              },
+              "/api/chat/sessions/source-session/messages": {
+                messages: [{ parts: [{ type: "text", text: content }] }],
+                queued: [],
+              },
+            },
+            assets: {},
+          };
+          const created = await request("/api/platform/admin/cases", {
+            method: "POST",
+            cookie: admin,
+            data: { ...draft, snapshot: { workspace }, expectedFileCount: 0 },
+          });
+          assert.equal(created.status, 201, JSON.stringify(created.data));
+          const path = `/api/platform/admin/cases/${created.data.id}`;
+          try {
+            const saved = (await request(path, { cookie: admin })).data;
+            assert.equal(saved.source_session_id, "source-session");
+            assert.equal(
+              saved.snapshot.workspace.responses[
+                "/api/chat/sessions/source-session/messages"
+              ].messages[0].parts[0].text,
+              content,
+            );
+            assert.equal(
+              (
+                await request(`${path}/native`, {
+                  method: "POST",
+                  cookie: admin,
+                  data: { revision: saved.revision, workspace },
+                })
+              ).status,
+              200,
+            );
+          } finally {
+            assert.equal(
+              (await request(path, { method: "DELETE", cookie: admin })).status,
+              200,
+            );
+          }
+        },
+      );
+      await t.test(
         "native project copies retain API records and safely serve the original files",
         async () => {
           const content = Buffer.from("original project file\n");

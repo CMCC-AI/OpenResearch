@@ -15,7 +15,6 @@ import { WorkModeSwitch, type WorkMode } from "../components/WorkModeSwitch";
 import { ProductWordmark } from "./ProductNav";
 import { Spinner } from "../components/ui";
 import { IconButton } from "../components/ui/IconButton";
-import { ResearchSuggestions } from "./ResearchSuggestions";
 
 export function ResearchStartPanel({ starting = false, draft, onDraftChange, attachments, onAttachmentsChange, onStart, onError, workMode, onWorkModeChange, preferredAgent, projects, activity, project, onSelectProject }: {
   starting?: boolean;
@@ -108,7 +107,6 @@ export function ResearchStartPanel({ starting = false, draft, onDraftChange, att
       </div>
     </form>
     <div className="mt-2 flex justify-start"><div className="research-home-project-picker"><ComposerProjectPicker projects={projects} activity={activity} projectId={project?.id ?? ""} projectName={project?.name ?? "新项目"} onSelect={onSelectProject} onNewProject={() => onSelectProject("")} /></div></div>
-    <ResearchSuggestions projectId={project?.id} harness={selection?.harness} model={selection?.model ?? null} onPick={(prompt) => { onDraftChange(prompt); draftRef.current?.focus(); }} />
   </section>;
 }
 

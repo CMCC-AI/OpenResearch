@@ -26,6 +26,22 @@ export function workspaceIsHealthy(body) {
   return body?.ok === true && typeof body.version === 'string' && typeof body.dashboardProtocol === 'number'
 }
 
+// A healthy old container may predate the account APIs used by today's UI.
+// Probe without cookies; a supported endpoint still exposes CORS on its 401.
+export async function assertAccountApi(base = platformOrigin) {
+  let response
+  try {
+    response = await fetch(`${base}/api/platform/token-quota`, { cache: 'no-store', signal: AbortSignal.timeout(3000) })
+  } catch {
+    throw new Error(`无法连接账号服务 ${base}；请先启动已有账号服务。`)
+  }
+  if (![200, 401].includes(response.status)
+    || response.headers.get('access-control-allow-origin') !== new URL(base).origin
+    || response.headers.get('access-control-allow-credentials') !== 'true') {
+    throw new Error('账号服务版本过旧或接口不兼容，缺少 Token 额度接口。请按 docs/product/start-mobilesci.md 的“更新本地账号服务”升级；无需重置账号或凭据。')
+  }
+}
+
 export function composeFiles(label, directory) {
   if (!label) return ['compose.yaml', 'compose.dev.yaml'].map(file => path.join(directory, file))
   return label.trim().split(',').map(file => {
@@ -94,6 +110,7 @@ async function ensureCompanions(options) {
   const [platformReady, literatureReady] = await Promise.all([
     ready(`${platformOrigin}/healthz`), ready(`${literatureOrigin}/api/papers?limit=1`),
   ])
+  if (platformReady) await assertAccountApi()
   if (platformReady && literatureReady) { console.log('账号服务和 DeepXiv 已运行，复用现有服务。'); return }
   const docker = spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], { stdio: 'ignore' })
   if (docker.status !== 0) throw new Error('请先启动 Docker Desktop，再双击 start-mobilesci.command。')
@@ -104,6 +121,7 @@ async function ensureCompanions(options) {
     const files = composeFiles(previous.status === 0 ? previous.stdout.trim() : '', directory)
     run('docker', ['compose', ...files.flatMap(file => ['-f', file]), 'up', '-d'], directory)
     await waitFor(`${platformOrigin}/healthz`, '账号服务')
+    await assertAccountApi()
   }
   if (!literatureReady) {
     if (!existsSync(path.join(options.literatureDir, '.env.local'))) throw new Error('DeepXiv 尚未配置 .env.local；请完成既有服务配置后再启动。')

@@ -64,17 +64,11 @@ test("the active DAG page exposes the evidence view and renders persisted claims
 });
 
 
-test("the active DAG offers only confirmed private packages without active runs", () => {
+test("the active DAG hides the confirmed research package download", () => {
   const current = { ...study, plans: [{ version: 1, tasks: [] }], deliverySnapshot: { scopeHash: "scope" }, decisions: [{ id: "gate", gate: "G4", version: 1, status: "approved", scopeHash: "scope" }] };
-  function render(currentStudy, runs = [], readonly = false) {
-    const view = {};
-    const isolated = { ...mocks, "../readOnlyApi": { getReadOnlyApi: () => readonly ? {} : null, projectAssetUrl: url => url } };
-    new Function("require", "exports", code)(id => id in isolated ? isolated[id] : require(id), view);
-    return renderToStaticMarkup(React.createElement(view.ResearchTeamDagDialog, { embedded: true, study: currentStudy, metrics: measured, runs, onClose() {} }));
+  for (const currentStudy of [current, { ...current, status: "stopped" }]) {
+    const html = renderToStaticMarkup(React.createElement(exported.ResearchTeamDagDialog, { embedded: true, study: currentStudy, metrics: measured, runs: [], onClose() {} }));
+    assert.doesNotMatch(html, /下载已确认研究包/);
+    assert.doesNotMatch(html, /\/package"/);
   }
-  assert.match(render(current), /href="\/api\/research\/studies\/study\/package"[^>]*download=""/);
-  assert.match(render({ ...current, status: "stopped" }), /下载已确认研究包/);
-  assert.doesNotMatch(render(current, [{ id: "old", status: "running" }]), /下载已确认研究包/);
-  assert.doesNotMatch(render(current, [], true), /下载已确认研究包/);
-  assert.doesNotMatch(render({ ...current, decisions: [{ ...current.decisions[0], status: "pending" }] }), /下载已确认研究包/);
 });

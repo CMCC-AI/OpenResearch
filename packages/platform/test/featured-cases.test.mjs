@@ -1,9 +1,96 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { Readable } from "node:stream";
 import {
+  featuredCaseRoutes,
+  NATIVE_METADATA_LIMIT,
   normalizeCase,
   normalizeNativeWorkspace,
 } from "../src/featured-cases.mjs";
+
+test("large team case requests preserve transcripts above the former 16 MiB limit", async () => {
+  const workspace = materialWorkspace();
+  const transcript = "研究结果".repeat(2 * 1024 * 1024);
+  workspace.responses["/api/chat/sessions/session/messages"].messages.push({
+    parts: [{ type: "text", text: transcript }],
+  });
+  const queries = [];
+  const db = {
+    query: async (...args) => {
+      queries.push(args);
+      return { rows: [] };
+    },
+    release() {},
+  };
+  let result;
+  const route = featuredCaseRoutes({
+    config: {
+      origin: new URL("http://localhost:5300"),
+      appOrigin: "http://localhost:5201",
+    },
+    pool: { connect: async () => db },
+    session: async () => ({ user_id: "admin", is_admin: true }),
+    json: (_res, data, status) => {
+      result = { data, status };
+    },
+    audit: async () => {},
+    limit: async () => {},
+  });
+  const payload = JSON.stringify({
+    sourceProjectId: "project",
+    title: "研究",
+    summary: "摘要",
+    category: "科研实践",
+    snapshot: { workspace },
+    expectedFileCount: 1,
+  });
+  assert.ok(Buffer.byteLength(payload) > 16 * 1024 * 1024);
+  const request = (chunks) =>
+    Object.assign(Readable.from(chunks), {
+      method: "POST",
+      headers: {
+        origin: "http://localhost:5201",
+        "content-type": "application/json",
+      },
+    });
+  await route(
+    request([Buffer.from(payload)]),
+    { setHeader() {} },
+    "/api/platform/admin/cases",
+  );
+  assert.equal(result.status, 201);
+  const insert = queries.find(([sql]) =>
+    sql.startsWith("INSERT INTO featured_cases"),
+  );
+  const saved = JSON.parse(insert[1][6]);
+  assert.equal(
+    saved.workspace.responses["/api/chat/sessions/session/messages"].messages[1]
+      .parts[0].text,
+    transcript,
+  );
+  const queryCount = queries.length;
+  const chunk = Buffer.alloc(1024 * 1024, " ");
+  await assert.rejects(
+    route(
+      request([...Array(65).fill(chunk), Buffer.from(" ")]),
+      { setHeader() {} },
+      "/api/platform/admin/cases",
+    ),
+    { status: 413, message: /65 MiB/ },
+  );
+  assert.equal(queries.length, queryCount);
+});
+
+test("native metadata remains bounded by UTF-8 bytes with a useful size error", () => {
+  const workspace = materialWorkspace();
+  workspace.responses["/api/chat/sessions/session/messages"].messages.push({
+    parts: [{ type: "text", text: "x".repeat(NATIVE_METADATA_LIMIT) }],
+  });
+  assert.throws(() => normalizeNativeWorkspace(workspace), {
+    status: 413,
+    message: /64 MiB/,
+  });
+});
 
 function materialWorkspace() {
   const id = "11111111-1111-4111-8111-111111111111";
@@ -334,4 +421,14 @@ test("range snapshot identities cannot mix projects, packages or sources", () =>
     change(v);
     assert.throws(() => normalizeNativeWorkspace(v));
   }
+});
+
+test("conversation cases preserve their source while old project snapshots remain compatible", () => {
+  const workspace = materialWorkspace();
+  workspace.sourceSessionId = workspace.sessionId;
+  assert.deepEqual(normalizeNativeWorkspace(workspace), workspace);
+  workspace.sourceSessionId = "other-session";
+  assert.throws(() => normalizeNativeWorkspace(workspace));
+  delete workspace.sourceSessionId;
+  assert.deepEqual(normalizeNativeWorkspace(workspace), workspace);
 });

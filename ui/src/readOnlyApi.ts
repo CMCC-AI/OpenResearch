@@ -1,3 +1,4 @@
+import { runtimeFetch } from "./runtimeRequest.ts";
 import type { NativeProjectSnapshot } from "./product/nativeProjectSnapshot";
 /** A scoped data source for the real project UI. Never intercepts global fetch. */
 export interface ReadOnlyApi {
@@ -15,7 +16,7 @@ export function installReadOnlyApi(api: ReadOnlyApi) {
   return () => { if (current === api) current = null; };
 }
 export const projectAssetUrl = (url: string) => current ? current.asset(url) : url;
-export const projectRequest = (url: string, init?: RequestInit): Promise<Response> => current && url.startsWith("/api/") ? current.read(url, init) : fetch(url, init);
+export const projectRequest = (url: string, init?: RequestInit): Promise<Response> => current && url.startsWith("/api/") ? current.read(url, init) : runtimeFetch(url, init);
 export function canonicalRequest(url: string) {
   const parsed = new URL(url, "http://snapshot.invalid");
   parsed.searchParams.sort();

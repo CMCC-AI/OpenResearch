@@ -1,3 +1,4 @@
+import { runtimeFetch } from "../runtimeRequest";
 import type { ChatSession, Project, ProjectArtifacts, CodeTree, Run, Experiment, ProjectFile } from "../api";
 import { canonicalRequest } from "../readOnlyApi";
 import type { NativeProjectSnapshot } from "./nativeProjectSnapshot";
@@ -7,14 +8,14 @@ export interface NativeCapture { workspace: NativeProjectSnapshot; assets: { nam
 const encode = (bytes: Uint8Array) => { let value = ""; for (let at = 0; at < bytes.length; at += 32768) value += String.fromCharCode(...bytes.subarray(at, at + 32768)); return btoa(value); };
 
 /** Capture the API responses consumed by the actual project page without flattening them. */
-export async function captureNativeProject(projectId: string, progress: (message: string) => void = () => {}): Promise<NativeCapture> {
-  const workspace: NativeProjectSnapshot = { version: 1, projectId, sessionId: "", responses: {}, assets: {} };
+export async function captureNativeProject(projectId: string, progress: (message: string) => void = () => {}, sourceSessionId?: string): Promise<NativeCapture> {
+  const workspace: NativeProjectSnapshot = { version: 1, ...(sourceSessionId ? { sourceSessionId } : {}), projectId, sessionId: "", responses: {}, assets: {} };
   const assets: NativeCapture["assets"] = [];
   let total = 0;
   async function read<T>(path: string): Promise<T> {
     const key = canonicalRequest(path);
     if (key in workspace.responses) return workspace.responses[key] as T;
-    const response = await fetch(path, { credentials: "include", cache: "no-store" });
+    const response = await runtimeFetch(path, { credentials: "include", cache: "no-store" });
     if (!response.ok) throw new Error(`项目资源读取失败（${response.status}）：${path}`);
     const value = await response.json() as T;
     workspace.responses[key] = value;
@@ -28,7 +29,7 @@ export async function captureNativeProject(projectId: string, progress: (message
     if (missingCoverage.has(base) || base in workspace.responses) return;
     progress("正在复制材料读取范围记录…");
     for (const path of [base, ...files.map(file => `${base}?source=${encodeURIComponent(file.id)}`)]) {
-      const response = await fetch(path, { credentials: "include", cache: "no-store" });
+      const response = await runtimeFetch(path, { credentials: "include", cache: "no-store" });
       if (response.status === 404 && path === base) {
         const detail = await response.json().catch(() => null);
         if (detail?.error === "route not found") { missingCoverage.add(base); return; }
@@ -42,7 +43,7 @@ export async function captureNativeProject(projectId: string, progress: (message
     const key = canonicalRequest(path);
     if (workspace.assets[key]) return;
     progress(`正在复制原项目文件：${filename}`);
-    const response = await fetch(path, { credentials: "include", cache: "no-store" });
+    const response = await runtimeFetch(path, { credentials: "include", cache: "no-store" });
     if (!response.ok) throw new Error(`原项目文件读取失败（${response.status}）：${filename}`);
     const reader = response.body?.getReader();
     const chunks: Uint8Array[] = []; let size = 0;
@@ -57,17 +58,45 @@ export async function captureNativeProject(projectId: string, progress: (message
   const source = (await read<{projects:Project[]}>("/api/projects")).projects.find((project)=>project.id===projectId);
   if(!source)throw new Error("无权读取案例原项目，或原项目已被删除。");
   workspace.responses["/api/projects"]={projects:[source]};
-  const before = await read<{sessions:ChatSession[]}>(`/api/chat/sessions?projectId=${projectId}`);
-  if(before.sessions.some((session)=>session.busy))throw new Error("原项目仍有运行中的会话，请结束后再同步。");
-  const runs = (await read<{runs:Run[]}>(`/api/projects/${projectId}/runs`)).runs;
-  if(runs.some((run)=>run.status==="running"||run.status==="starting"))throw new Error("原项目仍有运行中的实验，请结束后再同步。");
+  const sessionPath = `/api/chat/sessions?projectId=${projectId}`;
+  const allSessions = (await read<{sessions:ChatSession[]}>(sessionPath)).sessions;
+  if (sourceSessionId && !allSessions.some(session => session.id === sourceSessionId)) throw new Error("所选对话已不存在，不能生成案例。");
+  const selectedIds = new Set(sourceSessionId ? [sourceSessionId] : allSessions.map(session => session.id));
+  const researchRunIds = new Set<string>();
+  // Include expert descendants and sessions referenced by their research plans.
+  for (;;) {
+    const previousSize = selectedIds.size;
+    for (const session of allSessions) if (session.parentSessionId && selectedIds.has(session.parentSessionId)) selectedIds.add(session.id);
+    for (const session of allSessions.filter(session => selectedIds.has(session.id))) {
+      if (session.busy) throw new Error("所选范围仍有运行中的会话，请结束后再同步。");
+      const research = await read<{study?: import("../research").ResearchStudy | null; runs?: Run[]}>(`/api/research/sessions/${session.id}`);
+      for (const run of research.runs ?? []) researchRunIds.add(run.id);
+      for (const plan of research.study?.plans ?? []) for (const task of plan.tasks) {
+        if (task.sessionId && allSessions.some(row => row.id === task.sessionId)) selectedIds.add(task.sessionId);
+      }
+    }
+    if (selectedIds.size === previousSize) break;
+  }
+  const before = { sessions: allSessions.filter(session => selectedIds.has(session.id)) };
+  workspace.responses[canonicalRequest(sessionPath)] = { sessions: before.sessions.map(session => ({ ...session, parentSessionId: selectedIds.has(session.parentSessionId ?? "") ? session.parentSessionId : null, sideParentSessionId: selectedIds.has(session.sideParentSessionId ?? "") ? session.sideParentSessionId : null })) };
+  const experimentPath = `/api/projects/${projectId}/experiments`;
+  const allExperiments = (await read<{experiments:Experiment[]}>(experimentPath)).experiments;
+  const allRuns = (await read<{runs:Run[]}>(`/api/projects/${projectId}/runs`)).runs;
+  const researchExperimentIds = new Set(allRuns.filter(run => researchRunIds.has(run.id)).map(run => run.experimentId));
+  const experiments = allExperiments.filter(experiment => !sourceSessionId || selectedIds.has(experiment.chatSessionId ?? "") || researchExperimentIds.has(experiment.id));
+  const experimentIds = new Set(experiments.map(experiment => experiment.id));
+  const runs = allRuns.filter(run => !sourceSessionId || experimentIds.has(run.experimentId));
+  workspace.responses[canonicalRequest(experimentPath)] = { experiments };
+  workspace.responses[`/api/projects/${projectId}/runs`] = { runs };
+  if(runs.some((run)=>run.status==="running"||run.status==="starting"))throw new Error("所选范围仍有运行中的实验，请结束后再同步。");
   const state = await read<{lastTaskId:string|null}>(`/api/projects/${projectId}/ui-state`);
-  workspace.sessionId = state.lastTaskId && before.sessions.some((session)=>session.id===state.lastTaskId) ? state.lastTaskId : before.sessions.find((session)=>!session.parentSessionId)?.id || before.sessions[0]?.id || "";
+  workspace.sessionId = sourceSessionId || (state.lastTaskId && selectedIds.has(state.lastTaskId) ? state.lastTaskId : before.sessions.find((session)=>!session.parentSessionId)?.id || before.sessions[0]?.id || "");
   if(!workspace.sessionId)throw new Error("原项目没有会话历史。");
+  if (sourceSessionId) workspace.responses[`/api/projects/${projectId}/ui-state`] = { lastTaskId: sourceSessionId };
   const global = await read<{workspace:unknown}>("/api/settings/ui-state");
-  workspace.responses["/api/settings/ui-state"]={...global,workspace:global.workspace};
+  workspace.responses["/api/settings/ui-state"]={...global,workspace:sourceSessionId ? null : global.workspace};
   const activity = await read<{activity:{projectId:string}[]}>("/api/projects/activity");
-  workspace.responses["/api/projects/activity"]={activity:activity.activity.filter((row)=>row.projectId===projectId)};
+  workspace.responses["/api/projects/activity"]={activity:sourceSessionId ? [] : activity.activity.filter((row)=>row.projectId===projectId)};
   await read("/api/harnesses");
   await read(`/api/skills?project=${projectId}`);
   for (const harness of new Set(before.sessions.map((session) => session.harness))) await read(`/api/skills?${new URLSearchParams({harness,project:projectId})}`);
@@ -103,7 +132,8 @@ export async function captureNativeProject(projectId: string, progress: (message
     progress(`正在复制原会话：${session.title || session.id}`);
     const messages=await read<{messages:{parts:{type:string;text?:string;name?:string}[]}[];queued:unknown[]}>(`/api/chat/sessions/${session.id}/messages`);
     if(messages.queued?.length)throw new Error("原项目还有排队消息，请处理后再同步。");
-    workspace.responses[`/api/chat/sessions/${session.id}`]={session};
+    const saved = (workspace.responses[canonicalRequest(sessionPath)] as {sessions:ChatSession[]}).sessions.find(row => row.id === session.id)!;
+    workspace.responses[`/api/chat/sessions/${session.id}`]={session: saved};
     await read(`/api/research/sessions/${session.id}`);
     const wt=await read<{exists:boolean}>(`/api/chat/sessions/${session.id}/worktree`);
     if(wt.exists)await tree(new URLSearchParams({sessionId:session.id}).toString());
@@ -114,7 +144,6 @@ export async function captureNativeProject(projectId: string, progress: (message
       await captureCoverage(material.id, material.files);
     }
   }
-  const experiments=(await read<{experiments:Experiment[]}>(`/api/projects/${projectId}/experiments`)).experiments;
   for(const experiment of experiments){await tree(new URLSearchParams({ref:experiment.branchName}).toString());await read(`/api/experiments/${experiment.id}/diff`);}
   for(const run of runs){
     await read(`/api/runs/${run.id}/diff`);
@@ -123,13 +152,14 @@ export async function captureNativeProject(projectId: string, progress: (message
     const size=chunks.reduce((sum,chunk)=>sum+chunk.length,0);const bytes=new Uint8Array(size);offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
     workspace.responses[canonicalRequest(`/api/runs/${run.id}/log?offset=0`)]={dataBase64:encode(bytes),nextOffset:size,eof:true};
   }
-  const after=await fetch(`/api/chat/sessions?projectId=${projectId}`,{credentials:"include",cache:"no-store"}).then((response)=>response.json()) as typeof before;
-  if(JSON.stringify(after)!==JSON.stringify(before))throw new Error("复制期间原项目会话发生变化，请重试。");
+  const after=await runtimeFetch(`/api/chat/sessions?projectId=${projectId}`,{credentials:"include",cache:"no-store"}).then((response)=>response.json()) as typeof before;
+  const scopedAfter = { sessions: sourceSessionId ? after.sessions.filter(session => selectedIds.has(session.id) || selectedIds.has(session.parentSessionId ?? "")) : after.sessions };
+  if(JSON.stringify(scopedAfter)!==JSON.stringify(before))throw new Error("复制期间原项目会话发生变化，请重试。");
   // All package summaries must overlap one stable interval, including CLI
   // reads that do not update a chat's timestamp. Ignore observation timestamps.
   for (const [path, captured] of Object.entries(workspace.responses)) {
     if (!/^\/api\/materials\/[^/]+\/coverage$/.test(path)) continue;
-    const response = await fetch(path, { credentials: "include", cache: "no-store" });
+    const response = await runtimeFetch(path, { credentials: "include", cache: "no-store" });
     if (!response.ok) throw new Error("材料读取范围复核失败，不能省略发布。");
     const latest = await response.json();
     if (JSON.stringify(latest.coverage) !== JSON.stringify((captured as { coverage: unknown }).coverage)) throw new Error("复制期间材料读取记录发生变化，请重试。");

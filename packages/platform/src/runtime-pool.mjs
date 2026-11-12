@@ -1,6 +1,63 @@
 // All admission, request leases and suspension use the same transaction lock.
 // A slot is a running process, never an account or a persistent data directory.
-import { id, check } from "./security.mjs";
+import { id, check, HttpError } from "./security.mjs";
+import { transaction } from "./db.mjs";
+
+function pendingRuntime() {
+  const error = new HttpError(503, "请求暂未完成，请稍后重试");
+  error.runtimePending = true;
+  return error;
+}
+
+// Called only after authorization, before reading/forwarding any request body.
+// Background reads and SSE must not wake an idle environment on their own.
+export async function personalRuntimeTunnel(
+  pool,
+  workspace,
+  tunnels,
+  target,
+  wake = false,
+  stream = false,
+) {
+  const runtime = await transaction(pool, async (db) => {
+    await db.query("SELECT pg_advisory_xact_lock(721947)");
+    const { rows } = await db.query(
+      "SELECT status,desired FROM workspace_runtimes WHERE workspace_id=$1",
+      [workspace],
+    );
+    let row = rows[0];
+    if (!row && wake && !tunnels.has(workspace)) {
+      await db.query(
+        "INSERT INTO workspace_runtimes(workspace_id,status,requested_at,last_requested_at) VALUES($1,'waiting',now(),now())",
+        [workspace],
+      );
+      row = { status: "waiting", desired: "running" };
+    }
+    if (row) {
+      check(row.desired === "running", 409, "此操作暂不可用");
+      check(row.status !== "failed", 503, "请求暂未完成，请稍后重试");
+      if (wake && ["waiting", "sleeping"].includes(row.status))
+        await db.query(
+          "UPDATE workspace_runtimes SET status='waiting',requested_at=coalesce(requested_at,now()),last_requested_at=now(),last_used_at=now() WHERE workspace_id=$1",
+          [workspace],
+        );
+    }
+    return row;
+  });
+  const tunnel = tunnels.get(workspace);
+  if ((runtime && runtime.status !== "ready") || !tunnel)
+    throw pendingRuntime();
+  if (!stream) {
+    try {
+      await leaseRuntime(pool, workspace, target, wake);
+    } catch (error) {
+      // Suspension may have won the lock between inspection and lease creation.
+      if (error.status === 503) throw pendingRuntime();
+      throw error;
+    }
+  }
+  return tunnel;
+}
 
 export async function leaseRuntime(pool, workspace, target, touch = false) {
   const db = await pool.connect();
@@ -60,6 +117,22 @@ export async function leaseRuntime(pool, workspace, target, touch = false) {
   if (target.destroyed || target.writableEnded) release();
 }
 
+export const idleProcessProbe = `unknown=0
+for p in os.listdir('/proc'):
+ if p.isdigit() and int(p) not in (os.getpid(),os.getppid()):
+  try:
+   name=open('/proc/'+p+'/comm').read().strip()
+   args=open('/proc/'+p+'/cmdline','rb').read().decode().strip('\\0').split('\\0')
+   # Only known idle services are exempt. An arbitrary node/orx/agent process
+   # may itself be a detached research task, so its name is not sufficient.
+   service=(name in ('tini','docker-init') and int(p)==1)
+   service=service or (name=='node' and len(args)==2 and args[1] in ('src/executor-entry.mjs','/app/platform/src/executor-entry.mjs','src/runner.mjs','/app/platform/src/runner.mjs'))
+   service=service or (name=='orx' and args[1:2]==['up'])
+   service=service or (name=='opencode' and args[1:2]==['serve'])
+   if not service: unknown+=1
+  except FileNotFoundError: pass
+`;
+
 // Executed inside the user's container. Unknown activity or unavailable tools
 // must keep the container running, rather than risk interrupting research.
 export const idleProbe = `
@@ -75,13 +148,7 @@ c.execute('PRAGMA query_only=ON')
 q=['SELECT count(*) FROM chat_queued_messages','SELECT count(*) FROM chat_turn_leases WHERE heartbeat_at>?',"SELECT count(*) FROM chat_spawns WHERE state!='done'","SELECT count(*) FROM runs WHERE status NOT IN ('done','failed','cancelled')"]
 counts=[c.execute(s,(int(time.time()*1000)-60000,) if '?' in s else ()).fetchone()[0] for s in q]
 # Preserve detached scripts and shells, even when not registered as orx runs.
-unknown=0
-for p in os.listdir('/proc'):
- if p.isdigit() and int(p)!=os.getpid():
-  try:
-   name=open('/proc/'+p+'/comm').read().strip()
-   if name not in ('node','orx','tini','docker-init','opencode','claude','codex'): unknown+=1
-  except FileNotFoundError: pass
+${idleProcessProbe}
 counts.append(unknown)
 print(json.dumps(counts))`)}],{encoding:'utf8',timeout:4000}));
 console.log(JSON.stringify({idle:d.activity.every(x=>x.activeAgents===0&&x.runningExperiments===0)&&counts.length===5&&counts.every(x=>x===0)}));

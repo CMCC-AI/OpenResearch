@@ -1,3 +1,4 @@
+import { cancelRuntimeRequests } from "../runtimeRequest";
 import { pendingOwner, revokePendingOwner } from "../pendingSubmissions";
 import { PersonalResearchGate } from "./PersonalResearchGate";
 import { stripAppBase, appHref } from "../appBasePath";
@@ -104,6 +105,7 @@ export function AuthSessionProvider({
   }, [accountUrl, cloud]);
 
   const logout = useCallback(async () => {
+    cancelRuntimeRequests();
     if (user) await revokePendingOwner(pendingOwner(accountUrl, user.id)).catch(() => undefined);
     if (accountUrl) {
       await fetch(cloud ? "/_platform/logout" : `${accountUrl}/api/platform/browser-logout`, {

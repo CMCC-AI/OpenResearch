@@ -1,3 +1,4 @@
+import * as runtimeRequest from "../src/runtimeRequest.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -24,6 +25,7 @@ const code = ts.transpileModule(readFileSync(new URL("../src/product/captureNati
 }).outputText;
 const exports = {};
 new Function("require", "exports", code)((name) => {
+  if (name === "../runtimeRequest") return runtimeRequest;
   if (name === "../readOnlyApi") return { canonicalRequest };
   if (name === "./sha256") return { sha256Hex };
   throw new Error(`Unexpected import: ${name}`);
@@ -111,6 +113,58 @@ test("HTTP project capture with uploaded materials passes the server contract an
       failedCoverage = true;
       await assert.rejects(exports.captureNativeProject("p"), /未复制完整/);
       failedCoverage = false;
+    });
+
+    await t.test("conversation capture excludes an unrelated busy chat and experiment but keeps expert history", async () => {
+      const sessionPath = "/api/chat/sessions?projectId=p";
+      const originalSessions = structuredClone(responses[sessionPath]);
+      const originalStudy = responses["/api/research/sessions/s"];
+      responses[sessionPath].sessions.push(
+        { id: "expert", projectId: "p", parentSessionId: "s", harness: "opencode", archived: true },
+        { id: "other", projectId: "p", harness: "opencode", busy: true },
+      );
+      responses["/api/research/sessions/s"] = { study: { plans: [{ tasks: [{ sessionId: "expert" }] }] } };
+      responses["/api/research/sessions/expert"] = {};
+      responses["/api/chat/sessions/expert/messages"] = { messages: [{ parts: [{ type: "text", text: "expert results" }] }], queued: [] };
+      responses["/api/chat/sessions/expert/worktree"] = { exists: false };
+      responses["/api/projects/p/experiments"] = { experiments: [{ id: "other-exp", chatSessionId: "other" }] };
+      responses["/api/projects/p/runs"] = { runs: [{ id: "other-run", experimentId: "other-exp", status: "running" }] };
+      const originalFetchForScope = globalThis.fetch;
+      let sessionReads = 0;
+      globalThis.fetch = async (path, init) => {
+        if (path === sessionPath && ++sessionReads % 2 === 0) {
+          const latest = structuredClone(responses[sessionPath]);
+          latest.sessions.find(session => session.id === "other").updatedAt = Date.now();
+          return Response.json(latest);
+        }
+        return originalFetchForScope(path, init);
+      };
+      try {
+        const scoped = await exports.captureNativeProject("p", undefined, "s");
+        assert.equal(scoped.workspace.sourceSessionId, "s");
+        assert.equal(scoped.workspace.sessionId, "s");
+        assert.deepEqual(scoped.workspace.responses[sessionPath].sessions.map(session => session.id), ["s", "expert"]);
+        assert.deepEqual(scoped.workspace.responses["/api/projects/p/experiments"], { experiments: [] });
+        assert.deepEqual(scoped.workspace.responses["/api/projects/p/runs"], { runs: [] });
+        assert.ok(scoped.workspace.responses["/api/chat/sessions/expert/messages"]);
+        assert.equal(Object.keys(scoped.workspace.responses).some(path => path.includes("/other/")), false);
+        assert.deepEqual(validator.normalizeNativeWorkspace(scoped.workspace), scoped.workspace);
+        const replay = createReadOnlyProjectApi({ id: "single", base: "", admin: false, workspace: scoped.workspace });
+        assert.equal((await replay.read("/api/chat/sessions/other/messages")).status, 404);
+        responses[sessionPath].sessions[1].busy = true;
+        await assert.rejects(exports.captureNativeProject("p", undefined, "s"), /运行中/);
+        responses[sessionPath].sessions[1].busy = false;
+        responses["/api/chat/sessions/expert/messages"].queued = [{}];
+        await assert.rejects(exports.captureNativeProject("p", undefined, "s"), /排队/);
+        await assert.rejects(exports.captureNativeProject("p", undefined, "deleted"), /不存在/);
+        await assert.rejects(exports.captureNativeProject("p"), /运行中/);
+      } finally {
+        globalThis.fetch = originalFetchForScope;
+        responses[sessionPath] = originalSessions;
+        responses["/api/research/sessions/s"] = originalStudy;
+        responses["/api/projects/p/experiments"] = { experiments: [] };
+        responses["/api/projects/p/runs"] = { runs: [] };
+      }
     });
 
   } finally {

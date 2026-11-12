@@ -5,6 +5,7 @@ import { snapshotMessages, type CaseSnapshot } from "./caseSnapshot";
 export interface FeaturedCase {
   id: string; title: string; summary: string; category: string;
   source_project_id?: string;
+  source_session_id?: string | null;
   status: "draft" | "published"; revision: number; sort_order: number;
   created_at: string; updated_at: string; published_at: string | null;
 }

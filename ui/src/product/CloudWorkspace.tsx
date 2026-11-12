@@ -1,3 +1,5 @@
+import { PersonalResearchGate } from "./PersonalResearchGate";
+import { Spinner } from "../components/ui";
 import { useEffect, useState, type ReactNode } from "react";
 
 export const isCloudWorkspace = () => typeof location !== "undefined" && /^[0-9a-f-]{36}\./.test(location.hostname);
@@ -23,13 +25,12 @@ export function CloudWorkspace({ children }: { children: ReactNode }) {
   }, [cloud]);
   if (!cloud) return children;
   const portal = context?.portal || `${location.protocol}//${location.host.replace(/^[0-9a-f-]{36}\./, "")}`;
-  if (error || !context || !context.online) return <main className="flex h-full flex-col items-center justify-center gap-4 bg-canvas px-6 text-text">
-    <h1 className="text-2xl">{error ? "工作空间访问已暂停" : !context ? "正在验证工作空间" : context.privateSpaces ? "运行环境暂未就绪" : "执行器尚未连接"}</h1>
-    <p className="max-w-140 text-center text-subtext">{error || (context ? context.privateSpaces ? "请返回首页查看服务器环境状态或重新准备环境。" : "请检查你的执行器连接。原有实验不会因页面断开而自动停止。" : "正在获取账户权限…")}</p>
+  if (error) return <main className="flex h-full flex-col items-center justify-center gap-4 bg-canvas px-6 text-text">
+    <p role="alert" className="max-w-140 text-center text-subtext">{error}</p>
     <a href={portal} className="rounded-lg bg-primary px-4 py-2 text-background no-underline">返回首页</a>
   </main>;
-  return <div className="flex h-full min-h-0 flex-col"><div className="flex shrink-0 items-center justify-between gap-3 border-b border-border-variant bg-primary-subtle px-5 py-2 text-xs text-primary">
-    <span>{context.user.name} · 私人科研空间</span>
-    <a href={portal} className="text-primary">返回首页 ↗</a>
-  </div><div className="min-h-0 flex-1">{children}</div></div>;
+  if (!context) return <main className="flex h-full items-center justify-center bg-canvas"><Spinner /></main>;
+  return context.privateSpaces
+    ? <PersonalResearchGate accountUrl={location.origin} endpoint="/_platform/activity">{children}</PersonalResearchGate>
+    : children;
 }

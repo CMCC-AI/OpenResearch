@@ -162,13 +162,13 @@ export function ProjectsPage() {
     <div className="app flex flex-col flex-1 min-h-0">
       {runtime.kind === "local" && !isCloudWorkspace() && <><OfflineBanner /><UpdateBanner status={status} /></>}
       {error && (!projects || !state) ? <RouteFailure error={error} reset={retry} />
-        : !projects || !state ? <RoutePending />
-          : (
+        : (
             <ProjectsHome
               key={start.project ?? "research-home"}
-              preferredAgent={state.preferredAgent}
-              starting={starting}
-              projects={projects}
+              preferredAgent={state?.preferredAgent ?? null}
+              starting={starting || (Boolean(start.project) && !projects)}
+              projects={projects ?? []}
+              projectsLoading={!projects}
               initialDialogOpen={Boolean(start.new)}
               initialProjectId={start.project}
               onResume={beginResearch}
