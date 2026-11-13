@@ -33,3 +33,18 @@ test("branch browsing and panel layout only update the reader's in-memory copy",
  const state=await(await api.read("/api/settings/ui-state")).json();assert.equal(state.onboardingCompleted,true);assert.equal(state.workspace.panelWidth,600);assert.equal(workspace.responses["/api/settings/ui-state"].workspace,null);
  assert.equal(canonicalRequest("/api/file?z=2&a=1"),"/api/file?a=1&z=2");
 });
+
+test("missing checkout files in the active case return notFound so artifact fallback can resolve them",async()=>{
+ const workspace=snapshot();
+ workspace.responses["/api/projects/original-project/file?path=notes.md"]={path:"notes.md",root:"clone",content:"ok",truncated:false,binary:false,notFound:false};
+ const api=createReadOnlyProjectApi({id:"case-1",base:"",admin:false,workspace});
+ const missing=await api.read("/api/projects/original-project/file?path=research%2Fstudy%2Fpaper.md&sessionId=original-session");
+ assert.equal(missing.status,200);
+ assert.deepEqual(await missing.json(),{path:"research/study/paper.md",root:"clone",content:"",truncated:false,binary:false,notFound:true});
+ const withoutSession=await api.read("/api/projects/original-project/file?path=notes.md&sessionId=original-session");
+ assert.equal(withoutSession.status,200);
+ assert.equal((await withoutSession.json()).content,"ok");
+ const absMissing=await api.read("/api/files/abs?path=%2Ftmp%2Fmissing.txt");
+ assert.equal(absMissing.status,200);
+ assert.equal((await absMissing.json()).notFound,true);
+});

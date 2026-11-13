@@ -54,6 +54,17 @@ export function createReadOnlyProjectApi({ id, base, admin, workspace }: { id: s
           if (parsed.searchParams.has("limit")) return json({ sessions: all.sessions.filter((session) => parsed.searchParams.get("filter") === "all" || session.archived === (parsed.searchParams.get("filter") === "archived")), next: null });
           return json(all);
         }
+        if (parsed.pathname === `/api/projects/${workspace.projectId}/file`) {
+          const filePath = parsed.searchParams.get("path") ?? "";
+          if (parsed.searchParams.has("sessionId") && !parsed.searchParams.has("ref")) {
+            const withoutSession = canonicalRequest(`${parsed.pathname}?path=${encodeURIComponent(filePath)}`);
+            if (withoutSession in responses) return json(responses[withoutSession]);
+          }
+          return json({ path: filePath, root: "clone", content: "", truncated: false, binary: false, notFound: true });
+        }
+        if (parsed.pathname === "/api/files/abs") {
+          return json({ path: parsed.searchParams.get("path") ?? "", content: "", truncated: false, binary: false, notFound: true });
+        }
         if (parsed.pathname === "/api/skills") return json({ skills: [], importing: false });
         return json({ error: "这份项目副本中没有该资源。" }, 404);
       },
