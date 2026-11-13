@@ -171,7 +171,11 @@ export function useProjectWorkspace(props: Props): {
     if (projectCache.has(projectId)) setLoadedProject(projectId);
     else void queryClient.fetchQuery(getProjectUiStateQuery(projectId)).then((saved) => {
       if (!live || visit !== epoch) return;
-      projectCache.set(projectId, saved ?? emptyProjectWorkspace());
+      projectCache.set(projectId, {
+        ...emptyProjectWorkspace(),
+        ...saved,
+        tasks: saved?.tasks && typeof saved.tasks === "object" && !Array.isArray(saved.tasks) ? saved.tasks : {},
+      });
       setLoadedProject(projectId);
     }).catch((error: unknown) => {
       if (live && visit === epoch) setReadError(error instanceof Error ? error.message : String(error));

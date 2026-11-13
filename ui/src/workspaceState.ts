@@ -30,7 +30,9 @@ export interface ProjectWorkspace {
 }
 
 export function getTaskWorkspace(workspace: ProjectWorkspace | null | undefined, key: string): TaskWorkspace | undefined {
-  return workspace && Object.hasOwn(workspace.tasks, key) ? workspace.tasks[key] : undefined;
+  return workspace?.tasks && typeof workspace.tasks === "object" && Object.hasOwn(workspace.tasks, key)
+    ? workspace.tasks[key]
+    : undefined;
 }
 
 export interface GlobalWorkspace {
@@ -181,7 +183,7 @@ export function withoutResearchLocation(location: string | null): string | null 
 }
 
 export function withoutResearchWorkspace(state: ProjectWorkspace): ProjectWorkspace {
-  return { ...state, lastLocation: withoutResearchLocation(state.lastLocation), tasks: Object.fromEntries(Object.entries(state.tasks).map(([key, task]) => {
+  return { ...state, lastLocation: withoutResearchLocation(state.lastLocation), tasks: Object.fromEntries(Object.entries(state.tasks ?? {}).map(([key, task]) => {
     const tabs = task.tabs.filter((pane) => pane.kind !== "home" || pane.view !== "research");
     const active = task.active?.kind === "home" && task.active.view === "research" ? tabs.at(-1) ?? null : task.active;
     return [key, { ...task, tabs, active, history: task.history.filter((key) => key !== "home:research"), previewKey: task.previewKey === "home:research" ? null : task.previewKey }];
