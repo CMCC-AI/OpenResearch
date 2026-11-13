@@ -3,10 +3,44 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import {
   featuredCaseRoutes,
+  jsonbSafe,
+  jsonbString,
   NATIVE_METADATA_LIMIT,
   normalizeCase,
   normalizeNativeWorkspace,
 } from "../src/featured-cases.mjs";
+
+test("case snapshots replace only characters PostgreSQL jsonb rejects", () => {
+  const value = {
+    responses: {
+      "/api/chat/sessions/s/messages": {
+        messages: [
+          {
+            parts: [
+              {
+                text: "bin\u0000ary \uD83D tail \uDE00 ok 😀 研究",
+                "k\u0000": [1, null, true, "\u0000"],
+              },
+            ],
+          },
+        ],
+      },
+    },
+  };
+  const safe = jsonbSafe(value);
+  const part =
+    safe.responses["/api/chat/sessions/s/messages"].messages[0].parts[0];
+  assert.equal(part.text, "bin\uFFFDary \uFFFD tail \uFFFD ok 😀 研究");
+  assert.deepEqual(part["k\uFFFD"], [1, null, true, "\uFFFD"]);
+  const encoded = jsonbString(value);
+  assert.doesNotMatch(encoded, /\\u0000|\\ud[89a-f][0-9a-f]{2}/i);
+  assert.equal(
+    value.responses[
+      "/api/chat/sessions/s/messages"
+    ].messages[0].parts[0].text.includes("\u0000"),
+    true,
+  );
+});
 
 test("large team case requests preserve transcripts above the former 16 MiB limit", async () => {
   const workspace = materialWorkspace();

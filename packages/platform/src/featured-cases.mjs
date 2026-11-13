@@ -22,6 +22,27 @@ const uuid = (value) =>
 const fields =
   "id,title,summary,category,status,revision,sort_order,created_at,updated_at,published_at";
 
+// PostgreSQL jsonb rejects U+0000 and unpaired UTF-16 surrogates (22P05).
+// Tool output from binary files or truncated text can contain either, so
+// replace only those code units with U+FFFD; everything else stays verbatim.
+const LONE_SURROGATE =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+const jsonbText = (value) =>
+  value.replace(/\u0000/g, "\uFFFD").replace(LONE_SURROGATE, "\uFFFD");
+export function jsonbSafe(value) {
+  if (typeof value === "string") return jsonbText(value);
+  if (Array.isArray(value)) return value.map(jsonbSafe);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        jsonbText(key),
+        jsonbSafe(item),
+      ]),
+    );
+  return value;
+}
+export const jsonbString = (value) => JSON.stringify(jsonbSafe(value));
+
 // Only allowlisted metadata reaches the public copy. Conversation text is kept
 // verbatim for administrator review, including any paths it already contains.
 function validateParts(parts, depth = 0) {
@@ -830,7 +851,7 @@ export function featuredCaseRoutes({
             text(value.title, 200),
             text(value.summary, 4000),
             text(value.category, 80),
-            JSON.stringify(snapshot),
+            jsonbString(snapshot),
             value.expectedFileCount,
           ],
         );
@@ -1004,7 +1025,7 @@ export function featuredCaseRoutes({
           "UPDATE featured_cases SET snapshot=$2,expected_file_count=$3,revision=revision+1,updated_at=now() WHERE id=$1",
           [
             caseId,
-            JSON.stringify({
+            jsonbString({
               sessions: [],
               projectName: native.responses["/api/projects"].projects[0].name,
               workspace: native,
