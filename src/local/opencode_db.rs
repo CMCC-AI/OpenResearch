@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
@@ -261,7 +261,7 @@ fn write_journal(path: &Path, journal: &MigrationJournal) -> Result<()> {
 fn sync_parent(path: &Path) -> Result<()> {
     #[cfg(unix)]
     if let Some(parent) = path.parent() {
-        File::open(parent)?.sync_all()?;
+        std::fs::File::open(parent)?.sync_all()?;
     }
     #[cfg(not(unix))]
     let _ = path;
@@ -270,7 +270,7 @@ fn sync_parent(path: &Path) -> Result<()> {
 
 pub struct DatabaseLease {
     path: PathBuf,
-    lock: File,
+    lock: crate::file_lock::FileLock,
     state: DatabaseState,
     migration: bool,
 }
@@ -334,6 +334,7 @@ impl DatabaseLease {
                 path.display()
             ),
         })?;
+        let lock = crate::file_lock::FileLock::new(lock);
         let current = inspect(&path)?;
         let journal = read_journal(&path)?;
         if current != state

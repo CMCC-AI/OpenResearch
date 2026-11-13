@@ -4197,15 +4197,21 @@ impl ChatHost {
         session_id: &str,
         open: impl FnOnce() -> Result<Store>,
     ) -> Option<Store> {
-        if self.restarting.load(std::sync::atomic::Ordering::SeqCst)
-            || self.queue_cancellation_pending(session_id)
-            || self.durable_turns.lock().unwrap().contains_key(session_id)
-        {
-            return None;
-        }
+        let held = {
+            if self.restarting.load(std::sync::atomic::Ordering::SeqCst)
+                || self.queue_cancellation_pending(session_id)
+            {
+                return None;
+            }
+            let durable = self.durable_turns.lock().unwrap();
+            if durable.contains_key(session_id) {
+                return None;
+            }
+            durable.values().cloned().collect::<Vec<_>>()
+        };
         let token = uuid::Uuid::new_v4().to_string();
         let store = open().ok()?;
-        if !matches!(store.claim_chat_turn(session_id, &token), Ok(true)) {
+        if !matches!(store.claim_chat_turn(session_id, &token, &held), Ok(true)) {
             return None;
         }
         self.durable_turns
@@ -4213,6 +4219,16 @@ impl ChatHost {
             .unwrap()
             .insert(session_id.to_string(), token);
         Some(store)
+    }
+
+    /// Claim tokens of this process's running turns, whose leases its own expiry must spare.
+    pub(crate) fn held_turn_leases(&self) -> Vec<String> {
+        self.durable_turns
+            .lock()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Keep admission fenced until the captured lease has been released. The
@@ -4570,7 +4586,8 @@ impl ChatHost {
             // its async waiter is cancelled during SQLite recovery.
             let _data_dir_guard = data_dir_guard;
             let store = open()?;
-            for (session_id, message) in materialize_unfinished_turns(&store, false)? {
+            let turns = store.reconcile_expired_unfinished_chat_turns(&host.held_turn_leases())?;
+            for (session_id, message) in materialize_unfinished_turns(&store, turns)? {
                 host.emit("chat.message", message_json(&message, &session_id));
             }
             host.resume_persisted_queues();
@@ -4939,9 +4956,11 @@ impl ChatHost {
         Ok(true)
     }
 
-    /// Drain the oldest parked message once the current turn finishes. Each
-    /// queued request keeps its browser idempotency key and becomes one durable
-    /// turn in original order. Boxed return: `drain_queue` →
+    /// Dispatch the oldest parked message into a slot its releaser left
+    /// `Draining`. An idle slot is left alone: claiming it just to look would
+    /// refuse a fork or send that lands in between. Each queued request keeps
+    /// its browser idempotency key and becomes one durable turn in original
+    /// order. Boxed return: `drain_queue` →
     /// `send_message_showing` → (spawned) `drain_queue` is an async recursion
     /// cycle the auto-`Send` solver can't close on its own, so we assert the
     /// boxed future is `Send` to break it.
@@ -4950,25 +4969,12 @@ impl ChatHost {
         session_id: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            let turn_state = {
+            let Some(mut guard) = ({
                 let mut turns = self.turns.lock().await;
-                match turns.get(session_id) {
-                    Some(TurnState::Draining) => {
-                        Some(Some(TurnGuard::reserve(self, session_id, &mut turns)))
-                    }
-                    Some(_) => None,
-                    None => Some(None),
-                }
-            };
-            let mut guard = match turn_state {
-                Some(Some(guard)) => guard,
-                None => return,
-                Some(None) => {
-                    let Some(guard) = TurnGuard::claim(self, session_id, None).await else {
-                        return;
-                    };
-                    guard
-                }
+                matches!(turns.get(session_id), Some(TurnState::Draining))
+                    .then(|| TurnGuard::reserve(self, session_id, &mut turns))
+            }) else {
+                return;
             };
             match self.refresh_queue_for_dispatch(guard).await {
                 Ok(Some(refreshed)) => guard = refreshed,
@@ -6897,7 +6903,34 @@ impl ChatHost {
                 let drain_host = host.clone();
                 let drain_session = session_id.clone();
                 tokio::spawn(async move {
-                    drain_host.drain_queue(&drain_session).await;
+                    let should_drain = {
+                        let turns = drain_host.turns.clone().lock_owned().await;
+                        if drain_host
+                            .deleting_sessions
+                            .lock()
+                            .unwrap()
+                            .contains(&drain_session)
+                            || turns.contains_key(&drain_session)
+                        {
+                            false
+                        } else if let Some((guard, mut turns)) = TurnGuard::claim_locked_with_store(
+                            &drain_host,
+                            &drain_session,
+                            turns,
+                            Store::open,
+                        )
+                        .await
+                        {
+                            turns.insert(drain_session.clone(), TurnState::Draining);
+                            guard.defuse();
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if should_drain {
+                        drain_host.drain_queue(&drain_session).await;
+                    }
                 });
             }
             host.emit_queued(&session_id);
@@ -9944,19 +9977,14 @@ pub(crate) fn list_messages_with_store(
 /// Materialize restart recovery on the assistant message linked to every turn
 /// the store just converted from in-flight to failed. Nothing is replayed.
 pub fn reconcile_unfinished_turns(store: &Store) -> Result<()> {
-    materialize_unfinished_turns(store, true).map(|_| ())
+    materialize_unfinished_turns(store, store.reconcile_unfinished_chat_turns()?).map(|_| ())
 }
 
 fn materialize_unfinished_turns(
     store: &Store,
-    include_existing_failures: bool,
+    turns: Vec<StoredChatTurn>,
 ) -> Result<Vec<(String, WireMessage)>> {
     let mut messages = Vec::new();
-    let turns = if include_existing_failures {
-        store.reconcile_unfinished_chat_turns()?
-    } else {
-        store.reconcile_expired_unfinished_chat_turns()?
-    };
     for turn in turns {
         let action = turn.recovery_action.as_deref().unwrap_or({
             if matches!(turn.delivery_state.as_str(), "not_sent" | "rejected") {
@@ -13219,7 +13247,7 @@ with other project runs using `orx runs p1` and inspect the file located by `orx
         // Another process holds the turn: this one's `turns` map knows nothing
         // about it, so only the durable lease can stop a false completion.
         store
-            .claim_chat_turn("child", "other-process-token")
+            .claim_chat_turn("child", "other-process-token", &[])
             .unwrap();
         let host = bare_host();
 
@@ -14654,7 +14682,7 @@ mod checkpoint_tests {
         ] {
             let (dir, store, ctx) = checkpoint_fixture();
             seed_stop_queue(&store, &ctx.host);
-            assert!(store.claim_chat_turn("session", "stop-token").unwrap());
+            assert!(store.claim_chat_turn("session", "stop-token", &[]).unwrap());
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])
                 .env(CHILD, case)
@@ -15003,7 +15031,7 @@ mod checkpoint_tests {
             let (dir, store, ctx) = checkpoint_fixture();
             let host = ctx.host.clone();
             if mode == "foreign-lease" {
-                assert!(store.claim_chat_turn("session", "foreign").unwrap());
+                assert!(store.claim_chat_turn("session", "foreign", &[]).unwrap());
             }
             if mode == "restarting" {
                 host.restarting
@@ -15070,7 +15098,7 @@ mod checkpoint_tests {
     async fn lease_heartbeat_worker_retains_gate_after_waiter_cancellation() {
         let (dir, store, ctx) = checkpoint_fixture();
         let host = ctx.host.clone();
-        assert!(store.claim_chat_turn("session", "token").unwrap());
+        assert!(store.claim_chat_turn("session", "token", &[]).unwrap());
         // Database initialization is fixture setup, not part of observing
         // when cancellation releases the heartbeat's directory gate.
         let worker_store = Store::open_at(dir.clone()).unwrap();
@@ -15114,7 +15142,7 @@ mod checkpoint_tests {
     async fn lease_heartbeat_stale_result_cannot_interrupt_replacement_turn() {
         let (dir, store, ctx) = checkpoint_fixture();
         let host = ctx.host.clone();
-        assert!(store.claim_chat_turn("session", "old-token").unwrap());
+        assert!(store.claim_chat_turn("session", "old-token", &[]).unwrap());
         host.durable_turns
             .lock()
             .unwrap()
@@ -15132,7 +15160,7 @@ mod checkpoint_tests {
         let replace = async {
             ready.await.unwrap();
             store.release_chat_turn("session", "old-token").unwrap();
-            assert!(store.claim_chat_turn("session", "new-token").unwrap());
+            assert!(store.claim_chat_turn("session", "new-token", &[]).unwrap());
             let mut turns = host.turns.lock().await;
             host.durable_turns
                 .lock()
@@ -15170,7 +15198,7 @@ mod checkpoint_tests {
     async fn lease_heartbeat_storage_errors_do_not_report_ownership_loss() {
         for mode in ["live", "open-error", "sql-error"] {
             let (dir, store, ctx) = checkpoint_fixture();
-            assert!(store.claim_chat_turn("session", "token").unwrap());
+            assert!(store.claim_chat_turn("session", "token", &[]).unwrap());
             if mode == "live" {
                 let tx = store.begin().unwrap();
                 tx.execute("UPDATE chat_turn_leases SET heartbeat_at = 0", [])
@@ -15221,7 +15249,9 @@ mod checkpoint_tests {
         for live_lease in [false, true] {
             let (dir, store, ctx) = checkpoint_fixture();
             let host = ctx.host.clone();
-            assert!(store.claim_chat_turn("session", "lease-token").unwrap());
+            assert!(store
+                .claim_chat_turn("session", "lease-token", &[])
+                .unwrap());
             if !live_lease {
                 let tx = store.begin().unwrap();
                 tx.execute("UPDATE chat_turn_leases SET heartbeat_at = 0 WHERE chat_session_id = 'session'", []).unwrap();
@@ -15544,6 +15574,10 @@ mod checkpoint_tests {
                     Arc::new(crate::local::codex::CodexHost::new()),
                     Arc::new(crate::local::claude::ClaudeHost::new()),
                 ));
+                host.turns
+                    .lock()
+                    .await
+                    .insert("session".into(), TurnState::Draining);
                 host.drain_queue("session").await;
                 tokio::time::timeout(Duration::from_secs(3), async {
                     while host.turns.lock().await.contains_key("session") {
@@ -17263,7 +17297,7 @@ mod checkpoint_tests {
         let (dir, store, ctx) = checkpoint_fixture();
         let host = ctx.host.clone();
         let mut events = host.subscribe();
-        assert!(store.claim_chat_turn("session", "old-token").unwrap());
+        assert!(store.claim_chat_turn("session", "old-token", &[]).unwrap());
         host.durable_turns
             .lock()
             .unwrap()
@@ -17314,12 +17348,95 @@ mod checkpoint_tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[tokio::test]
+    async fn a_stalled_process_keeps_its_own_turns_when_it_expires_stale_leases() {
+        let (dir, store, ctx) = checkpoint_fixture();
+        for id in ["working", "other"] {
+            let mut s = store.get_chat_session("session").unwrap().unwrap();
+            s.id = id.into();
+            store.create_chat_session(&s).unwrap();
+        }
+        let host = ctx.host.clone();
+        let turns = host.turns.clone().lock_owned().await;
+        let root = dir.clone();
+        let (_working, turns) =
+            TurnGuard::claim_locked_with_store(&host, "working", turns, move || {
+                Store::open_at(root)
+            })
+            .await
+            .unwrap();
+        drop(turns);
+
+        let stall = || {
+            let tx = store.begin().unwrap();
+            tx.execute(
+                "UPDATE chat_turn_leases SET heartbeat_at = ?1",
+                [now_ms() - crate::store::CHAT_TURN_LEASE_TTL_MS - 1],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        };
+
+        stall();
+        let turns = host.turns.clone().lock_owned().await;
+        let root = dir.clone();
+        let (_other, turns) =
+            TurnGuard::claim_locked_with_store(&host, "other", turns, move || Store::open_at(root))
+                .await
+                .unwrap();
+        drop(turns);
+        let gate = Arc::new(tokio::sync::Mutex::new(()));
+        let root = dir.clone();
+        let (_, lost) = host
+            .renew_turn_leases_with_store(gate.clone().lock_owned().await, move || {
+                Store::open_at(root)
+            })
+            .await
+            .unwrap();
+        assert!(lost.is_empty());
+
+        stall();
+        let root = dir.clone();
+        host.reconcile_expired_turn_leases_with_store(gate.clone().lock_owned().await, move || {
+            Store::open_at(root)
+        })
+        .await
+        .unwrap();
+        let root = dir.clone();
+        let (_, lost) = host
+            .renew_turn_leases_with_store(gate.clone().lock_owned().await, move || {
+                Store::open_at(root)
+            })
+            .await
+            .unwrap();
+        assert!(lost.is_empty());
+
+        stall();
+        assert!(!store
+            .claim_data_dir_move("move", &host.held_turn_leases())
+            .unwrap());
+        let root = dir.clone();
+        let (_, lost) = host
+            .renew_turn_leases_with_store(gate.clone().lock_owned().await, move || {
+                Store::open_at(root)
+            })
+            .await
+            .unwrap();
+        assert!(lost.is_empty());
+        drop(_working);
+        drop(_other);
+        drop(host);
+        drop(ctx);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn finished_lease_release_cannot_clear_a_replacement_slot_or_token() {
         let (dir, store, ctx) = checkpoint_fixture();
         let host = ctx.host.clone();
         let mut events = host.subscribe();
-        assert!(store.claim_chat_turn("session", "old-token").unwrap());
+        assert!(store.claim_chat_turn("session", "old-token", &[]).unwrap());
         host.durable_turns
             .lock()
             .unwrap()
@@ -17337,7 +17454,7 @@ mod checkpoint_tests {
         };
         ready.await.unwrap();
         store.release_chat_turn("session", "old-token").unwrap();
-        assert!(store.claim_chat_turn("session", "new-token").unwrap());
+        assert!(store.claim_chat_turn("session", "new-token", &[]).unwrap());
         host.durable_turns
             .lock()
             .unwrap()

@@ -494,11 +494,15 @@ mod instance {
     /// The lock, or `None` once the app holding it was asked to come forward (or
     /// never answered). Retries both: when two launch together, the winner may not
     /// have bound its socket yet, or may give the lock up because it can't.
-    fn take_lock(file: File, socket: &Path, wait: Duration) -> std::io::Result<Option<File>> {
+    fn take_lock(
+        file: File,
+        socket: &Path,
+        wait: Duration,
+    ) -> std::io::Result<Option<crate::file_lock::FileLock>> {
         let deadline = Instant::now() + wait;
         loop {
             match file.try_lock() {
-                Ok(()) => return Ok(Some(file)),
+                Ok(()) => return Ok(Some(crate::file_lock::FileLock::new(file))),
                 Err(TryLockError::Error(error)) => return Err(error),
                 Err(TryLockError::WouldBlock) => {}
             }

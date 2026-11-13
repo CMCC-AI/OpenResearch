@@ -340,7 +340,7 @@ pub(crate) fn forward_args(
 pub(crate) struct InteractiveConnection {
     pub args: Vec<String>,
     #[cfg(unix)]
-    _lock: std::fs::File,
+    _lock: crate::file_lock::FileLock,
 }
 
 /// Arguments for the short interactive login opened by Settings. `true` ends
@@ -387,7 +387,7 @@ pub(crate) async fn interactive_args(
                 Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
             }
         }
-        file
+        crate::file_lock::FileLock::new(file)
     };
     #[cfg(unix)]
     if control_master(target, &path, &options, "check").await? {
