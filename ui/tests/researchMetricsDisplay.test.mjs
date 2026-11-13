@@ -63,6 +63,15 @@ test("the active DAG page exposes the evidence view and renders persisted claims
   assert.doesNotMatch(html, /aria-label="科研专家团纵向 DAG"/);
 });
 
+test("the active DAG page labels the tasks view header accurately", () => {
+  const taskMocks = { ...mocks, react: { ...React, useId: () => "dag", useRef: value => ({ current: value }), useEffect() {}, useMemo: fn => fn(), useState: initial => [initial === "overview" ? "tasks" : typeof initial === "function" ? initial() : initial, () => {}] } };
+  const view = {};
+  new Function("require", "exports", code)(id => id in taskMocks ? taskMocks[id] : require(id), view);
+  const html = renderToStaticMarkup(React.createElement(view.ResearchTeamDagDialog, { embedded: true, study, metrics: measured, runs: [], onClose() {} }));
+  assert.match(html, /科研专家团 · 本次任务依赖/);
+  assert.match(html, /aria-pressed="true"[^>]*>本次任务依赖/);
+});
+
 
 test("the active DAG hides the confirmed research package download", () => {
   const current = { ...study, plans: [{ version: 1, tasks: [] }], deliverySnapshot: { scopeHash: "scope" }, decisions: [{ id: "gate", gate: "G4", version: 1, status: "approved", scopeHash: "scope" }] };

@@ -182,6 +182,62 @@ export function validateQuotaModels(document) {
       "输出上限字段无效",
     );
   }
+  if (document.providers !== undefined) {
+    check(
+      document.providers &&
+        typeof document.providers === "object" &&
+        !Array.isArray(document.providers),
+      503,
+      "供应商配置无效",
+    );
+    for (const [providerId, provider] of Object.entries(document.providers)) {
+      check(
+        /^[a-zA-Z0-9_-]{1,100}$/.test(providerId) &&
+          !["__proto__", "prototype", "constructor"].includes(providerId) &&
+          provider &&
+          typeof provider === "object" &&
+          !Array.isArray(provider),
+        503,
+        "模型供应商标识无效",
+      );
+      check(
+        typeof provider.apiKey === "string" &&
+          provider.apiKey.length > 0 &&
+          !/[\r\n]/.test(provider.apiKey),
+        503,
+        "模型认证配置无效",
+      );
+      let url;
+      try {
+        url = new URL(provider.baseUrl);
+      } catch {
+        throw new HttpError(503, "模型地址无效");
+      }
+      check(
+        ["https:", "http:"].includes(url.protocol) &&
+          !url.username &&
+          !url.password &&
+          !url.search &&
+          !url.hash,
+        503,
+        "模型地址无效",
+      );
+      if (provider.discoveredModels !== undefined)
+        check(
+          Array.isArray(provider.discoveredModels) &&
+            provider.discoveredModels.length <= 200 &&
+            provider.discoveredModels.every(
+              (m) =>
+                typeof m === "string" &&
+                m.length > 0 &&
+                m.length <= 200 &&
+                !/[\x00-\x1f{}]/.test(m),
+            ),
+          503,
+          "探测模型列表无效",
+        );
+    }
+  }
   return document.models;
 }
 export function nativeUsage(value) {

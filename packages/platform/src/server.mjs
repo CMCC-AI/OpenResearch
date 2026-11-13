@@ -521,7 +521,13 @@ export async function createPlatform(
       check(
         settings.action === undefined ||
           (config.tokenQuota.enabled
-            ? ["remove", "default"]
+            ? [
+                "remove",
+                "default",
+                "connectProvider",
+                "disconnectProvider",
+                "probeModels",
+              ]
             : ["disconnect", "verify"]
           ).includes(settings.action),
         400,
@@ -529,7 +535,8 @@ export async function createPlatform(
       );
       const disconnect = settings.action === "disconnect";
       const verify = settings.action === "verify";
-      if (verify) await limit(`model-verify:${s.user_id}`, 6, 60);
+      if (verify || settings.action === "probeModels")
+        await limit(`model-verify:${s.user_id}`, 12, 60);
       const saved = await modelSettings[
         config.tokenQuota.enabled
           ? settings.action || "save"
@@ -550,7 +557,9 @@ export async function createPlatform(
               : disconnect
                 ? "opencode.provider.disconnect"
                 : "opencode.config.update",
-          config.tokenQuota.enabled ? settings.id : settings.providerId,
+          config.tokenQuota.enabled
+            ? settings.id || settings.providerId
+            : settings.providerId,
         );
       });
       return json(res, saved);

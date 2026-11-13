@@ -282,13 +282,28 @@ export function AdminQuotaModels({ settings, base }: { settings: QuotaModels; ba
     clearFeedback();
     try {
       let current = saved;
-      const toRemove = current.models.filter((m) => (m.providerId || "mobilesci") === provider.id);
-      for (const model of toRemove) {
-        current = await caseWrite<QuotaModels>(base, "admin/opencode", {
-          action: "remove",
-          id: model.id,
+      try {
+        const result = await caseWrite<QuotaModels>(base, "admin/opencode", {
+          action: "disconnectProvider",
+          providerId: provider.id,
           revision: current.revision,
         });
+        if (isQuotaModelsResponse(result)) {
+          current = result;
+        }
+      } catch (cause) {
+        const msg = cause instanceof Error ? cause.message : "";
+        if (!msg.includes("不支持的模型配置操作")) {
+          throw cause;
+        }
+        const toRemove = current.models.filter((m) => (m.providerId || "mobilesci") === provider.id);
+        for (const model of toRemove) {
+          current = await caseWrite<QuotaModels>(base, "admin/opencode", {
+            action: "remove",
+            id: model.id,
+            revision: current.revision,
+          });
+        }
       }
       setSaved(current);
       setSessionProviders((prev) => {

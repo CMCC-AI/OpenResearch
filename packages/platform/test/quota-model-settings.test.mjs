@@ -182,8 +182,120 @@ test("quota-mode HTTP configuration requires administrator and trusted origin, w
       (await request("POST", { ...model, revision: state.revision })).status,
       409,
     );
+    const savedState = await (await request("GET")).json();
+    const connected = await request("POST", {
+      action: "connectProvider",
+      providerId: "deepseek",
+      providerName: "DeepSeek",
+      baseUrl: "https://api.deepseek.com/v1",
+      apiKey: "secret-deepseek-key",
+      revision: savedState.revision,
+    });
+    assert.equal(connected.status, 200);
+    const connectedBody = await connected.json();
+    assert(!JSON.stringify(connectedBody).includes("secret-deepseek-key"));
+    assert.ok(
+      connectedBody.providers.some(
+        (p) => p.id === "deepseek" && p.hasApiKey === true,
+      ),
+    );
+    const enabledSecond = await request("POST", {
+      id: "deepseek-chat",
+      name: "DeepSeek V3",
+      providerId: "deepseek",
+      providerName: "DeepSeek",
+      model: "deepseek-chat",
+      baseUrl: "https://api.deepseek.com/v1",
+      apiKey: "",
+      contextTokens: 65536,
+      maxOutputTokens: 8192,
+      opencode: { tool_call: true },
+      revision: connectedBody.revision,
+    });
+    assert.equal(enabledSecond.status, 200);
+    const afterEnable = await enabledSecond.json();
+    assert.equal(afterEnable.models.length, 2);
+    const disconnected = await request("POST", {
+      action: "disconnectProvider",
+      providerId: "deepseek",
+      revision: afterEnable.revision,
+    });
+    assert.equal(disconnected.status, 200);
+    const afterDisconnect = await disconnected.json();
+    assert.equal(afterDisconnect.models.length, 1);
+    assert.ok(!afterDisconnect.providers.some((p) => p.id === "deepseek"));
   } finally {
     await app.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("quota provider connection, sibling key inheritance, model probing and provider disconnect", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "quota-provider-"));
+  const file = join(dir, "models.json");
+  try {
+    await writeFile(file, JSON.stringify({ models: [model] }));
+    const calls = [];
+    const settings = quotaModelSettings(file, {
+      async fetcher(url, init) {
+        calls.push({ url, headers: init.headers });
+        return {
+          ok: true,
+          async json() {
+            return {
+              data: [{ id: "kimi-k2.6" }, { id: "kimi-k3" }],
+            };
+          },
+        };
+      },
+    });
+    let state = await settings.read();
+    assert.equal(state.providers.length, 1);
+    assert.equal(state.providers[0].id, "moonshotai-cn");
+    assert.equal(state.providers[0].hasApiKey, true);
+
+    // Enable a second model under moonshotai-cn without re-entering apiKey
+    state = await settings.save({
+      id: "kimi-k3",
+      name: "Kimi K3",
+      providerId: "moonshotai-cn",
+      providerName: "Kimi / Moonshot",
+      model: "kimi-k3",
+      baseUrl: "https://example.invalid/v1",
+      apiKey: "",
+      contextTokens: 262144,
+      maxOutputTokens: 16384,
+      opencode: { reasoning: true, tool_call: true },
+      revision: state.revision,
+    });
+    const storedAfterSibling = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(storedAfterSibling.models.length, 2);
+    assert.equal(storedAfterSibling.models[1].apiKey, model.apiKey);
+    assert.deepEqual(storedAfterSibling.models[1].headers, model.headers);
+
+    // Probe models using stored provider/model apiKey when request apiKey is empty
+    const probed = await settings.probeModels({
+      providerId: "moonshotai-cn",
+      baseUrl: "https://example.invalid/v1/",
+      apiKey: "",
+    });
+    assert.deepEqual(probed.models, ["kimi-k2.6", "kimi-k3"]);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "https://example.invalid/v1/models");
+    assert.equal(
+      calls[0].headers.authorization,
+      `Bearer ${model.apiKey}`,
+    );
+
+    // Reject disconnecting the only remaining provider
+    await assert.rejects(
+      settings.disconnectProvider({
+        providerId: "moonshotai-cn",
+        revision: state.revision,
+      }),
+      { status: 400 },
+    );
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
