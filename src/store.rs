@@ -85,13 +85,14 @@ pub(crate) fn open_lifecycle_lock_at(
     path: &std::path::Path,
 ) -> Result<fd_lock::RwLock<std::fs::File>> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::paths::create_dir_all(parent)?;
     }
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(path)?;
+        .open(path)
+        .with_context(|| format!("Could not open {}", path.display()))?;
     Ok(fd_lock::RwLock::new(file))
 }
 
@@ -719,6 +720,40 @@ impl Store {
         Self::open_at_with_move_lock(dir, move_lock_path, BUSY_TIMEOUT)
     }
 
+    /// Opens the store for a command that only reads it. Where the store cannot be
+    /// written, as in a sandboxed agent, it opens read-only and applies no schema;
+    /// elsewhere it opens as `open` does, so a newer reader still finds its columns.
+    pub fn open_for_reading() -> Result<Self> {
+        Self::open_for_reading_within(BUSY_TIMEOUT)
+    }
+
+    /// Open like `open_for_reading`, but cap SQLite's lock wait — `orx exp wait`
+    /// shrinks this to its deadline so one blocked open can't overshoot it.
+    pub fn open_for_reading_within(busy_timeout: Duration) -> Result<Self> {
+        let dir = data_dir();
+        let db = dir.join("orx.db");
+        let exists = db
+            .try_exists()
+            .with_context(|| format!("Could not read {}", db.display()))?;
+        let writable =
+            || Self::open_at_with_move_lock(data_dir(), data_dir_move_lock_path(), busy_timeout);
+        if !exists {
+            return writable();
+        }
+        // SQLite opens a file it may not write read-only.
+        let conn = Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .with_context(|| format!("Could not open {}", db.display()))?;
+        if !conn.is_readonly(rusqlite::MAIN_DB)? {
+            drop(conn);
+            return writable();
+        }
+        conn.pragma_update(None, "busy_timeout", busy_timeout.as_millis() as u64)?;
+        Ok(Self {
+            conn,
+            data_dir_move_lock_path: data_dir_move_lock_path(),
+        })
+    }
+
     /// Shrink this connection's lock wait (e.g. to a wait loop's remaining
     /// deadline). The next call can pass the default back to restore it.
     pub(crate) fn set_busy_timeout(&self, timeout: Duration) -> Result<()> {
@@ -741,8 +776,8 @@ impl Store {
         busy_timeout: Duration,
         mut phase: impl FnMut(&'static str),
     ) -> Result<Self> {
-        std::fs::create_dir_all(dir.join("run-logs"))
-            .map_err(|e| anyhow!("Could not create {}: {}", dir.display(), e))?;
+        crate::paths::create_dir_all(&dir)?;
+        crate::paths::create_dir_all(&dir.join("run-logs"))?;
         let conn = Connection::open(dir.join("orx.db"))?;
         conn.busy_timeout(busy_timeout)?;
         // WAL conversion can return SQLITE_BUSY without invoking SQLite's busy handler.

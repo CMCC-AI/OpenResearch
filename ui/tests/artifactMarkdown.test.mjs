@@ -35,7 +35,16 @@ const render = (markdown, folder = "reports", entries = []) => renderToStaticMar
 const urls = html => [...html.matchAll(/(?:href|src)="([^"]+)"/g)].map(match => new URL(match[1].replaceAll("&amp;", "&"), "http://localhost"));
 
 test("artifact Markdown resolves Chinese and reserved filenames through the real renderer and file URL builder", () => {
-  for (const [link, filename] of [["结果.md", "结果.md"], ["结果%20汇总.md", "结果 汇总.md"], ["chart%231.png", "chart#1.png"], ["a%3Fb.png", "a?b.png"], ["chart%25231.png", "chart%231.png"]]) {
+  for (const [link, filename] of [
+    ["结果.md", "结果.md"],
+    ["结果%20汇总.md", "结果 汇总.md"],
+    ["50%off.md", "50%off.md"],
+    ["50%off-数据.md", "50%off-数据.md"],
+    ["50%.md", "50%.md"],
+    ["chart%231.png", "chart#1.png"],
+    ["a%3Fb.png", "a?b.png"],
+    ["chart%25231.png", "chart%231.png"],
+  ]) {
     const targets = urls(render(`[报告](${link})\n\n![图](${link})`));
     assert.ok(targets.length >= 3);
     for (const target of targets) assert.equal(target.searchParams.get("path"), `reports/${filename}`, link);

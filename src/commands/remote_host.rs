@@ -852,7 +852,7 @@ fn open_lock(path: &Path) -> Result<fd_lock::RwLock<File>> {
 
 pub(crate) fn canonical_data_dir() -> Result<PathBuf> {
     let data_dir = crate::store::data_dir();
-    std::fs::create_dir_all(&data_dir)?;
+    crate::paths::create_dir_all(&data_dir)?;
     crate::paths::canonicalize(&data_dir)
         .map_err(|error| anyhow!("Could not resolve {}: {error}", data_dir.display()))
 }
@@ -956,22 +956,29 @@ fn normalize_lock_key(path: &Path) -> Result<PathBuf> {
 
 #[cfg(unix)]
 fn ensure_private_dir(path: &Path) -> Result<()> {
-    if path.exists() {
-        let metadata = std::fs::symlink_metadata(path)?;
-        if metadata.file_type().is_symlink()
-            || !metadata.is_dir()
-            || metadata_uid(&metadata) != effective_uid()
-            || metadata_mode(&metadata) & 0o077 != 0
-        {
-            return Err(anyhow!(
-                "Unsafe remote-host runtime directory {}.",
-                path.display()
-            ));
+    use anyhow::Context as _;
+    use std::os::unix::fs::DirBuilderExt as _;
+    // Another orx may win the race to create it, so verify an existing one instead of failing.
+    match std::fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("Cannot create {}", path.display()))
         }
-        return Ok(());
     }
-    std::fs::create_dir(path)?;
-    set_mode(path, 0o700)
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("Cannot inspect {}", path.display()))?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || metadata_uid(&metadata) != effective_uid()
+        || metadata_mode(&metadata) & 0o077 != 0
+    {
+        return Err(anyhow!(
+            "Unsafe remote-host runtime directory {}.",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -1040,6 +1047,26 @@ mod tests {
         assert!(control_socket_path(&data_dir)
             .unwrap()
             .starts_with(format!("/tmp/orx-{}", effective_uid())));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_callers_all_get_one_private_runtime_dir() {
+        let root = crate::local::git::TemporaryDirectory::new("orx-runtime-race").unwrap();
+        let racing = root.path().join("racing");
+        let barrier = std::sync::Barrier::new(16);
+        std::thread::scope(|scope| {
+            for _ in 0..16 {
+                scope.spawn(|| {
+                    barrier.wait();
+                    ensure_private_dir(&racing).unwrap();
+                });
+            }
+        });
+        assert_eq!(
+            metadata_mode(&std::fs::metadata(&racing).unwrap()) & 0o777,
+            0o700
+        );
     }
 
     #[test]
