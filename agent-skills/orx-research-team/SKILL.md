@@ -53,18 +53,30 @@ brief 中说明文件用途。采用以下布局，仅创建实际需要且已�
 
 ```text
 <artifactRoot>/
-  deliverables/
-    report.md                 # 唯一主报告；方案任务可命名 experiment-plan.md
-    figures/                  # 正文引用的最终图表
-    supplementary/            # 正文确实需要的补充方法、数据表或复现材料
-  process/
-    <task-id>/                # 该任务自己的分析、草稿、证据映射、审查或清单
+  研究清单.md               # 断点续研清单：阶段、任务状态与恢复说明（见“研究清单与断点续研”节）
+  报告/
+    report.md               # 唯一主报告；方案任务可命名 experiment-plan.md
+    图表/                   # 正文引用的最终图表
+    补充材料/               # 正文确实需要的补充方法、数据表或复现材料
+  实验/
+    <run-id>/               # 各次运行的原始产物
+  外部获取/                 # 非本次研究/模型能力获得的外部数据，附简要来源说明
+  过程/
+    <task-id>/              # 该任务自己的分析、草稿、证据映射、审查或清单
 ```
 
-- 根目录不散落编号 JSON/YAML、审稿记录或多个 final/latest/report-vN。
-  中间分析、检索、资产盘点、大纲、草稿、交接、诊断、审查与 manifest 都属于
-  `process/<task-id>/`，不是默认的最终附件。原始数据与代码保留在原有项目、
-  材料包和实验记录中；通过引用定位，不为归档重复复制整份数据或日志。
+产物目录统一使用中文命名（报告、图表、补充材料、实验、外部获取、过程），
+已批准计划中已登记的旧路径保持有效，不重命名已验收产物；新计划一律采用
+中文布局。
+
+- 根目录除 `研究清单.md` 外不散落编号 JSON/YAML、审稿记录或多个
+  final/latest/report-vN。中间分析、检索、资产盘点、大纲、草稿、交接、
+  诊断、审查与 manifest 都属于 `过程/<task-id>/`，不是默认的最终附件。
+  原始数据与代码保留在原有项目、材料包和实验记录中；通过引用定位，
+  不为归档重复复制整份数据或日志。
+- 凡不是本次研究产生、也非模型能力输出的数据（用户另行提供的数据集、
+  外部系统回传的结果、公开下载的数据等），统一放入 `外部获取/`，并附一份
+  简短 `来源说明.md` 写明各项来源与获取方式；不再逐项做溯源审查登记。
 - 每个任务只声明下游或验收实际需要的输出。不要因为角色模板列了字段，就
   额外创建一份 YAML、JSON、Markdown 和说明文件表达同一内容。结构化记录
   只有在下游需要或任务明确声明时才生成；过程摘要尽量合并到一个任务记录。
@@ -127,13 +139,52 @@ brief 中说明文件用途。采用以下布局，仅创建实际需要且已�
   相对链接与附件，不添加新观点或改写科学结论；实质修改退回版本化计划并
   重新审查。所有必需复制文件都应在归档任务 outputs 中逐项声明。
 - manifest 仅索引真实存在的文件，可标记 main/figure/supplementary/process
-  及其来源；不创建并行的“项目总结”“专家过程报告”作为第二篇主报告。
+  及其来源，写入 `过程/<task-id>/`；不创建并行的“项目总结”“专家过程报告”
+  作为第二篇主报告。
   manifest 不代替 orx 的产物登记、哈希校验或人工确认。
 - G4（W4 为 G3）确认的是完成整理后的确切产物，归档在确认前完成，获批前
   标记待确认；确认后不得继续覆盖。记录和证据仍按现有规则验收及保留，不能
   为精简交付删除过程记录、失败结果或必需证据。
 - 已存在的计划/历史路径保持可读，不自动搬迁、改名或重写已验收产物。新
   计划采用此布局；用户要求调整在途任务时按原生版本化计划与审批规则处理。
+
+## 研究清单与断点续研
+
+每个研究项目由主理人在 `<artifactRoot>/研究清单.md` 维护一份中文清单，
+作为研究中断后恢复的权威入口。清单是给人看的简明状态，不替代
+`orx research status` 的机器状态；两者冲突时以平台状态为准并立即修正清单。
+
+- **建立时机**：G1 批准、计划生效后立即建立；只有一两个任务的轻量问答
+  不必建清单。
+- **更新时机**：每个任务完成、失败、审批通过或计划修订时同步更新；
+  更新清单是该阶段收尾的一部分，不另设登记任务。
+- **内容从简**：按 W1–W4 阶段列出任务条目，每条只记 状态（待开始/进行中/
+  已完成/受阻）、产物入口路径和一句断点说明（下次从哪里接着做）。不逐条
+  登记证据页码、哈希或审计细节。
+
+示例：
+
+```markdown
+# 研究清单：<研究题目>
+更新时间：2026-11-13 | 当前阶段：结果分析 | 计划版本：v3
+
+- [x] 资产盘点（task: assets）→ 过程/assets/
+- [x] 结果分析（task: analysis）→ 过程/analysis/analysis.yaml
+- [ ] 写作（task: write）→ 断点：大纲已定稿，从引言开始写
+- [ ] 独立审稿与引用核验（task: review, audit）
+- [ ] 归档与 G4 确认（task: package）→ 报告/report.md
+
+## 断点恢复说明
+中断原因：会话超时。下次继续：读取本清单 → `orx research status` 核对任务
+状态 → 从 write 任务继续，已完成任务不重跑、产物不重写。
+```
+
+- **中断恢复流程**：新会话或续研请求到来时，先读 `研究清单.md`，再用
+  `orx research status` 核对计划、任务与闸门状态；从第一个未完成条目继续，
+  已完成且验收的任务不重新执行、不改写其产物。计划需要变更时仍走原生
+  版本化计划与 G1 确认，清单随新版本同步重写。
+- 研究完成并经 G4 确认后，在清单末尾标记“已完成”并保留，作为该研究的
+  总入口。
 
 ## Materials and proportional execution
 
@@ -187,13 +238,13 @@ decision in terms of what the user is agreeing to, then register the native plan
    W1–W4 plans must additionally include their required roles and dependencies:
    `{"workflow":null,"summary":"Write one paper-style report from existing registered evidence; no new experiments",
    "tasks":[{"id":"write","role":"as-evidence-writer","brief":"Write a complete manuscript from the supplied evidence and record its evidence mapping",
-   "dependsOn":[],"outputs":["process/write/manuscript.md","process/write/evidence-map.yaml"]},
+   "dependsOn":[],"outputs":["过程/write/manuscript.md","过程/write/evidence-map.yaml"]},
    {"id":"review","role":"as-independent-reviewer","brief":"Independently review the write task manuscript and evidence",
-   "dependsOn":["write"],"outputs":["process/review/review.yaml"]},
+   "dependsOn":["write"],"outputs":["过程/review/review.yaml"]},
    {"id":"audit","role":"as-quality-citation-auditor","brief":"Audit citations and claims in the same reviewed manuscript",
-   "dependsOn":["review"],"outputs":["process/audit/citation-audit.yaml"]},
+   "dependsOn":["review"],"outputs":["过程/audit/citation-audit.yaml"]},
    {"id":"package","role":"as-research-package-curator","brief":"Package the audited manuscript without changing scientific content; declare any actual figures before dispatch",
-   "dependsOn":["audit"],"outputs":["deliverables/report.md","process/package/research-package-manifest.json"]}]}`.
+   "dependsOn":["audit"],"outputs":["报告/report.md","过程/package/research-package-manifest.json"]}]}`.
    Call `orx research roles` for available roles. Use only needed experts.
    Plans are versioned; a changed plan invalidates previous approvals. Maximum
    40 tasks per plan; parallel live helpers are bounded by the native limit.
@@ -229,7 +280,9 @@ decision in terms of what the user is agreeing to, then register the native plan
    a failed/incomplete child after checking its return, but cannot claim a task
    succeeded without its dispatched session and declared artifacts. Use
    `--task <task-id>` for lead-side validation.
-8. Register claims with `orx research claim --file <path>`:
+8. Register claims with `orx research claim --file <path>` — only for the key
+   conclusions and load-bearing claims the deliverable relies on, not every
+   paragraph; the goal is research, not bookkeeping:
    `{"text":"...","support":"paper|experiment|inference","source":"...",
    "location":"page/section","runId":null,"lineStart":null,"lineEnd":null}`.
    Experiment claims require a same-project real run, an inclusive log line

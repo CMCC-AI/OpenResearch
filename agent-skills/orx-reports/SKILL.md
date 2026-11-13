@@ -10,8 +10,10 @@ immediately.
 Before writing, inspect the existing artifacts directory and follow its
 organization. Reuse the relevant folder for follow-up outputs. Group related
 outputs by research topic or deliverable instead of accumulating files at the
-artifacts root. Add subfolders such as `figures/`, `data/`, or `models/` only
-when they help; do not create empty scaffolding.
+artifacts root. Add subfolders such as `图表/`, `数据/`, or `模型/` only
+when they help; do not create empty scaffolding. Product-classification folders
+use Chinese names; externally obtained data that was not produced by this
+research goes to `外部获取/` with a brief source note.
 
 Use a descriptive filename for each output. For example:
 
@@ -19,7 +21,7 @@ Use a descriptive filename for each output. For example:
 <artifacts-dir>/
   transformer-sweep/
     transformer-sweep-report.md
-    figures/
+    图表/
       orx_figstyle.py
       patch-size.pdf
       patch-size.svg
@@ -27,7 +29,7 @@ Use a descriptive filename for each output. For example:
       learning-rate.pdf
       learning-rate.svg
       learning-rate.py
-    data/
+    数据/
       sweep-results.csv
 ```
 
@@ -42,17 +44,17 @@ Read the `orx-figures` module before writing any figure; a default
 matplotlib plot does not meet the bar the reports are held to.
 
 Use relative links within reports, for example
-`![Patch size](figures/patch-size.svg)` from `transformer-sweep-report.md`.
+`![Patch size](图表/patch-size.svg)` from `transformer-sweep-report.md`.
 For research-team sessions, follow the injected research delivery contract:
-keep task records under `process/<task-id>/` and the publication-style main
-report under `deliverables/`. These records remain registered and traceable,
+keep task records under `过程/<task-id>/` and the publication-style main
+report under `报告/`. These records remain registered and traceable,
 but the final chat handoff links the main report and necessary supplementary
 outputs rather than listing every intermediate file. Preserve declared task
 paths and already accepted outputs when continuing an existing study.
 
 For other sessions, in the chat handoff, link every finished output using the session playbook's
 evidence-and-links contract, including the full nested path, for example
-`<file path="artifacts/transformer-sweep/figures/patch-size.svg" />`.
+`<file path="artifacts/transformer-sweep/图表/patch-size.svg" />`.
 When an output is an image, also show it inline in the chat handoff using
 `![Description](artifacts/<relative-path>)`, while keeping its file link. Put related image previews in consecutive
 paragraphs so they render as a carousel, with file links after the group.

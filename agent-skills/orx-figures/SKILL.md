@@ -121,7 +121,7 @@ link.
 | The figure is for | Write it to | Cite it as |
 | --- | --- | --- |
 | A paper (`.tex`) | `figs/` beside the `.tex` in the working tree — `\includegraphics` resolves paths relative to the source, and the artifacts directory is not beside it | `<file path="figs/loss_curve.pdf" />` — repository-relative, **no** `artifacts/` prefix |
-| A report, a summary, an answer in chat | Load `orx-reports` and use the relevant topic or deliverable folder under the artifacts directory, e.g. `transformer-sweep/figures/` | `<file path="artifacts/transformer-sweep/figures/loss_curve.pdf" />` |
+| A report, a summary, an answer in chat | Load `orx-reports` and use the relevant topic or deliverable folder under the artifacts directory, e.g. `transformer-sweep/图表/` | `<file path="artifacts/transformer-sweep/图表/loss_curve.pdf" />` |
 
 **The tag must match the destination.** A figure written to the worktree but
 cited with an `artifacts/` prefix is looked for in the artifacts directory and
