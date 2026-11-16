@@ -3,7 +3,7 @@ import test from 'node:test'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { optionsFrom, workspaceIsHealthy, sourceIsNewer, composeFiles } from './start-mobilesci.mjs'
+import { optionsFrom, workspaceIsHealthy, sourceIsNewer, composeFiles, assertAccountApi } from './start-mobilesci.mjs'
 
 test('startup options reject unknown arguments and resolve companion paths', () => {
   assert.equal(optionsFrom(['--rebuild', '--deeplit-dir', '/tmp/literature']).rebuild, true)
@@ -38,4 +38,31 @@ test('source changes rebuild a cached executable while an unchanged checkout reu
     utimesSync(path.join(sources,'main.rs'),new Date(300000),new Date(300000))
     assert.equal(sourceIsNewer(binary,[sources]), true)
   } finally { rmSync(dir,{recursive:true}) }
+})
+
+
+test('a healthy legacy account service without the quota browser route is rejected before opening the UI', async t => {
+  t.mock.method(globalThis, 'fetch', async () => new Response('{}', { status: 401 }))
+  await assert.rejects(assertAccountApi('http://localhost:5300'), /账号服务版本过旧.*Token 额度接口/)
+})
+
+test('the account API probe accepts authenticated routes even when quotas are disabled', async t => {
+  const requests = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    requests.push([url, init])
+    return new Response('{}', { status: 401, headers: {
+      'access-control-allow-origin': 'http://localhost:5300',
+      'access-control-allow-credentials': 'true',
+    } })
+  })
+  await assert.doesNotReject(assertAccountApi('http://localhost:5300'))
+  assert.equal(requests[0][0], 'http://localhost:5300/api/platform/token-quota')
+  assert.equal(requests[0][1].credentials, undefined, 'compatibility checks must not use a user session')
+})
+
+test('unreachable or incorrectly configured account APIs do not silently reuse an old service', async t => {
+  const fetch = t.mock.method(globalThis, 'fetch', async () => { throw new TypeError('Failed to fetch') })
+  await assert.rejects(assertAccountApi('http://localhost:5300'), /无法连接账号服务/)
+  fetch.mock.mockImplementation(async () => new Response('{}', { status: 401, headers: { 'access-control-allow-origin': 'http://evil.invalid', 'access-control-allow-credentials': 'true' } }))
+  await assert.rejects(assertAccountApi('http://localhost:5300'), /接口不兼容/)
 })

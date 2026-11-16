@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { ChevronUp, Cpu, House, LogOut, Settings, ShieldCheck, UserRound } from "lucide-react";
+import { ChevronUp, Cpu, House, LogOut, Settings, Gauge, ShieldCheck, UserRound } from "lucide-react";
 import { useAuthSession } from "../product/AuthSession";
 import { useRuntime } from "../RemoteRuntime";
 import { m } from "../paraglide/messages.js";
@@ -38,7 +38,9 @@ export function AccountMenu({ connectionInfo }: { connectionInfo?: ReactNode }) 
     }}>
       {user && <MenuItem role="menuitem" onClick={() => { menu.setOpen(false); void navigate({ to: "/" }); }}><span className="flex items-center gap-2.5"><House size={15} />回到首页</span></MenuItem>}
       {user?.isAdmin && <MenuItem role="menuitem" onClick={() => { menu.setOpen(false); void navigate({ to: "/admin/users" }); }}><span className="flex items-center gap-2.5"><ShieldCheck size={15} />系统管理</span></MenuItem>}
-      {canAccessResearch && ([{ id: "compute", label: m.settings_page_compute(), Icon: Cpu }, { id: "settings", label: m.settings_page_settings(), Icon: Settings }] as const).map(({ id, label, Icon }) => <MenuItem key={id} role="menuitem" onClick={() => { menu.setOpen(false); void navigate({ to: "/settings/$tab", params: { tab: id } }); }}><span className="flex items-center gap-2.5"><Icon size={15} />{label}</span></MenuItem>)}
+      {user && <MenuItem role="menuitem" onClick={() => { menu.setOpen(false); void navigate({ to: "/settings/quota" }); }}><span className="flex items-center gap-2.5"><Gauge size={15} />Token 额度</span></MenuItem>}
+      {user && <MenuItem role="menuitem" onClick={() => { menu.setOpen(false); void navigate({ to: "/settings/account" }); }}><span className="flex items-center gap-2.5"><Settings size={15} />个人设置</span></MenuItem>}
+      {canAccessResearch && ([{ id: "compute", label: m.settings_page_compute(), Icon: Cpu }, ...(!user ? [{ id: "settings", label: m.settings_page_settings(), Icon: Settings } as const] : [])] as const).map(({ id, label, Icon }) => <MenuItem key={id} role="menuitem" onClick={() => { menu.setOpen(false); void navigate({ to: "/settings/$tab", params: { tab: id } }); }}><span className="flex items-center gap-2.5"><Icon size={15} />{label}</span></MenuItem>)}
       <div className="my-1 border-t border-border-variant" />
       <details className="px-2 py-1 text-sm text-subtext"><summary role="menuitem" className="cursor-pointer rounded-md py-1 focus-visible:outline-2 focus-visible:outline-primary">连接状态与版本</summary>{canAccessResearch ? connectionInfo ?? <WorkspaceConnection runtime={runtime} /> : <p className="text-xs">MobileSci {runtime.version}</p>}</details>
       <div className="my-1 border-t border-border-variant" />

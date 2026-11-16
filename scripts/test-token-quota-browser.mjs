@@ -1,0 +1,423 @@
+#!/usr/bin/env node
+// Built workspace UI against synthetic accounts; no executor or model is started.
+import assert from "node:assert/strict";
+import http from "node:http";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+const root = new URL("../", import.meta.url);
+const require = createRequire(new URL("ui/package.json", root));
+const { chromium } = require("@playwright/test");
+const assets = new URL("ui/dist/", root);
+const artifacts = new URL("ui/test-results/token-quota/", root);
+await mkdir(artifacts, { recursive: true });
+let monthlyLimit = 2000000,
+  pending = true,
+  origin;
+let modelRevision = 1;
+let models = [{ id: "kimi", name: "Kimi", providerId: "moonshotai-cn", model: "kimi-test", baseUrl: "https://example.invalid/v1", contextTokens: 262144, maxOutputTokens: 8192, hasApiKey: true, opencode: { reasoning: true } }];
+const modelWrites = [];
+const writes = [],
+  reconciliations = [],
+  errors = [],
+  unexpected = [];
+const balance = () => ({
+  enabled: true,
+  period: "2026-11",
+  timezone: "Asia/Shanghai",
+  monthlyLimit,
+  granted: monthlyLimit,
+  used: 100,
+  reserved: pending ? 50 : 0,
+  available: monthlyLimit - 100 - (pending ? 50 : 0),
+});
+const target = {
+  id: "target-user",
+  name: "<target>",
+  email: "user@example.com",
+  is_admin: false,
+  disabled: false,
+  created_at: "2026-11-01T00:00:00Z",
+  last_login_at: null,
+};
+const managed = () => ({
+  ...balance(),
+  user: target,
+  requests: pending
+    ? [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          period: "2026-11",
+          model: "research",
+          state: "pending",
+          reserved: 50,
+          upstream_request_id: "synthetic-request",
+        },
+      ]
+    : [],
+});
+const server = http.createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url, origin);
+    const path = url.pathname.replace(/^\/mobilesci(?=\/)/, "");
+    const admin = req.headers.cookie?.includes("quota-role=admin");
+    const send = (value, status = 200) => {
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify(value));
+    };
+    const user = {
+      id: admin ? "admin" : "reader",
+      name: admin ? "Admin" : "Researcher",
+      email: admin ? "admin@example.com" : "user@example.com",
+      isAdmin: !!admin,
+    };
+    if (path === "/_orx/runtime")
+      return send({ kind: "local", version: "test", accountUrl: origin });
+    if (path === "/api/platform/catalog-session")
+      return send({
+        user,
+        canAccessResearch: true,
+        privateResearch: true,
+        deepLiteratureUrl: null,
+      });
+    if (path === "/api/platform/admin/opencode" && admin) {
+      if (req.method === "POST") {
+        let body = ""; for await (const part of req) body += part;
+        const data = JSON.parse(body);
+        assert.equal(data.revision, String(modelRevision)); modelWrites.push(data);
+        const index = models.findIndex(m => m.id === data.id);
+        if (data.action === "default") models.unshift(...models.splice(index, 1));
+        else if (data.action === "remove") models.splice(index, 1);
+        else {
+          assert.equal(data.apiKey, index < 0 ? "synthetic-new-key" : "");
+          const { apiKey, revision, ...model } = data;
+          if (index < 0) models.push({ ...model, hasApiKey: true }); else models[index] = model;
+        }
+        modelRevision++;
+      }
+      return send({ enabled: true, backend: "quota", revision: String(modelRevision), models });
+    }
+    if (path === "/api/platform/token-quota") return send(balance());
+    if (path === "/api/platform/admin/users" && admin)
+      return send({
+        summary: { total: 1, enabled: 1, disabled: 0, admins: 0 },
+        users: [target],
+        total: 1,
+        page: 1,
+        pageSize: 20,
+      });
+    if (path.startsWith("/api/platform/admin/token-quotas") && admin) {
+      if (req.method === "POST") {
+        let body = "";
+        for await (const part of req) body += part;
+        const data = JSON.parse(body);
+        assert.equal(data.email, "user@example.com");
+        if (path.endsWith("/reconcile")) {
+          assert.equal(data.actualTokens, 12);
+          reconciliations.push(data);
+          pending = false;
+        } else {
+          assert.equal(data.monthlyLimit, 3000000);
+          assert.match(data.idempotencyKey, /^[0-9a-f-]{36}$/);
+          writes.push(data);
+          monthlyLimit = data.monthlyLimit;
+        }
+      }
+      return send(managed());
+    }
+    if (path === "/favicon.ico") {
+      res.writeHead(204).end();
+      return;
+    }
+    if (path.startsWith("/api/") || path.startsWith("/_platform/")) {
+      unexpected.push(req.method + " " + path);
+      return send({ error: "unexpected executor/account request" }, 503);
+    }
+    const relative = path.startsWith("/assets/")
+      ? path.slice(1)
+      : path === "/favicon.svg"
+        ? "favicon.svg"
+        : "index.html";
+    const contents = await readFile(new URL(relative, assets));
+    res.writeHead(200, {
+      "content-type": relative.endsWith(".js")
+        ? "text/javascript"
+        : relative.endsWith(".css")
+          ? "text/css"
+          : relative.endsWith(".svg")
+            ? "image/svg+xml"
+            : relative.endsWith(".png")
+              ? "image/png"
+              : "text/html",
+    });
+    res.end(contents);
+  } catch (e) {
+    errors.push(e.message);
+    res.writeHead(500).end();
+  }
+});
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+origin = `http://127.0.0.1:${server.address().port}`;
+let browser;
+try {
+  browser = await chromium.launch({
+    headless: true,
+    executablePath: process.env.TOKEN_QUOTA_TEST_CHROMIUM || undefined,
+  });
+  const admin = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+  });
+  await admin.addCookies([{ name: "quota-role", value: "admin", url: origin }]);
+  await admin.addInitScript(() =>
+    Object.defineProperty(globalThis.crypto, "randomUUID", {
+      value: undefined,
+      configurable: true,
+    }),
+  );
+  const page = await admin.newPage();
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.goto(origin + "/mobilesci/admin/opencode");
+  await page.getByLabel("上游模型 ID").waitFor();
+  assert.equal(await page.getByLabel("API Key", { exact: true }).inputValue(), "");
+  await page.getByLabel("显示名称").fill("Kimi updated");
+  await page.getByRole("button", { name: "保存模型接入", exact: true }).click();
+  await page.getByRole("status").filter({hasText: "网关模型清单已保存"}).waitFor();
+  assert.equal(models[0].name, "Kimi updated");
+  assert.equal(modelWrites.length, 1);
+  assert.equal(monthlyLimit, 2000000);
+  assert.equal(pending, true);
+  assert.equal(await page.getByRole("button", { name: "移除此模型", exact: true }).isDisabled(), true);
+  await page.getByRole("button", { name: "接入其他模型", exact: true }).click();
+  await page.getByLabel("选择供应商").selectOption("deepseek");
+  await page.getByLabel("模型别名").fill("new-model");
+  await page.getByLabel("显示名称").fill("New Model");
+  await page.getByLabel("服务地址（OpenAI 兼容 Base URL）").fill("https://new.example.invalid/v1");
+  await page.getByLabel("API Key", { exact: true }).fill("synthetic-new-key");
+  await page.getByLabel("上游模型 ID").fill("provider-model");
+  await page.getByRole("button", { name: "保存模型接入", exact: true }).click();
+  await page.getByRole("status").filter({hasText: "网关模型清单已保存"}).waitFor();
+  assert.equal(models.length, 2);
+  const newCard = page.getByRole("article", { name: "New Model", exact: true });
+  await newCard.getByRole("button", { name: "设为默认", exact: true }).click();
+  await newCard.getByRole("button", { name: "当前默认", exact: true }).waitFor();
+  assert.equal(models[0].id, "new-model");
+  assert.equal(models[0].providerId, "deepseek");
+  assert.equal(await page.getByLabel("API Key", { exact: true }).inputValue(), "");
+  await page.locator("main").evaluate(el => el.scrollTop = 0);
+  await page.screenshot({path: fileURLToPath(new URL("models-wide.png", artifacts)), fullPage: true});
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.screenshot({path: fileURLToPath(new URL("models-narrow.png", artifacts)), fullPage: true});
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(origin + "/mobilesci/admin/users");
+  await page
+    .getByRole("row")
+    .filter({ hasText: "user@example.com" })
+    .getByRole("link", { name: "Token 额度", exact: true })
+    .click();
+  await page
+    .getByRole("heading", { name: "用户 Token 额度", exact: true })
+    .waitFor();
+  assert.equal(
+    await page.getByLabel("用户邮箱").inputValue(),
+    "user@example.com",
+  );
+  await page.getByLabel("每月 Token 额度").fill("3000000");
+  await page.getByLabel("调整原因").fill("browser acceptance");
+  await page.getByRole("button", { name: "保存月额度", exact: true }).click();
+  await page
+    .getByText("月额度已保存，本月已用和在途消费保留。", { exact: true })
+    .waitFor();
+  assert.equal(writes.length, 1);
+  assert.ok(
+    (
+      await page
+        .getByRole("heading", {
+          name: "<target> · user@example.com",
+          exact: true,
+        })
+        .textContent()
+    ).includes("<target>"),
+  );
+  await page.getByLabel("实际 Token 用量").fill("12");
+  await page.getByLabel("补账依据").fill("synthetic provider receipt");
+  await page.getByRole("button", { name: "确认并补账", exact: true }).click();
+  await page.getByText("暂无待确认请求", { exact: true }).waitFor();
+  assert.equal(reconciliations.length, 1);
+  await page.locator("main").evaluate((el) => (el.scrollTop = 0));
+  await page.screenshot({
+    path: fileURLToPath(new URL("admin-wide.png", artifacts)),
+    fullPage: true,
+  });
+  const adminNarrowContext = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+  });
+  await adminNarrowContext.addCookies([
+    { name: "quota-role", value: "admin", url: origin },
+  ]);
+  const adminNarrow = await adminNarrowContext.newPage();
+  await adminNarrow.goto(
+    origin + "/mobilesci/admin/quotas?email=user%40example.com",
+  );
+  await adminNarrow.getByLabel("每月 Token 额度").waitFor();
+  assert.ok(
+    await adminNarrow.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  );
+  await adminNarrow.screenshot({
+    path: fileURLToPath(new URL("admin-narrow.png", artifacts)),
+    fullPage: true,
+  });
+  const normal = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+  });
+  await normal.addCookies([{ name: "quota-role", value: "user", url: origin }]);
+  let user = await normal.newPage();
+  user.on("pageerror", (e) => errors.push(e.message));
+  await user.goto(origin + "/mobilesci/settings/account");
+  await user.getByRole("heading", { name: "账户资料", exact: true }).waitFor();
+  await user
+    .getByRole("button", { name: "个人用户菜单 · Researcher", exact: true })
+    .click();
+  await user.getByRole("menuitem").filter({ hasText: "Token 额度" }).click();
+  await user
+    .getByRole("heading", { name: "我的 Token 额度", exact: true })
+    .waitFor();
+  await user.getByText("3,000,000", { exact: true }).waitFor();
+  assert.equal(await user.getByLabel("用户邮箱").count(), 0);
+  await user.screenshot({
+    path: fileURLToPath(new URL("user-wide.png", artifacts)),
+    fullPage: true,
+  });
+  const narrowContext = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+  });
+  await narrowContext.addCookies([
+    { name: "quota-role", value: "user", url: origin },
+  ]);
+  user = await narrowContext.newPage();
+  user.on("pageerror", (e) => errors.push(e.message));
+  await user.goto(origin + "/mobilesci/settings/quota");
+  await user.getByText("3,000,000", { exact: true }).waitFor();
+  assert.equal(await user.locator(".product-frame").count(), 1);
+  assert.ok(
+    await user.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  );
+  await user.screenshot({
+    path: fileURLToPath(new URL("user-narrow.png", artifacts)),
+    fullPage: true,
+  });
+  await user.getByRole("link", { name: "账户与安全", exact: true }).click();
+  await user
+    .getByLabel("当前密码", { exact: true })
+    .fill("Current synthetic password");
+  await user
+    .getByLabel("新密码", { exact: true })
+    .fill("New synthetic password");
+  await user
+    .getByLabel("确认新密码", { exact: true })
+    .fill("Different synthetic password");
+  await user
+    .getByRole("button", { name: "保存并重新登录", exact: true })
+    .click();
+  await user
+    .getByRole("alert")
+    .filter({ hasText: "两次输入的新密码不一致" })
+    .waitFor();
+  await user.goto(origin + "/mobilesci/admin/quotas");
+  await user
+    .getByRole("heading", { name: "无权访问系统管理", exact: true })
+    .waitFor();
+  assert.deepEqual(
+    unexpected,
+    [],
+    "account settings and administration must never wake an executor",
+  );
+  // Load a real project into the workspace cache, then switch through all
+  // personal tabs. Passive tabs must retain navigation without refreshing projects.
+  const cached = await normal.newPage();
+  const executorReads = [];
+  const sidebarReads = () => executorReads.filter((path) => path.startsWith("/api/projects") || path.startsWith("/api/chat"));
+  cached.on("pageerror", (e) => errors.push(e.message));
+  await cached.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/platform/personal-space")
+      return route.fulfill({ json: { status: "ready", online: true } });
+    if (path.startsWith("/api/platform/")) return route.continue();
+    executorReads.push(path);
+    const fixtures = {
+      "/api/projects": { projects: [{ id: "cached-project", name: "Cached research project", repoPath: "/research", updatedAt: 1 }] },
+      "/api/projects/activity": { activity: [] },
+      "/api/chat/sessions": { sessions: [] },
+    };
+    return path in fixtures
+      ? route.fulfill({ json: fixtures[path] })
+      : route.fulfill({ status: 503, json: { error: "synthetic unavailable settings" } });
+  });
+  await cached.goto(origin + "/mobilesci/settings/settings");
+  await cached.getByLabel("项目 Cached research project", { exact: true }).waitFor();
+  const navBox = await cached.getByRole("navigation", { name: "设置导航" }).boundingBox();
+  await cached.locator(".settings-stack").waitFor();
+  await cached.waitForLoadState("networkidle");
+  for (const label of ["账户与安全", "Token 额度", "工作区设置"]) {
+    await cached.getByRole("navigation", { name: "设置导航" }).getByRole("link", { name: label, exact: true }).click();
+    await cached.waitForURL(`**/settings/${label === "账户与安全" ? "account" : label === "Token 额度" ? "quota" : "settings"}`);
+    if (label !== "工作区设置") await cached.locator(".settings-stack").waitFor({ state: "detached" });
+    await cached.getByRole("heading", { name: "个人设置", exact: true }).waitFor();
+    await cached.getByLabel("项目 Cached research project", { exact: true }).waitFor();
+    const box = await cached.getByRole("navigation", { name: "设置导航" }).boundingBox();
+    assert.equal(box.x, navBox.x);
+    assert.equal(box.y, navBox.y);
+    assert.equal(box.width, navBox.width);
+    assert.equal(await cached.getByText("登录后查看研究项目", { exact: true }).count(), 0);
+    if (label !== "工作区设置") {
+      await cached.waitForLoadState("networkidle");
+      const reads = sidebarReads();
+      // Refocusing also exercises disabled-query refetch behavior.
+      await cached.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await cached.waitForTimeout(150);
+      assert.deepEqual(sidebarReads(), reads, "passive tabs must not refresh project/session data");
+    }
+  }
+  await cached.screenshot({ path: fileURLToPath(new URL("settings-cached-wide.png", artifacts)), fullPage: true });
+  for (const width of [760, 390]) {
+    await cached.setViewportSize({ width, height: 844 });
+    let previous;
+    for (const label of ["账户与安全", "Token 额度", "工作区设置"]) {
+      await cached.getByRole("navigation", { name: "设置导航" }).getByRole("link", { name: label, exact: true }).click();
+      const box = await cached.getByRole("navigation", { name: "设置导航" }).boundingBox();
+      if (previous) assert.deepEqual(box, previous, "settings navigation must align at every viewport");
+      previous = box;
+      assert.ok(await cached.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    }
+    await cached.screenshot({ path: fileURLToPath(new URL(`settings-cached-${width}.png`, artifacts)), fullPage: true });
+  }
+  await cached.close();
+  assert.deepEqual(errors, []);
+  await writeFile(
+    new URL("proof.json", artifacts),
+    JSON.stringify(
+      {
+        adminConfiguredMonthlyLimit: monthlyLimit,
+        reconciliation: true,
+        personalMenu: true,
+        accountSettings: true,
+        ordinaryAdminDenied: true,
+        executorRequests: unexpected.length,
+        wideAndNarrow: true,
+        errors,
+      },
+      null,
+      2,
+    ),
+  );
+  console.log(
+    "Workspace token quota and personal settings browser acceptance passed",
+  );
+} finally {
+  await browser?.close();
+  await new Promise((resolve) => server.close(resolve));
+}

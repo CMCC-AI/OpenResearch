@@ -1,0 +1,16 @@
+{
+  "revision": "47571b04bb074703f43764d7387f98c218f2b88b",
+  "candidateImage": "sha256:e6b575a7611062979a61c7050e194fb66849e3d7923b432395b3d17e8e43f582",
+  "clone": "mobilesci_release71_47571b04",
+  "steps": [
+    "old-baseline",
+    "candidate-migrate",
+    "old-after-upgrade",
+    "candidate-reopen"
+  ],
+  "tablesVerified": 23,
+  "allExistingRowsAndValuesPreserved": true,
+  "migrationsIdempotent": true,
+  "productionModified": false,
+  "modelsCalled": false
+}

@@ -1,0 +1,29 @@
+{
+  "verifiedAt": "2026-11-11T10:29:46.703397+00:00",
+  "revision": "47571b04bb074703f43764d7387f98c218f2b88b",
+  "remoteBranchesRemoved": [
+    "feat/mobilesci-7-stabilization",
+    "release/mobilesci-0.2.23-mobilesci.7",
+    "fix/mobilesci-7-quota-bootstrap",
+    "release/mobilesci-0.2.23-mobilesci.7.1"
+  ],
+  "localCandidateWorktreesAndBranchesRemoved": [
+    "feat/mobilesci-7-stabilization",
+    "fix/mobilesci-7-quota-bootstrap"
+  ],
+  "immutableReleaseTagsPreserved": [
+    "v0.2.23-mobilesci.7",
+    "v0.2.23-mobilesci.7.1"
+  ],
+  "isolatedDatabasesRemoved": [
+    "mobilesci_release7_27c7ef4f",
+    "mobilesci_release71_47571b04"
+  ],
+  "databaseConnectionsForceTerminated": 0,
+  "productionFixtureAccountsRemaining": 0,
+  "productionBackupsAndRollbackContainersRetained": true,
+  "userStashesRetained": true,
+  "draftPr17AndUniqueAi4sProductKzyBranchPreserved": true,
+  "realModelCalls": 0,
+  "experimentsStarted": 0
+}

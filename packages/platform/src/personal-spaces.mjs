@@ -18,7 +18,7 @@ export async function ensurePersonalSpace(db, user) {
   );
   return workspace;
 }
-export async function preparePersonalSpace(db, user, capacity, retry = false) {
+export async function preparePersonalSpace(db, user, _capacity, retry = false) {
   // Same order in all callers: capacity advisory lock, then user row.
   await db.query("SELECT pg_advisory_xact_lock(721947)");
   const found = await db.query(
@@ -32,23 +32,19 @@ export async function preparePersonalSpace(db, user, capacity, retry = false) {
     [workspace],
   );
   if (!runtime.rows.length || runtime.rows[0].desired === "deleted") {
-    const active = await db.query(
-      "SELECT count(*)::int n FROM workspace_runtimes WHERE desired='running'",
-    );
-    check(
-      active.rows[0].n < capacity,
-      409,
-      "运行环境暂时已满，你的个人空间和数据已保留，请稍后重试或联系管理员。",
-    );
     await db.query(
-      "INSERT INTO workspace_runtimes(workspace_id) VALUES($1) ON CONFLICT(workspace_id) DO UPDATE SET desired='running',status='queued',error=NULL,checked_at=NULL",
+      "INSERT INTO workspace_runtimes(workspace_id,status,requested_at,last_requested_at) VALUES($1,'waiting',now(),now()) ON CONFLICT(workspace_id) DO UPDATE SET desired='running',status='waiting',error=NULL,checked_at=NULL,requested_at=now(),last_requested_at=now(),last_used_at=now()",
       [workspace],
     );
   } else if (retry && runtime.rows[0].status === "failed") {
     await db.query(
-      "UPDATE workspace_runtimes SET status='queued',error=NULL,checked_at=NULL WHERE workspace_id=$1",
+      "UPDATE workspace_runtimes SET status='queued',error=NULL,checked_at=NULL,last_used_at=now() WHERE workspace_id=$1",
       [workspace],
     );
   }
+  await db.query(
+    "UPDATE workspace_runtimes SET status=CASE WHEN status='sleeping' THEN 'waiting' ELSE status END, requested_at=CASE WHEN status='sleeping' THEN now() ELSE requested_at END, last_requested_at=now(), last_used_at=now() WHERE workspace_id=$1",
+    [workspace],
+  );
   return workspace;
 }

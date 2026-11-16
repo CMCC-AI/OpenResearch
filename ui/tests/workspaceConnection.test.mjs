@@ -6,6 +6,9 @@ import React from "react";
 import ts from "typescript";
 import { getComposerStashStore, getResearchSubmissionStore } from "../src/composerStash.ts";
 
+import * as homeStart from "../src/homeConversationStart.ts";
+import * as turnId from "../src/clientTurnId.ts";
+
 const require = createRequire(import.meta.url);
 const messages = { m: new Proxy({}, { get: (_, name) => () => String(name) }) };
 
@@ -16,7 +19,7 @@ function load(file, mocks, globals = {}) {
   }).outputText;
   const exports = {};
   new Function("require", "exports", ...Object.keys(globals), code)(
-    (name) => mocks[name] ?? require(name), exports, ...Object.values(globals),
+    (name) => mocks[name] ?? ({ "./homeConversationStart": homeStart, "./clientTurnId": turnId }[name]) ?? require(name), exports, ...Object.values(globals),
   );
   return exports;
 }
@@ -29,7 +32,7 @@ function hooks() {
     react: {
       ...React,
       useEffect: () => {},
-      useRef: () => ({ current: null }),
+      useRef: (value) => ({ current: value }),
       useState: (initial) => {
         const index = cursor++;
         if (!(index in values)) values[index] = initial;
@@ -178,13 +181,15 @@ for (const content of ["objective", "attachments", "empty", "missing"]) for (con
   const navigations = [];
   const calls = [];
   const alerts = [];
+  const sends = [];
+  let sessionRows;
   let createFailure = false;
   let harnessReady = true;
   const session = { id: "session", projectId: "p", harness: "opencode", model: "configured-model" };
   const { ProjectsPage } = load("routePages.tsx", {
     react: hooks().react,
-    "./queries/client": { getWorkspaceGeneration: () => 7, setScopedQueryData: () => {} },
-    "./api": { createChatSession: async (...args) => { calls.push(args); if (createFailure) throw new Error("create failed"); return session; } },
+    "./queries/client": { getWorkspaceGeneration: () => 7, setScopedQueryData: (_key, updater) => { sessionRows = updater(sessionRows); } },
+    "./api": { sendChatMessage: async (...args) => { sends.push(args); sessionRows = sessionRows.map(row => ({ ...row, busy: true, title: "live title" })); return { ok: true }; }, createChatSession: async (...args) => { calls.push(args); if (createFailure) throw new Error("create failed"); return session; } },
     "./research": { researchModes: { team: "团队研究" } },
     "./queries/settings": { getHarnessesQuery: () => ({ kind: "harnesses" }) },
     "./queries/chat": { listChatSessionsQuery: () => ({ queryKey: ["sessions"] }) },
@@ -223,8 +228,13 @@ for (const content of ["objective", "attachments", "empty", "missing"]) for (con
     assert.equal(calls[0][2].autonomy, "copilot");
     assert.deepEqual(calls[0][2].research, workMode === "team" ? { mode: "team", objective: draft.draft.trim() || "团队研究" } : undefined);
   }
-  assert.equal(stashes.get("session"), hasContent ? draft : undefined);
-  assert.equal(submissions.get("session"), hasContent ? draft : undefined);
+  assert.equal(stashes.get("session"), content === "attachments" ? draft : undefined);
+  assert.equal(submissions.get("session"), content === "attachments" ? draft : undefined);
+  assert.equal(sends.length, content === "objective" ? 1 : 0);
+  if (content === "objective") {
+    assert.equal(sessionRows[0].busy, true, "navigation must retain live busy state from the accepted turn");
+    assert.equal(sessionRows[0].title, "live title");
+  }
   assert.deepEqual(navigations[0], hasContent ? {
     to: "/projects/$projectId/tasks/$sessionId", params: { projectId: "p", sessionId: "session" },
   } : { to: "/projects/$projectId", params: { projectId: "p" } });
@@ -233,7 +243,7 @@ for (const content of ["objective", "attachments", "empty", "missing"]) for (con
     const count = calls.length;
     await Promise.all([home.props.onResume({ id: "p" }, draft), home.props.onResume({ id: "p" }, draft)]);
     assert.equal(calls.length, count + 1, "double clicks must not create two sessions");
-    assert.equal(submissions.get("session"), draft, "existing project submissions use the same direct session flow");
+    assert.equal(submissions.get("session"), content === "attachments" ? draft : undefined, "plain questions are sent before navigation; attachments use the composer");
     submissions.clear();
     const navigationCount = navigations.length;
     createFailure = true;

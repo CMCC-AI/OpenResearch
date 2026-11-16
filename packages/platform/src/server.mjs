@@ -1,13 +1,22 @@
 import {
+  quotaConfiguration,
+  loadQuotaModels,
+  modelGateway,
+} from "./model-gateway.mjs";
+import { tokenQuotas, ensureTokenQuota } from "./token-quotas.mjs";
+import { tokenQuotaRoutes } from "./token-quota-routes.mjs";
+import {
   ensurePersonalSpace,
   preparePersonalSpace,
 } from "./personal-spaces.mjs";
+import { quotaModelSettings } from "./quota-model-settings.mjs";
 import { opencodeSettings } from "./opencode-settings.mjs";
 import { accountRoutes } from "./accounts.mjs";
 import { resetMailer } from "./mail.mjs";
 import { featuredCaseRoutes } from "./featured-cases.mjs";
 import { storageAccess, storageSettings } from "./storage.mjs";
 import { researchLimit } from "./research-limits.mjs";
+import { leaseRuntime, personalRuntimeTunnel } from "./runtime-pool.mjs";
 import http from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
@@ -133,6 +142,7 @@ export function configuration(env = process.env) {
     );
   return {
     origin,
+    tokenQuota: quotaConfiguration(env),
     opencodeConfigFile: env.OPENCODE_ADMIN_CONFIG_FILE || "",
     opencodeAdminUrl: env.OPENCODE_ADMIN_URL || "",
     sendPasswordReset: resetMailer(env),
@@ -187,6 +197,17 @@ export async function createPlatform(
   config,
   pool = createPool(config.database),
 ) {
+  config.tokenQuota ||= { enabled: false, monthlyTokens: 2000000 };
+  if (config.tokenQuota.enabled)
+    await loadQuotaModels(config.tokenQuota.modelsFile);
+  const quota = tokenQuotas(pool, config.tokenQuota.monthlyTokens);
+  const quotaRoutes = tokenQuotaRoutes({ config, pool, quota, input, json });
+  const gateway = modelGateway({
+    pool,
+    quota,
+    settings: config.tokenQuota,
+    limit,
+  });
   const tunnels = new Map();
   const wss = new WebSocketServer({
     noServer: true,
@@ -263,6 +284,46 @@ export async function createPlatform(
     if (websocket || !["GET", "HEAD"].includes(req.method))
       sameOrigin(req, config.origin.origin);
     return { s, workspace };
+  }
+  // Keep the browser connected to the gateway while compute is absent. This
+  // stream owns no compute lease and never wakes an idle container by itself.
+  function pendingEvents(
+    req,
+    res,
+    workspace,
+    authorize = () => personalAccess(req),
+  ) {
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-store",
+      "x-accel-buffering": "no",
+    });
+    res.write(": connected\n\n");
+    let pending = false;
+    const timer = setInterval(async () => {
+      if (pending || res.destroyed || res.writableEnded) return;
+      pending = true;
+      try {
+        await authorize();
+        const { rows } = await pool.query(
+          "SELECT status,desired FROM workspace_runtimes WHERE workspace_id=$1",
+          [workspace],
+        );
+        if (
+          rows[0]?.desired === "deleted" ||
+          rows[0]?.status === "failed" ||
+          (rows[0]?.status === "ready" && tunnels.has(workspace))
+        )
+          res.end();
+        else res.write(": keepalive\n\n");
+      } catch {
+        res.end();
+      } finally {
+        pending = false;
+      }
+    }, 5000);
+    timer.unref();
+    res.once("close", () => clearInterval(timer));
   }
   async function newSession(db, user, host, parent = null) {
     const secret = token();
@@ -388,11 +449,52 @@ export async function createPlatform(
     audit,
     limit,
   });
-  const modelSettings = opencodeSettings(
-    config.opencodeConfigFile,
-    config.opencodeAdminUrl,
-  );
-  async function adminUsers(req, res, origin, currentSession = null) {
+  const modelSettings = config.tokenQuota.enabled
+    ? quotaModelSettings(config.tokenQuota.modelsFile)
+    : opencodeSettings(config.opencodeConfigFile, config.opencodeAdminUrl);
+  async function changePassword(req, res, s) {
+    const b = await input(req);
+    await limit(`password:${s.user_id}`, 5, 900);
+    const next = await passwordHash(b.password);
+    const revoked = await transaction(pool, async (db) => {
+      const user = await db.query(
+        "SELECT password_hash FROM platform_users WHERE id=$1 AND NOT disabled FOR UPDATE",
+        [s.user_id],
+      );
+      check(
+        user.rows[0] &&
+          (await verifyPassword(b.current, user.rows[0].password_hash)),
+        403,
+        "当前密码错误",
+      );
+      const sessions = await db.query(
+        "SELECT token_hash FROM platform_sessions WHERE user_id=$1",
+        [s.user_id],
+      );
+      await db.query(
+        "UPDATE platform_users SET password_hash=$2,password_version=password_version+1 WHERE id=$1",
+        [s.user_id, next],
+      );
+      await db.query("DELETE FROM platform_sessions WHERE user_id=$1", [
+        s.user_id,
+      ]);
+      await db.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [
+        s.user_id,
+      ]);
+      await audit(db, s.user_id, null, "password.change");
+      return sessions.rows;
+    });
+    for (const tunnel of tunnels.values())
+      for (const row of revoked) tunnel.revokeSession(row.token_hash);
+    res.setHeader("set-cookie", sessionCookie("", config.secure, 0));
+    return json(res, { ok: true });
+  }
+  async function accountBrowserRequests(
+    req,
+    res,
+    origin,
+    currentSession = null,
+  ) {
     browserSessionOrigin(req, origin);
     res.setHeader("access-control-allow-origin", origin);
     res.setHeader("access-control-allow-credentials", "true");
@@ -406,6 +508,11 @@ export async function createPlatform(
     const s = currentSession || (await session(req));
     await limit(`admin-users:${s.user_id}`, 180, 60);
     const path = new URL(req.url, config.origin).pathname;
+    if (await quotaRoutes(req, res, path, s, origin)) return;
+    if (path === "/api/platform/password") {
+      check(req.method === "POST", 405);
+      return await changePassword(req, res, s);
+    }
     if (path === "/api/platform/admin/opencode") {
       check(s.is_admin, 403, "仅系统管理员可配置 OpenCode 模型");
       check(["GET", "POST"].includes(req.method), 405);
@@ -413,26 +520,46 @@ export async function createPlatform(
       const settings = await input(req);
       check(
         settings.action === undefined ||
-          ["disconnect", "verify"].includes(settings.action),
+          (config.tokenQuota.enabled
+            ? [
+                "remove",
+                "default",
+                "connectProvider",
+                "disconnectProvider",
+                "probeModels",
+              ]
+            : ["disconnect", "verify"]
+          ).includes(settings.action),
         400,
         "不支持的模型配置操作",
       );
       const disconnect = settings.action === "disconnect";
       const verify = settings.action === "verify";
-      if (verify) await limit(`model-verify:${s.user_id}`, 6, 60);
+      if (verify || settings.action === "probeModels")
+        await limit(`model-verify:${s.user_id}`, 12, 60);
       const saved = await modelSettings[
-        verify ? "verify" : disconnect ? "disconnect" : "save"
+        config.tokenQuota.enabled
+          ? settings.action || "save"
+          : verify
+            ? "verify"
+            : disconnect
+              ? "disconnect"
+              : "save"
       ](settings, async () => {
         await audit(
           pool,
           s.user_id,
           null,
-          verify
-            ? "opencode.model.verify"
-            : disconnect
-              ? "opencode.provider.disconnect"
-              : "opencode.config.update",
-          settings.providerId,
+          config.tokenQuota.enabled
+            ? `quota.model.${settings.action || "save"}`
+            : verify
+              ? "opencode.model.verify"
+              : disconnect
+                ? "opencode.provider.disconnect"
+                : "opencode.config.update",
+          config.tokenQuota.enabled
+            ? settings.id || settings.providerId
+            : settings.providerId,
         );
       });
       return json(res, saved);
@@ -455,6 +582,7 @@ export async function createPlatform(
       );
     try {
       const path = new URL(req.url, config.origin).pathname;
+      if (await gateway(req, res, path)) return;
       const ssoServicePath = [
         "/api/auth/sso/exchange",
         "/api/auth/sso/session",
@@ -509,11 +637,11 @@ export async function createPlatform(
         const s = await session(req);
         await spaceOwner(s.user_id, workspace);
         if (
-          /^\/api\/platform\/admin\/(?:users(?:\/[0-9a-f-]{36}\/(?:password|role|delete))?|opencode)$/.test(
+          /^\/api\/platform\/(?:token-quota|password|admin\/(?:token-quotas(?:\/reconcile)?|users(?:\/[0-9a-f-]{36}\/(?:password|role|delete))?|opencode))$/.test(
             path,
           )
         )
-          return await adminUsers(
+          return await accountBrowserRequests(
             req,
             res,
             workspaceOrigin(config, workspace),
@@ -521,6 +649,22 @@ export async function createPlatform(
           );
         if (path === "/api/auth/sso/authorize" && req.method === "GET")
           return await authorizeDeepLiterature(req, res, s, workspace);
+        if (path === "/_platform/activity" && req.method === "POST") {
+          check(config.privateSpaces && config.managed, 404);
+          sameOrigin(req, workspaceOrigin(config, workspace));
+          await limit(`runtime:${workspace}:${s.user_id}`, 60, 60);
+          const data = await input(req);
+          await transaction(pool, async (db) => {
+            const prepared = await preparePersonalSpace(
+              db,
+              s.user_id,
+              config.managedCapacity,
+              !!data.retry,
+            );
+            check(prepared === workspace, 403);
+          });
+          return json(res, { ok: true });
+        }
         if (path === "/_platform/context" && req.method === "GET")
           return json(res, {
             workspace,
@@ -602,14 +746,45 @@ export async function createPlatform(
         }
         if (path.startsWith("/api/")) {
           await access(req, workspace);
+          let tunnel;
+          if (config.privateSpaces && config.managed) {
+            try {
+              tunnel = await personalRuntimeTunnel(
+                pool,
+                workspace,
+                tunnels,
+                res,
+                !["GET", "HEAD"].includes(req.method),
+                path === "/api/events",
+              );
+            } catch (error) {
+              if (
+                error.runtimePending &&
+                path === "/api/events" &&
+                req.method === "GET"
+              )
+                return pendingEvents(req, res, workspace, () =>
+                  access(req, workspace),
+                );
+              throw error;
+            }
+          } else {
+            tunnel = tunnels.get(workspace);
+            check(tunnel, 503, "执行器离线，请联系工作空间管理员");
+            if (path !== "/api/events")
+              await leaseRuntime(
+                pool,
+                workspace,
+                res,
+                !["GET", "HEAD"].includes(req.method),
+              );
+          }
           const policy = researchLimit(req.method, path);
           await limit(
             `api-${policy.bucket}:${workspace}:${s.user_id}`,
             policy.maximum,
             60,
           );
-          const tunnel = tunnels.get(workspace);
-          check(tunnel, 503, "执行器离线，请联系工作空间管理员");
           if (!["GET", "HEAD"].includes(req.method))
             await audit(
               pool,
@@ -634,8 +809,25 @@ export async function createPlatform(
         !path.startsWith("/api/auth/")
       ) {
         const { s, workspace } = await personalAccess(req);
-        const tunnel = tunnels.get(workspace);
-        check(tunnel, 503, "正在准备你的研究环境，请稍候再试");
+        let tunnel;
+        try {
+          tunnel = await personalRuntimeTunnel(
+            pool,
+            workspace,
+            tunnels,
+            res,
+            !["GET", "HEAD"].includes(req.method),
+            path === "/api/events",
+          );
+        } catch (error) {
+          if (
+            error.runtimePending &&
+            path === "/api/events" &&
+            req.method === "GET"
+          )
+            return pendingEvents(req, res, workspace);
+          throw error;
+        }
         const policy = researchLimit(req.method, path);
         await limit(
           `api-${policy.bucket}:${workspace}:${s.user_id}`,
@@ -738,7 +930,7 @@ export async function createPlatform(
         return json(res, { code: 200, data: { ok: true } });
       }
       if (
-        /^\/api\/platform\/admin\/(?:users(?:\/[0-9a-f-]{36}\/(?:password|role|delete))?|opencode)$/.test(
+        /^\/api\/platform\/(?:token-quota|password|admin\/(?:token-quotas(?:\/reconcile)?|users(?:\/[0-9a-f-]{36}\/(?:password|role|delete))?|opencode))$/.test(
           path,
         )
       ) {
@@ -746,7 +938,7 @@ export async function createPlatform(
           !req.headers.origin || req.headers.origin === config.origin.origin
             ? config.origin.origin
             : config.appOrigin;
-        return await adminUsers(req, res, origin);
+        return await accountBrowserRequests(req, res, origin);
       }
       const browserSessionPath = [
         "/api/platform/catalog-session",
@@ -856,7 +1048,7 @@ export async function createPlatform(
       if (path === "/api/platform/register" && req.method === "POST") {
         await limit(
           `register-ip:${hash(req.socket.remoteAddress || "")}`,
-          10,
+          120,
           3600,
         );
         const b = await input(req);
@@ -872,6 +1064,8 @@ export async function createPlatform(
               [user, address, name, encoded],
             );
             await ensurePersonalSpace(db, user);
+            if (config.tokenQuota.enabled)
+              await ensureTokenQuota(db, user, config.tokenQuota.monthlyTokens);
             const created = await newSession(db, user, req.headers.host);
             await audit(db, user, null, "account.register");
             return created;
@@ -892,6 +1086,7 @@ export async function createPlatform(
         check(req.method === "GET", 405, "服务器存储仅支持查看");
         return json(res, await storageSettings(config, s));
       }
+      if (await quotaRoutes(req, res, path, s)) return;
       if (await accounts.admin(req, res, path, s)) return;
       if (path === "/api/platform/capabilities" && req.method === "GET")
         return json(res, {
@@ -939,6 +1134,10 @@ export async function createPlatform(
           "SELECT status,error FROM workspace_runtimes WHERE workspace_id=$1 AND desired='running'",
           [workspace],
         );
+        await pool.query(
+          "UPDATE workspace_runtimes SET last_requested_at=now() WHERE workspace_id=$1 AND status='waiting'",
+          [workspace],
+        );
         return json(res, {
           id: workspace,
           status: result.rows[0]?.status || "not_started",
@@ -959,43 +1158,7 @@ export async function createPlatform(
         res.setHeader("set-cookie", sessionCookie("", config.secure, 0));
         return json(res, { ok: true });
       }
-      if (path === "/api/platform/password" && req.method === "POST") {
-        const b = await input(req);
-        await limit(`password:${s.user_id}`, 5, 900);
-        const next = await passwordHash(b.password);
-        const revoked = await transaction(pool, async (db) => {
-          const user = await db.query(
-            "SELECT password_hash FROM platform_users WHERE id=$1 AND NOT disabled FOR UPDATE",
-            [s.user_id],
-          );
-          check(
-            user.rows[0] &&
-              (await verifyPassword(b.current, user.rows[0].password_hash)),
-            403,
-            "当前密码错误",
-          );
-          const sessions = await db.query(
-            "SELECT token_hash FROM platform_sessions WHERE user_id=$1",
-            [s.user_id],
-          );
-          await db.query(
-            "UPDATE platform_users SET password_hash=$2,password_version=password_version+1 WHERE id=$1",
-            [s.user_id, next],
-          );
-          await db.query("DELETE FROM platform_sessions WHERE user_id=$1", [
-            s.user_id,
-          ]);
-          await db.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [
-            s.user_id,
-          ]);
-          await audit(db, s.user_id, null, "password.change");
-          return sessions.rows;
-        });
-        for (const tunnel of tunnels.values())
-          for (const row of revoked) tunnel.revokeSession(row.token_hash);
-        res.setHeader("set-cookie", sessionCookie("", config.secure, 0));
-        return json(res, { ok: true });
-      }
+
       if (path === "/api/platform/workspaces") {
         if (req.method === "GET") {
           const { rows } = await pool.query(
@@ -1260,10 +1423,32 @@ export async function createPlatform(
         res.writeHead(303, { location: config.origin.origin });
         return res.end();
       }
+      if (error.runtimePending) {
+        res.setHeader("x-orx-runtime-pending", "1");
+        res.setHeader("retry-after", "2");
+      }
       if (error.status === 429) res.setHeader("retry-after", "60");
       json(
         res,
-        { error: error instanceof HttpError ? error.message : "服务暂不可用" },
+        failedPath.startsWith("/api/platform/model-gateway/")
+          ? {
+              error: {
+                message:
+                  error instanceof HttpError
+                    ? error.message
+                    : "模型网关暂不可用",
+                type:
+                  error.status === 402
+                    ? "insufficient_quota"
+                    : "model_gateway_error",
+                code:
+                  error.status === 402 ? "insufficient_quota" : "gateway_error",
+              },
+            }
+          : {
+              error:
+                error instanceof HttpError ? error.message : "服务暂不可用",
+            },
         error.status || 500,
       );
       if (!error.status)
@@ -1324,6 +1509,7 @@ export async function createPlatform(
         check(/\/terminal(?:\?|$)/.test(req.url), 403, "仅允许科研终端连接");
         const tunnel = tunnels.get(workspace);
         check(tunnel, 503);
+        await leaseRuntime(pool, workspace, socket, true);
         wss.handleUpgrade(req, socket, head, (ws) => {
           try {
             tunnel.socket(req, ws, s.token_hash, authorize);

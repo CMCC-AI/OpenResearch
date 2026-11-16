@@ -11,6 +11,7 @@ function authGate(pathname, user, loading = false, canAccessResearch = true, pri
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports = {};
   const mocks = {
+    "../runtimeRequest": { cancelRuntimeRequests: () => {} },
     "../appBasePath": appBase,
     "../pendingSubmissions": { pendingOwner: (account, id) => JSON.stringify([account, id]), revokePendingOwner: async owner => { lifecycle.push(["clear-pending", owner]); } },
     react: { ...React, useState: () => { const values = [loading, user, canAccessResearch, null, null, privateResearch]; return [values[stateIndex++], () => {}]; }, useEffect: () => {}, useCallback: (fn) => fn, useMemo: (fn) => fn() },

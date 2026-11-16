@@ -1,6 +1,6 @@
 ---
 name: orx-instances
-description: "Create standalone OpenResearch compute instances with `orx instance create`. Use when the user wants a persistent machine for manual or ad-hoc work rather than an experiment run."
+description: "Create standalone MobileSci compute instances with `orx instance create`. Use when the user wants a persistent machine for manual or ad-hoc work rather than an experiment run."
 ---
 
 # Standalone instances

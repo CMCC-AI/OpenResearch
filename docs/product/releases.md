@@ -1,8 +1,10 @@
 # MobileSci 版本发布
 
-最新已发布源码为 [v0.2.23-mobilesci.6](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.6)，固定提交 `ba641033954d7a5a92cc099ee63106b788d8f2ba`，自身完整发行 [CI 42342582854](https://github.com/CMCC-AI/OpenResearch/actions/runs/42342582854) 成功，范围见[发布说明](../../release-notes/v0.2.23-mobilesci.6.md)与[发行证据](../ai-for-science/release-v0.2.23-mobilesci.6-evidence.md)。既有标签与附件不可变；PR #15/#16 只是发行后源码合入，PR #17 保留草稿，不混入 `.6`。
+最新源码为 [v0.2.23-mobilesci.7.1](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.7.1)，固定提交 `47571b04bb074703f43764d7387f98c218f2b88b`，自身完整发行 [CI 42999983526](https://github.com/CMCC-AI/OpenResearch/actions/runs/42999983526) 成功。四个正式附件下载后与同候选干净重建逐字节一致，见[发行回执](evidence/mobilesci-7.1/release-gate.json)。`.6`、`.7` 及其附件保持不可变。
 
-2026-11-09 第二次生产切换已有 `.6` 的脚本 healthy 回执，其后用户确认保留 `.6` 并暂停后续操作；独立切换后复核及实际登录业务验收未完成，本轮不连接生产。当前源码/验收边界、待办与 M0/M1 完成标准以[收尾里程碑](../ai-for-science/closeout-milestone-2026-11-09.md)为准。官方真实合并祖先仍为 .19；[.23 选择性回移](../ai-for-science/upstream-v0.2.23-backports.md)、[.24 已选适配](../ai-for-science/upstream-v0.2.24-backports.md)、[.25 的 45 项评估](../ai-for-science/upstream-v0.2.25-review-2026-11-09.md)分别记录，未回移不等于待补债务。
+2026-11-11 已完成 M7 多用户稳定版的五步交付：候选冻结、核心流程、真实数据副本升级回退、独立源码发行及生产统一切换。平台、provisioner、四个存量私人执行器和未来镜像引用已对齐 `.7.1`，实际生产新用户冷启动及认证桥接通过，原研究数据与既有额度保留。完整证据见[交付记录](release-v0.2.23-mobilesci.7-delivery.md)；[原发布计划](release-v0.2.23-mobilesci.7-plan.md)保留历史范围与完成节点。源码及生产交付不等于签名桌面安装包已就绪。
+
+真实上游合并祖先仍为 v0.2.19；[.23](../ai-for-science/upstream-v0.2.23-backports.md)、[.24](../ai-for-science/upstream-v0.2.24-backports.md)、[.25](../ai-for-science/upstream-v0.2.25-review-2026-11-09.md)、[.26](../ai-for-science/upstream-v0.2.26-release-scope.md)均按具体需求选择评估或适配，不表示整版同步。PR #17 继续草稿，不阻塞本轮；下一轮按[需求准入](next-cycle-plan.md)独立制定，未回移项不自动成为欠债。
 
 ## 源码版本
 

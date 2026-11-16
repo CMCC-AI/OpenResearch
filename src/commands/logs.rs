@@ -1,4 +1,4 @@
-use std::io::{Read as _, SeekFrom, Write};
+use std::io::{Read as _, SeekFrom};
 
 use crate::error::Result;
 use crate::plane::resolve_run;
@@ -43,33 +43,25 @@ fn trailing_char_preview(bytes: &[u8]) -> String {
     }
 }
 
-fn print_compact_summary(path: &std::path::Path, total_bytes: u64, preview: &str) -> Result<()> {
-    let mut stdout = std::io::stdout();
-    writeln!(
-        stdout,
-        "This is the path to the full log file: {}",
-        path.display()
-    )?;
-    writeln!(stdout, "It is {} bytes.", total_bytes)?;
-    writeln!(stdout)?;
-    writeln!(stdout, "Here are the last 500 characters of the log file:")?;
-    stdout.write_all(preview.as_bytes())?;
+fn print_compact_summary(path: &std::path::Path, total_bytes: u64, preview: &str) {
+    println!("This is the path to the full log file: {}", path.display());
+    println!("It is {} bytes.", total_bytes);
+    println!();
+    println!("Here are the last 500 characters of the log file:");
+    print!("{preview}");
     if preview.is_empty() || !preview.ends_with('\n') {
-        writeln!(stdout)?;
+        println!();
     }
-    writeln!(
-        stdout,
+    println!(
         "Use targeted search on this path (for example `rg PATTERN` or an editor) to inspect portions of the log. This preview is not proof of absence."
-    )?;
-    writeln!(stdout, "Avoid reading the entire log file at once into the context window; search it and read only the relevant portions.")?;
-    stdout.flush()?;
-    Ok(())
+    );
+    println!("Avoid reading the entire log file at once into the context window; search it and read only the relevant portions.");
 }
 
 /// Prints a run's local log path, size, and bounded preview.
 pub async fn run(args: crate::LogsArgs) -> Result<()> {
     crate::local::chat::record_chat_target("runs", &args.run_id);
-    resolve_run(Store::open()?, &args.run_id)?;
+    resolve_run(Store::open_for_reading()?, &args.run_id)?;
 
     let path = log_path(&args.run_id);
     let mut file = match std::fs::File::open(&path) {
@@ -82,8 +74,8 @@ pub async fn run(args: crate::LogsArgs) -> Result<()> {
     };
     let total = file.metadata()?.len();
     let bytes = read_preview_suffix(&mut file, total)?;
-    let preview = trailing_char_preview(&bytes);
-    print_compact_summary(&path, total, &preview)
+    print_compact_summary(&path, total, &trailing_char_preview(&bytes));
+    Ok(())
 }
 
 #[cfg(test)]

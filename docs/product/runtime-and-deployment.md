@@ -1,6 +1,8 @@
 # 运行形态、入口与部署配置
 
-本文是当前运行形态和配置约定的统一入口，更新于 2026-11-09。具体安装步骤引用下方指南；历史团队设计不作为当前私人托管版的权限或部署依据。
+本文是当前运行形态和配置约定的统一入口，更新于 2026-11-12。具体安装步骤引用下方指南；历史团队设计不作为当前私人托管版的权限或部署依据。
+
+当前 MobileSci 生产版本为 `.7.1`：平台、provisioner、四个现用私人执行器及未来镜像／Compose 已统一，实际新用户首次供给及认证桥接验收通过，见[交付回执](release-v0.2.23-mobilesci.7-delivery.md)。下述补丁事件属于历史记录，不覆盖此版本状态。
 
 ## 运行形态
 
@@ -15,7 +17,7 @@
 
 ## 统一入口
 
-- 科研主页 `/projects`；论文发现 `/discover`；论文精读 `/literature`；系统管理 `/admin/users`；案例管理 `/admin/cases`。
+- 科研主页 `/projects`；论文发现 `/discover`；论文精读 `/literature`；系统管理 `/admin/users`；用户额度 `/admin/quotas`；案例管理 `/admin/cases`；个人账户 `/settings/account`；个人额度 `/settings/quota`。
 - `/mobilesci` 部署使用同一组路由加前缀，例如 `/mobilesci/admin/users`。前端资源及导航通过 `appHref` 等现有基路径工具生成，不能硬编码网站根路径。
 - 账号门户从 `/api/platform/capabilities` 返回的 `openResearchAppUrl` 计算管理地址，保留部署前缀，不再内部生成 `/_account/login?admin=1`。
 - `/_account/login?admin=1` 和 `/cases/manage` 仅作为旧链接兼容入口；登录与管理员权限检查仍有效。新链接统一指向现行路由。
@@ -31,6 +33,8 @@
 | 可选认证文件 | `MANAGED_OPENCODE_AUTH_FILE` | 既有认证 seed，属于凭据链路；不能因清理配置复制参数而一并删除 |
 | 执行镜像 | `MANAGED_EXECUTOR_IMAGE`；迁移中的原工作台另有 `MANAGED_CONNECTOR_IMAGE` | 同步维护现有实例、未来实例与持久化配置，保留各自数据卷 |
 
+上表描述未启用用户 Token 配额时的模型接入兼容链路；启用配额后改用下方用户级模型网关，执行器不再挂载共享 live/seed 认证文件。
+
 `compose.yaml + compose.hosted.yaml` 是通用服务器私人托管版入口；`compose.dev.yaml` 用于本地开发账号服务；`compose.managed.yaml` 是历史原型参考，不与 hosted 叠加作为新的生产基线。
 
 `OPENCODE_ADMIN_CONFIG_FILE`、`MANAGED_OPENCODE_CONFIG_DIR`、`MANAGED_OPENCODE_CONFIG_FILE` 保留旧安装适配。它们与 Compose 的 `MANAGED_OPENCODE_CONFIG_DIRECTORY` 不是同一个变量。新部署不推荐旧文件编辑或首次复制配置；迁移到官方 API/live 模式时，迁移工具会同时移除运行环境及 Compose 中被替代的配置来源，并保留认证文件、原工作台身份和其他设置。仍依赖旧模式的安装须先迁移，兼容实现本轮不删除。
@@ -43,6 +47,12 @@
 
 临时目录 `/tmp/opencode` 曾被构建时的 root 进程创建为 `0755`，使 UID 1000 的 Agent 无法写入。镜像在 root 安装完成后执行 `orx-prepare-executor`，将该目录及已有构建缓存归属设为 `1000:1000`，目录权限设为 `0700`；运行进程仍为非 root。其他临时脚本优先放在 worktree 或 `mktemp -d` 创建的目录。
 
+同样检查 `/home/node/.npm`：历史 HOME 卷可能保留 root 所有的 npm 缓存，导致 OpenCode 安装 `@opencode-ai/plugin` 时出现 `EACCES` 并阻塞初始化。`orx-prepare-executor` 同时规范 npm 缓存归属，`orx-check-executor-tools` 以 UID 1000 验证写入权限。镜像构建不能覆盖已有 HOME 卷；部署修复须先备份并核实空闲，再对存量卷执行同一准备步骤。只处理缓存，不递归更改整个 HOME 的权限。
+
+执行器镜像在 `/opt/opencode-npm-cache` 预热与 `OPENCODE_VERSION` 匹配的插件及依赖。入口以运行用户将公共 npm 缓存合入 HOME（或 `npm_config_cache`）并优先使用缓存，兼容已挂载的 HOME 卷，不复制认证文件或覆盖已有缓存。工作目录初始化允许最多 120 秒，返回有效配置后仍校验 title/compaction 模型，模型不匹配最多等待 30 秒；后端输出等待阶段及成功耗时，超时错误指向 `agent-opencode.log`。离线缓存不替代用户项目额外插件的网络依赖。上线需重新构建完整执行器镜像并同步现有及未来实例；仅替换 orx 或旧增量包不会补齐镜像缓存。
+
+历史补丁：2026-11-11 曾上线 `9ddca788` 的设置页与缓存修复：平台静态资源、4 个现用私人执行器、provisioner 的未来镜像引用及持久化 Compose 已同步。备份及成功回执位于服务器 `/opt/mobilesci/backups/settings-cache-20261111t015948z/`，静态资源和 OpenCode 验收位于 `/opt/mobilesci/staging/settings-cache-9ddca788/`。原报错用户完成插件依赖安装后，独立进程约 3 秒就绪、有效 Agent 配置约 206 毫秒返回，title/compaction 均匹配 `moonshotai-cn/kimi-k2.6`；未发送模型请求，原有 4 笔待确认预占与已用量保持不变。切换前的失败尝试均已自动回滚；健康探针须携带配置的 Host，执行器启动须在平台与网关就绪之后，因为额度配置通过网关获取。
+
 每次镜像构建以 UID 1000 执行 `orx-check-executor-tools`，检查预装库导入、临时脚本写入、Python venv/pip 和 uv 离线建环境，并以合成 PDF 验证真实 Poppler 的分页、越界页、损坏/图片页及失败恢复。部署后也可运行：
 
 ```bash
@@ -53,7 +63,7 @@ docker exec --user 1000:1000 <执行器容器名> orx-check-executor-tools
 
 新部署重新构建执行镜像即可。MobileSci 增量更新在本地构建 `executor-packages` 阶段，把 `.deb`、uv 和安装/验证脚本一起装入更新包；服务器构建阶段无需访问 apt、PyPI 或 GitHub。已有私人空间须用包含这些文件的新包执行 `--unified-opencode` 更新，替换存量执行器并同步 provisioner 与持久化 Compose 的 `MANAGED_EXECUTOR_IMAGE`；仅更新 platform/workbench 或重启旧执行器不会补齐工具。旧包不包含此能力，必须重新准备。通用 hosted 部署也必须在空闲维护窗口替换存量执行器、保留 HOME 卷，并同步未来镜像引用。
 
-私人执行器的 `MANAGED_EXECUTOR_MEMORY` 与 `MANAGED_EXECUTOR_MEMORY_SWAP` 均为字节数，后者表示内存与 swap 的合计上限。hosted Compose 默认使用 2.5 GiB 内存、4.5 GiB 合计上限和 `MANAGED_CAPACITY=2`；按宿主总内存、平台服务预留量与实际并发负载调整。显式配置的配额由 provisioner 同步到已有执行器，后续新建执行器使用相同值；旧 connector 保留独立的小额限制。未显式配置时，provisioner 不覆盖运维热调整的已有容器配额。
+私人执行器的 `MANAGED_EXECUTOR_MEMORY` 与 `MANAGED_EXECUTOR_MEMORY_SWAP` 均为字节数，后者表示内存与 swap 的合计上限。hosted Compose 默认使用 2.5 GiB 内存、4.5 GiB 合计上限和 `MANAGED_CAPACITY=2`；按宿主总内存、平台服务预留量与实际并发负载调整。`MANAGED_CAPACITY` 只限制同时运行的环境，不限制账号与个人数据空间；平台准入改为自动排队，provisioner 在 `MANAGED_IDLE_SECONDS`（默认 120 秒）后通过活动 API、SQLite 任务台账、请求/终端租约及未知进程检查确认闲置，停止容器并保留 HOME 卷。后台轮询和 SSE 不续占名额、不主动唤醒已停止环境，界面的人机交互维持使用期。工作台和首页输入区域立即展示，provisioner 准备、休眠、排队状态不在前端展示；用户进入、返回或提交操作时自动申请运行环境，恢复时保留未发送草稿。尚未转发的业务请求由网关使用 `x-orx-runtime-pending: 1` 标识，客户端保留原始请求并等待后重试；普通 503、网络错误及已转发请求不自动重放，工作台退出后取消待发送请求。SSE 在网关等待计算环境就绪，不持有运行租约，也不显示虚假的断线提示。旧子域名入口采用相同策略，通过当前工作区的 `/_platform/activity` 续期并自动恢复，保留原有身份和来源校验，不再展示执行环境拦截页或额外状态条。真实操作失败仍按业务错误反馈。升级需先应用 `009.sql`，并同步 provisioner 与 Compose 中的池容量。显式配置的配额由 provisioner 同步到已有执行器，后续新建执行器使用相同值；旧 connector 保留独立的小额限制。未显式配置时，provisioner 不覆盖运维热调整的已有容器配额。
 
 OpenCode、Claude 和 Codex 共用闲置策略。有效内存不超过 8 GiB 时，OpenCode 每 30 秒检查一次，闲置两分钟释放进程，超过一个的闲置进程在至少闲置 30 秒后按最近使用顺序释放。运行中的对话、等待权限或问题回复、上下文压缩受使用租约保护；回收同时清理进程组，下次消息从持久化原生会话恢复。Linux 按宿主物理内存与 cgroup v1/v2 配额的较小值选择策略，并重新读取配额以适应在线调整。此策略只限制闲置进程，多个同时活跃的会话仍需合理的内存和并发规划。
 
@@ -69,8 +79,16 @@ OpenCode、Claude 和 Codex 共用闲置策略。有效内存不超过 8 GiB 时
 
 ### 模型接入的断开与验证
 
+2026-11-12 额度模式模型管理已上线：管理员的 `/admin/opencode` 现在直接编辑网关清单，保留角色与 Origin 校验、密钥脱敏、版本冲突检测及配置审计。服务器清单仅保留 6 个 `moonshotai-cn` Kimi 模型，默认 `kimi-k2.6`，移除两个 GLM；供应商模型目录返回 200，未发送生成请求。平台专用挂载由只读单文件改为可写目录 `/opt/mobilesci/state/token-quotas:/run/mobilesci/token-quotas`，持久化 Compose 同步；私人执行器不挂载该目录，额度策略与账本不变。通过已有管理员正常登录实测读取和原样保存均返回 200。配置与原容器备份位于 `/opt/mobilesci/backups/quota-model-admin-20261112T150215Z/`，上线源码与独立 UI 构建位于 `/opt/mobilesci/staging/quota-model-admin-20261112/`。备份含凭据，禁止公开。新模型与默认项在私人空间下次唤醒时刷新；移除模型立即停止新网关调用。
+
 系统管理的“OpenCode 模型接入”中，“已配置”仅表示存在供应商凭据，并非调用已验证。“验证已保存模型”通过内部 OpenCode 服务的实际配置与认证链路发送最小文本请求，显示供应商、模型、验证时间与耗时。验证可能产生少量费用；测试会话禁止工具调用，结束后中止并删除。验证失败只返回脱敏的鉴权、模型不存在、限流或通用错误，不转发上游原文。修改表单后需先保存再验证；结果仅表示该模型在验证时可用，不是持续健康监控。旧文件配置模式需先启用 `OPENCODE_ADMIN_URL` 才能验证。
 
 “断开此供应商”清空共享配置中的 API Key、通过官方认证 API 删除配置服务中的登录凭据，并将供应商加入 `disabled_providers`，防止执行器环境变量或历史认证 seed 再次启用它；指向它的默认模型及小模型同时清空。此操作不撤销供应商平台签发的密钥，且不会中断正在使用旧配置的会话。重新填写密钥并保存会解除禁用；新启动的 OpenCode 进程读取新配置。其他供应商保持原配置。
 
 2026-11-02 服务器接入验收：`moonshotai-cn/kimi-k2.6` 与 `research-relay/deepseek-v4-flash-0731` 均通过实际 OpenCode 调用，默认使用后者。Kimi 密钥在 Coding 接口返回 401，在 Moonshot 中国接口可用；中转站不提供 `deepseekv4-flash`，必须使用目录中的精确 ID。该服务器的 WireGuard `~.` DNS 路由导致 Kimi 解析超时，已通过 `mobilesci-kimi-dns.service` 仅将 `moonshot.cn` 交由 eth0 原有云 DNS 解析；未改动 VPN 默认路由。平台增量镜像及 Compose、模型配置、静态资源回滚备份保存在服务器 `/opt/mobilesci/patches/model-access-20261102/`，其中模型配置备份含凭据，禁止公开。
+
+2026-11-11 经用户授权修复 DNS 并移除失败入口：`api.moonshot.cn` 的 CNAME 为 `rp68jmko8a6qpuee.aliyunddos1022.com`，原规则未覆盖别名，其 AAAA 查询走回 WireGuard DNS 并超时。`mobilesci-kimi-dns.service` 现同时将 `~moonshot.cn` 与该精确别名交由 eth0 解析，保留原云 DNS `183.60.83.19/183.60.82.98` 和 VPN 默认路由；重启服务后国内模型目录返回 200。若供应商更换 CNAME，需复核并更新对应精确规则。同一 Key 在 `api.kimi.com/coding/v1/models` 返回 401，在 `api.moonshot.cn/v1/models` 返回 200，故从平台有效模型清单移除 `kimi-code-plan-cn/k3`，保留国内 `moonshotai-cn/kimi-k2.6` 及其他供应商。备份、原模型配置和修复回执位于 `/opt/mobilesci/backups/kimi-dns-20261111t032906z/`；模型配置备份含凭据，禁止公开。验证未调用模型生成，也未变更待确认额度。
+
+## 注册用户 token 月额度
+
+平台模型的用户级月额度见[配置与实施边界](user-token-quotas.md)：默认每月 200 万、管理员逐用户设置、上海自然月重置。源码默认关闭；当前 MobileSci 私人托管实例已完成迁移并启用，平台默认每月 200 万。真实 Key 不挂入用户执行器，历史外部副本须确认范围后再评估轮换，不能擅自停用共享凭据。个人设置和额度由账户服务提供，查看这些页面不唤醒科研执行器。当前运行时升级与发行门禁见[`.7` 计划](release-v0.2.23-mobilesci.7-plan.md)。

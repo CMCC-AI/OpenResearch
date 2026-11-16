@@ -21,6 +21,7 @@ import { Route as WorkflowsRouteImport } from './routes/workflows'
 import { Route as AdminIndexRouteImport } from './routes/admin.index'
 import { Route as AdminCasesRouteImport } from './routes/admin.cases'
 import { Route as AdminOpencodeRouteImport } from './routes/admin.opencode'
+import { Route as AdminQuotasRouteImport } from './routes/admin.quotas'
 import { Route as AdminUsersRouteImport } from './routes/admin.users'
 import { Route as CasesIndexRouteImport } from './routes/cases.index'
 import { Route as CasesCaseIdRouteImport } from './routes/cases.$caseId'
@@ -28,6 +29,8 @@ import { Route as CasesManageRouteImport } from './routes/cases.manage'
 import { Route as ProjectsIndexRouteImport } from './routes/projects.index'
 import { Route as ProjectsProjectIdRouteImport } from './routes/projects.$projectId'
 import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
+import { Route as SettingsAccountRouteImport } from './routes/settings.account'
+import { Route as SettingsQuotaRouteImport } from './routes/settings.quota'
 import { Route as ProjectsProjectIdIndexRouteImport } from './routes/projects.$projectId.index'
 import { Route as ProjectsProjectIdDeliverablesRouteImport } from './routes/projects.$projectId.deliverables'
 import { Route as ProjectsProjectIdSkillsRouteImport } from './routes/projects.$projectId.skills'
@@ -96,6 +99,11 @@ const AdminOpencodeRoute = AdminOpencodeRouteImport.update({
   path: '/opencode',
   getParentRoute: () => AdminRoute,
 } as any)
+const AdminQuotasRoute = AdminQuotasRouteImport.update({
+  id: '/quotas',
+  path: '/quotas',
+  getParentRoute: () => AdminRoute,
+} as any)
 const AdminUsersRoute = AdminUsersRouteImport.update({
   id: '/users',
   path: '/users',
@@ -129,6 +137,16 @@ const ProjectsProjectIdRoute = ProjectsProjectIdRouteImport.update({
 const SettingsTabRoute = SettingsTabRouteImport.update({
   id: '/settings/$tab',
   path: '/settings/$tab',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsAccountRoute = SettingsAccountRouteImport.update({
+  id: '/settings/account',
+  path: '/settings/account',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsQuotaRoute = SettingsQuotaRouteImport.update({
+  id: '/settings/quota',
+  path: '/settings/quota',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProjectsProjectIdIndexRoute = ProjectsProjectIdIndexRouteImport.update({
@@ -184,11 +202,14 @@ export interface FileRoutesByFullPath {
   '/workflows': typeof WorkflowsRoute
   '/admin/cases': typeof AdminCasesRoute
   '/admin/opencode': typeof AdminOpencodeRoute
+  '/admin/quotas': typeof AdminQuotasRoute
   '/admin/users': typeof AdminUsersRoute
   '/cases/$caseId': typeof CasesCaseIdRoute
   '/cases/manage': typeof CasesManageRoute
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
   '/settings/$tab': typeof SettingsTabRoute
+  '/settings/account': typeof SettingsAccountRoute
+  '/settings/quota': typeof SettingsQuotaRoute
   '/admin/': typeof AdminIndexRoute
   '/cases/': typeof CasesIndexRoute
   '/projects/': typeof ProjectsIndexRoute
@@ -209,10 +230,13 @@ export interface FileRoutesByTo {
   '/workflows': typeof WorkflowsRoute
   '/admin/cases': typeof AdminCasesRoute
   '/admin/opencode': typeof AdminOpencodeRoute
+  '/admin/quotas': typeof AdminQuotasRoute
   '/admin/users': typeof AdminUsersRoute
   '/cases/$caseId': typeof CasesCaseIdRoute
   '/cases/manage': typeof CasesManageRoute
   '/settings/$tab': typeof SettingsTabRoute
+  '/settings/account': typeof SettingsAccountRoute
+  '/settings/quota': typeof SettingsQuotaRoute
   '/admin': typeof AdminIndexRoute
   '/cases': typeof CasesIndexRoute
   '/projects': typeof ProjectsIndexRoute
@@ -237,11 +261,14 @@ export interface FileRoutesById {
   '/workflows': typeof WorkflowsRoute
   '/admin/cases': typeof AdminCasesRoute
   '/admin/opencode': typeof AdminOpencodeRoute
+  '/admin/quotas': typeof AdminQuotasRoute
   '/admin/users': typeof AdminUsersRoute
   '/cases/$caseId': typeof CasesCaseIdRoute
   '/cases/manage': typeof CasesManageRoute
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
   '/settings/$tab': typeof SettingsTabRoute
+  '/settings/account': typeof SettingsAccountRoute
+  '/settings/quota': typeof SettingsQuotaRoute
   '/admin/': typeof AdminIndexRoute
   '/cases/': typeof CasesIndexRoute
   '/projects/': typeof ProjectsIndexRoute
@@ -267,11 +294,14 @@ export interface FileRouteTypes {
     | '/workflows'
     | '/admin/cases'
     | '/admin/opencode'
+    | '/admin/quotas'
     | '/admin/users'
     | '/cases/$caseId'
     | '/cases/manage'
     | '/projects/$projectId'
     | '/settings/$tab'
+    | '/settings/account'
+    | '/settings/quota'
     | '/admin/'
     | '/cases/'
     | '/projects/'
@@ -292,10 +322,13 @@ export interface FileRouteTypes {
     | '/workflows'
     | '/admin/cases'
     | '/admin/opencode'
+    | '/admin/quotas'
     | '/admin/users'
     | '/cases/$caseId'
     | '/cases/manage'
     | '/settings/$tab'
+    | '/settings/account'
+    | '/settings/quota'
     | '/admin'
     | '/cases'
     | '/projects'
@@ -319,11 +352,14 @@ export interface FileRouteTypes {
     | '/workflows'
     | '/admin/cases'
     | '/admin/opencode'
+    | '/admin/quotas'
     | '/admin/users'
     | '/cases/$caseId'
     | '/cases/manage'
     | '/projects/$projectId'
     | '/settings/$tab'
+    | '/settings/account'
+    | '/settings/quota'
     | '/admin/'
     | '/cases/'
     | '/projects/'
@@ -347,6 +383,8 @@ export interface RootRouteChildren {
   RemoteLaunchRoute: typeof RemoteLaunchRoute
   WorkflowsRoute: typeof WorkflowsRoute
   SettingsTabRoute: typeof SettingsTabRoute
+  SettingsAccountRoute: typeof SettingsAccountRoute
+  SettingsQuotaRoute: typeof SettingsQuotaRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -435,6 +473,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminOpencodeRouteImport
       parentRoute: typeof AdminRoute
     }
+    '/admin/quotas': {
+      id: '/admin/quotas'
+      path: '/quotas'
+      fullPath: '/admin/quotas'
+      preLoaderRoute: typeof AdminQuotasRouteImport
+      parentRoute: typeof AdminRoute
+    }
     '/admin/users': {
       id: '/admin/users'
       path: '/users'
@@ -482,6 +527,20 @@ declare module '@tanstack/react-router' {
       path: '/settings/$tab'
       fullPath: '/settings/$tab'
       preLoaderRoute: typeof SettingsTabRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings/account': {
+      id: '/settings/account'
+      path: '/settings/account'
+      fullPath: '/settings/account'
+      preLoaderRoute: typeof SettingsAccountRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings/quota': {
+      id: '/settings/quota'
+      path: '/settings/quota'
+      fullPath: '/settings/quota'
+      preLoaderRoute: typeof SettingsQuotaRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/projects/$projectId/': {
@@ -539,6 +598,7 @@ declare module '@tanstack/react-router' {
 interface AdminRouteChildren {
   AdminCasesRoute: typeof AdminCasesRoute
   AdminOpencodeRoute: typeof AdminOpencodeRoute
+  AdminQuotasRoute: typeof AdminQuotasRoute
   AdminUsersRoute: typeof AdminUsersRoute
   AdminIndexRoute: typeof AdminIndexRoute
 }
@@ -546,6 +606,7 @@ interface AdminRouteChildren {
 const AdminRouteChildren: AdminRouteChildren = {
   AdminCasesRoute: AdminCasesRoute,
   AdminOpencodeRoute: AdminOpencodeRoute,
+  AdminQuotasRoute: AdminQuotasRoute,
   AdminUsersRoute: AdminUsersRoute,
   AdminIndexRoute: AdminIndexRoute,
 }
@@ -614,6 +675,8 @@ const rootRouteChildren: RootRouteChildren = {
   RemoteLaunchRoute: RemoteLaunchRoute,
   WorkflowsRoute: WorkflowsRoute,
   SettingsTabRoute: SettingsTabRoute,
+  SettingsAccountRoute: SettingsAccountRoute,
+  SettingsQuotaRoute: SettingsQuotaRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

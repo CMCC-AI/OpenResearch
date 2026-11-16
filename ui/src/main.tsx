@@ -11,6 +11,7 @@ import { WINDOWS_TITLEBAR } from "./desktopTitlebar";
 import { getLocale } from "./paraglide/runtime.js";
 import "./tailwind.css";
 import { CloudWorkspace } from "./product/CloudWorkspace";
+import { DeploymentUpdateNotice } from "./components/DeploymentUpdateNotice";
 
 const locale = getLocale();
 document.documentElement.lang = locale;
@@ -20,6 +21,7 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <CloudWorkspace><RouterProvider router={router} /></CloudWorkspace>
+      <DeploymentUpdateNotice />
       {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen buttonPosition="bottom-right" />}
     </QueryClientProvider>
     <Toaster />

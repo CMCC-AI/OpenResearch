@@ -18,7 +18,10 @@ async function openSession(page, index) {
   // Vite intentionally opens query devtools. Close it through its actual UI;
   // forcing the row click would hide an interception failure and skip the user flow.
   const devtools = page.getByRole('button', { name: 'Close tanstack query devtools', exact: true });
-  if (await devtools.isVisible()) await devtools.click();
+  if (await devtools.isVisible()) await devtools.click({ timeout: 5000 }).catch(async error => {
+    // The panel may finish closing while Playwright retries a detached button.
+    if (await devtools.isVisible()) throw error;
+  });
   if (!await row.isVisible()) {
     if (await history.isVisible()) await history.click();
     if (await sidebar.isVisible()) await sidebar.click();

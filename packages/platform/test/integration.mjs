@@ -993,6 +993,63 @@ test(
             [a, b],
           );
           try {
+            await pool.query(
+              "UPDATE workspace_runtimes SET status='sleeping' WHERE workspace_id=$1",
+              [a],
+            );
+            const legacyPending = await request("/api/projects", {
+              host: aHost,
+              cookie: aSession.cookie,
+              origin: `http://${aHost}`,
+            });
+            assert.equal(legacyPending.status, 503);
+            assert.equal(legacyPending.headers["x-orx-runtime-pending"], "1");
+            assert.equal(
+              (
+                await pool.query(
+                  "SELECT status FROM workspace_runtimes WHERE workspace_id=$1",
+                  [a],
+                )
+              ).rows[0].status,
+              "sleeping",
+            );
+            const legacyWake = await request("/_platform/activity", {
+              method: "POST",
+              host: aHost,
+              cookie: aSession.cookie,
+              origin: `http://${aHost}`,
+              data: {},
+            });
+            assert.equal(
+              legacyWake.status,
+              200,
+              JSON.stringify(legacyWake.data),
+            );
+            assert.equal(
+              (
+                await pool.query(
+                  "SELECT status FROM workspace_runtimes WHERE workspace_id=$1",
+                  [a],
+                )
+              ).rows[0].status,
+              "waiting",
+            );
+            assert.equal(
+              (
+                await request("/_platform/activity", {
+                  method: "POST",
+                  host: aHost,
+                  cookie: aSession.cookie,
+                  origin: "https://evil.test",
+                  data: {},
+                })
+              ).status,
+              403,
+            );
+            await pool.query(
+              "UPDATE workspace_runtimes SET status='ready' WHERE workspace_id=$1",
+              [a],
+            );
             assert.equal((await request("/api/projects")).status, 401);
             for (const [cookie, expected] of [
               [alice, "only-a"],
@@ -1047,13 +1104,13 @@ test(
                   data: {},
                 })
               ).status,
-              409,
+              200,
             );
             const again = await request("/api/platform/personal-space", {
               cookie: created.cookie,
             });
             assert.equal(again.data.id, initial.data.id);
-            assert.equal(again.data.status, "not_started");
+            assert.equal(again.data.status, "waiting");
             const ws = new WebSocket(
               `ws://127.0.0.1:${port}/api/projects/p/terminal`,
               {

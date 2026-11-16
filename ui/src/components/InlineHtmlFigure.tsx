@@ -1,3 +1,4 @@
+import { runtimeFetch } from "../runtimeRequest";
 import { useEffect, useState } from "react";
 import { m } from "../paraglide/messages.js";
 import type { ImageCandidate } from "../markdownTarget";
@@ -13,7 +14,7 @@ export function InlineHtmlFigure({ candidates, name }: { candidates: ImageCandid
     async function load() {
       for (const candidate of candidates) {
         try {
-          const response = await fetch(candidate.url, { signal: controller.signal, credentials: "include" });
+          const response = await runtimeFetch(candidate.url, { signal: controller.signal, credentials: "include" });
           if (!response.ok || !response.headers.get("content-type")?.startsWith("text/html")) continue;
           const html = await response.text();
           if (!controller.signal.aborted) setDocument({ ...candidate, html });

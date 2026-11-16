@@ -2,6 +2,7 @@ import http from "node:http";
 import { pathToFileURL } from "node:url";
 import { createPool, transaction } from "./db.mjs";
 import { hash, token, id } from "./security.mjs";
+import { scheduleRuntimes } from "./runtime-pool.mjs";
 
 // This process alone owns access to Docker. No user-defined images or paths.
 export function docker(method, path, body, binary = false) {
@@ -98,15 +99,32 @@ export function runtimeConfig(workspace, env) {
   if (!/^[0-9a-f-]{36}$/.test(workspace)) throw new Error("Invalid workspace");
   if (!env.MANAGED_EXECUTOR_IMAGE)
     throw new Error("MANAGED_EXECUTOR_IMAGE is required");
-  const liveConfigDirectory = env.MANAGED_OPENCODE_LIVE_CONFIG_DIR;
-  const configFile = env.MANAGED_OPENCODE_CONFIG_FILE;
+  const quotaMode = env.TOKEN_QUOTAS_ENABLED === "true";
+  if (
+    quotaMode &&
+    env.MANAGED_NETWORK &&
+    (env.MANAGED_NETWORK === "host" ||
+      env.MANAGED_NETWORK.startsWith("container:") ||
+      /(?:^|_)quota-model-admin$/.test(env.MANAGED_NETWORK))
+  )
+    throw new Error(
+      "Quota executors must not share host or model-admin networks",
+    );
+
+  const liveConfigDirectory =
+    !quotaMode && env.MANAGED_OPENCODE_LIVE_CONFIG_DIR;
+  const configFile = !quotaMode && env.MANAGED_OPENCODE_CONFIG_FILE;
   if (configFile && (!configFile.startsWith("/") || /[:\n\r]/.test(configFile)))
     throw new Error(
       "MANAGED_OPENCODE_CONFIG_FILE must be an absolute host path",
     );
   const legacy = workspace === env.MANAGED_LEGACY_WORKSPACE;
-  const sharedDirectory = env.MANAGED_OPENCODE_CONFIG_DIR;
-  const authFile = env.MANAGED_OPENCODE_AUTH_FILE;
+  if (quotaMode && legacy)
+    throw new Error(
+      "Token quota mode does not support legacy connectors; migrate credentials and data first",
+    );
+  const sharedDirectory = !quotaMode && env.MANAGED_OPENCODE_CONFIG_DIR;
+  const authFile = !quotaMode && env.MANAGED_OPENCODE_AUTH_FILE;
   for (const path of [sharedDirectory, authFile, liveConfigDirectory])
     if (path && (!path.startsWith("/") || /[:\n\r]/.test(path)))
       throw Error("Managed configuration must be an absolute host path");
@@ -135,6 +153,9 @@ export function runtimeConfig(workspace, env) {
       "RUNNER_STATE_DIR=/home/node/.runner-state",
       "RUNNER_ISOLATION_ACK=dedicated-workspace",
       "OPENCODE_DISABLE_AUTOUPDATE=1",
+      ...(quotaMode
+        ? ["TOKEN_QUOTAS_ENABLED=true", "OPENCODE_CONFIG_PROJECT_DISABLE=1"]
+        : []),
       `ORX_ACCOUNT_URL=${env.PLATFORM_ORIGIN}`,
       "RUNNER_TOKEN_FILE=/home/node/.platform-token",
       ...(!legacy && sharedDirectory && !liveConfigDirectory
@@ -218,6 +239,17 @@ export async function reconcile(db, job, env = process.env, call = docker) {
     );
     return;
   }
+  if (
+    container &&
+    env.TOKEN_QUOTAS_ENABLED === "true" &&
+    (!container.Config.Env?.includes("TOKEN_QUOTAS_ENABLED=true") ||
+      container.Mounts?.some((m) =>
+        /opencode|orx-seed/.test(m.Destination || ""),
+      ))
+  )
+    throw new Error(
+      "Existing executor must be migrated to quota mode before reuse; no running work was stopped",
+    );
   if (!container) {
     await call(
       "POST",
@@ -286,8 +318,9 @@ async function main() {
     let workspace;
     try {
       await transaction(pool, async (db) => {
+        await scheduleRuntimes(db, process.env, docker);
         const { rows } = await db.query(
-          "SELECT * FROM workspace_runtimes WHERE status<>'deleted' AND (status<>'failed' OR desired='deleted') AND (checked_at IS NULL OR checked_at<now()-interval '10 seconds') ORDER BY checked_at NULLS FIRST LIMIT 1 FOR UPDATE SKIP LOCKED",
+          "SELECT * FROM workspace_runtimes WHERE ((desired='deleted' AND status<>'deleted') OR status IN ('queued','starting','ready')) AND (checked_at IS NULL OR checked_at<now()-interval '10 seconds') ORDER BY checked_at NULLS FIRST LIMIT 1 FOR UPDATE SKIP LOCKED",
         );
         if (!rows.length) return;
         workspace = rows[0].workspace_id;

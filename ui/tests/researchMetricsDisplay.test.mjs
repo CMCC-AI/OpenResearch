@@ -67,6 +67,14 @@ test("the active DAG page exposes the evidence view and renders persisted claims
   assert.doesNotMatch(html, /aria-label="科研专家团流程图"/);
 });
 
+test("the active DAG page labels the tasks view header accurately", () => {
+  const taskMocks = { ...mocks, react: { ...React, useId: () => "dag", useRef: value => ({ current: value }), useEffect() {}, useMemo: fn => fn(), useState: initial => [initial === "overview" ? "tasks" : typeof initial === "function" ? initial() : initial, () => {}] } };
+  const view = {};
+  new Function("require", "exports", code)(id => id in taskMocks ? taskMocks[id] : require(id), view);
+  const html = renderToStaticMarkup(React.createElement(view.ResearchTeamDagDialog, { embedded: true, study, metrics: measured, runs: [], onClose() {} }));
+  assert.match(html, /科研专家团 · 本次任务依赖/);
+  assert.match(html, /aria-pressed="true"[^>]*>本次任务依赖/);
+});
 
 test("the active DAG links deliverables only for confirmed studies without active runs", () => {
   const current = { ...study, plans: [{ version: 1, tasks: [] }], deliverySnapshot: { scopeHash: "scope" }, decisions: [{ id: "gate", gate: "G4", version: 1, status: "approved", scopeHash: "scope" }] };
@@ -108,4 +116,13 @@ test("the W1 task view renders existing plan and task approvals as read-only gra
   assert.equal(rendered.nodes.find(node => node.id === workflowGraph.systemNodeIds.scope).data.state, "completed");
   assert.equal(rendered.nodes.find(node => node.id === workflowGraph.approvalNodeId(tasks[0].id)).data.state, "completed");
   assert.ok(rendered.edges.some(edge => edge.source === workflowGraph.approvalNodeId(tasks[0].id) && edge.target === tasks[1].id));
+});
+
+test("the active DAG hides the confirmed research package download", () => {
+  const current = { ...study, plans: [{ version: 1, tasks: [] }], deliverySnapshot: { scopeHash: "scope" }, decisions: [{ id: "gate", gate: "G4", version: 1, status: "approved", scopeHash: "scope" }] };
+  for (const currentStudy of [current, { ...current, status: "stopped" }]) {
+    const html = renderToStaticMarkup(React.createElement(exported.ResearchTeamDagDialog, { embedded: true, study: currentStudy, metrics: measured, runs: [], onClose() {} }));
+    assert.doesNotMatch(html, /下载已确认研究包/);
+    assert.doesNotMatch(html, /\/package"/);
+  }
 });

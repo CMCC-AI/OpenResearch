@@ -1,3 +1,4 @@
+import { webcrypto } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
@@ -13,6 +14,11 @@ function browser(routes = {}) {
         innerHTML: "",
         textContent: "",
         disabled: false,
+        children: [],
+        showModal() {},
+        append(child) {
+          this.children.push(child);
+        },
         classList: { add() {}, remove() {} },
         querySelector: () => node("submit"),
         setAttribute(name, value) {
@@ -27,6 +33,7 @@ function browser(routes = {}) {
   const context = vm.createContext({
     URL,
     URLSearchParams,
+    crypto: { getRandomValues: (bytes) => webcrypto.getRandomValues(bytes) },
     AbortSignal,
     setTimeout,
     clearTimeout,
@@ -132,6 +139,9 @@ test("administrator lands on user management and normal users have no management
   );
   const ordinary = browser({
     "/api/platform/me": { name: "Reader", isAdmin: false },
+    "/api/platform/capabilities": {
+      openResearchAppUrl: "http://localhost:4791/projects",
+    },
   });
   ordinary.context.location.search = "?admin=1";
   await ordinary.ui.load();
@@ -139,28 +149,24 @@ test("administrator lands on user management and normal users have no management
   assert.deepEqual(ordinary.redirects, []);
 });
 
-test("account management links use canonical admin routes for root and prefixed apps", async () => {
-  for (const prefix of ["", "/mobilesci"]) {
-    const b = browser({
-      "/api/platform/me": { name: "Admin", isAdmin: true },
-      "/api/platform/capabilities": {
-        openResearchAppUrl: `http://localhost:4791${prefix}/projects?from=old#section`,
-      },
-    });
-    b.context.location.search = "?account=1";
-    await b.ui.load();
-    assert.ok(
-      b
-        .node("#account")
-        .innerHTML.includes(
-          `href="http://localhost:4791${prefix}/admin/users"`,
-        ),
-    );
-    assert.ok(!b.node("#account").innerHTML.includes("admin=1"));
-    assert.deepEqual(b.redirects, []);
-    assert.equal(
-      b.calls.filter((path) => path === "/api/platform/capabilities").length,
-      1,
-    );
-  }
+test("legacy account URLs redirect into workspace settings for ordinary and admin users", async () => {
+  for (const prefix of ["", "/mobilesci"])
+    for (const isAdmin of [false, true]) {
+      const b = browser({
+        "/api/platform/me": { name: "Researcher", isAdmin },
+        "/api/platform/capabilities": {
+          openResearchAppUrl: `http://localhost:4791${prefix}/projects?old=1#section`,
+        },
+      });
+      b.context.location.search = "?account=1";
+      await b.ui.load();
+      assert.deepEqual(b.redirects, [
+        `http://localhost:4791${prefix}/settings/account`,
+      ]);
+      assert.equal(b.node("#account").innerHTML, "");
+      assert.equal(
+        b.calls.filter((path) => path.includes("token-quota")).length,
+        0,
+      );
+    }
 });

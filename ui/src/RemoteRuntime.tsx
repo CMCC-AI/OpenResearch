@@ -50,9 +50,9 @@ const RuntimeContext = createContext<RuntimeInfo | null>(null);
 function LocalResearchEffects() {
   const { user, canAccessResearch, loading } = useAuthSession();
   const locale = useLocale();
-  const isCase = useLocation({ select: (location) => stripAppBase(location.pathname).startsWith("/cases/") });
-  useQuery({ ...reportLocaleQuery(locale), enabled: !isCase && !loading && Boolean(user) && canAccessResearch });
-  return !isCase && !loading && user && canAccessResearch ? <QueryEvents /> : null;
+  const passivePage = useLocation({ select: (location) => { const path = stripAppBase(location.pathname); return path === "/cases" || path.startsWith("/cases/") || path === "/admin" || path.startsWith("/admin/") || path === "/settings/account" || path === "/settings/quota"; } });
+  useQuery({ ...reportLocaleQuery(locale), enabled: !passivePage && !loading && Boolean(user) && canAccessResearch });
+  return !passivePage && !loading && user && canAccessResearch ? <QueryEvents /> : null;
 }
 
 function workspaceKey(runtime: RuntimeInfo): string {

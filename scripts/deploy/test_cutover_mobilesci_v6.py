@@ -184,6 +184,7 @@ class CutoverTests(unittest.TestCase):
              patch.object(cutover, 'create', side_effect=engine.create), \
              patch.object(cutover, 'assert_idle'), patch.object(cutover, 'wait_ready'), \
              patch.object(cutover, 'backup_databases'), \
+             patch.object(cutover.shutil, 'disk_usage', return_value=type('Disk', (), {'free': 20 * 1024**3})()), \
              patch.object(cutover.time, 'sleep'), \
              patch.object(cutover.subprocess, 'run', return_value=type('Result', (), {'returncode': 0})()), \
              patch.object(cutover, 'wait_public_entry'), \

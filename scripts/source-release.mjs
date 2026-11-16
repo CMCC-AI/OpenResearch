@@ -34,7 +34,7 @@ export async function prepareSourceRelease(root, output, revision) {
   const metadata = JSON.parse(await readFile(resolve(root, 'product-upstream.json'), 'utf8'))
   const cargo = await readFile(resolve(root, 'Cargo.toml'), 'utf8')
   const version = validateProductVersion(metadata, /^version = "([^"]+)"/m.exec(cargo)?.[1])
-  if (!/^\d+\.\d+\.\d+-mobilesci\.\d+$/.test(version)) throw Error('Expected a MobileSci product version')
+  if (!/^\d+\.\d+\.\d+-mobilesci\.\d+(?:\.\d+)?$/.test(version)) throw Error('Expected a MobileSci product version')
   const lock = await readFile(resolve(root, 'Cargo.lock'), 'utf8')
   if (!lock.includes(`name = "openresearch-cli"\nversion = "${version}"`)) throw Error('Cargo.lock version differs')
   const notes = await readFile(resolve(root, `release-notes/v${version}.md`), 'utf8')

@@ -126,7 +126,7 @@ with sqlite3.connect(sys.argv[1]) as c:
   }
   await post('/api/settings/ui-state', { tourCompleted: true, preferredAgent: { harness: 'opencode', model: null }, workspace: { lastLocation: '/projects', railOpen: true, panelWidth: 480, experimentsView: 'tree' } })
   // Generate the case through the production capture implementation and real
-  // APIs. Only its hash primitive is supplied by Node instead of browser crypto.
+  // APIs. Adapt runtime requests to the isolated origin and use Node hashing.
   // Actual upload/CLI receipts, isolated from the four navigation fixtures.
   // The two read events below are synthetic test observations, never model calls.
   const readingMaterial = await (await post(`/api/projects/${readingProject.id}/materials`, {})).json()
@@ -143,11 +143,14 @@ with sqlite3.connect(sys.argv[1]) as c:
   const require = createRequire(path.join(ui, 'package.json'))
   const ts = require('typescript')
   const { canonicalRequest } = await import(pathToFileURL(path.join(ui, 'src/readOnlyApi.ts')).href)
+  const caseArtifacts = await import(pathToFileURL(path.join(ui, 'src/product/caseArtifacts.ts')).href)
   const source = readFileSync(path.join(ui, 'src/product/captureNativeProject.ts'), 'utf8')
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
   const module = {}
   new Function('require', 'exports', 'fetch', code)(name => {
+    if (name === '../runtimeRequest') return { runtimeFetch: read }
     if (name === '../readOnlyApi') return { canonicalRequest }
+    if (name === './caseArtifacts') return caseArtifacts
     if (name === './sha256') return { sha256Hex: async bytes => createHash('sha256').update(bytes).digest('hex') }
     throw new Error(`Unexpected capture dependency ${name}`)
   }, module, read)

@@ -38,7 +38,7 @@ import {
   getWorkspaceGeneration,
   getWorkspaceIdentity,
 } from "../queries/client";
-import { LOCAL_PREFIX, SHELL_TOOL } from "../queries/chatState";
+import { LOCAL_PREFIX } from "../queries/chatState";
 import { CancelledError, useInfiniteQuery, useMutation, useQueries, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatState } from "../queries/chatStore";
@@ -166,6 +166,8 @@ import { getLocale } from "../paraglide/runtime.js";
 import { activePath, forkPositions } from "../transcriptTree";
 import {
   splitTurnParts,
+  shellExchangePart,
+  pendingPlanForTurn,
   isUsageLimitPart,
   isModelAccessLimitPart,
   unreadAfterBusyChange,
@@ -217,7 +219,6 @@ import { ComposerSkillChips, MessageWithChips, skillMarginSpaces } from "./Skill
 import { WorkspaceConnection } from "./WorkspaceConnection";
 import {
   defaultSelection,
-  HARNESS_LABELS,
   ModelPicker,
   usePopover,
   type ModelSelection,
@@ -3281,11 +3282,6 @@ function AssistantTurn({ message, parts, options }: {
   );
 }
 
-function shellExchangePart(message: ChatMessage): ChatPart | null {
-  const part = message.parts.length === 1 ? message.parts[0] : undefined;
-  return message.role === "user" && part?.type === "tool" && part.tool === SHELL_TOOL ? part : null;
-}
-
 /** A composer `!` command and what it printed: the user's own shell run, shown
  * where it happened on the branch. */
 function ShellExchangeCard({ part }: { part: ChatPart }) {
@@ -4059,7 +4055,7 @@ export function ChatPanel({
   onShowRail,
   onNewProject,
   mainView,
-  onSelectMainView,
+  onSelectMainView: _onSelectMainView,
   onOpenFile,
   onOpenRun,
   runExperimentName,
@@ -4901,7 +4897,7 @@ export function ChatPanel({
         const markdown = openSession
           ? transcriptMarkdown(title, messages, {
             user: m.chat_export_you(),
-            assistant: HARNESS_LABELS[openSession.harness],
+            assistant: "MobileSci",
           })
           : null;
         if (markdown) downloadMarkdown(transcriptFileName(title), markdown);
@@ -5208,23 +5204,7 @@ export function ChatPanel({
   // Nonce while the open session's title is mid-reveal; undefined = static.
   const activeTitleReveal = activeSession ? titleReveals.get(activeSession.id) : undefined;
 
-  // The newest unresolved plan prompt, if any — it drives the docked strip
-  // above the composer. Resolution re-emits the message over SSE, so this
-  // recomputes to null and the strip disappears on its own.
-  const pendingPlan = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      for (const part of messages[i].parts) {
-        if (part.type === "prompt" && part.prompt?.kind === "plan" && !part.prompt.resolved) {
-          return {
-            promptId: part.id,
-            plan: part.prompt.plan ?? "",
-            synthesized: !!part.prompt.synthesized,
-          };
-        }
-      }
-    }
-    return null;
-  }, [messages]);
+  const pendingPlan = useMemo(() => pendingPlanForTurn(messages), [messages]);
 
   // Native questions own the composer only while their turn is still running.
   const pendingQuestion = useMemo(
@@ -6648,7 +6628,7 @@ export function ChatPanel({
             <PlanStrip
               synthesized={pendingPlan.synthesized}
               agentLabel={
-                activeSession ? HARNESS_LABELS[activeSession.harness] : m.chat_the_agent()
+                activeSession ? "科研助手" : m.chat_the_agent()
               }
               showResumeModes={activeSession?.harness === "claude-code"}
               onView={(intent) => openPlan?.(pendingPlan.plan, pendingPlan.promptId, intent)}
@@ -6883,9 +6863,9 @@ export function ChatPanel({
                   pendingQuestion
                     ? m.chat_type_custom_answer()
                     : steering && activeHarness
-                      ? m.chat_steer_placeholder({ harness: ltr(HARNESS_LABELS[activeHarness.id]), shortcut: ltr(queueChord) })
+                      ? m.chat_steer_placeholder({ harness: "科研助手", shortcut: ltr(queueChord) })
                       : composerSelection && !activeHarness?.agentReady
-                        ? m.chat_harness_unavailable({ harness: ltr(HARNESS_LABELS[composerSelection.harness]) })
+                        ? m.chat_harness_unavailable({ harness: "模型服务" })
                         : conversationStatus?.placeholder ?? "请输入您的研究内容，输入/使用命令和技能"
                 }
                 rows={2}
@@ -7116,7 +7096,6 @@ export function ChatPanel({
                 <ModelPicker
                   value={composerSelection}
                   onSelect={selectModel}
-                  onOpenSettings={() => onSelectMainView("harnesses")}
                   permissionChoices={activeHarness?.agentReady ? (opts?.permissionModes ?? []) : []}
                   defaultPermissionId={opts?.defaultPermissionMode ?? null}
                   onSelectPermission={setPermissionMode}

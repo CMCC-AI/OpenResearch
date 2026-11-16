@@ -683,3 +683,7 @@ th {
     padding: 16px;
   }
 }
+
+.quota-request {
+  overflow-wrap: anywhere;
+}

@@ -51,7 +51,7 @@ export function ProductSidebar({ children, connectionInfo, onCollapse, projectId
       {canAccessResearch && <WorkflowNavigationLink projectId={projectId} active={pathname === "/workflows" || pathname === `/projects/${encodeURIComponent(projectId ?? "")}/workflows`} />}
       <Link to="/cases" title="精选案例" aria-label="精选案例" aria-current={pathname === "/cases" || pathname.startsWith("/cases/") ? "page" : undefined} className="product-nav-item flex h-9 items-center gap-2.5 rounded-xl px-3 text-sm font-medium text-text no-underline"><Star size={18} className="shrink-0" /><span className="research-nav-label">精选案例</span></Link>
     </nav>
-    <div aria-label="OpenResearch 项目与会话" className="product-research-navigation flex min-h-0 flex-1 flex-col border-t border-border-variant pt-2">{children ?? (canAccessResearch ? <ResearchProjectNavigation enabled={Boolean(user)} /> : <p className="px-2 text-xs text-subtext">浏览管理员发布的公共案例，原项目保持独立访问权限。</p>)}</div>
+    <div aria-label="OpenResearch 项目与会话" className="product-research-navigation flex min-h-0 flex-1 flex-col border-t border-border-variant pt-2">{children ?? (canAccessResearch ? <ResearchProjectNavigation enabled={Boolean(user) && pathname !== "/settings/account" && pathname !== "/settings/quota"} /> : <p className="px-2 text-xs text-subtext">浏览管理员发布的公共案例，原项目保持独立访问权限。</p>)}</div>
     <AccountMenu connectionInfo={connectionInfo} />
   </aside>;
 }

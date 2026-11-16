@@ -1,3 +1,4 @@
+import { runtimeFetch } from "./runtimeRequest";
 import { inferFilePresentation } from "./filePreview";
 import { decodePreviewText, readPreviewResponse } from "./previewText";
 import { validateApiResponse } from "./apiValidation";
@@ -152,14 +153,14 @@ async function json<T>(res: Response): Promise<T> {
   return data;
 }
 
-const get = <T>(url: string, signal?: AbortSignal, personal = false) => (personal ? fetch(url, { signal }) : projectRequest(url, { signal })).then(async (r) => {
+const get = <T>(url: string, signal?: AbortSignal, personal = false) => (personal ? runtimeFetch(url, { signal }) : projectRequest(url, { signal })).then(async (r) => {
   const data = await json<T>(r);
   validateApiResponse(url, data);
   return data;
 });
 async function writeResponse(url: string, init: RequestInit, personal = false): Promise<Response> {
   const scope = workspaceScope(personal);
-  const response = await (personal ? fetch(url, init) : projectRequest(url, init));
+  const response = await (personal ? runtimeFetch(url, init) : projectRequest(url, init));
   if (!isCurrentScope(scope)) throw new DOMException("Workspace changed", "AbortError");
   writeScopes.set(response, scope);
   if (response.ok) invalidateWrite(url, scope);
@@ -721,7 +722,7 @@ export const saveOverleafSession = (session: string, opts: { host?: string } = {
   post<{ hasSession: boolean }>("/api/overleaf/session", { session, host: opts.host });
 
 export const deleteOverleafSession = () =>
-  fetch("/api/overleaf/session", { method: "DELETE" }).then((r) => json<{ hasSession: boolean }>(r));
+  runtimeFetch("/api/overleaf/session", { method: "DELETE" }).then((r) => json<{ hasSession: boolean }>(r));
 
 /** Read the session cookie from a browser signed in to Overleaf on this
  * machine, so it need not be pasted. macOS only; reading Chrome/Edge/Brave/Arc
@@ -761,7 +762,7 @@ export const startOverleafLive = (
   });
 
 export const stopOverleafLive = (projectId: string, path: string, opts: { sessionId?: string } = {}) =>
-  fetch(`/api/projects/${projectId}/file/overleaf/live?${checkoutQuery(opts, new URLSearchParams({ path }))}`, {
+  runtimeFetch(`/api/projects/${projectId}/file/overleaf/live?${checkoutQuery(opts, new URLSearchParams({ path }))}`, {
     method: "DELETE",
   }).then((r) => json<OverleafLive>(r));
 
@@ -1407,7 +1408,7 @@ export const getArtifactFileText = (
   path: string,
   signal?: AbortSignal,
 ): Promise<FileTextBody | null> => {
-  return fetch(artifactUrl(projectId, path), { signal, credentials: "include",
+  return runtimeFetch(artifactUrl(projectId, path), { signal, credentials: "include",
     headers: { Range: `bytes=0-${FILE_PREVIEW_BYTES - 1}` },
   }).then((r) => {
     if (r.status === 404) return null;
@@ -1436,7 +1437,7 @@ export const getArtifactFileMetadata = (
   path: string,
   signal?: AbortSignal,
 ): Promise<ArtifactFileMetadata | null> =>
-  fetch(artifactUrl(projectId, path), { signal, method: "HEAD", credentials: "include" }).then((r) => {
+  runtimeFetch(artifactUrl(projectId, path), { signal, method: "HEAD", credentials: "include" }).then((r) => {
     if (r.status === 404) return null;
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const presentation = r.headers.get("x-openresearch-presentation");

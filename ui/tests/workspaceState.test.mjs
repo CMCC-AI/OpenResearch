@@ -6,6 +6,7 @@ import {
   withoutResearchLocation,
   createWorkspaceWriter,
   emptyProjectWorkspace,
+  getTaskWorkspace,
   parseDestination,
   parsePane,
   safeLocation,
@@ -229,4 +230,13 @@ test("legacy research fallback preserves other tabs and does not mutate the curr
   assert.deepEqual(legacy.tasks.session.history, ["file:paper.tex"]);
   assert.equal(state.tasks.session.tabs.length, 2);
   assert.equal(withoutResearchLocation(taskLocation("project", "session", file)), taskLocation("project", "session", file));
+});
+
+test("getTaskWorkspace and withoutResearchWorkspace handle partial workspaces without tasks", () => {
+  assert.equal(getTaskWorkspace(undefined, "new"), undefined);
+  assert.equal(getTaskWorkspace(null, "new"), undefined);
+  assert.equal(getTaskWorkspace({ lastTaskId: "chat_1" }, "chat_1"), undefined);
+  assert.equal(getTaskWorkspace({ lastTaskId: "chat_1", tasks: null }, "chat_1"), undefined);
+  const partial = withoutResearchWorkspace({ version: 1, lastTaskId: "chat_1", lastLocation: null });
+  assert.deepEqual(partial.tasks, {});
 });

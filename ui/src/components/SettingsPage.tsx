@@ -386,7 +386,7 @@ function AuthLabel({ h }: { h: Harness }) {
 }
 
 
-function HarnessesTab({ remote }: { remote: boolean }) {
+export function HarnessesTab({ remote }: { remote: boolean }) {
   const authSession = useOptionalAuthSession();
   const canConfigureModels = (!appBasePath && !isCloudWorkspace()) || !!authSession?.user?.isAdmin;
   const harnessesOptions = getHarnessesQuery();
@@ -3754,7 +3754,7 @@ type SettingsNavItem = {
   activeTabs: Tab[];
 };
 
-const SETTINGS_SECTIONS: Tab[] = ["projects", "harnesses", "storage"];
+const SETTINGS_SECTIONS: Tab[] = ["projects", "storage"];
 
 /** Primary rail entries. Configuration sections share the Settings entry. */
 export const SETTINGS_NAV: SettingsNavItem[] = [
@@ -3783,8 +3783,10 @@ export function SettingsView({
   onProjectUpdate,
   onSelectTab,
   remote = false,
+  embedded = false,
 }: {
   tab: Tab;
+  embedded?: boolean;
   project: Project | null;
   onProjectUpdate: (project: Project) => void;
   onSelectTab: (tab: Tab) => void;
@@ -3813,19 +3815,16 @@ export function SettingsView({
   if (!isAvailableSettingsTab(tab)) return <p role="alert" className="p-6 text-subtext">该配置页面暂不开放。</p>;
 
   return (
-    <div className="settings-view max-w-readable my-0 mx-auto pt-6 px-8 pb-15 [&_h1]:mt-0 [&_h1]:mx-0 [&_h1]:mb-1.5 [&_h1]:text-3xl [&_>_.error]:text-accent-red [&_>_.error]:text-base [&_>_.error]:whitespace-pre-wrap [&_>_.error]:mt-0 [&_>_.error]:mx-0 [&_>_.error]:mb-3">
+    <div className={`settings-view ${embedded ? "min-w-0" : "max-w-readable my-0 mx-auto pt-6 px-8 pb-15"} [&_h1]:mt-0 [&_h1]:mx-0 [&_h1]:mb-1.5 [&_h1]:text-3xl [&_>_.error]:text-accent-red [&_>_.error]:text-base [&_>_.error]:whitespace-pre-wrap [&_>_.error]:mt-0 [&_>_.error]:mx-0 [&_>_.error]:mb-3`}>
       {showsSettings && (
         <>
-          <h1>{m.settings_page_settings()}</h1>
+          {!embedded && <h1>{m.settings_page_settings()}</h1>}
           <div className="settings-stack mt-4.5">
             <section className={SETTINGS_STACK_SECTION_CLASS_NAME}>
               <AppearanceTab />
             </section>
             <section ref={tab === "projects" ? sectionRef : undefined} className={SETTINGS_STACK_SECTION_CLASS_NAME}>
               <ProjectDefaultsTab remote={remote} />
-            </section>
-            <section ref={tab === "harnesses" ? sectionRef : undefined} className={SETTINGS_STACK_SECTION_CLASS_NAME}>
-              <HarnessesTab remote={remote} />
             </section>
             {!remote && (
               <section ref={tab === "storage" ? sectionRef : undefined} className={SETTINGS_STACK_SECTION_CLASS_NAME}>

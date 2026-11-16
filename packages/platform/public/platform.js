@@ -241,21 +241,6 @@ function authentication(mode = "login") {
     authentication(registering ? "login" : "register");
 }
 
-function passwordDialog() {
-  show(`<h2>修改密码</h2>
-    <p>保存后会退出所有产品，需要重新登录。</p>
-    <form id="password-form" class="stack">
-      ${passwordField("当前密码", "current", "current-password")}
-      ${passwordField("新密码", "password", "new-password", true)}
-      <button type="submit" class="primary">保存并退出</button>
-    </form>`);
-  bindForm("#password-form", async (data) => {
-    await api("/password", "POST", data);
-    dialog.close();
-    authentication();
-  });
-}
-
 function administrationUrl(capabilities) {
   const destination = new URL(capabilities.openResearchAppUrl);
   destination.pathname = destination.pathname.replace(
@@ -267,23 +252,19 @@ function administrationUrl(capabilities) {
   return destination.href;
 }
 
+function personalSettingsUrl(capabilities) {
+  const destination = new URL(capabilities.openResearchAppUrl);
+  destination.pathname = destination.pathname.replace(
+    /\/projects\/?$/,
+    "/settings/account",
+  );
+  destination.search = "";
+  destination.hash = "";
+  return destination.href;
+}
 function renderAccount(capabilities) {
   document.body.classList.remove("auth-page");
-  account.innerHTML = `<span class="muted">${esc(me.name)}</span> ${me.isAdmin ? `<a class="admin-link" href="${esc(administrationUrl(capabilities))}">系统管理</a>` : ""} <button id="password">修改密码</button> <button id="logout">退出</button>`;
-  document.querySelector("#password").onclick = passwordDialog;
-  document.querySelector("#logout").onclick = async () => {
-    await api("/logout", "POST");
-    me = null;
-    authentication();
-  };
-  app.innerHTML = `<section class="auth card account-card">
-    <span class="eyebrow">ACCOUNT</span>
-    <h1>账号设置</h1>
-    <dl class="account-details">
-      <div><dt>姓名</dt><dd>${esc(me.name)}</dd></div>
-      <div><dt>邮箱</dt><dd>${esc(me.email)}</dd></div>
-    </dl>
-  </section>`;
+  account.innerHTML = `<a href="${esc(personalSettingsUrl(capabilities))}">个人设置</a>`;
 }
 
 async function administration(capabilities) {
@@ -323,7 +304,7 @@ async function load() {
     location.replace(capabilities.openResearchAppUrl);
     return;
   }
-  renderAccount(capabilities);
+  location.replace(personalSettingsUrl(capabilities));
 }
 
 (resetToken ? Promise.resolve(recovery("reset")) : load()).catch((error) =>

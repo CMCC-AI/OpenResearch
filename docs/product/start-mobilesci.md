@@ -35,3 +35,20 @@ node scripts/dev-slot.mjs stop
 账号服务的 `OPENRESEARCH_APP_ORIGIN` 必须与开发前端的浏览器地址一致（通常为 `http://localhost:5201`），否则登录态请求会因来源不受信任返回 403，登录后也会跳回旧端口。切换到日常 4791 入口时，同步调整 `packages/platform/.env` 中该值，并使用账号服务原有 Compose 文件重建 `platform` 容器；不需要更换数据库或凭据。
 
 开发槽支持主工作区位于功能分支。Vite 由受管 Node 进程直接启动，避免部分 pnpm 版本分离进程组导致归属检查及停止失败。
+
+
+## 更新本地账号服务
+
+前端热更新不会更新 Docker 内的账号 API。旧容器即使 `/healthz` 正常，也可能缺少 Token 额度接口和对应的跨域处理，页面会显示 `Failed to fetch`。两个启动入口会先检查该接口，避免把旧服务误判为与当前前端兼容。
+
+升级前备份 PostgreSQL 和现有容器配置，保留 `.env`、数据库卷与凭据；使用该容器标签 `com.docker.compose.project.config_files` 记录的原有 Compose 文件。构建 `platform`、`migrate`，运行迁移后只替换 `platform`，无需停止开发槽或研究执行器。对于已有的三文件本地部署，命令如下（新部署不要因此引入历史 managed 配置）：
+
+```bash
+cd packages/platform
+compose_args=(-f compose.yaml -f compose.dev.yaml -f compose.managed.yaml)
+docker compose "${compose_args[@]}" build platform migrate
+docker compose "${compose_args[@]}" run --rm --no-deps migrate
+docker compose "${compose_args[@]}" up -d --no-deps platform
+```
+
+核对 `OPENRESEARCH_APP_ORIGIN` 仍对应当前前端。未登录访问 `/api/platform/token-quota` 应返回带受信任来源响应头的 401；登录后返回实际配置。Token 额度默认关闭，本地自配模型不会自动纳入托管平台计费，其他部署的余额也不会自动同步。未启用时页面应显示“当前部署尚未启用平台模型额度”，不应显示网络错误或虚构余额。

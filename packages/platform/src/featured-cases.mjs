@@ -13,10 +13,35 @@ export const CASE_FILE_LIMIT = 25 * 1024 * 1024;
 export const CASE_TOTAL_LIMIT = 200 * 1024 * 1024;
 const NATIVE_FILE_LIMIT = 128 * 1024 * 1024;
 const NATIVE_TOTAL_LIMIT = 512 * 1024 * 1024;
+// Team conversations retain expert transcripts and per-session research state.
+// Reserve separate space for the create-request envelope around the workspace.
+export const NATIVE_METADATA_LIMIT = 64 * 1024 * 1024;
+const CASE_JSON_LIMIT = NATIVE_METADATA_LIMIT + 1024 * 1024;
 const uuid = (value) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 const fields =
   "id,title,summary,category,status,revision,sort_order,created_at,updated_at,published_at";
+
+// PostgreSQL jsonb rejects U+0000 and unpaired UTF-16 surrogates (22P05).
+// Tool output from binary files or truncated text can contain either, so
+// replace only those code units with U+FFFD; everything else stays verbatim.
+const LONE_SURROGATE =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+const jsonbText = (value) =>
+  value.replace(/\u0000/g, "\uFFFD").replace(LONE_SURROGATE, "\uFFFD");
+export function jsonbSafe(value) {
+  if (typeof value === "string") return jsonbText(value);
+  if (Array.isArray(value)) return value.map(jsonbSafe);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        jsonbText(key),
+        jsonbSafe(item),
+      ]),
+    );
+  return value;
+}
+export const jsonbString = (value) => JSON.stringify(jsonbSafe(value));
 
 // Only allowlisted metadata reaches the public copy. Conversation text is kept
 // verbatim for administrator review, including any paths it already contains.
@@ -229,7 +254,139 @@ export function normalizeNativeWorkspace(value) {
       (session) => session.projectId === value.projectId && !session.busy,
     ),
   );
+  if (value.sourceSessionId !== undefined) {
+    string(value.sourceSessionId, 100);
+    check(
+      value.sourceSessionId === value.sessionId,
+      400,
+      "案例来源对话必须为当前会话",
+    );
+  }
   const sessionIds = new Set(sessions.map((session) => session.id));
+  let fileScope;
+  const scopedAssetKeys = new Set();
+  if (value.fileScope !== undefined) {
+    object(value.fileScope);
+    const paths = value.fileScope.artifactPaths;
+    const safePath = (path) =>
+      typeof path === "string" &&
+      path.length <= 4096 &&
+      !/[\\\x00-\x1f\x7f]/.test(path) &&
+      path.split("/").every((part) => part && part !== "." && part !== "..");
+    check(
+      value.sourceSessionId &&
+        value.fileScope.kind === "conversation-results" &&
+        Array.isArray(paths) &&
+        paths.length <= 200 &&
+        new Set(paths).size === paths.length,
+      400,
+      "案例成果范围无效",
+    );
+    const roots = new Set();
+    for (const session of sessions) {
+      const study =
+        value.responses[`/api/research/sessions/${session.id}`]?.study;
+      if (
+        study &&
+        study.projectId === value.projectId &&
+        sessionIds.has(study.sessionId) &&
+        typeof study.id === "string" &&
+        /^[a-z0-9_-]+$/i.test(study.id)
+      )
+        roots.add(`research/${study.id}`);
+    }
+    check(
+      paths.every(
+        (path) =>
+          safePath(path) &&
+          [...roots].some((root) => path.startsWith(root + "/")),
+      ),
+      400,
+      "只能公开所选对话关联的成果子目录或文件",
+    );
+    const listing = value.responses[`/api/projects/${value.projectId}/files`];
+    check(
+      listing &&
+        typeof listing.dir === "string" &&
+        listing.dir &&
+        Array.isArray(listing.entries) &&
+        listing.truncated === false,
+      400,
+      "案例成果清单不完整",
+    );
+    const nodes = new Set();
+    let count = 0,
+      bytes = 0;
+    const canonical = (path) => {
+      const url = new URL(path, "http://snapshot.invalid");
+      url.searchParams.sort();
+      return url.pathname + url.search;
+    };
+    const visit = (entries, parent = "") => {
+      check(Array.isArray(entries));
+      for (const entry of entries) {
+        check(
+          entry &&
+            safePath(entry.path) &&
+            !nodes.has(entry.path) &&
+            (!parent || entry.path.startsWith(parent + "/")),
+          400,
+          "成果路径无效或重复",
+        );
+        nodes.add(entry.path);
+        if (entry.isDir) {
+          check(
+            paths.some(
+              (path) =>
+                path === entry.path ||
+                path.startsWith(entry.path + "/") ||
+                entry.path.startsWith(path + "/"),
+            ),
+            400,
+            "成果目录超出所选范围",
+          );
+          visit(entry.children ?? [], entry.path);
+        } else {
+          check(
+            paths.some(
+              (path) =>
+                path === entry.path || entry.path.startsWith(path + "/"),
+            ),
+            400,
+            "成果文件超出所选范围",
+          );
+          check(
+            Number.isSafeInteger(entry.size) &&
+              entry.size >= 0 &&
+              entry.size <= NATIVE_FILE_LIMIT,
+          );
+          count++;
+          bytes += entry.size;
+          const raw = canonical(
+            `/api/projects/${value.projectId}/files/file?path=${encodeURIComponent(entry.path)}`,
+          );
+          const name = value.assets[raw];
+          check(typeof name === "string", 400, "所选成果文件尚未复制完整");
+          scopedAssetKeys.add(raw);
+          const absolute = canonical(
+            `/api/files/abs/raw?path=${encodeURIComponent(listing.dir.replace(/\/$/, "") + "/" + entry.path)}`,
+          );
+          if (value.assets[absolute] !== undefined)
+            check(value.assets[absolute] === name, 400, "成果文件引用不一致");
+          scopedAssetKeys.add(absolute);
+        }
+      }
+    };
+    visit(listing.entries);
+    check(
+      paths.every((path) => nodes.has(path)) &&
+        count <= 2000 &&
+        bytes <= NATIVE_TOTAL_LIMIT,
+      413,
+      "所选成果超限或清单缺失",
+    );
+    fileScope = { kind: "conversation-results", artifactPaths: paths };
+  }
   const materialRefs = new Set();
   for (const session of sessions) {
     const messages =
@@ -265,6 +422,22 @@ export function normalizeNativeWorkspace(value) {
     const experiment = route.match(/^\/api\/experiments\/([^/]+)/);
     if (experiment) check(experimentIds.has(experiment[1]));
     check(response && typeof response === "object");
+    if (fileScope) {
+      check(
+        !/^\/api\/projects\/[^/]+\/file$/.test(route) &&
+          route !== "/api/files/abs",
+        400,
+        "对话成果案例不能混入项目工作区文件",
+      );
+      if (route.endsWith("/code-tree"))
+        check(
+          Array.isArray(response.entries) && response.entries.length === 0,
+          400,
+          "项目工作区文件应留在原项目",
+        );
+      if (route.endsWith("/worktree"))
+        check(response.exists === false, 400, "工作区应留在原项目");
+    }
     const material = route.match(/^\/api\/materials\/([^/]+)$/);
     if (material) {
       const materialId = material[1];
@@ -294,8 +467,10 @@ export function normalizeNativeWorkspace(value) {
         check(
           typeof file.sha256 === "string" &&
             /^[0-9a-f]{64}$/i.test(file.sha256) &&
-            typeof assetName === "string" &&
-            assetName.startsWith(`native-${file.sha256}.`),
+            (fileScope
+              ? assetName === undefined
+              : typeof assetName === "string" &&
+                assetName.startsWith(`native-${file.sha256}.`)),
           400,
           "材料原文件副本缺失或哈希不一致",
         );
@@ -364,6 +539,8 @@ export function normalizeNativeWorkspace(value) {
     }
   }
   for (const [path, name] of Object.entries(value.assets)) {
+    if (fileScope)
+      check(scopedAssetKeys.has(path), 400, "案例混入未选择的成果或原始上传件");
     check(
       /^\/api\/(?:projects\/[^/?]+\/(?:file\/raw|files\/file)|chat\/attachments\/[^/?]+|files\/abs\/raw|research\/studies\/[^/?]+\/package|materials\/[^/?]+\/[^/?]+\/download)(?:\?|$)/.test(
         path,
@@ -384,14 +561,18 @@ export function normalizeNativeWorkspace(value) {
     );
   }
   check(
-    Buffer.byteLength(JSON.stringify(value), "utf8") <= 16 * 1024 * 1024,
+    Buffer.byteLength(JSON.stringify(value), "utf8") <= NATIVE_METADATA_LIMIT,
     413,
-    "完整项目元数据超过 16 MB",
+    "案例快照超过 64 MiB，不能截断研究记录发布",
   );
   return {
     version: 1,
     projectId: value.projectId,
     sessionId: value.sessionId,
+    ...(value.sourceSessionId !== undefined
+      ? { sourceSessionId: value.sourceSessionId }
+      : {}),
+    ...(fileScope ? { fileScope } : {}),
     responses: value.responses,
     assets: value.assets,
   };
@@ -567,12 +748,18 @@ export function normalizeCase(value) {
   };
 }
 
-async function caseInput(req, maxBytes = 16 * 1024 * 1024) {
+async function caseInput(req, maxBytes = CASE_JSON_LIMIT) {
   check(req.headers["content-type"]?.split(";")[0] === "application/json", 415);
   let value;
   try {
     value = JSON.parse((await body(req, maxBytes)).toString("utf8"));
   } catch (error) {
+    if (error.status === 413)
+      check(
+        false,
+        413,
+        `案例请求超过 ${Math.floor(maxBytes / 1024 / 1024)} MiB 上限，请检查所选对话范围`,
+      );
     if (error.status) throw error;
     check(false, 400, "JSON 格式无效");
   }
@@ -638,7 +825,7 @@ export function featuredCaseRoutes({
     if (suffix.length === 0) {
       if (req.method === "GET") {
         const result = await pool.query(
-          `SELECT ${fields}${admin ? ",source_project_id" : ""} FROM featured_cases ${admin ? "" : "WHERE status='published'"} ORDER BY sort_order,published_at DESC NULLS LAST,created_at DESC LIMIT 200`,
+          `SELECT ${fields}${admin ? ",source_project_id,snapshot #>> '{workspace,sourceSessionId}' AS source_session_id" : ""} FROM featured_cases ${admin ? "" : "WHERE status='published'"} ORDER BY sort_order,published_at DESC NULLS LAST,created_at DESC LIMIT 200`,
         );
         json(res, { cases: result.rows });
         return true;
@@ -664,7 +851,7 @@ export function featuredCaseRoutes({
             text(value.title, 200),
             text(value.summary, 4000),
             text(value.category, 80),
-            JSON.stringify(snapshot),
+            jsonbString(snapshot),
             value.expectedFileCount,
           ],
         );
@@ -815,6 +1002,12 @@ export function featuredCaseRoutes({
           400,
           "只允许同步原关联项目",
         );
+        check(
+          (current.snapshot?.workspace?.sourceSessionId ?? null) ===
+            (native.sourceSessionId ?? null),
+          400,
+          "只允许同步原关联对话范围",
+        );
         const existing = await db.query(
           "SELECT name FROM featured_case_files WHERE case_id=$1",
           [caseId],
@@ -832,7 +1025,7 @@ export function featuredCaseRoutes({
           "UPDATE featured_cases SET snapshot=$2,expected_file_count=$3,revision=revision+1,updated_at=now() WHERE id=$1",
           [
             caseId,
-            JSON.stringify({
+            jsonbString({
               sessions: [],
               projectName: native.responses["/api/projects"].projects[0].name,
               workspace: native,
@@ -868,7 +1061,7 @@ export function featuredCaseRoutes({
     }
     if (!action && req.method === "GET") {
       const result = await pool.query(
-        `SELECT ${fields},snapshot${admin ? ",source_project_id,expected_file_count" : ""} FROM featured_cases WHERE id=$1 ${admin ? "" : "AND status='published'"}`,
+        `SELECT ${fields},snapshot${admin ? ",source_project_id,expected_file_count,snapshot #>> '{workspace,sourceSessionId}' AS source_session_id" : ""} FROM featured_cases WHERE id=$1 ${admin ? "" : "AND status='published'"}`,
         [caseId],
       );
       check(result.rows[0], 404, "案例不存在或尚未发布");

@@ -212,7 +212,7 @@ const S_REPORTS: AgentSkill = AgentSkill {
 };
 const S_CUSTOMIZE: AgentSkill = AgentSkill {
     name: "orx-customize",
-    description: "Save reusable skills and LaTeX templates with `orx skills add` and `orx templates add`. Use when the user asks to create, import, or add a skill or template to OpenResearch for use across projects.",
+    description: "Save reusable skills and LaTeX templates with `orx skills add` and `orx templates add`. Use when the user asks to create, import, or add a skill or template to MobileSci for use across projects.",
     content: CUSTOMIZE,
     resources: &[],
 };
@@ -242,14 +242,14 @@ const S_RESULTS: AgentSkill = AgentSkill {
 };
 const S_INSTANCES: AgentSkill = AgentSkill {
     name: "orx-instances",
-    description: "Create standalone OpenResearch compute instances with `orx instance create`. Use when the user wants a persistent machine for manual or ad-hoc work rather than an experiment run.",
+    description: "Create standalone MobileSci compute instances with `orx instance create`. Use when the user wants a persistent machine for manual or ad-hoc work rather than an experiment run.",
     content: INSTANCES,
     resources: &[],
 };
 
 const S_FEEDBACK: AgentSkill = AgentSkill {
     name: "orx-feedback",
-    description: "Report product feedback about OpenResearch itself with `orx feedback`. Use when the user expresses frustration with an OpenResearch feature or bug, says a feature would be nice to have, or you hit a meaningful limitation or bug in the orx CLI, the agent harness, or the app. Not for research results, the user's own code, or minor nits.",
+    description: "Report product feedback about MobileSci itself with `orx feedback`. Use when the user expresses frustration with a MobileSci feature or bug, says a feature would be nice to have, or you hit a meaningful limitation or bug in the CLI, the agent harness, or the app. Not for research results, the user's own code, or minor nits.",
     content: FEEDBACK,
     resources: &[],
 };

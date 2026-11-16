@@ -1,3 +1,4 @@
+import { cancelRuntimeRequests } from "../runtimeRequest";
 import { pendingOwner, revokePendingOwner } from "../pendingSubmissions";
 import { PersonalResearchGate } from "./PersonalResearchGate";
 import { stripAppBase, appHref } from "../appBasePath";
@@ -104,6 +105,7 @@ export function AuthSessionProvider({
   }, [accountUrl, cloud]);
 
   const logout = useCallback(async () => {
+    cancelRuntimeRequests();
     if (user) await revokePendingOwner(pendingOwner(accountUrl, user.id)).catch(() => undefined);
     if (accountUrl) {
       await fetch(cloud ? "/_platform/logout" : `${accountUrl}/api/platform/browser-logout`, {
@@ -129,8 +131,9 @@ export function AuthSessionProvider({
   if ((protectedRoute || pathname === "/") && loading)
     return <main className="app flex h-full items-center justify-center bg-background"><Spinner /></main>;
   if (protectedRoute && !user) return <Navigate to="/" replace />;
-  if (user && !canAccessResearch && protectedRoute && !pathname.startsWith("/cases") && !pathname.startsWith("/admin")) return <Navigate to="/cases" replace />;
-  const needsRuntime = privateResearch && user && protectedRoute && !pathname.startsWith("/admin") && !pathname.startsWith("/cases") && !pathname.startsWith("/literature");
+  const personalSettings = pathname === "/settings/account" || pathname === "/settings/quota";
+  if (user && !canAccessResearch && !personalSettings && protectedRoute && !pathname.startsWith("/cases") && !pathname.startsWith("/admin")) return <Navigate to="/cases" replace />;
+  const needsRuntime = privateResearch && user && !personalSettings && protectedRoute && !pathname.startsWith("/admin") && !pathname.startsWith("/cases") && !pathname.startsWith("/literature");
   return <AuthSessionContext value={value}>{needsRuntime ? <PersonalResearchGate key={user.id} accountUrl={accountUrl}>{children}</PersonalResearchGate> : children}</AuthSessionContext>;
 }
 

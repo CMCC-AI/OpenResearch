@@ -512,11 +512,16 @@ fn collect_mirrored(
     plugin: bool,
     out: &mut Vec<Mirrored>,
 ) {
-    let Ok(entries) = fs::read_dir(dir) else {
+    // A plugin can name one skill folder instead of a folder of skills.
+    let only = (plugin && dir.join("SKILL.md").is_file()).then_some(dir);
+    let Ok(entries) = fs::read_dir(only.and_then(Path::parent).unwrap_or(dir)) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        if only.is_some_and(|only| path != only) {
+            continue;
+        }
         if !path.is_dir() {
             continue;
         }
@@ -1685,6 +1690,25 @@ mod tests {
             ["good"]
         );
         let _ = fs::remove_dir_all(&agent_dir);
+    }
+
+    #[test]
+    fn a_plugin_root_can_be_one_skill_folder() {
+        let root = temp_root();
+        let skill = root.join("deep-research");
+        fs::create_dir_all(skill.join("references")).unwrap();
+        fs::write(skill.join("SKILL.md"), skill_md("deep-research")).unwrap();
+        fs::write(skill.join("references/guide.md"), "reference").unwrap();
+        let mut found = Vec::new();
+        collect_mirrored(&skill, "research", "claude-code", true, &mut found);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "deep-research");
+        assert_eq!(found[0].dir, skill);
+        // A native skills dir is always a folder of skills.
+        let mut native = Vec::new();
+        collect_mirrored(&skill, "Claude Code", "claude-code", false, &mut native);
+        assert!(native.is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

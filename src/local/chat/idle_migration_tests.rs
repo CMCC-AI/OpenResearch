@@ -128,7 +128,7 @@ async fn while_idle_failures_release_reservations_and_do_not_treat_sql_errors_as
     for failure in ["open", "foreign-lease", "sql", "work", "panic"] {
         let (dir, store, ctx) = checkpoint_fixture();
         if failure == "foreign-lease" {
-            assert!(store.claim_chat_turn("session", "foreign").unwrap());
+            assert!(store.claim_chat_turn("session", "foreign", &[]).unwrap());
         }
         if failure == "sql" {
             let tx = store.begin().unwrap();

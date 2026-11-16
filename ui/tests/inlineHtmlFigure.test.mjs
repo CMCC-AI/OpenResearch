@@ -1,3 +1,4 @@
+import * as runtimeRequest from "../src/runtimeRequest.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -32,6 +33,7 @@ function mount(props) {
   const element = (type, elementProps) => ({ type, props: elementProps });
   const exports = {};
   new Function("require", "exports", compiled)((name) => ({
+    "../runtimeRequest": runtimeRequest,
     react,
     "react/jsx-runtime": { jsx: element, jsxs: element },
     "../paraglide/messages.js": { m: new Proxy({}, { get: (_, key) => () => String(key) }) },

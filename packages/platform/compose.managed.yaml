@@ -16,6 +16,7 @@ services:
       PLATFORM_ORIGIN: ${PLATFORM_ORIGIN}
       MANAGED_CONNECT_URL: http://host.docker.internal:5300
       MANAGED_EXECUTOR_IMAGE: openresearch-managed-executor:local
+      MANAGED_CAPACITY: ${MANAGED_CAPACITY:-4}
       ORX_DEEP_LITERATURE_URL: http://host.docker.internal:3000
       ORX_DEEP_LITERATURE_WEB_URL: http://localhost:3000
     volumes:

@@ -28,7 +28,12 @@ pub(super) async fn package(Path(id): Path<String>) -> std::result::Result<Respo
         "x-content-sha256",
         snapshot.archive.sha256.parse().map_err(bad_request)?,
     );
-    let stream = tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(file));
+    let stream = tokio_util::io::ReaderStream::new(file.into_async_reader().map_err(|err| {
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("打开封存研究包失败: {err}"),
+        )
+    })?);
     Ok((headers, axum::body::Body::from_stream(stream)).into_response())
 }
 

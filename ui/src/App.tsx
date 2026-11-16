@@ -1784,12 +1784,10 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     onOpenExperiment={(id, runId) => openExperimentTab(id, "overview", "preview", runId)}
     rightOffset={panelOpen ? panelWidth + 28 : undefined}
     activeView={panelOpen && (rightTab === "files" || rightTab === "artifacts" || rightTab === "experiments" || rightTab === "terminal" || rightTab === "research" || rightTab === "materials") ? rightTab : null}
-    projectId={activeProject.id}
     onMaterials={() => openMaterialsTab()}
     onResearch={openResearchTab}
     onWorkflow={() => selectMainView("workflows")}
     onDeliverables={() => selectMainView("deliverables")}
-    onCompute={() => selectMainView("compute")}
     onOpenSession={(id) => onActiveSessionChange(id)}
     sessionId={activeSessionId}
     busy={sessionsQuery.data?.some((session) => session.id === activeSessionId && session.busy) ?? false}

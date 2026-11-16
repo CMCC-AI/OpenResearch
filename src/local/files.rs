@@ -410,6 +410,107 @@ pub fn list(project: &LocalProject) -> Result<ArtifactsListing> {
     })
 }
 
+/// Explicit case exports browse only the selected conversation's research roots.
+/// Ordinary artifact polling retains its small, independent listing budget.
+pub fn case_entries(
+    base: &Path,
+    roots: &[String],
+    selected: Option<&str>,
+    recursive: bool,
+) -> Result<Vec<ArtifactEntry>> {
+    const CASE_ENTRIES: usize = 20_000;
+    fn entry(
+        path: &Path,
+        scope: &Path,
+        relative: &str,
+        depth: usize,
+        budget: &mut usize,
+        ancestors: &mut Vec<PathBuf>,
+    ) -> Result<ArtifactEntry> {
+        let canonical = crate::paths::canonicalize(path)?;
+        if !canonical.starts_with(scope) {
+            return Err(anyhow!("成果链接指向所选对话之外：{relative}"));
+        }
+        if *budget == 0 {
+            return Err(anyhow!(
+                "所选成果目录超过 20,000 条记录，请选择更小的子目录"
+            ));
+        }
+        *budget -= 1;
+        let md = std::fs::metadata(&canonical)?;
+        let mut children = Vec::new();
+        if md.is_dir() && depth > 0 {
+            if ancestors.contains(&canonical) {
+                return Err(anyhow!("成果目录存在循环链接：{relative}"));
+            }
+            ancestors.push(canonical.clone());
+            for child in std::fs::read_dir(path)? {
+                let child = child?;
+                let name = child.file_name().to_string_lossy().into_owned();
+                if !is_ignored(&name) {
+                    children.push(entry(
+                        &child.path(),
+                        scope,
+                        &format!("{relative}/{name}"),
+                        depth - 1,
+                        budget,
+                        ancestors,
+                    )?);
+                }
+            }
+            ancestors.pop();
+            children.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+        } else if md.is_dir() && depth == 0 && ancestors.len() >= 64 {
+            return Err(anyhow!("成果目录层级过深：{relative}"));
+        }
+        Ok(ArtifactEntry {
+            name: relative.rsplit('/').next().unwrap_or(relative).to_owned(),
+            path: relative.to_owned(),
+            is_dir: md.is_dir(),
+            size: if md.is_file() { md.len() } else { 0 },
+            modified_at: mtime_ms(&md),
+            presentation: md.is_file().then(|| presentation_for_path(relative)),
+            children,
+        })
+    }
+    let mut out = Vec::new();
+    let mut budget = CASE_ENTRIES;
+    for root in roots {
+        if !is_safe_rel_path(root) {
+            return Err(anyhow!("成果目录无效"));
+        }
+        let relative = match selected {
+            Some(path) if path == root || path.starts_with(&format!("{root}/")) => path,
+            Some(_) => continue,
+            None => root,
+        };
+        if !is_safe_rel_path(relative) {
+            return Err(anyhow!("成果路径无效"));
+        }
+        let root_path = base.join(root);
+        if !root_path.exists() && selected.is_none() {
+            continue;
+        }
+        let canonical_base = crate::paths::canonicalize(base)?;
+        let scope = crate::paths::canonicalize(&root_path)?;
+        if scope != canonical_base.join(root) {
+            return Err(anyhow!("成果目录越界"));
+        }
+        out.push(entry(
+            &base.join(relative),
+            &scope,
+            relative,
+            if recursive { 64 } else { 1 },
+            &mut budget,
+            &mut Vec::new(),
+        )?);
+    }
+    if selected.is_some() && out.is_empty() {
+        return Err(anyhow!("只能选择当前对话关联的成果目录"));
+    }
+    Ok(out)
+}
+
 /// A contained artifact path suitable for streaming without buffering.
 pub fn file_path(project: &LocalProject, rel_path: &str) -> Result<PathBuf> {
     resolve_contained(&files_dir(project), rel_path)
@@ -497,6 +598,71 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("secret.txt"), "secret").unwrap();
         (root, base, outside)
+    }
+
+    #[test]
+    fn case_selection_leaves_large_intermediate_data_and_other_studies_in_source() {
+        let (root, base, _) = scratch();
+        let study = "research/study_selected";
+        std::fs::create_dir_all(base.join(format!("{study}/paper"))).unwrap();
+        std::fs::create_dir_all(base.join(format!("{study}/features"))).unwrap();
+        std::fs::create_dir_all(base.join("research/study_other")).unwrap();
+        std::fs::write(base.join(format!("{study}/paper/report.md")), "report").unwrap();
+        for n in 0..2100 {
+            std::fs::write(base.join(format!("{study}/features/{n}.parquet")), "data").unwrap();
+        }
+        let roots = vec![study.to_owned()];
+        let shallow = case_entries(&base, &roots, None, false).unwrap();
+        assert_eq!(shallow[0].children.len(), 2);
+        assert!(shallow[0]
+            .children
+            .iter()
+            .all(|row| row.children.is_empty()));
+        let selected = format!("{study}/paper");
+        let exported = case_entries(&base, &roots, Some(&selected), true).unwrap();
+        assert_eq!(exported.len(), 1);
+        assert_eq!(
+            exported[0].children[0].path,
+            format!("{selected}/report.md")
+        );
+        assert_eq!(
+            std::fs::read_dir(base.join(format!("{study}/features")))
+                .unwrap()
+                .count(),
+            2100
+        );
+        assert!(case_entries(&base, &roots, Some("research/study_other"), true).is_err());
+        assert!(case_entries(
+            &base,
+            &roots,
+            Some("research/study_selected/../study_other"),
+            true
+        )
+        .is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn case_selection_rejects_symlinks_to_other_studies_and_cycles() {
+        let (root, base, outside) = scratch();
+        std::fs::create_dir_all(base.join("research/study_a/paper")).unwrap();
+        std::fs::create_dir_all(base.join("research/study_b")).unwrap();
+        symlink(
+            base.join("research/study_b"),
+            base.join("research/study_a/foreign"),
+        )
+        .unwrap();
+        symlink(
+            base.join("research/study_a/paper"),
+            base.join("research/study_a/paper/loop"),
+        )
+        .unwrap();
+        let roots = vec!["research/study_a".into()];
+        assert!(case_entries(&base, &roots, Some("research/study_a/foreign"), true).is_err());
+        assert!(case_entries(&base, &roots, Some("research/study_a/paper"), true).is_err());
+        symlink(outside, base.join("research/linked")).unwrap();
+        assert!(case_entries(&base, &["research/linked".into()], None, false).is_err());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

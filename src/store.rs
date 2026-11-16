@@ -26,7 +26,7 @@ use std::time::Duration;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
-use crate::error::{anyhow, Result};
+use crate::error::{anyhow, Context, Result};
 use crate::local::autonomy::Autonomy;
 use crate::local::model::{LocalExperiment, LocalProject};
 use crate::workspace_state::{GlobalWorkspaceState, WorkspaceState};
@@ -86,13 +86,14 @@ pub(crate) fn open_lifecycle_lock_at(
     path: &std::path::Path,
 ) -> Result<fd_lock::RwLock<std::fs::File>> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::paths::create_dir_all(parent)?;
     }
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(path)?;
+        .open(path)
+        .with_context(|| format!("Could not open {}", path.display()))?;
     Ok(fd_lock::RwLock::new(file))
 }
 
@@ -416,6 +417,20 @@ const RUN_WAKEUP_CLAIM_TTL_MS: i64 = 60 * 1000;
 pub(crate) const CHAT_TURN_LEASE_TTL_MS: i64 = 60 * 1000;
 const CHAT_SPAWN_CLAIM_TTL_MS: i64 = 60 * 1000;
 
+/// Delete turn leases not renewed within the TTL, except `held`, the claim tokens of this
+/// process's running turns: a stall or sleep leaves them stale but their turns alive.
+fn expire_turn_leases(conn: &Connection, held: &[String]) -> Result<()> {
+    conn.execute(
+        "DELETE FROM chat_turn_leases
+         WHERE heartbeat_at < ?1 AND claim_token NOT IN (SELECT value FROM json_each(?2))",
+        params![
+            now_ms() - CHAT_TURN_LEASE_TTL_MS,
+            serde_json::to_string(held)?
+        ],
+    )?;
+    Ok(())
+}
+
 fn migrate_chat_spawns(conn: &Connection) -> Result<()> {
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS product_migrations (name TEXT PRIMARY KEY)")?;
@@ -706,6 +721,40 @@ impl Store {
         Self::open_at_with_move_lock(dir, move_lock_path, BUSY_TIMEOUT)
     }
 
+    /// Opens the store for a command that only reads it. Where the store cannot be
+    /// written, as in a sandboxed agent, it opens read-only and applies no schema;
+    /// elsewhere it opens as `open` does, so a newer reader still finds its columns.
+    pub fn open_for_reading() -> Result<Self> {
+        Self::open_for_reading_within(BUSY_TIMEOUT)
+    }
+
+    /// Open like `open_for_reading`, but cap SQLite's lock wait — `orx exp wait`
+    /// shrinks this to its deadline so one blocked open can't overshoot it.
+    pub fn open_for_reading_within(busy_timeout: Duration) -> Result<Self> {
+        let dir = data_dir();
+        let db = dir.join("orx.db");
+        let exists = db
+            .try_exists()
+            .with_context(|| format!("Could not read {}", db.display()))?;
+        let writable =
+            || Self::open_at_with_move_lock(data_dir(), data_dir_move_lock_path(), busy_timeout);
+        if !exists {
+            return writable();
+        }
+        // SQLite opens a file it may not write read-only.
+        let conn = Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .with_context(|| format!("Could not open {}", db.display()))?;
+        if !conn.is_readonly(rusqlite::MAIN_DB)? {
+            drop(conn);
+            return writable();
+        }
+        conn.pragma_update(None, "busy_timeout", busy_timeout.as_millis() as u64)?;
+        Ok(Self {
+            conn,
+            data_dir_move_lock_path: data_dir_move_lock_path(),
+        })
+    }
+
     /// Shrink this connection's lock wait (e.g. to a wait loop's remaining
     /// deadline). The next call can pass the default back to restore it.
     pub(crate) fn set_busy_timeout(&self, timeout: Duration) -> Result<()> {
@@ -728,13 +777,34 @@ impl Store {
         busy_timeout: Duration,
         mut phase: impl FnMut(&'static str),
     ) -> Result<Self> {
-        std::fs::create_dir_all(dir.join("run-logs"))
-            .map_err(|e| anyhow!("Could not create {}: {}", dir.display(), e))?;
+        crate::paths::create_dir_all(&dir)?;
+        crate::paths::create_dir_all(&dir.join("run-logs"))?;
         let conn = Connection::open(dir.join("orx.db"))?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "busy_timeout", busy_timeout.as_millis() as u64)?;
+        conn.busy_timeout(busy_timeout)?;
+        // WAL conversion can return SQLITE_BUSY without invoking SQLite's busy handler.
+        let wal_start = std::time::Instant::now();
+        let mut delay = Duration::from_millis(1);
+        while let Err(error) = conn.pragma_update(None, "journal_mode", "WAL") {
+            let remaining = busy_timeout.saturating_sub(wal_start.elapsed());
+            if remaining.is_zero()
+                || error.sqlite_error_code() != Some(rusqlite::ErrorCode::DatabaseBusy)
+            {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Could not prepare the database at {}. Try again.",
+                        dir.join("orx.db").display()
+                    )
+                });
+            }
+            std::thread::sleep(delay.min(remaining));
+            conn.busy_timeout(busy_timeout.saturating_sub(wal_start.elapsed()))?;
+            delay = (delay * 2).min(Duration::from_millis(50));
+        }
+        conn.busy_timeout(busy_timeout)?;
         phase("connection");
-        conn.execute_batch(
+        let schema =
+            rusqlite::Transaction::new_unchecked(&conn, rusqlite::TransactionBehavior::Immediate)?;
+        schema.execute_batch(
             "CREATE TABLE IF NOT EXISTS runs (
                 id           TEXT PRIMARY KEY,
                 experiment_id TEXT NOT NULL,
@@ -968,6 +1038,7 @@ impl Store {
                 preferred_reasoning_level TEXT
             );",
         )?;
+        schema.commit()?;
         // Keep this applied batch immutable; future columns require a new migration.
         phase("tables");
         schema::migrate_columns(&conn, "legacy-columns-v1", &[
@@ -1764,16 +1835,21 @@ impl Store {
         )?)
     }
 
-    pub fn claim_chat_turn(&self, chat_session_id: &str, token: &str) -> Result<bool> {
+    pub fn claim_chat_turn(
+        &self,
+        chat_session_id: &str,
+        token: &str,
+        held: &[String],
+    ) -> Result<bool> {
         self.clear_stale_data_dir_move_lease()?;
+        expire_turn_leases(&self.conn, held)?;
         self.conn.execute(
             "DELETE FROM chat_turn_leases
-             WHERE heartbeat_at < ?1
-                OR NOT EXISTS (
-                    SELECT 1 FROM chat_sessions
-                    WHERE chat_sessions.id = chat_turn_leases.chat_session_id
-                )",
-            params![now_ms() - CHAT_TURN_LEASE_TTL_MS],
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM chat_sessions
+                 WHERE chat_sessions.id = chat_turn_leases.chat_session_id
+             )",
+            [],
         )?;
         let claimed = self.conn.execute(
             "INSERT OR IGNORE INTO chat_turn_leases
@@ -1803,11 +1879,8 @@ impl Store {
         Ok(())
     }
 
-    pub fn claim_data_dir_move(&self, token: &str) -> Result<bool> {
-        self.conn.execute(
-            "DELETE FROM chat_turn_leases WHERE heartbeat_at < ?1",
-            params![now_ms() - CHAT_TURN_LEASE_TTL_MS],
-        )?;
+    pub fn claim_data_dir_move(&self, token: &str, held: &[String]) -> Result<bool> {
+        expire_turn_leases(&self.conn, held)?;
         self.clear_stale_data_dir_move_lease()?;
         let claimed = self.conn.execute(
             "INSERT OR IGNORE INTO data_dir_move_lease (id, claim_token, heartbeat_at)
@@ -3268,23 +3341,24 @@ impl Store {
     pub fn reconcile_unfinished_chat_turns(&self) -> Result<Vec<StoredChatTurn>> {
         // Sub-agent usage outliving its parent turn: its native connection died with the server.
         self.finalize_usage_turns("codex-late:", "cancelled")?;
-        self.reconcile_unfinished_chat_turns_inner(true)
+        self.reconcile_unfinished_chat_turns_inner(true, &[])
     }
 
-    pub fn reconcile_expired_unfinished_chat_turns(&self) -> Result<Vec<StoredChatTurn>> {
-        self.reconcile_unfinished_chat_turns_inner(false)
+    pub fn reconcile_expired_unfinished_chat_turns(
+        &self,
+        held: &[String],
+    ) -> Result<Vec<StoredChatTurn>> {
+        self.reconcile_unfinished_chat_turns_inner(false, held)
     }
 
     fn reconcile_unfinished_chat_turns_inner(
         &self,
         include_existing_failures: bool,
+        held: &[String],
     ) -> Result<Vec<StoredChatTurn>> {
         let now = now_ms();
         let transaction = self.conn.unchecked_transaction()?;
-        transaction.execute(
-            "DELETE FROM chat_turn_leases WHERE heartbeat_at < ?1",
-            params![now - CHAT_TURN_LEASE_TTL_MS],
-        )?;
+        expire_turn_leases(&transaction, held)?;
         transaction.execute(
             "UPDATE chat_activity_spans SET ended_at=observed_at WHERE ended_at IS NULL AND NOT EXISTS(SELECT 1 FROM chat_turn_leases l WHERE l.chat_session_id=chat_activity_spans.session_id)", [],
         )?;
@@ -3884,6 +3958,71 @@ pub fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wal_setup_honors_the_lock_timeout() {
+        let dir = std::env::temp_dir().join(format!("orx-wal-timeout-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let locked = Connection::open(dir.join("orx.db")).unwrap();
+        locked
+            .execute_batch(
+                "CREATE TABLE preserved (value TEXT);
+                 INSERT INTO preserved VALUES ('kept');
+                 BEGIN;
+                 SELECT * FROM preserved;",
+            )
+            .unwrap();
+
+        for timeout in [Duration::ZERO, Duration::from_millis(50)] {
+            let start = std::time::Instant::now();
+            let error = Store::open_at_with_move_lock(dir.clone(), dir.join(".lock"), timeout)
+                .err()
+                .expect("the reader blocks the journal mode change");
+            let elapsed = start.elapsed();
+            assert_eq!(
+                error
+                    .downcast_ref::<rusqlite::Error>()
+                    .unwrap()
+                    .sqlite_error_code(),
+                Some(rusqlite::ErrorCode::DatabaseBusy)
+            );
+            assert!(elapsed >= timeout, "{elapsed:?}");
+            assert!(elapsed < timeout + Duration::from_secs(1), "{elapsed:?}");
+        }
+
+        locked.execute_batch("ROLLBACK").unwrap();
+        let store = Store::open_at(dir.clone()).unwrap();
+        let mode: String = store
+            .conn
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+        drop(store);
+        drop(locked);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn concurrent_opens_apply_the_schema_without_partial_state() {
+        let dir =
+            std::env::temp_dir().join(format!("orx-schema-concurrent-{}", uuid::Uuid::new_v4()));
+        let ready = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        ready.wait();
+                        let store = Store::open_at(dir.clone()).unwrap();
+                        assert!(!store.ui_state().unwrap().onboarding_completed);
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        });
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     #[ignore = "synthetic Store open profile; run explicitly with --ignored --nocapture"]
@@ -4687,7 +4826,7 @@ mod tests {
         let mut turn = chat_turn_fixture("running", "client-running");
         turn.state = "running".into();
         store.admit_chat_turn(None, &turn).unwrap();
-        assert!(store.claim_chat_turn("chat_1", "owner").unwrap());
+        assert!(store.claim_chat_turn("chat_1", "owner", &[]).unwrap());
 
         assert!(store.reconcile_unfinished_chat_turns().unwrap().is_empty());
         assert_eq!(
@@ -4706,15 +4845,19 @@ mod tests {
                 params![now_ms() - CHAT_TURN_LEASE_TTL_MS - 1],
             )
             .unwrap();
+        assert!(store
+            .reconcile_expired_unfinished_chat_turns(&["owner".into()])
+            .unwrap()
+            .is_empty());
         assert_eq!(
             store
-                .reconcile_expired_unfinished_chat_turns()
+                .reconcile_expired_unfinished_chat_turns(&[])
                 .unwrap()
                 .len(),
             1
         );
         assert!(store
-            .reconcile_expired_unfinished_chat_turns()
+            .reconcile_expired_unfinished_chat_turns(&[])
             .unwrap()
             .is_empty());
         let _ = std::fs::remove_dir_all(&dir);
@@ -5328,7 +5471,7 @@ mod tests {
         store
             .create_chat_spawn(&chat_spawn_fixture("pending", "lead"))
             .unwrap();
-        assert!(store.claim_chat_turn("pending", "live").unwrap());
+        assert!(store.claim_chat_turn("pending", "live", &[]).unwrap());
         assert!(migrate_chat_spawns(&store.conn)
             .unwrap_err()
             .to_string()
@@ -5750,7 +5893,9 @@ mod tests {
                 };
                 let lease_session = if lease == "other" { unrelated } else { target };
                 if lease != "absent" {
-                    assert!(second.claim_chat_turn(lease_session, "turn-owner").unwrap());
+                    assert!(second
+                        .claim_chat_turn(lease_session, "turn-owner", &[])
+                        .unwrap());
                     if lease == "expired" {
                         second.conn.execute("UPDATE chat_turn_leases SET heartbeat_at=0 WHERE chat_session_id=?1", [lease_session]).unwrap();
                     }
@@ -5826,7 +5971,9 @@ mod tests {
             let second = Store::open_at(dir.clone()).unwrap();
             let lease_session = if lease == "other" { "other" } else { "owner" };
             if lease != "absent" {
-                assert!(second.claim_chat_turn(lease_session, "turn-owner").unwrap());
+                assert!(second
+                    .claim_chat_turn(lease_session, "turn-owner", &[])
+                    .unwrap());
                 if lease == "expired" {
                     second
                         .conn
@@ -6646,20 +6793,20 @@ mod tests {
             .unwrap();
         let second = Store::open_at(dir.clone()).unwrap();
 
-        assert!(first.claim_chat_turn("chat_A", "token_A").unwrap());
-        assert!(!second.claim_chat_turn("chat_A", "token_B").unwrap());
+        assert!(first.claim_chat_turn("chat_A", "token_A", &[]).unwrap());
+        assert!(!second.claim_chat_turn("chat_A", "token_B", &[]).unwrap());
         assert!(!second.renew_chat_turn("chat_A", "token_B").unwrap());
-        assert!(!second.claim_data_dir_move("move_A").unwrap());
+        assert!(!second.claim_data_dir_move("move_A", &[]).unwrap());
         second.release_chat_turn("chat_A", "token_B").unwrap();
-        assert!(!second.claim_chat_turn("chat_A", "token_B").unwrap());
+        assert!(!second.claim_chat_turn("chat_A", "token_B", &[]).unwrap());
         first.release_chat_turn("chat_A", "token_A").unwrap();
         let move_lock = first.acquire_data_dir_move_lock().unwrap();
-        assert!(first.claim_data_dir_move("move_A").unwrap());
-        assert!(!second.claim_chat_turn("chat_A", "token_B").unwrap());
+        assert!(first.claim_data_dir_move("move_A", &[]).unwrap());
+        assert!(!second.claim_chat_turn("chat_A", "token_B", &[]).unwrap());
         second.release_data_dir_move("move_B").unwrap();
-        assert!(!second.claim_chat_turn("chat_A", "token_B").unwrap());
+        assert!(!second.claim_chat_turn("chat_A", "token_B", &[]).unwrap());
         drop(move_lock);
-        assert!(second.claim_chat_turn("chat_A", "token_B").unwrap());
+        assert!(second.claim_chat_turn("chat_A", "token_B", &[]).unwrap());
 
         drop(second);
         drop(first);

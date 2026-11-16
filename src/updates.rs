@@ -769,8 +769,14 @@ pub fn updater_lock_path() -> PathBuf {
 
 /// Whether an `orx update` is still running, e.g. one `apply_now` stopped waiting for.
 pub fn updater_running() -> bool {
-    std::fs::File::open(updater_lock_path())
-        .is_ok_and(|file| matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock)))
+    std::fs::File::open(updater_lock_path()).is_ok_and(|file| match file.try_lock() {
+        Ok(()) => {
+            drop(crate::file_lock::FileLock::new(file));
+            false
+        }
+        Err(std::fs::TryLockError::WouldBlock) => true,
+        Err(std::fs::TryLockError::Error(_)) => false,
+    })
 }
 
 /// Consecutive failed update attempts recorded so far.
@@ -1100,7 +1106,7 @@ fn open_lock(path: Option<PathBuf>) -> Option<std::fs::File> {
 /// Held shared for an `orx up`'s lifetime. Swapping the binary under it would hand
 /// its agents a different `orx` than the backend running them, so updaters defer.
 pub struct BackendLock {
-    _file: std::fs::File,
+    _file: crate::file_lock::FileLock,
 }
 
 impl BackendLock {
@@ -1109,13 +1115,15 @@ impl BackendLock {
     pub fn acquire() -> Option<Self> {
         let file = open_lock(backend_lock_path())?;
         file.lock_shared().ok()?;
-        Some(Self { _file: file })
+        Some(Self {
+            _file: crate::file_lock::FileLock::new(file),
+        })
     }
 }
 
 /// An updater's exclusive hold on the install, kept until it finishes replacing it.
 pub struct InstallClaim {
-    _file: Option<std::fs::File>,
+    _file: Option<crate::file_lock::FileLock>,
 }
 
 /// `None` while an `orx up` is using this install. A lock nobody could open protects nobody.
@@ -1124,8 +1132,11 @@ pub fn claim_install(target: &UpdateTarget) -> Option<InstallClaim> {
         return Some(InstallClaim { _file: None });
     };
     match file.try_lock() {
+        Ok(()) => Some(InstallClaim {
+            _file: Some(crate::file_lock::FileLock::new(file)),
+        }),
         Err(std::fs::TryLockError::WouldBlock) => None,
-        _ => Some(InstallClaim { _file: Some(file) }),
+        Err(std::fs::TryLockError::Error(_)) => Some(InstallClaim { _file: None }),
     }
 }
 

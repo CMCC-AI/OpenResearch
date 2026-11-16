@@ -90,10 +90,27 @@ pub fn agent_log_path() -> PathBuf {
     store::data_dir().join("agent-opencode.log")
 }
 
+/// Base prompt overriding opencode's built-in persona, binding the agent to MobileSci.
+pub(crate) const MOBILESCI_AGENT_PROMPT: &str = "\
+你是 MobileSci（九天·科学智能助手），由中国移动九天人工智能团队打造。\
+你深度融入科研全流程，协助研究人员开展文献调研、科研假设构想、实验方案设计与受管算力调度，并自动生成学术图表与报告。\
+当被问及身份、你是谁或平台功能时，你必须始终明确表明自己是 MobileSci 科学智能助手。\
+严禁自称或提及 OpenCode、OpenResearch、Claude、ChatGPT、Cursor 等底层引擎或第三方代称，底层执行器对用户完全不可见。\
+You are MobileSci, an AI for Science research assistant developed by China Mobile Jiutian AI team. \
+Follow the project instructions in the session playbook. Never refer to yourself as OpenCode or OpenResearch; always identify as MobileSci.";
+
 /// Chat-server config; native questions are answered through the dashboard.
 fn opencode_config_json(model: Option<&str>, instructions: &str, plugin: Option<&str>) -> String {
     let mut cfg = json!({
         "$schema": "https://opencode.ai/config.json",
+        "agent": {
+            "build": {
+                "prompt": MOBILESCI_AGENT_PROMPT,
+            },
+            "plan": {
+                "prompt": MOBILESCI_AGENT_PROMPT,
+            },
+        },
         "permission": {
             "edit": "allow",
             "bash": "allow",
@@ -467,7 +484,7 @@ async fn spawn_agent(
     // Tag runs the agent launches (`orx exp run`) with this session so they can
     // be explicitly subscribed to. One serve child per session; set after the
     // synced-env loop so it isn't shadowed.
-    crate::local::chat::set_chat_session_env(&mut cmd, session_id, "opencode", up_port);
+    crate::local::chat::set_chat_session_env(&mut cmd, session_id, "opencode", up_port)?;
     if let Some(config) = &config_override {
         // The repo tracks its own opencode.json; ours rides OPENCODE_CONFIG.
         // Project configs load after OPENCODE_CONFIG and would override our
@@ -498,12 +515,23 @@ async fn spawn_agent(
 }
 
 pub(crate) async fn verify_generation_models(endpoint: &AgentEndpoint, model: &str) -> Result<()> {
+    verify_generation_models_with_timeout(endpoint, model, Duration::from_secs(120)).await
+}
+
+async fn verify_generation_models_with_timeout(
+    endpoint: &AgentEndpoint,
+    model: &str,
+    initialization_timeout: Duration,
+) -> Result<()> {
     let path = match endpoint.protocol {
         Protocol::V1 => "/agent",
         Protocol::V2 => "/api/agent",
     };
+    let started = Instant::now();
     let mut mismatch = None;
-    tokio::time::timeout(Duration::from_secs(30), async {
+    let mut mismatch_since = None;
+    eprintln!("OpenCode: waiting for effective agent configuration ({path})");
+    tokio::time::timeout(initialization_timeout, async {
         loop {
             let response: Value = endpoint.client.get(format!("{}{path}", endpoint.base_url))
                 .send().await?.error_for_status()?.json().await?;
@@ -531,13 +559,20 @@ pub(crate) async fn verify_generation_models(endpoint: &AgentEndpoint, model: &s
                 }
             }
             if mismatch.is_none() {
+                eprintln!("OpenCode: agent configuration ready after {} ms", started.elapsed().as_millis());
                 return Ok(());
+            }
+            // A responsive configuration with the wrong model is a separate
+            // failure from cold-start dependency installation.
+            let since = mismatch_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= Duration::from_secs(30) {
+                return Err(anyhow!("OpenCode's effective {} model does not match the selected model. Check managed OpenCode settings.", mismatch.unwrap()));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }).await.map_err(|_| match mismatch {
         Some(name) => anyhow!("OpenCode's effective {name} model does not match the selected model. Check managed OpenCode settings."),
-        None => anyhow!("OpenCode agent configuration timed out"),
+        None => anyhow!("OpenCode agent configuration timed out after {} seconds during workspace initialization; check agent-opencode.log for dependency installation, cache permissions, or network failures", initialization_timeout.as_secs()),
     })?
 }
 
@@ -1151,7 +1186,8 @@ mod tests {
         .unwrap();
         assert!(config["permission"].get("question").is_none());
         assert!(config.get("tools").is_none());
-        assert!(config.get("agent").is_none());
+        assert_eq!(config["agent"]["build"]["prompt"], MOBILESCI_AGENT_PROMPT);
+        assert_eq!(config["agent"]["plan"]["prompt"], MOBILESCI_AGENT_PROMPT);
         assert_eq!(config["permission"]["read"], "allow");
         assert_eq!(config["model"], "cloud/selected");
         assert_eq!(config["instructions"], json!(["playbook"]));
@@ -1592,6 +1628,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_configuration_waits_for_workspace_and_bounds_stalls() {
+        use axum::{routing::get, Json, Router};
+        for protocol in [Protocol::V1, Protocol::V2] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = AgentEndpoint {
+                base_url: format!("http://{}", listener.local_addr().unwrap()),
+                client: crate::net::loopback_client().build().unwrap(),
+                protocol,
+                legacy_v2_api: false,
+            };
+            let app = Router::new().route(
+                if protocol == Protocol::V1 {
+                    "/agent"
+                } else {
+                    "/api/agent"
+                },
+                get(move || async move {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    let agents = json!([{"name":"build","id":"build"}]);
+                    Json(if protocol == Protocol::V1 {
+                        agents
+                    } else {
+                        json!({"data":agents})
+                    })
+                }),
+            );
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            verify_generation_models_with_timeout(
+                &endpoint,
+                "custom/selected",
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+            let error = verify_generation_models_with_timeout(
+                &endpoint,
+                "custom/selected",
+                Duration::from_millis(20),
+            )
+            .await
+            .unwrap_err();
+            assert!(error.to_string().contains("workspace initialization"));
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
     async fn effective_agent_models_reject_overrides_but_allow_disabled_agents() {
         use axum::{routing::get, Json, Router};
         for protocol in [Protocol::V1, Protocol::V2] {
@@ -1761,11 +1844,11 @@ mod tests {
         // The template's leading HTML comment (repo-reader documentation) must
         // be stripped — the prompt starts at the title.
         assert!(
-            md.starts_with("# OpenResearch agent"),
+            md.starts_with("# MobileSci agent"),
             "template comment not stripped"
         );
         assert!(!md.contains("<!--"), "HTML comment leaked into the prompt");
-        assert!(md.contains("Use the available OpenResearch skills"));
+        assert!(md.contains("Use the available MobileSci skills"));
         assert!(md.contains("execute important user flows"));
         assert!(!md.contains("orx skill <name>"));
         // Native catalogs may abbreviate descriptions; preserve routing context here.

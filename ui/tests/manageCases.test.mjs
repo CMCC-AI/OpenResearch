@@ -4,8 +4,9 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 import * as jsx from "react/jsx-runtime";
 
-function page({ projects = [], projectState = "success", status = "draft", research = true, failure = null } = {}) {
+function page({ projects = [], projectState = "success", status = "draft", research = true, failure = null, sessions = [], extraCases = [], sourceSessionId } = {}) {
   const item = { id: "saved", source_project_id: "gone", title: "历史项目", status, revision: 7, created_at: "2026-01-01" };
+  if (sourceSessionId) item.source_session_id = sourceSessionId;
   const states = [], calls = [], invalidations = [];
   let cursor = 0;
   const output = ts.transpileModule(readFileSync(new URL("../src/product/ManageCasesPage.tsx", import.meta.url), "utf8"), {
@@ -18,11 +19,16 @@ function page({ projects = [], projectState = "success", status = "draft", resea
     "@tanstack/react-query": {
       useQuery: ({ queryKey }) => queryKey[0] === "case-source-projects"
         ? { data: projectState === "success" ? projects : undefined, isSuccess: projectState === "success", error: projectState === "error" ? new Error("offline") : null }
-        : { data: { cases: [item] } },
+        : queryKey[0] === "case-source-sessions" ? { data: sessions, isSuccess: true }
+        : queryKey[0] === "case-source-artifacts" ? {data: {entries:[], roots:[]}, isSuccess:true}
+        : queryKey[0] === "case-selected-artifacts" ? {isSuccess:true}
+        : { data: { cases: [item, ...extraCases] } },
       useQueryClient: () => ({ invalidateQueries: async (key) => invalidations.push(key) }),
     },
     "@tanstack/react-router": { Link: "a" },
-    "../api": { listProjects: async () => projects },
+    "./CaseArtifactPicker": { CaseArtifactPicker: "artifact-picker" },
+    "./caseArtifacts": { artifactSelectionSummary: () => ({files:0,bytes:0}) },
+    "../api": { fmtBytes: String, listProjects: async () => projects, listChatSessions: async () => sessions },
     "../components/ui": { Button: "button" },
     "./AuthSession": { useAuthSession: () => ({ user: { id: "admin", isAdmin: true }, canAccessResearch: research }) },
     "./FeaturedCases": { useCasesBase: () => "" },
@@ -47,7 +53,7 @@ test("orphaned drafts explain source availability, disable stale selection, and 
   assert.equal(p.nodes(p.render()).find((node) => node.type === "button" && node.props.type === "submit").props.disabled, true);
   assert.ok(p.button("发布已保存副本"));
   assert.ok(p.button("删除草稿"));
-  assert.equal(p.button("从原项目更新并加入"), undefined);
+  assert.equal(p.button("创建对话案例"), undefined);
 });
 
 test("saved copies publish with reviewed revision without accessing a missing project or research runtime", async () => {
@@ -86,7 +92,7 @@ test("loading and failed project queries do not claim sources are missing", () =
     assert.doesNotMatch(p.text(p.render()), /当前工作空间未找到原项目/);
     assert.ok(p.button("发布已保存副本"));
   }
-  assert.ok(page({ projects: [{ id: "gone", name: "available" }] }).button("从原项目更新并加入"));
+  assert.ok(page({ projects: [{ id: "gone", name: "available" }] }).button("创建对话案例"));
 });
 
 test("incomplete copies and revision conflicts surface server errors and stay unpublished", async () => {
@@ -97,4 +103,45 @@ test("incomplete copies and revision conflicts surface server errors and stay un
   assert.match(p.text(p.render()), /成果文件尚未复制完整，不能发布/);
   assert.ok(p.button("已审核，确认发布"));
   assert.equal(p.calls.length, 1);
+});
+
+test("one project's conversations remain separate from its published whole-project case", async () => {
+  const p = page({ projects: [{ id: "gone", name: "project" }], status: "published", sessions: [{ id: "one", title: "first" }, { id: "two", title: "second" }], extraCases: [{ id: "second-case", source_project_id: "gone", source_session_id: "two", title: "second", status: "published" }] });
+  const selects = () => p.nodes(p.render()).filter(node => node.type === "select");
+  assert.equal(selects().length, 2);
+  selects()[1].props.onChange({ target: { value: "one" } });
+  const form = p.nodes(p.render()).find(node => node.type === "form");
+  const submit = p.nodes(p.render()).find(node => node.props.type === "submit");
+  assert.equal(submit.props.disabled, false);
+  form.props.onSubmit({ preventDefault() {} });
+  await settle();
+  assert.equal(p.calls[0][4], undefined);
+  assert.equal(p.calls[0][5], "one");
+  assert.equal(p.nodes(p.render()).filter(node => node.type === "article").length, 2);
+  selects()[1].props.onChange({ target: { value: "two" } });
+  assert.equal(p.button("已在案例集中").props.disabled, true);
+  selects()[0].props.onChange({ target: { value: "other-project" } });
+  assert.equal(selects()[0].props.value, "other-project");
+});
+
+test("updating a conversation draft retains its original conversation scope", async () => {
+  const p = page({ projects: [{ id: "gone", name: "project" }], sourceSessionId: "one" });
+  p.button("选择成果并更新").props.onClick();
+  assert.equal(p.calls.length, 0);
+  p.nodes(p.render()).find(node => node.type === "form").props.onSubmit({ preventDefault() {} });
+  await settle();
+  assert.equal(p.calls[0][4], "saved");
+  assert.equal(p.calls[0][5], "one");
+});
+
+test("case scope lists only the two main conversations, hiding expert and side conversations", () => {
+  const p = page({ projects: [{ id: "gone", name: "论文撰写" }], sessions: [
+    { id: "greeting", title: "Greeting" },
+    { id: "paper", title: "非洲绿氢输欧竞争力研究" },
+    { id: "expert", title: "内部专家", parentSessionId: "paper" },
+    { id: "side", title: "侧边讨论", sideParentSessionId: "paper" },
+  ] });
+  const select = p.nodes(p.render()).filter(node => node.type === "select")[1];
+  assert.deepEqual(p.nodes(select).filter(node => node.type === "option").map(node => node.props.value), ["", "greeting", "paper"]);
+  assert.doesNotMatch(p.text(select), /内部专家|侧边讨论/);
 });

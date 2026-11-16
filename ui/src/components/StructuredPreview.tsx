@@ -1,3 +1,4 @@
+import { runtimeFetch } from "../runtimeRequest";
 import { useEffect, useState } from "react";
 import { readPreviewResponse } from "../previewText";
 import { parseStructuredFile, STRUCTURED_PREVIEW_LIMIT, type StructuredDocument } from "../structuredPreview";
@@ -18,7 +19,7 @@ export default function StructuredPreview({ url, name }: { url: string; name: st
   useEffect(() => {
     const controller = new AbortController();
     void (async () => {
-      const response = await fetch(url, { credentials: "include", signal: controller.signal });
+      const response = await runtimeFetch(url, { credentials: "include", signal: controller.signal });
       if (!response.ok) throw new Error(`读取文件失败（HTTP ${response.status}）`);
       if (Number(response.headers.get("content-length")) > STRUCTURED_PREVIEW_LIMIT) { await response.body?.cancel(); throw new Error("文件超过 16 MiB，请下载查看。"); }
       const { bytes, truncated } = await readPreviewResponse(response, STRUCTURED_PREVIEW_LIMIT);

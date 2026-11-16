@@ -12,6 +12,55 @@ import {
 } from "./tunnel.mjs";
 import { pathToFileURL } from "node:url";
 
+// One outstanding 64 KiB chunk per response bounds the downstream queue.
+// The capability is negotiated so old gateways and runners remain compatible.
+async function responseChunk(
+  ws,
+  id,
+  body,
+  controller,
+  sequence,
+  flowControlled,
+) {
+  const message = {
+    type: "chunk",
+    id,
+    body,
+    ...(flowControlled ? { sequence } : {}),
+  };
+  if (!flowControlled) {
+    send(ws, message);
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    const cleanup = () => {
+      controller.ack = undefined;
+      controller.signal.removeEventListener("abort", aborted);
+    };
+    const aborted = () => {
+      cleanup();
+      reject(controller.signal.reason || new Error("Response cancelled"));
+    };
+    controller.ack = (received) => {
+      if (received === sequence) {
+        cleanup();
+        resolve();
+      }
+    };
+    controller.signal.addEventListener("abort", aborted, { once: true });
+    if (controller.signal.aborted) {
+      aborted();
+      return;
+    }
+    try {
+      send(ws, message);
+    } catch (error) {
+      cleanup();
+      reject(error);
+    }
+  });
+}
+
 // No public listener: this connector only reaches a fixed local OpenResearch instance.
 export function connectRunner({
   platform,
@@ -64,6 +113,11 @@ export function connectRunner({
       msg = JSON.parse(data.toString());
       check(typeof msg.id === "string");
       if (msg.type === "cancel") return cancel(msg.id);
+      if (msg.type === "http-ack") {
+        check(Number.isSafeInteger(msg.sequence) && msg.sequence >= 0);
+        active.get(msg.id)?.ack?.(msg.sequence);
+        return;
+      }
       if (msg.type === "ws-data") {
         const socket = active.get(msg.id);
         if (socket?.readyState === WebSocket.OPEN) {
@@ -120,7 +174,10 @@ export function connectRunner({
             AbortSignal.timeout(31 * 60_000),
           ]),
         });
+        const flowControlled = msg.flowControl === "ack-v1";
+        let sequence = 0;
         send(ws, {
+          ...(flowControlled ? { flowControl: "ack-v1" } : {}),
           type: "head",
           id: msg.id,
           status: response.status,
@@ -129,13 +186,16 @@ export function connectRunner({
         if (response.body)
           for await (const chunk of response.body) {
             for (let i = 0; i < chunk.length; i += 64 * 1024)
-              send(ws, {
-                type: "chunk",
-                id: msg.id,
-                body: Buffer.from(chunk.subarray(i, i + 64 * 1024)).toString(
+              await responseChunk(
+                ws,
+                msg.id,
+                Buffer.from(chunk.subarray(i, i + 64 * 1024)).toString(
                   "base64",
                 ),
-              });
+                controller,
+                sequence++,
+                flowControlled,
+              );
           }
         send(ws, { type: "end", id: msg.id });
         active.delete(msg.id);

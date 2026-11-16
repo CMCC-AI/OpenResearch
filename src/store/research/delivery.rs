@@ -508,7 +508,10 @@ impl Store {
             )
         })
     }
-    pub fn research_download_package(&self, id: &str) -> Result<(std::fs::File, DeliverySnapshot)> {
+    pub fn research_download_package(
+        &self,
+        id: &str,
+    ) -> Result<(crate::file_lock::FileLock, DeliverySnapshot)> {
         let study = self.research_study(id)?;
         if self
             .research_runs(&study)?

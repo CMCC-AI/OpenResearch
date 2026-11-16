@@ -30,7 +30,15 @@ pub async fn run(args: crate::ExpArgs) -> Result<()> {
     {
         return wait(exp_id, project, timeout, interval).await;
     }
-    let mut store = Store::open()?;
+    let mut store = match &args.command {
+        ExpCommand::Status { .. }
+        | ExpCommand::Desc {
+            set: None,
+            stdin: false,
+            ..
+        } => Store::open_for_reading()?,
+        _ => Store::open()?,
+    };
     match args.command {
         ExpCommand::Archive {
             exp_id,
@@ -170,7 +178,7 @@ async fn wait(
         (Some(exp_id), None) => {
             let plane = crate::plane::local_plane::retry_on_db_lock(
                 || {
-                    let store = Store::open_with_busy_timeout(
+                    let store = Store::open_for_reading_within(
                         crate::plane::local_plane::busy_timeout_left(deadline),
                     )?;
                     resolve_experiment(store, &exp_id)
@@ -184,7 +192,7 @@ async fn wait(
         (None, Some(project_id)) => {
             let plane = crate::plane::local_plane::retry_on_db_lock(
                 || {
-                    let store = Store::open_with_busy_timeout(
+                    let store = Store::open_for_reading_within(
                         crate::plane::local_plane::busy_timeout_left(deadline),
                     )?;
                     resolve_project(store, &project_id)

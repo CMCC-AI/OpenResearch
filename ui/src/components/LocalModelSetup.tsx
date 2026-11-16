@@ -10,7 +10,7 @@ import { OptionPicker } from "./ModelPicker";
 import lmStudioLogo from "../assets/lm-studio-logo.svg";
 import ollamaLogo from "../assets/ollama-logo.png";
 import omlxLogo from "../assets/omlx-logo.svg";
-import { Badge, Button, ButtonLink, IconButton, Input, Spinner, showAlert } from "./ui";
+import { Badge, Button, IconButton, Input, Spinner, showAlert } from "./ui";
 
 const LM_STUDIO = { id: "lmstudio", label: "LM Studio", icon: lmStudioLogo, url: "http://127.0.0.1:1234/v1" };
 const SERVERS = [
@@ -118,9 +118,8 @@ export function LocalModelSetup({ installed, onConnected, dialogOnly = false, on
           </Button>
         }>
           <div className="space-y-4">
-            {!installed && <div className="text-sm text-text">
-              <p>{m.local_models_install_opencode()}</p>
-              <ButtonLink href="https://opencode.ai/docs/#install" target="_blank" rel="noreferrer">{m.local_models_get_opencode()}</ButtonLink>
+            {!installed && <div className="text-sm text-accent-red">
+              <p>模型执行环境未就绪，请联系管理员检查配置。</p>
             </div>}
             <OptionPicker choices={SERVERS} value={serverId} title={m.local_models_server()} header={m.local_models_server()} variant="field" floating dropDown disabled={busy}
               renderLabel={(choice) => <>{choice.id === "openai-compatible" ? m.local_models_custom_endpoint() : choice.label}{choice.id === "openai-compatible" && <span className="ml-1 text-xs font-normal text-subtext">{m.local_models_compatible_api()}</span>}</>}

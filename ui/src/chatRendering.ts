@@ -1,4 +1,23 @@
 import type { ChatMessage, ChatPart, ChatSession } from "./api";
+import { SHELL_TOOL } from "./queries/chatState.ts";
+
+export function shellExchangePart(message: ChatMessage): ChatPart | null {
+  const part = message.parts.length === 1 ? message.parts[0] : undefined;
+  return message.role === "user" && part?.type === "tool" && part.tool === SHELL_TOOL ? part : null;
+}
+
+/** Only the latest user turn may own the composer; shell exchanges do not start a turn. */
+export function pendingPlanForTurn(messages: ChatMessage[]) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user" && !shellExchangePart(messages[i])) break;
+    for (const part of messages[i].parts) {
+      if (part.type === "prompt" && part.prompt?.kind === "plan" && !part.prompt.resolved) {
+        return { promptId: part.id, plan: part.prompt.plan ?? "", synthesized: !!part.prompt.synthesized };
+      }
+    }
+  }
+  return null;
+}
 
 export function pendingQuestionId(
   messages: ChatMessage[],

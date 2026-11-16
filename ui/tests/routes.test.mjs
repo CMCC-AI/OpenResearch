@@ -42,7 +42,11 @@ function loadModule(filename, api = {}, remembered = null) {
       if (id === "../product/FeaturedCases") return { CasesPage: () => null, CaseDetailPage: () => null };
       if (id === "../product/AdminLayout") return { AdminLayout: () => null };
       if (id === "../product/AdminOpenCodePage") return { AdminOpenCodePage: () => null };
+      if (id === "../product/PersonalSettingsPage") return { PersonalSettingsPage: () => null };
+      if (id === "../product/AdminTokenQuotasPage") return { AdminTokenQuotasPage: () => null };
       if (id === "../product/AdminUsersPage") return { AdminUsersPage: () => null };
+      if (id === "../product/AdminTokenQuotasPage") return { AdminTokenQuotasPage: () => null };
+      if (id === "../product/PersonalSettingsPage") return { PersonalSettingsPage: () => null };
       if (id === "../product/ManageCasesPage") return { ManageCasesPage: () => null };
       if (id === "../product/ProductNav") return { PlatformFrame: () => null };
       if (id === "../workflow/WorkflowStudio") return { WorkflowStudio: () => null };
@@ -65,6 +69,9 @@ test("real file routes distinguish task/new, task IDs, project index, and settin
   for (const [path, routeId] of [
     ["/", "/"],
     ["/capabilities", "/capabilities"],
+    ["/settings/account", "/settings/account"],
+    ["/settings/quota", "/settings/quota"],
+    ["/admin/quotas", "/admin/quotas"],
     ["/discover", "/discover"],
     ["/literature", "/literature"],
     ["/workflows", "/workflows"],

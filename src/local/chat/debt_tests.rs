@@ -172,7 +172,7 @@ fn user_stop_aborts_before_queue_database_and_cleanup_waits() {
     for case in ["queue", "database", "cleanup", "overlap"] {
         let (dir, store, ctx) = checkpoint_fixture();
         super::checkpoint_tests::seed_stop_queue(&store, &ctx.host);
-        assert!(store.claim_chat_turn("session", "stop-token").unwrap());
+        assert!(store.claim_chat_turn("session", "stop-token", &[]).unwrap());
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", TEST, "--nocapture"])
             .env(CHILD, case)
@@ -215,7 +215,7 @@ fn expire_lease(store: &Store, session: &str) {
 async fn lease_heartbeat_database_contention_reports_error_then_recovers() {
     let (dir, store, ctx) = checkpoint_fixture();
     let host = ctx.host.clone();
-    assert!(store.claim_chat_turn("session", "token").unwrap());
+    assert!(store.claim_chat_turn("session", "token", &[]).unwrap());
     host.durable_turns
         .lock()
         .unwrap()
@@ -249,7 +249,7 @@ async fn lease_heartbeat_database_contention_reports_error_then_recovers() {
         .unwrap();
     assert!(lost.is_empty());
     assert!(store.chat_turn_leased("session").unwrap());
-    assert!(!store.claim_chat_turn("session", "competitor").unwrap());
+    assert!(!store.claim_chat_turn("session", "competitor", &[]).unwrap());
     drop(guard);
     drop(host);
     drop(ctx);
@@ -261,7 +261,7 @@ async fn lease_heartbeat_database_contention_reports_error_then_recovers() {
 async fn lease_heartbeat_continues_during_slow_scan_and_waiting_migration() {
     let (dir, store, ctx) = checkpoint_fixture();
     let host = ctx.host.clone();
-    assert!(store.claim_chat_turn("session", "token").unwrap());
+    assert!(store.claim_chat_turn("session", "token", &[]).unwrap());
     host.durable_turns
         .lock()
         .unwrap()
@@ -294,7 +294,7 @@ async fn lease_heartbeat_continues_during_slow_scan_and_waiting_migration() {
     for _ in 0..2 {
         expire_lease(&store, "session");
         await_live_lease(&store, "session").await;
-        assert!(!store.claim_chat_turn("session", "competitor").unwrap());
+        assert!(!store.claim_chat_turn("session", "competitor", &[]).unwrap());
         assert!(!migration.is_finished());
     }
     release.send(()).unwrap();
@@ -313,7 +313,7 @@ async fn lease_heartbeat_continues_during_slow_scan_and_waiting_migration() {
 async fn lease_heartbeat_migration_pauses_storage_and_cancelled_worker_keeps_gate() {
     let (dir, store, ctx) = checkpoint_fixture();
     let host = ctx.host.clone();
-    assert!(store.claim_chat_turn("session", "token").unwrap());
+    assert!(store.claim_chat_turn("session", "token", &[]).unwrap());
     host.durable_turns
         .lock()
         .unwrap()
@@ -365,8 +365,8 @@ async fn lease_heartbeat_slow_ownership_loss_cleanup_does_not_delay_live_session
     let mut other = store.get_chat_session("session").unwrap().unwrap();
     other.id = "other".into();
     store.create_chat_session(&other).unwrap();
-    assert!(store.claim_chat_turn("session", "new-owner").unwrap());
-    assert!(store.claim_chat_turn("other", "live-token").unwrap());
+    assert!(store.claim_chat_turn("session", "new-owner", &[]).unwrap());
+    assert!(store.claim_chat_turn("other", "live-token", &[]).unwrap());
     host.durable_turns.lock().unwrap().extend([
         ("session".into(), "old-owner".into()),
         ("other".into(), "live-token".into()),
@@ -383,7 +383,7 @@ async fn lease_heartbeat_slow_ownership_loss_cleanup_does_not_delay_live_session
         expire_lease(&store, "other");
         await_live_lease(&store, "other").await;
         assert!(store.renew_chat_turn("session", "new-owner").unwrap());
-        assert!(!store.claim_chat_turn("other", "competitor").unwrap());
+        assert!(!store.claim_chat_turn("other", "competitor", &[]).unwrap());
     }
     heartbeat.abort();
     assert!(heartbeat.await.unwrap_err().is_cancelled());

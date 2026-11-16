@@ -1,0 +1,52 @@
+{
+  "revision": "47571b04bb074703f43764d7387f98c218f2b88b",
+  "candidateImage": "sha256:37511fdc1b991750af6bafbf5e1d2d3e475f1f07f49747414b39b60eecf7d287",
+  "executorsVerified": 4,
+  "existingRowsAndValuesPreserved": true,
+  "sqliteIntegrityAndForeignKeys": true,
+  "network": "none",
+  "productionModified": false,
+  "modelsCalled": false,
+  "checks": [
+    {
+      "executor": "orx-managed-0530872b-9889-46c5-b2bd-cc228ab0cf28",
+      "lifecycle": [
+        "upgrade-old-upgrade",
+        "restored-backup"
+      ],
+      "researchStatusReads": 0,
+      "materialReads": 0,
+      "materialListings": 0
+    },
+    {
+      "executor": "orx-managed-76ab2832-1a72-4a2d-bcfc-12f65565a14b",
+      "lifecycle": [
+        "upgrade-old-upgrade",
+        "restored-backup"
+      ],
+      "researchStatusReads": 1,
+      "materialReads": 1,
+      "materialListings": 1
+    },
+    {
+      "executor": "orx-managed-9dc6ff5b-91fb-413e-b335-c15f07cffaca",
+      "lifecycle": [
+        "upgrade-old-upgrade",
+        "restored-backup"
+      ],
+      "researchStatusReads": 0,
+      "materialReads": 0,
+      "materialListings": 0
+    },
+    {
+      "executor": "orx-managed-d07040f0-0368-4793-b65d-d383b4e62e8c",
+      "lifecycle": [
+        "upgrade-old-upgrade",
+        "restored-backup"
+      ],
+      "researchStatusReads": 0,
+      "materialReads": 0,
+      "materialListings": 0
+    }
+  ]
+}

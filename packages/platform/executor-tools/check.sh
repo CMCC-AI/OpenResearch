@@ -9,8 +9,12 @@ python3 -m pip --version
 uv --version
 python3 -c 'import numpy, pandas, scipy, matplotlib, openpyxl, requests, bs4, lxml, PIL, docx, shapefile, shapely, PyPDF2'
 python3 /usr/local/libexec/orx/check-pdf.py
+mkdir -p /home/node/.npm
 scratch=$(mktemp -d /tmp/opencode/runtime-check.XXXXXX)
-trap 'rm -rf "$scratch"' EXIT HUP INT TERM
+npm_scratch=$(mktemp -d /home/node/.npm/runtime-check.XXXXXX)
+trap 'rm -rf "$scratch" "$npm_scratch"' EXIT HUP INT TERM
+printf 'npm cache write check\n' > "$npm_scratch/check"
+test ! -d /home/node/.npm/_cacache/tmp || test -w /home/node/.npm/_cacache/tmp
 printf 'print("executor write check passed")\n' > "$scratch/check.py"
 python3 "$scratch/check.py"
 python3 -m venv "$scratch/venv"

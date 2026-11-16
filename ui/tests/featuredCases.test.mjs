@@ -112,3 +112,11 @@ test("capture preserves project metadata, completion timing and native research 
   assert.equal(study.plans[0].tasks[0].sessionId,"private-expert");
   runs[0].status="running";await assert.rejects(api.captureProject("private-project"),/运行中的实验/);
 });
+
+test("legacy cases route administrators to explicit conversation and output selection", () => {
+  const { CaseTranscript } = components([detail], true);
+  const html = renderToStaticMarkup(React.createElement(CaseTranscript, {detail}));
+  assert.ok(html.includes("选择对话和公开成果"));
+  assert.ok(html.includes('href="/admin/cases"'));
+  assert.equal(html.includes("从原项目同步完整历史与文件"), false);
+});

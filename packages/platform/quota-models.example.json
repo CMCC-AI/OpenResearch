@@ -1,0 +1,13 @@
+{
+  "models": [
+    {
+      "id": "research-default",
+      "name": "平台科研模型",
+      "baseUrl": "https://your-provider.example/v1",
+      "apiKey": "REPLACE_ON_SERVER_ONLY",
+      "model": "your-model-id",
+      "contextTokens": 131072,
+      "maxOutputTokens": 8192
+    }
+  ]
+}

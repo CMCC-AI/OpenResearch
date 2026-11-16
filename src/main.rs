@@ -18,6 +18,7 @@ mod commands;
 mod compute;
 mod config;
 mod error;
+mod file_lock;
 mod folder_picker;
 mod invocation;
 mod jobs;
@@ -1028,6 +1029,9 @@ async fn main() {
         Cli::command().print_help().ok();
         return;
     };
+    if ends_with_its_stdout(&command) {
+        output::end_when_stdout_closes();
+    }
     // Outdated-version warning (skipped for the commands that manage updates
     // themselves). `start` prints the cached warning to stderr *now*,
     // before the command runs, so it shows even for commands that
@@ -1244,6 +1248,22 @@ fn install_panic_reporter() {
             show_error_dialog(&format!("{info}"));
         }
     }));
+}
+
+/// Servers, protocol children and per-call hooks outlive a closed stdout; every other
+/// command ends with it, as `orx runs | head` expects.
+fn ends_with_its_stdout(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Up(_)
+            | Command::Serve(_)
+            | Command::Supervise(_)
+            | Command::McpGate
+            | Command::AntigravityGate
+            | Command::RemoteHost(_)
+            | Command::PlanGate
+            | Command::InvocationGate
+    )
 }
 
 fn should_capture_command(command: &Command) -> bool {

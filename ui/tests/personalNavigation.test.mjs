@@ -1,3 +1,4 @@
+import * as runtimeRequest from "../src/runtimeRequest.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -11,7 +12,7 @@ const require = createRequire(import.meta.url);
 function load(path, stubs) {
   const code = ts.transpileModule(readFileSync(new URL(path, import.meta.url), "utf8"), { fileName: path, compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
   const exports = {};
-  new Function("require", "exports", code)((name) => name in stubs ? stubs[name] : require(name), exports);
+  new Function("require", "exports", code)((name) => name === "./runtimeRequest" ? runtimeRequest : name in stubs ? stubs[name] : require(name), exports);
   return exports;
 }
 const messages = new Proxy({}, { get: (_, key) => () => key });
@@ -234,7 +235,12 @@ test("the real home SessionRow opens the personal session with its saved pane",a
   });
   globalThis.fetch=async()=>Response.json({version:1,tasks:{s:{active:{kind:"side",sessionId:"own-side"}}}});
   try{
-    renderToStaticMarkup(React.createElement(ResearchProjectNavigation,{enabled:true}));assert.equal(typeof open,"function");
+    for (const enabled of [true, false]) {
+      const html = renderToStaticMarkup(React.createElement(ResearchProjectNavigation, { enabled }));
+      assert.match(html, /Personal session/, "cached sessions remain visible on passive settings pages");
+      assert.doesNotMatch(html, /登录后查看研究项目/);
+    }
+    assert.equal(typeof open,"function");
     open();await settleNavigation();assert.deepEqual(routes,[{href:workspace.taskLocation("source","s",{kind:"side",sessionId:"own-side"})}]);
     assert.equal(routes[0].href.startsWith("/projects/"),true);
   }finally{n.cleanup();globalThis.fetch=originalFetch;f.cleanup();}

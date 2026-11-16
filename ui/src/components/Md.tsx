@@ -28,7 +28,7 @@ import { absoluteFileUrl, artifactUrl, projectFileUrl } from "../api";
 import { InlineHtmlFigure } from "./InlineHtmlFigure";
 import { ImageCarousel, ImageCarouselContext } from "./ImageCarousel";
 import { imageWheelZoom } from "../imageZoom";
-import { chatImageTarget, chatImageTargets, citedFilePath, documentAssetTarget, encodeMarkdownPath, firstCitedLine, rehypeSafeUrls, splitLineSuffix, type ImageCandidate } from "../markdownTarget";
+import { chatImageTarget, chatImageTargets, citedFilePath, documentAssetTarget, encodeMarkdownPath, firstCitedLine, rehypeNetworkImages, rehypeSafeUrls, splitLineSuffix, type ImageCandidate } from "../markdownTarget";
 
 const ImageResolverContext = createContext<((src: string) => ImageCandidate[]) | undefined>(undefined);
 
@@ -361,6 +361,7 @@ const markdownProcessor = unified()
   .use(remarkFigures)
   .use(remarkMentions)
   .use(remarkRehype)
+  .use(rehypeNetworkImages)
   .use(rehypeSafeUrls)
   .use(rehypeKatex);
 
@@ -399,6 +400,7 @@ function PaperFigure({ children }: { children: ReactNode }) {
 }
 
 const stableComponents: Record<string, (props: any) => ReactNode> = {
+  "image-carousel": ({ children }) => <ImageCarousel>{children}</ImageCarousel>,
   figure: ({ children }) => <PaperFigure>{children}</PaperFigure>,
   figcaption: ({ children }) => <figcaption className="mt-3 text-sm italic leading-relaxed text-text">{children}</figcaption>,
   th: ({ node: _node, ...rest }) => <th dir="auto" {...rest} />,
@@ -461,7 +463,6 @@ export const Md = memo(function Md({
     );
   }, [imageSrc, inert]);
   const components: Record<string, (props: any) => ReactNode> = useMemo(() => ({
-    "image-carousel": ({ children }) => <ImageCarousel>{children}</ImageCarousel>,
     "file-mention": (props) => {
       const cited = splitLineSuffix(props.path);
       const line = (props.lines && firstCitedLine(props.lines)) || cited.line;
