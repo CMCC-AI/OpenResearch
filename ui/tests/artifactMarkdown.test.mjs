@@ -9,7 +9,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import ts from "typescript";
-import { resolveMarkdownTarget } from "../src/markdownTarget.ts";
+import { rehypeNetworkImages, resolveMarkdownTarget } from "../src/markdownTarget.ts";
 import { normalizeMarkdownForRendering } from "../src/markdownNormalization.ts";
 
 const source = ts.createSourceFile("ArtifactsTab.tsx", readFileSync(new URL("../src/components/ArtifactsTab.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -26,7 +26,7 @@ const code = ts.transpileModule(`const artifactUrl = ${artifactUrl};\n${declarat
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
 }).outputText;
 const exports = {};
-const bindings = { useMemo: React.useMemo, useRef: React.useRef, ReactMarkdown, remarkGfm, remarkMath, rehypeKatex, remarkMathOptions: {}, mdCodeComponents: {},
+const bindings = { useMemo: React.useMemo, useRef: React.useRef, ReactMarkdown, remarkGfm, remarkMath, rehypeKatex, rehypeNetworkImages, remarkMathOptions: {}, mdCodeComponents: {},
   normalizeMarkdownForRendering, resolveMarkdownTarget,
   projectAssetUrl: value => value,
 };
@@ -67,4 +67,20 @@ test("artifact paths reject invalid encoding and encoded root escape while exter
   const targets = urls(render("[网页](https://example.com/结果) [小节](#summary)"));
   assert.equal(targets[0].origin, "https://example.com"); assert.equal(targets[1].hash, "#summary");
   assert.ok(!render("[无效](..%2F..%2Fprivate.txt)").includes("<a "));
+});
+
+test("artifact markdown links remote images instead of rendering img elements", () => {
+  const html = render([
+    "![Remote](https://example.com/a.png)",
+    "![Protocol relative](//example.com/b.png)",
+    "[![Badge](https://example.com/badge.svg)](https://example.com/ci)",
+    "![Local](plot.png)",
+  ].join("\n\n"));
+  assert.ok(!html.includes("src=\"https://example.com/a.png\""));
+  assert.ok(!html.includes("src=\"//example.com/b.png\""));
+  assert.ok(!html.includes("src=\"https://example.com/badge.svg\""));
+  assert.ok(html.includes("<a href=\"https://example.com/a.png\""));
+  assert.ok(html.includes("<a href=\"//example.com/b.png\""));
+  assert.ok(html.includes(">Badge</a>"));
+  assert.ok(html.includes("<img src=\"/api/projects/project/files/file?path=reports%2Fplot.png\""));
 });

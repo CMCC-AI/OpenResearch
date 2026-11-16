@@ -4,8 +4,9 @@ import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkRehype from "remark-rehype";
 import { remarkFigures } from "../src/remarkFigures.ts";
+import { rehypeNetworkImages } from "../src/markdownTarget.ts";
 
-const processor = unified().use(remarkParse).use(remarkFigures).use(remarkRehype);
+const processor = unified().use(remarkParse).use(remarkFigures).use(remarkRehype).use(rehypeNetworkImages);
 const render = (text) => processor.runSync(processor.parse(text));
 
 test("a standalone captioned image becomes a figure with a separate linked caption", () => {
@@ -65,4 +66,16 @@ test("consecutive image previews form one carousel and keep file links outside i
   assert.equal(separate.children.some((node) => node.tagName === "image-carousel"), false);
   const charts = render('![A](a.html)\n\n![B](b.html)');
   assert.equal(charts.children.some((node) => node.tagName === "image-carousel"), false);
+});
+
+test("network images are linked rather than fetched or grouped into carousels", () => {
+  const tree = render("![Remote](https://example.com/a.png)\n\n![Second](//example.com/b.png)\n\n[![Badge](https://example.com/badge.svg)](https://example.com/ci)");
+  const elements = tree.children.filter((node) => node.type === "element");
+  assert.equal(elements.some((node) => node.tagName === "image-carousel"), false);
+  assert.equal(elements[0].children[0].tagName, "a");
+  assert.equal(elements[0].children[0].properties.href, "https://example.com/a.png");
+  assert.equal(elements[1].children[0].tagName, "a");
+  assert.equal(elements[1].children[0].properties.href, "//example.com/b.png");
+  assert.equal(elements[2].children[0].tagName, "a");
+  assert.equal(elements[2].children[0].children[0].value, "Badge");
 });
