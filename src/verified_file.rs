@@ -33,9 +33,58 @@ impl FileStamp {
     }
 }
 
+struct SourceFile {
+    file: Option<File>,
+    locked: std::sync::atomic::AtomicBool,
+}
+
+impl SourceFile {
+    fn new(file: File) -> Self {
+        Self {
+            file: Some(file),
+            locked: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn mark_locked(&self) {
+        self.locked
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn into_locked_file(mut self) -> crate::file_lock::FileLock {
+        self.locked
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        crate::file_lock::FileLock::new(self.file.take().expect("source file active"))
+    }
+}
+
+impl std::ops::Deref for SourceFile {
+    type Target = File;
+
+    fn deref(&self) -> &File {
+        self.file.as_ref().expect("source file active")
+    }
+}
+
+impl std::ops::DerefMut for SourceFile {
+    fn deref_mut(&mut self) -> &mut File {
+        self.file.as_mut().expect("source file active")
+    }
+}
+
+impl Drop for SourceFile {
+    fn drop(&mut self) {
+        if self.locked.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Some(file) = self.file.take() {
+                let _ = file.unlock();
+            }
+        }
+    }
+}
+
 pub(crate) struct FileSource {
     path: PathBuf,
-    file: File,
+    file: SourceFile,
     identity: same_file::Handle,
     stamp: FileStamp,
     kind: &'static str,
@@ -99,7 +148,7 @@ impl FileSource {
         let identity = same_file::Handle::from_file(file.try_clone()?)?;
         Ok(Self {
             path: path.to_path_buf(),
-            file,
+            file: SourceFile::new(file),
             identity,
             stamp,
             kind,
@@ -133,6 +182,7 @@ impl FileSource {
         self.file
             .try_lock_shared()
             .map_err(|e| anyhow!("文件正在回收或无法锁定: {e}"))?;
+        self.file.mark_locked();
         Ok(())
     }
 
@@ -140,12 +190,13 @@ impl FileSource {
         self.file
             .try_lock()
             .map_err(|e| anyhow!("文件正在使用或无法锁定: {e}"))?;
+        self.file.mark_locked();
         Ok(())
     }
 
     /// One extra byte detects growth without following an indefinitely appended file.
     pub(crate) fn reader(&mut self) -> Take<&mut File> {
-        (&mut self.file).take(self.stamp.bytes.saturating_add(1))
+        (&mut *self.file).take(self.stamp.bytes.saturating_add(1))
     }
 
     pub(crate) fn check_unchanged(&self) -> Result<()> {
@@ -157,10 +208,10 @@ impl FileSource {
         Ok(())
     }
 
-    pub(crate) fn into_file(mut self) -> Result<File> {
+    pub(crate) fn into_file(mut self) -> Result<crate::file_lock::FileLock> {
         self.check_unchanged()?;
         self.file.rewind()?;
-        Ok(self.file)
+        Ok(self.file.into_locked_file())
     }
 
     pub(crate) fn hash(&mut self) -> Result<String> {
