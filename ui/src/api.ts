@@ -2358,6 +2358,10 @@ export const decideResearchGate = (studyId: string, decisionId: string, scopeHas
   post<{ ok: boolean; resumeError?: string | null }>(`/api/research/studies/${studyId}/decisions/${decisionId}`, { scopeHash, approved, reason });
 export const endResearchStudy = (studyId: string, version: number) =>
   post<{ ok: boolean }>(`/api/research/studies/${studyId}/end`, { version });
+export const pauseResearchStudy = (studyId: string, version: number) =>
+  post<{ ok: boolean; interrupted?: string[] }>(`/api/research/studies/${studyId}/pause`, { version });
+export const resumeResearchStudy = (studyId: string, version: number) =>
+  post<{ ok: boolean }>(`/api/research/studies/${studyId}/resume`, { version });
 
 // Workflow Studio resources remain local and compile into the native research plan.
 export const listWorkflowAgents = (signal?: AbortSignal) =>
@@ -2368,14 +2372,20 @@ export const updateWorkflowAgent = (id: string, input: import("./workflow/model"
   put<{ agent: import("./workflow/model").WorkflowAgent }>(`/api/workflow/agents/${encodeURIComponent(id)}`, input).then((result) => result.agent);
 export const deleteWorkflowAgent = (id: string) =>
   writeResponse(`/api/workflow/agents/${encodeURIComponent(id)}`, { method: "DELETE" }).then((response) => json<{ ok: boolean }>(response));
-export const getGlobalWorkflowDraft = (signal?: AbortSignal) =>
-  get<{ draft: import("./workflow/model").WorkflowDraft | null }>("/api/workflow/draft", signal).then((result) => result.draft);
-export const saveGlobalWorkflowDraft = (input: import("./workflow/model").WorkflowDraftInput) =>
-  put<{ draft: import("./workflow/model").WorkflowDraft }>("/api/workflow/draft", input).then((result) => result.draft);
-export const getWorkflowDraft = (projectId: string, signal?: AbortSignal) =>
-  get<{ draft: import("./workflow/model").WorkflowDraft | null }>(`/api/projects/${encodeURIComponent(projectId)}/workflow/draft`, signal).then((result) => result.draft);
-export const saveWorkflowDraft = (projectId: string, input: import("./workflow/model").WorkflowDraftInput) =>
-  put<{ draft: import("./workflow/model").WorkflowDraft }>(`/api/projects/${encodeURIComponent(projectId)}/workflow/draft`, input).then((result) => result.draft);
+// The workflow library is shared: every project lists and runs every draft,
+// and `projectId` on a draft only records where it was created ("" = globally).
+export const listWorkflows = (signal?: AbortSignal) =>
+  get<{ drafts: import("./workflow/model").WorkflowDraft[] }>("/api/workflows", signal).then((result) => result.drafts);
+export const getWorkflow = (id: string, signal?: AbortSignal) =>
+  get<{ draft: import("./workflow/model").WorkflowDraft | null }>(`/api/workflows/${encodeURIComponent(id)}`, signal).then((result) => result.draft);
+export const createWorkflow = (input: import("./workflow/model").WorkflowDraftInput, projectId = "") =>
+  post<{ draft: import("./workflow/model").WorkflowDraft }>("/api/workflows", { ...input, projectId }).then((result) => result.draft);
+export const saveWorkflow = (id: string, input: import("./workflow/model").WorkflowDraftInput) =>
+  put<{ draft: import("./workflow/model").WorkflowDraft }>(`/api/workflows/${encodeURIComponent(id)}`, input).then((result) => result.draft);
+export const copyWorkflow = (id: string) =>
+  post<{ draft: import("./workflow/model").WorkflowDraft }>(`/api/workflows/${encodeURIComponent(id)}/copy`, {}).then((result) => result.draft);
+export const deleteWorkflow = (id: string) =>
+  writeResponse(`/api/workflows/${encodeURIComponent(id)}`, { method: "DELETE" }).then((response) => json<{ ok: boolean }>(response));
 export const submitWorkflowDraft = (sessionId: string, draftId: string, objective: string) =>
   post<{ studyId: string; sessionId: string; version: number; deduplicated: boolean }>(`/api/research/sessions/${encodeURIComponent(sessionId)}/workflow-plan`, { draftId, objective });
 export const listResearchDeliveries = (projectId: string, signal?: AbortSignal) =>

@@ -12,6 +12,10 @@ pub(super) struct PreparedPlan {
     artifacts: HashMap<String, Vec<PreparedArtifact>>,
     agents: HashMap<String, AgentSnapshot>,
     deduplicate: bool,
+    source: Option<crate::workflow::WorkflowSource>,
+    objective: Option<String>,
+    /// 计划来自用户显式提交的方法草稿：按用户编排执行，免专家团自动编排的审稿+审计兜底。
+    explicit_method: bool,
 }
 
 fn same_agent(
@@ -26,12 +30,80 @@ fn same_agent(
 }
 
 impl Store {
+    /// Bind a saved method to this conversation without creating another chat.
+    /// Invalid drafts are rejected before a normal chat becomes a study.
+    pub fn research_use_workflow(
+        &self,
+        session_id: &str,
+        draft_id: &str,
+        objective: &str,
+    ) -> Result<(String, u32, bool)> {
+        let objective = objective.trim();
+        if objective.is_empty() || objective.len() > 24000 {
+            return Err(anyhow!("请在对话中明确研究目标（最多 24000 字节）"));
+        }
+        let session = self
+            .get_chat_session(session_id)?
+            .ok_or_else(|| anyhow!("会话不存在"))?;
+        if session.parent_session_id.is_some() || session.side_parent_session_id.is_some() {
+            return Err(anyhow!("请在主聊天中使用工作流"));
+        }
+        let draft = self
+            .workflow_draft_by_id(draft_id)?
+            .ok_or_else(|| anyhow!("工作流不存在"))?;
+        crate::workflow::validate_draft(&draft.input)?;
+        let source = crate::workflow::WorkflowSource {
+            id: draft.id,
+            name: draft.input.name.clone(),
+            updated_at: draft.updated_at,
+        };
+        let input = draft.input.into_plan(objective);
+        let existing = self.research_for_session(session_id)?;
+        validate_plan_with_roles(
+            &input,
+            existing.as_ref().map_or("team", |s| s.mode.as_str()),
+            true,
+            |role| crate::local::research::role_for_store(self, role).map(|_| ()),
+        )?;
+        if let Some(study) = &existing {
+            study.ensure_active()?;
+        }
+        let study = match existing {
+            Some(study) => study,
+            None => self.research_create(session_id, "team", objective)?,
+        };
+        let agents = self.research_agent_snapshots(&input)?;
+        if study.objective == objective
+            && study
+                .plans
+                .last()
+                .is_some_and(|plan| plan.workflow_source.as_ref() == Some(&source))
+            && self.research_plan_equivalent(&study, &input, &agents)?
+        {
+            return Ok((study.id.clone(), study.plan()?.version, true));
+        }
+        let mut prepared = self.research_prepare_plan_with_inspector(
+            &study.id,
+            input,
+            PreparedArtifact::inspect,
+            true,
+        )?;
+        if study.objective != objective {
+            prepared.artifacts.clear();
+        }
+        prepared.source = Some(source);
+        prepared.objective = Some(objective.to_owned());
+        prepared.deduplicate = true;
+        let (version, deduplicated) = self.research_commit_plan(prepared)?;
+        Ok((study.id, version, deduplicated))
+    }
     pub fn research_set_plan(&self, id: &str, input: PlanInput) -> Result<()> {
         let prepared =
-            self.research_prepare_plan_with_inspector(id, input, PreparedArtifact::inspect)?;
+            self.research_prepare_plan_with_inspector(id, input, PreparedArtifact::inspect, false)?;
         self.research_commit_plan(prepared).map(|_| ())
     }
 
+    #[cfg(test)]
     pub fn research_set_plan_idempotent(&self, id: &str, input: PlanInput) -> Result<(u32, bool)> {
         let study = self.research_study(id)?;
         let agents = self.research_agent_snapshots(&input)?;
@@ -39,7 +111,7 @@ impl Store {
             return Ok((study.plan()?.version, true));
         }
         let mut prepared =
-            self.research_prepare_plan_with_inspector(id, input, PreparedArtifact::inspect)?;
+            self.research_prepare_plan_with_inspector(id, input, PreparedArtifact::inspect, false)?;
         prepared.deduplicate = true;
         self.research_commit_plan(prepared)
     }
@@ -76,9 +148,14 @@ impl Store {
             }))
     }
 
-    fn research_validate_plan_revision(&self, study: &Study, input: &PlanInput) -> Result<()> {
+    fn research_validate_plan_revision(
+        &self,
+        study: &Study,
+        input: &PlanInput,
+        explicit_method: bool,
+    ) -> Result<()> {
         study.ensure_active()?;
-        validate_plan_with_roles(input, &study.mode, |role| {
+        validate_plan_with_roles(input, &study.mode, explicit_method, |role| {
             crate::local::research::role_for_store(self, role).map(|_| ())
         })?;
         if study.claim_revision.is_some() || study.metric_citation_revision.is_some() {
@@ -107,9 +184,10 @@ impl Store {
         id: &str,
         input: PlanInput,
         mut inspect: impl FnMut(&Path, &str) -> Result<PreparedArtifact>,
+        explicit_method: bool,
     ) -> Result<PreparedPlan> {
         let study = self.research_study(id)?;
-        self.research_validate_plan_revision(&study, &input)?;
+        self.research_validate_plan_revision(&study, &input, explicit_method)?;
         let agents = self.research_agent_snapshots(&input)?;
         let mut artifacts = HashMap::new();
         if input.workflow.as_deref().unwrap_or(&study.mode) == study.workflow_mode() {
@@ -152,6 +230,9 @@ impl Store {
             artifacts,
             agents,
             deduplicate: false,
+            source: None,
+            objective: None,
+            explicit_method,
         })
     }
 
@@ -162,6 +243,8 @@ impl Store {
                 return Err(anyhow!("研究状态在产物核验期间发生变化，请刷新后重新提交计划"));
             }
             if prepared.deduplicate
+                && prepared.objective.as_ref().is_none_or(|objective| objective == &study.objective)
+                && prepared.source.as_ref().is_none_or(|source| study.plans.last().is_some_and(|plan| plan.workflow_source.as_ref() == Some(source)))
                 && self.research_plan_equivalent(study, &prepared.input, &prepared.agents)?
             {
                 submission = Some((study.plan()?.version, true));
@@ -169,7 +252,7 @@ impl Store {
             }
             let input = prepared.input;
             let agents = prepared.agents;
-            self.research_validate_plan_revision(study, &input)?;
+            self.research_validate_plan_revision(study, &input, prepared.explicit_method)?;
             let version = study.plans.last().map_or(1, |p| p.version + 1);
             // Compare effective routes: legacy manual plans may omit workflow,
             // while a team plan may select a different research contract.
@@ -320,8 +403,10 @@ impl Store {
                 });
             }
             study.delivery_error = None;
+            if let Some(objective) = prepared.objective { study.objective = objective; }
             study.plans.push(ResearchPlan {
                 version,
+                workflow_source: prepared.source,
                 material_ids: Some(material_ids),
                 workflow: input.workflow,
                 summary: input.summary,

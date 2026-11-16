@@ -82,6 +82,7 @@ pub struct WorkflowDraftInput {
     pub objective: String,
     #[serde(default)]
     pub summary: String,
+    /// "literature" 按系统文献综述模板计划提交；"custom" 提交为 workflow:null 的专家团动态计划。
     pub workflow: String,
     #[serde(default)]
     pub tasks: Vec<TaskSpec>,
@@ -102,9 +103,17 @@ pub struct WorkflowDraft {
     pub updated_at: i64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowSource {
+    pub id: String,
+    pub name: String,
+    pub updated_at: i64,
+}
+
 /// 计划摘要在提交时由研究目标与任务拓扑确定性生成，相同提交得到相同摘要，
 /// 从而在 `research_plan_equivalent` 的逐字段比对下保持去重语义。
-/// 任务确认、结论门控与返工上限属于人工确认的范围预算，按配置确定性写入。
+/// 任务确认、结论把关与返工上限属于人工确认的范围预算，按配置确定性写入。
 pub fn plan_summary(workflow: &str, objective: &str, tasks: &[TaskSpec]) -> String {
     let task_count = tasks.len();
     let goal = objective.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -130,7 +139,7 @@ pub fn plan_summary(workflow: &str, objective: &str, tasks: &[TaskSpec]) -> Stri
         controls.push(format!("{approvals} 项完成后需主理人确认"));
     }
     if gates > 0 {
-        controls.push(format!("{gates} 项启用结论门控"));
+        controls.push(format!("{gates} 项启用结论把关"));
     }
     if rework > 0 {
         controls.push(format!("自动返工上限共 {rework} 轮"));
@@ -140,14 +149,17 @@ pub fn plan_summary(workflow: &str, objective: &str, tasks: &[TaskSpec]) -> Stri
     } else {
         format!("（{}）", controls.join("，"))
     };
-    format!("围绕目标「{excerpt}」，按「{flow}」流程执行 {task_count} 个专家任务{controls}，各任务按依赖顺序登记产物，最终整理为可追溯的研究包{scope}。")
+    format!("围绕目标「{excerpt}」，按「{flow}」流程执行 {task_count} 个专家任务{controls}，各任务按依赖顺序登记产物，最终整理为可追溯的研究成果{scope}。")
 }
 
 impl WorkflowDraftInput {
     pub fn into_plan(self, objective: &str) -> PlanInput {
+        // 画布草稿一律按自定义编排提交（workflow:null）：专家与依赖由主理人自由组合，
+        // 不套用预设契约。W1–W4 预设只由聊天自动路由登记，workflow 字段仅作旧数据兼容。
+        let summary = plan_summary("custom", objective, &self.tasks);
         PlanInput {
-            workflow: Some(self.workflow.clone()),
-            summary: plan_summary(&self.workflow, objective, &self.tasks),
+            workflow: None,
+            summary,
             tasks: self.tasks,
         }
     }
@@ -160,11 +172,18 @@ pub fn validate_draft(input: &WorkflowDraftInput) -> Result<()> {
     if input.objective.len() > 24000 || input.summary.len() > 24000 {
         return Err(anyhow!("研究目标与计划摘要不能超过 24000 个字符"));
     }
-    if input.workflow != "literature" {
-        return Err(anyhow!("当前版本支持系统文献综述（W1）工作流"));
+    if input.workflow != "literature" && input.workflow != "custom" {
+        return Err(anyhow!(
+            "流程必须是系统文献综述（W1）或自定义编排（custom）"
+        ));
     }
-    if input.tasks.len() > 40 || input.positions.len() > 40 {
+    if input.tasks.len() > 40 {
         return Err(anyhow!("工作流最多包含 40 个任务"));
+    }
+    // 40 个任务、每任务最多一个确认检查点，以及输入、G1、G4、交付。
+    // 展示节点只占布局空间，不消耗专家任务名额，也不进入 PlanInput。
+    if input.positions.len() > 84 {
+        return Err(anyhow!("工作流最多保存 84 个节点坐标"));
     }
     if input
         .positions
@@ -202,6 +221,45 @@ mod tests {
     }
 
     #[test]
+    fn system_layout_does_not_consume_task_budget_or_enter_plan() {
+        let tasks: Vec<_> = (0..40)
+            .map(|i| summary_task(&format!("task-{i}")))
+            .collect();
+        let mut positions = HashMap::new();
+        for task in &tasks {
+            positions.insert(task.id.clone(), FlowPoint { x: 0.0, y: 0.0 });
+            positions.insert(
+                format!(":system:G5:{}", task.id),
+                FlowPoint { x: 0.0, y: 200.0 },
+            );
+        }
+        for id in ["input", "G1", "G4", "output"] {
+            positions.insert(format!(":system:{id}"), FlowPoint { x: -320.0, y: 0.0 });
+        }
+        let mut draft = WorkflowDraftInput {
+            name: "Layout budget".into(),
+            objective: String::new(),
+            summary: String::new(),
+            workflow: "literature".into(),
+            tasks: tasks.clone(),
+            positions,
+            viewport: None,
+        };
+        validate_draft(&draft).unwrap();
+        assert_eq!(draft.clone().into_plan("Goal").tasks, tasks);
+        draft
+            .positions
+            .insert("extra".into(), FlowPoint { x: 0.0, y: 0.0 });
+        assert!(validate_draft(&draft).is_err());
+        draft.positions.remove("extra");
+        draft.positions.get_mut(":system:G1").unwrap().x = f64::NAN;
+        assert!(validate_draft(&draft).is_err());
+        draft.positions.get_mut(":system:G1").unwrap().x = 0.0;
+        draft.tasks.push(summary_task("task-41"));
+        assert!(validate_draft(&draft).is_err());
+    }
+
+    #[test]
     fn plan_summary_is_deterministic_and_tracks_objective() {
         let tasks: Vec<TaskSpec> = (0..9)
             .map(|index| summary_task(&format!("task-{index}")))
@@ -233,7 +291,7 @@ mod tests {
         let first = plan_summary("literature", "综述研究目标", &tasks);
         let second = plan_summary("literature", "综述研究目标", &tasks);
         assert_eq!(first, second);
-        assert!(first.contains("（1 项完成后需主理人确认，1 项启用结论门控，自动返工上限共 2 轮）"));
+        assert!(first.contains("（1 项完成后需主理人确认，1 项启用结论把关，自动返工上限共 2 轮）"));
         // 配置变化必须改变摘要，从而让计划比对生成新版本并重新确认 G1。
         tasks[1].max_rework = 3;
         assert_ne!(first, plan_summary("literature", "综述研究目标", &tasks));

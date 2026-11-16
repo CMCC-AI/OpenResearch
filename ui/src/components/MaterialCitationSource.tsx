@@ -46,7 +46,7 @@ function CitationSelection({ citation }: { citation: MaterialCitation }) {
     <p className="mt-1 text-xs text-subtext">{citation.source} · {citationRange(citation)}</p>
     <p className="mt-1 text-xs text-subtext">只展示该引用的原文选区；浏览不代表 AI 已阅读或结论已通过审查。</p>
     <details className="mt-2 text-xs text-subtext"><summary className="cursor-pointer">来源与版本</summary><dl className="mt-1 space-y-1">
-      <div className="break-all">材料包：{citation.packageId}</div><div className="break-all">原件 SHA-256：{citation.sha256}</div><div className="break-all">选区 SHA-256：{citation.contentSha256}</div><div className="break-all">原读取回执：{citation.readEventId}</div>
+      <div className="break-all">材料包：{citation.packageId}</div><div className="break-all">原件 SHA-256：{citation.sha256}</div><div className="break-all">选区 SHA-256：{citation.contentSha256}</div><div className="break-all">原始读取记录：{citation.readEventId}</div>
       <div className="break-all">读取会话：{citation.readerSessionId ?? "手工终端，未关联 Agent 会话"}</div>
     </dl></details>
     {error ? <div ref={retryBoxRef} className="mt-3 space-y-2"><p role="alert" className="break-words text-sm text-accent-red">{error}</p><Button size="small" onClick={() => { focusAfterRetry.current = true; setAttempt(value => value + 1); }}>重新核验</Button></div>

@@ -51,7 +51,7 @@ pub struct TaskSpec {
     /// 完成后需主理人在人工确认页批准（G5:{任务id}）才放行下游。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub requires_approval: bool,
-    /// 结论门控：完成时读取 `<首个产物>.verdict.json`，结论为阻塞时拦截下游派发。
+    /// 结论把关：完成时读取 `<首个产物>.verdict.json`，结论为阻塞时拦截下游派发。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gate_downstream: bool,
     /// 结论为阻塞时自动带意见返工上游的轮数上限（0–3）。
@@ -61,7 +61,7 @@ pub struct TaskSpec {
 fn is_zero(value: &u32) -> bool {
     *value == 0
 }
-/// 结论门控任务的机器可读验收结论，来自产物旁的 `<首个产物>.verdict.json`。
+/// 结论把关任务的机器可读验收结论，来自产物旁的 `<首个产物>.verdict.json`。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskVerdict {
@@ -166,7 +166,7 @@ pub struct ResearchTask {
     pub evidence_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<crate::workflow::AgentSnapshot>,
-    /// 结论门控任务最近一次验收结论；返工期间保留供界面展示，下一次验收覆盖。
+    /// 结论把关任务最近一次验收结论；返工期间保留供界面展示，下一次验收覆盖。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<TaskVerdict>,
     /// 结论阻塞触发的自动返工已用轮数（上限为 spec.max_rework）。
@@ -198,6 +198,8 @@ impl ResearchTask {
 #[serde(rename_all = "camelCase")]
 pub struct ResearchPlan {
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_source: Option<crate::workflow::WorkflowSource>,
     /// Immutable package IDs visible on the lead's branch when this plan was created.
     /// None is legacy data; Some(empty) explicitly fixes a plan with no materials.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -345,7 +347,11 @@ impl Study {
     }
     pub fn ensure_active(&self) -> Result<()> {
         if self.status != "active" {
-            return Err(anyhow!("研究已停止"));
+            return Err(anyhow!(if self.status == "paused" {
+                "研究已暂停，请先继续研究"
+            } else {
+                "研究已停止"
+            }));
         }
         Ok(())
     }
@@ -439,6 +445,9 @@ impl Study {
         }
         if let Some(ids) = &plan.material_ids {
             scope["materialIds"] = serde_json::json!(ids);
+        }
+        if let Some(source) = &plan.workflow_source {
+            scope["workflowSource"] = serde_json::to_value(source)?;
         }
         let agents: Vec<_> = plan
             .tasks
@@ -580,14 +589,15 @@ pub fn inspect_artifact(root: &Path, relative: &str) -> Result<Artifact> {
 }
 #[cfg(test)]
 pub fn validate_plan(input: &PlanInput, mode: &str) -> Result<()> {
-    validate_plan_with_roles(input, mode, |role| {
+    validate_plan_with_roles(input, mode, false, |role| {
         crate::local::research::role(role).map(|_| ())
     })
 }
 
-fn validate_plan_with_roles(
+pub(crate) fn validate_plan_with_roles(
     input: &PlanInput,
     mode: &str,
+    explicit_method: bool,
     mut validate_role: impl FnMut(&str) -> Result<()>,
 ) -> Result<()> {
     if let Some(workflow) = &input.workflow {
@@ -672,10 +682,10 @@ fn validate_plan_with_roles(
         }
         if task.gate_downstream {
             if task.role == "as-experiment-operator" {
-                return Err(anyhow!("实验执行任务不支持结论门控: {}", task.id));
+                return Err(anyhow!("实验执行任务不支持结论把关: {}", task.id));
             }
             if task.depends_on.is_empty() {
-                return Err(anyhow!("结论门控任务需要至少一个前置任务: {}", task.id));
+                return Err(anyhow!("结论把关任务需要至少一个前置任务: {}", task.id));
             }
         }
         if task.max_rework > MAX_REWORK {
@@ -685,7 +695,7 @@ fn validate_plan_with_roles(
             ));
         }
         if task.max_rework > 0 && !task.gate_downstream {
-            return Err(anyhow!("任务 {} 设置返工上限需要同时开启结论门控", task.id));
+            return Err(anyhow!("任务 {} 设置返工上限需要同时开启结论把关", task.id));
         }
     }
     let mut visited = HashSet::new();
@@ -781,7 +791,8 @@ fn validate_plan_with_roles(
             }
         }
     }
-    if matches!(mode, "team" | "review") {
+    // 专家团自动编排以独立审稿+引用审计兜底；用户显式提交的方法按其编排执行（W1 契约另行约束）。
+    if (mode == "team" && !explicit_method) || mode == "review" {
         for required in ["as-independent-reviewer", "as-quality-citation-auditor"] {
             if !input.tasks.iter().any(|t| t.role == required) {
                 return Err(anyhow!("计划必须包含独立审稿和引用审计"));
@@ -1346,7 +1357,9 @@ impl Store {
             if study.status == "stopped" {
                 return Ok(());
             }
-            study.ensure_active()?;
+            if study.status != "paused" {
+                study.ensure_active()?;
+            }
             if study.plan().is_ok_and(|plan| plan.tasks.iter().any(|task| task.state == "running")) {
                 return Err(anyhow!("仍有执行中或待验收的专家任务，请先完成或停止任务"));
             }
@@ -1370,6 +1383,55 @@ impl Store {
                 }
             }
             study.status = "stopped".into();
+            Ok(())
+        })
+    }
+
+    /// Pause an active study: block auto-dispatch and soft-return running expert
+    /// tasks to pending without consuming attempts; running experiments keep
+    /// running. Returns the bound expert sessions so the caller can interrupt
+    /// them after the state flip — their settlement then retires silently.
+    pub fn research_pause(&self, id: &str, version: u32) -> Result<Vec<String>> {
+        let mut sessions = Vec::new();
+        self.research_update(id, |study| {
+            if study.plans.last().map_or(0, |plan| plan.version) != version {
+                return Err(anyhow!("研究计划已变化，请刷新后再操作"));
+            }
+            if study.status == "paused" {
+                return Ok(());
+            }
+            study.ensure_active()?;
+            let plan = study.plan_mut()?;
+            for task in plan.tasks.iter_mut() {
+                if task.state == "running" {
+                    if let Some(session) = task.session_id.take() {
+                        sessions.push(session);
+                    }
+                    task.state = "pending".into();
+                    task.pending_nudge = None;
+                    task.pending_nudge_turn_id = None;
+                }
+            }
+            study.status = "paused".into();
+            Ok(())
+        })?;
+        Ok(sessions)
+    }
+
+    /// Resume a paused study; dispatching is left to the caller or the
+    /// background reconcile, which picks the study back up once it is active.
+    pub fn research_resume(&self, id: &str, version: u32) -> Result<()> {
+        self.research_update(id, |study| {
+            if study.plans.last().map_or(0, |plan| plan.version) != version {
+                return Err(anyhow!("研究计划已变化，请刷新后再操作"));
+            }
+            if study.status == "active" {
+                return Ok(());
+            }
+            if study.status != "paused" {
+                return Err(anyhow!("研究已停止，无法继续"));
+            }
+            study.status = "active".into();
             Ok(())
         })
     }
@@ -1847,6 +1909,193 @@ mod tests {
                 spec("audit", "as-quality-citation-auditor", &["review"]),
             ],
         }
+    }
+    fn saved_literature_workflow(store: &Store) -> crate::workflow::WorkflowDraft {
+        let profile = &crate::local::research::workflows()["literature"];
+        let tasks = profile
+            .required_roles
+            .iter()
+            .map(|role| {
+                let deps: Vec<_> = profile
+                    .dependencies
+                    .iter()
+                    .filter(|edge| &edge[1] == role)
+                    .map(|edge| edge[0].as_str())
+                    .collect();
+                spec(role, role, &deps)
+            })
+            .collect();
+        store
+            .create_workflow_draft(
+                "",
+                crate::workflow::WorkflowDraftInput {
+                    name: "Saved evidence review".into(),
+                    objective: String::new(),
+                    summary: String::new(),
+                    workflow: "literature".into(),
+                    tasks,
+                    positions: std::collections::HashMap::new(),
+                    viewport: None,
+                },
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn workflow_attaches_to_normal_chat_with_history_and_keeps_versioned_approval() {
+        let (dir, store, _) = setup();
+        store.conn.execute("INSERT INTO chat_sessions(id,project_id,harness,created_at,updated_at) VALUES('normal','project','codex',1,1)", []).unwrap();
+        store.conn.execute("INSERT INTO chat_messages(id,session_id,role,parts_json,created_at) VALUES('existing-message','normal','user','[]',1)", []).unwrap();
+        let draft = saved_literature_workflow(&store);
+        let (id, version, duplicate) = store
+            .research_use_workflow("normal", &draft.id, "Compare evidence")
+            .unwrap();
+        assert_eq!(version, 1);
+        assert!(!duplicate);
+        let study = store.research_study(&id).unwrap();
+        assert_eq!(study.session_id, "normal");
+        assert_eq!(store.list_chat_messages("normal").unwrap().len(), 1);
+        assert_eq!(
+            study.plan().unwrap().workflow_source.as_ref().unwrap().id,
+            draft.id
+        );
+        let task_id = &study.plan().unwrap().tasks[0].spec.id;
+        assert!(study.ready(task_id).is_err());
+        assert_eq!(store.count_live_chat_spawns("normal").unwrap(), 0);
+        assert_eq!(
+            store
+                .research_use_workflow("normal", &draft.id, "Compare evidence")
+                .unwrap(),
+            (id.clone(), 1, true)
+        );
+        approve(&store, &study, "G1");
+        assert!(store.research_study(&id).unwrap().ready(task_id).is_ok());
+        let old = store.research_study(&id).unwrap().decisions[0].clone();
+        assert_eq!(
+            store
+                .research_use_workflow("normal", &draft.id, "A different goal")
+                .unwrap()
+                .1,
+            2
+        );
+        let changed = store.research_study(&id).unwrap();
+        assert_eq!(changed.objective, "A different goal");
+        assert!(changed.ready(task_id).is_err());
+        assert!(store
+            .research_decide(&id, &old.id, &old.scope_hash, true, String::new())
+            .is_err());
+        store.delete_workflow_draft(&draft.id).unwrap();
+        drop(store);
+        let reopened = Store::open_at(dir.path().to_path_buf()).unwrap();
+        assert_eq!(
+            reopened
+                .research_study(&id)
+                .unwrap()
+                .plan()
+                .unwrap()
+                .workflow_source
+                .as_ref()
+                .unwrap()
+                .name,
+            "Saved evidence review"
+        );
+    }
+
+    #[test]
+    fn custom_workflow_drafts_register_without_preset_roles() {
+        let (_dir, store, _) = setup();
+        store.conn.execute("INSERT INTO chat_sessions(id,project_id,harness,created_at,updated_at) VALUES('normal','project','codex',1,1)", []).unwrap();
+        // 只有两位专家的小 DAG：custom 流程不要求 W1 必需专家队伍。
+        let input = crate::workflow::WorkflowDraftInput {
+            name: "Custom pipeline".into(),
+            objective: String::new(),
+            summary: String::new(),
+            workflow: "custom".into(),
+            tasks: vec![
+                spec("strategy", "as-literature-strategist", &[]),
+                spec("evidence", "as-paper-evidence-analyst", &["strategy"]),
+            ],
+            positions: HashMap::new(),
+            viewport: None,
+        };
+        let draft = store.create_workflow_draft("", input).unwrap();
+        let (study_id, version, deduplicated) = store
+            .research_use_workflow("normal", &draft.id, "只查文献证据")
+            .unwrap();
+        assert_eq!(version, 1);
+        assert!(!deduplicated);
+        let study = store.research_study(&study_id).unwrap();
+        // custom 提交为 workflow:null 的专家团动态计划，不套用模板契约。
+        assert!(study.plan().unwrap().workflow.is_none());
+        assert_eq!(study.plan().unwrap().tasks.len(), 2);
+    }
+
+    #[test]
+    fn invalid_workflows_and_child_chats_cannot_create_studies_or_bypass_gates() {
+        let (_dir, store, _) = setup();
+        store.conn.execute("INSERT INTO chat_sessions(id,project_id,harness,created_at,updated_at) VALUES('normal','project','codex',1,1)", []).unwrap();
+        let draft = saved_literature_workflow(&store);
+        let mut invalid = draft.input.clone();
+        assert!(crate::local::research::turn_context(&store, "normal")
+            .unwrap()
+            .unwrap()
+            .contains("orx research workflow list"));
+        assert!(store.research_for_session("normal").unwrap().is_none());
+        invalid.tasks.clear();
+        let invalid = store.create_workflow_draft("", invalid).unwrap();
+        assert!(store
+            .research_use_workflow("normal", &invalid.id, "Goal")
+            .is_err());
+        assert!(store.research_for_session("normal").unwrap().is_none());
+        assert!(store
+            .research_use_workflow("normal", &draft.id, " ")
+            .is_err());
+        assert!(store
+            .research_use_workflow("normal", "missing", "Goal")
+            .is_err());
+        store
+            .conn
+            .execute(
+                "UPDATE chat_sessions SET parent_session_id='lead' WHERE id='normal'",
+                [],
+            )
+            .unwrap();
+        assert!(store
+            .research_use_workflow("normal", &draft.id, "Goal")
+            .is_err());
+        let direct: i64 = store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM research_studies WHERE session_id='normal'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(direct, 0);
+    }
+
+    #[test]
+    fn workflow_goal_changes_do_not_inherit_outputs_for_the_previous_question() {
+        let (_dir, store, _) = setup();
+        let draft = saved_literature_workflow(&store);
+        let (id, _, _) = store
+            .research_use_workflow("lead", &draft.id, "First goal")
+            .unwrap();
+        let study = store.research_study(&id).unwrap();
+        approve(&store, &study, "G1");
+        let task = &study.plan().unwrap().tasks[0].spec.id;
+        bind(&store, &study, task, "expert-attempt");
+        finish(&store, &study, task);
+        assert_eq!(
+            store.research_study(&id).unwrap().task(task).unwrap().state,
+            "completed"
+        );
+        store
+            .research_use_workflow("lead", &draft.id, "Second goal")
+            .unwrap();
+        let changed = store.research_study(&id).unwrap();
+        assert_eq!(changed.task(task).unwrap().state, "pending");
+        assert!(changed.task(task).unwrap().artifacts.is_empty());
     }
     fn approve(store: &Store, study: &Study, gate: &str) {
         let study = store.research_study(&study.id).unwrap();
@@ -2418,6 +2667,7 @@ mod tests {
         let (_dir, store, mut study) = setup();
         study.created_at = 1000;
         study.plans.push(ResearchPlan {
+            workflow_source: None,
             version: 1,
             material_ids: None,
             workflow: None,

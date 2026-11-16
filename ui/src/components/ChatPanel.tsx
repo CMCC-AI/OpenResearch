@@ -7,6 +7,7 @@ import { isChatLayoutPending } from "../chatLayout";
 import { ChatLoadingShell } from "./ChatLoadingShell";
 import { pendingMaterials, droppedMaterials, prepareMaterialAttachments, validateMaterialFiles } from "../materialUploads";
 import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
+import { ResearchPauseControl } from "./ResearchPauseControl";
 import { createClientTurnId } from "../clientTurnId";
 import { SessionFilterMenu, SessionRow, TitleReveal, TITLE_REVEAL_CLEAR_MS, type SessionFilter } from "./NativeSidebarRows";
 import { ResearchNavigationMore } from "./ResearchNavigation";
@@ -17,6 +18,9 @@ import { getResearchStudy } from "../api";
 import { researchModes, type ResearchMode } from "../research";
 import { researchConversationStatus } from "../researchConversationStatus";
 import { ResearchConversationStatus } from "./ResearchConversationStatus";
+import { ResearchConversation } from "./ResearchConversation";
+import { ChatWorkflowChooser } from "../workflow/ChatWorkflowChooser";
+import { takeWorkflowConversation } from "../workflow/conversation";
 import { expertSessionContext, isSidebarSession, mainSessionId } from "../researchSessions";
 import { ExpertConversationHeader } from "./ExpertConversationHeader";
 import { readTranscriptScroll, rememberTranscriptScroll } from "../transcriptScrollMemory";
@@ -3885,7 +3889,12 @@ export const Transcript = memo(function Transcript({
     rangeExtractor,
   });
   useLayoutEffect(() => {
-    const scroll = () => virtualizer.scrollToEnd();
+    const scroll = () => {
+      virtualizer.scrollToEnd();
+      // Expert activity and confirmation cards follow the virtual message list.
+      const element = scrollRef.current;
+      if (element) element.scrollTop = element.scrollHeight;
+    };
     scrollToEndRef.current = scroll;
     const element = scrollRef.current;
     let position = rememberedScroll ?? { offset: element?.scrollTop ?? 0, atBottom: true, width: element?.offsetWidth };
@@ -4295,8 +4304,20 @@ export function ChatPanel({
       else composerStashRef.current.delete(stashKey);
     };
   }, [stashKey, composerPrefill]);
+  useEffect(() => {
+    if (embedded || readOnly || mainView !== "chat") return;
+    const request = takeWorkflowConversation(projectId, activeId);
+    if (!request) return;
+    const current = composerLiveRef.current;
+    const next = current.draft.startsWith(request) ? current.draft : request + current.draft;
+    // Keep StrictMode's stash cleanup from restoring the pre-handoff draft.
+    composerLiveRef.current = { ...current, draft: next };
+    setDraft(next);
+    setSkillMenuDismissed(false);
+    window.requestAnimationFrame(() => composerRef.current?.focus());
+  }, [projectId, activeId, mainView, embedded, readOnly]);
   const [settingsError, setSettingsError] = useState<string | null>(null);
-  const researchState = useQuery({ queryKey: workspaceKey("researchStudy", activeId), queryFn: ({ signal }) => getResearchStudy(activeId!, signal), enabled: Boolean(activeId) && !embedded, refetchInterval: (query) => query.state.data?.study?.status === "active" ? 2500 : false });
+  const researchState = useQuery({ queryKey: workspaceKey("researchStudy", activeId), queryFn: ({ signal }) => getResearchStudy(activeId!, signal), enabled: Boolean(activeId) && !embedded, refetchInterval: (query) => ["active", "paused"].includes(query.state.data?.study?.status ?? "") ? 2500 : false });
   const expertContext = expertSessionContext(sessions.find((session) => session.id === activeId), researchState.data?.study);
   const sidebarActiveId = mainSessionId(activeId, sessions);
   const currentWorkMode: WorkMode = activeId ? researchState.data?.study?.mode ?? "normal" : researchMode;
@@ -5319,7 +5340,7 @@ export function ChatPanel({
   }, [activeId]);
 
   // Opening a session or returning from settings starts pinned at the latest messages.
-  const threadMounted = mainView === "chat" && (messages.length > 0 || busy);
+  const threadMounted = mainView === "chat" && (messages.length > 0 || busy || !!conversationStudy);
 
   const historyError = !historyQuery.data ? historyQuery.error : null;
   const layoutPending = isChatLayoutPending({
@@ -6556,6 +6577,16 @@ export function ChatPanel({
                   onRecover={readOnly ? undefined : recoverFailedTurn}
                   skills={transcriptSkills}
                 />
+                {conversationStudy && <ResearchConversation key={conversationStudy.id} projectId={projectId} study={conversationStudy} onInspect={() => { stickToBottom.current = false; setTranscriptAtBottom(false); }} renderMessage={(message, sessionId, running) => renderParts(message.parts, {
+                  activePermissionId: firstPendingPermission([message])?.id ?? null,
+                  onOpenFile: onOpenFile ? (path, line, exp, ref, intent) => onOpenFile(path, sessionId, line, exp, ref, intent) : undefined,
+                  onOpenRun,
+                  onOpenExperiment,
+                  runExperimentName,
+                  experimentName,
+                  onRespond: readOnly ? undefined : answer => { void respondChat(sessionId, answer).finally(() => { void queryClient.invalidateQueries({ queryKey: getChatMessagesQuery(sessionId).queryKey }); }).catch(error => showAlert(`专家请求回复失败：${error instanceof Error ? error.message : String(error)}`, "error")); },
+                  predictTextTail: running,
+                })} />}
               </ChatImageScope>
               {busy && awaitingInput && (
                 <div className="flex items-center gap-2 text-subtext text-sm pt-0.5 px-0 pb-2 italic">{m.chat_panel_waiting_for_your_input()}</div>
@@ -6985,6 +7016,7 @@ export function ChatPanel({
             </div>
 
             <div className="composer-actions flex min-w-0 justify-end items-center gap-2 pt-1.5 px-2 pb-2">
+              {!embedded && !readOnly && !expertContext && <ChatWorkflowChooser disabled={busy} onChoose={request => { setDraft(current => request + current); setSkillMenuDismissed(false); composerRef.current?.focus(); }} />}
               <div className="option-picker relative inline-flex shrink-0" ref={dataSources.ref}>
                 <IconButton
                   type="button"
@@ -7098,6 +7130,7 @@ export function ChatPanel({
                 />
                 <ContextMeter usage={openSession?.contextUsage} />
               </div>
+              {!embedded && !isDemoProjectId(projectId) && (researchState.data?.study?.status === "active" || researchState.data?.study?.status === "paused") && <ResearchPauseControl study={researchState.data.study} />}
               {stopping || (busy && !pendingQuestion) ? (
                 // Stop whenever the turn is busy and typed text has nowhere to
                 // go — actively streaming, or held on a plan/permission card

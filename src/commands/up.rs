@@ -521,13 +521,16 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
             axum::routing::put(workflow::update_agent).delete(workflow::delete_agent),
         )
         .route(
-            "/api/workflow/draft",
-            get(workflow::global_draft).put(workflow::save_global_draft),
+            "/api/workflows",
+            get(workflow::list_workflows).post(workflow::create_workflow),
         )
         .route(
-            "/api/projects/{project}/workflow/draft",
-            get(workflow::draft).put(workflow::save_draft),
+            "/api/workflows/{id}",
+            get(workflow::get_workflow)
+                .put(workflow::save_workflow)
+                .delete(workflow::delete_workflow),
         )
+        .route("/api/workflows/{id}/copy", post(workflow::copy_workflow))
         .route(
             "/api/projects/{project}/research/deliveries",
             get(research::deliveries),
@@ -538,6 +541,8 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
         )
         .route("/api/research/sessions/{id}", get(research::session))
         .route("/api/research/studies/{id}/end", post(research::end))
+        .route("/api/research/studies/{id}/pause", post(research::pause))
+        .route("/api/research/studies/{id}/resume", post(research::resume))
         .route("/api/research/studies/{id}/package", get(research::package))
         .route(
             "/api/research/studies/{id}/decisions/{decision}",

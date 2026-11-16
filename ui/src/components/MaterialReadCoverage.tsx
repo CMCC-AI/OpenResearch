@@ -34,21 +34,21 @@ export function MaterialReadCoverage({ material, sessionId }: { material: Materi
   return <section aria-label="读取范围记录" className="flex h-full min-h-0 flex-col">
     <div className="min-h-0 flex-1 overflow-auto">
       <div className="flex flex-col gap-2 border-b border-border p-3 text-xs text-subtext">
-        <p className="m-0">仅表示 CLI 已向 Agent 输出选区，不证明理解或审查。网页预览、下载及其他工具读取不计入记录；不同任务、计划和解析视图分别展示。</p>
+        <p className="m-0">记录表示「内容已经交给专家看过」，不证明理解或审查。网页预览、下载等其他方式的阅读不记录在内；不同任务分别展示。</p>
         <div className="flex flex-wrap items-center gap-2">
           <label className="flex min-w-0 flex-1 items-center gap-2">文件<select aria-label="筛选读取记录的文件" className="min-w-0 flex-1 rounded-md border border-border bg-background p-1.5 text-text" value={source} onChange={event => setSource(event.target.value)}><option value="">整个材料包</option>{material.files.map(file => <option key={file.id} value={file.id}>{file.path}</option>)}</select></label>
           {sessionId && !readOnly && <label className="flex items-center gap-1.5"><input type="checkbox" checked={currentOnly} onChange={event => setCurrentOnly(event.target.checked)} />仅当前会话</label>}
           <Button size="small" onClick={() => setAttempt(value => value + 1)}>{readOnly ? "重新读取快照" : "刷新读取范围"}</Button>
         </div>
-        {readOnly && <p className="m-0">此处为案例发布时保存的记录，不查询私人执行器。案例缺少记录时无法推断是否已读。</p>}
+        {readOnly && <p className="m-0">这里只看案例发布时保存的记录；案例没带记录时，无法判断是否读过。</p>}
       </div>
       <div className="p-4">
         {!active ? <p role="status" className="flex items-center gap-2 text-sm text-subtext"><Spinner />正在汇总读取范围…</p>
-          : active.error ? <div role="alert" className="text-sm text-subtext"><p>{active.error}</p><p>{readOnly ? "可选择已复制的单个文件记录；旧快照缺少记录时需由发布者更新。" : "可选择单个文件或当前会话缩小范围。"}查询失败不等于没有读取记录。</p><Button size="small" onClick={() => setAttempt(value => value + 1)}>重试读取范围</Button></div>
+          : active.error ? <div role="alert" className="text-sm text-subtext"><p>{active.error}</p><p>{readOnly ? "可以试试只看单个文件；旧案例缺记录时要等发布者更新。" : "可以按单个文件或只看当前会话缩小范围。"}查询失败不代表没有读过。</p><Button size="small" onClick={() => setAttempt(value => value + 1)}>重试读取范围</Button></div>
             : value && <>
-              <p className="mt-0 text-sm text-subtext">检查 {value.coverage.consideredEvents} 条回执 · {groups.length} 组输出范围 · 查询时间 {new Date(value.measuredAt).toLocaleString("zh-CN")}</p>
+              <p className="mt-0 text-sm text-subtext">{value.coverage.consideredEvents} 条读取记录 · {groups.length} 组内容范围 · 查询时间 {new Date(value.measuredAt).toLocaleString("zh-CN")}</p>
               {Object.entries(value.coverage.excluded).length > 0 && <div className="mb-4 rounded-md border border-border p-3 text-xs text-subtext"><p className="mb-1 mt-0">以下记录未计入输出范围：</p><ul className="m-0 list-inside list-disc p-0">{Object.entries(value.coverage.excluded).map(([reason, count]) => <li key={reason}>{exclusionLabels[reason]}：{count}</li>)}</ul></div>}
-              {!groups.length ? <p role="status" className="text-sm text-subtext">{value.coverage.consideredEvents === 0 ? "尚无此范围内登记的 CLI 读取记录。" : "没有可汇总的已确认输出范围。"} 这不能证明 Agent 未通过其他工具读取。</p>
+              {!groups.length ? <p role="status" className="text-sm text-subtext">{value.coverage.consideredEvents === 0 ? "这个范围内还没有读取记录。" : "暂时没有可汇总的内容范围。"}专家也可能通过其他方式读过，这里没有记录。</p>
                 : <ul className="m-0 list-none space-y-3 p-0">{groups.slice(currentPage * pageSize, (currentPage + 1) * pageSize).map((group, index) => <CoverageRow key={`${currentPage}:${index}`} group={group} />)}</ul>}
             </>}
       </div>

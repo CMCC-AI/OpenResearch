@@ -7,6 +7,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 import * as research from "../src/research.ts";
 import { reconcileFlowNodes } from "../src/flowNodes.ts";
+import * as workflowGraph from "../src/workflow/graph.ts";
+import { createLiteratureDraft } from "../src/workflow/model.ts";
 
 const require = createRequire(import.meta.url);
 const source = readFileSync(new URL("../src/components/ResearchTeamDag.tsx", import.meta.url), "utf8");
@@ -16,6 +18,8 @@ const mocks = {
   "../appBasePath": { appHref: (value) => value },
   "../research": research,
   "../flowNodes": { reconcileFlowNodes },
+  "../workflow/graph": workflowGraph,
+  "../workflow/SystemNode": { SystemNodeCard: () => null },
   "@xyflow/react": { useNodesState: (nodes) => [nodes, () => {}, () => {}], ReactFlow: () => null, MarkerType: { ArrowClosed: "arrowclosed" } },
   "./ResearchWorkflow": {},
   "./ResearchEvidence": { ResearchEvidence: () => null },
@@ -60,21 +64,48 @@ test("the active DAG page exposes the evidence view and renders persisted claims
   const html = renderToStaticMarkup(React.createElement(view.ResearchTeamDagDialog, { embedded: true, study: { ...study, claims: [{ id: "claim-with-source" }] }, metrics: measured, runs: [], onClose() {} }));
   assert.match(html, /研究证据与原文来源/); assert.match(html, /persisted-claim:claim-with-source/);
   assert.match(html, /aria-pressed="true"[^>]*>证据与来源/);
-  assert.doesNotMatch(html, /aria-label="科研专家团纵向 DAG"/);
+  assert.doesNotMatch(html, /aria-label="科研专家团流程图"/);
 });
 
 
-test("the active DAG offers only confirmed private packages without active runs", () => {
+test("the active DAG links deliverables only for confirmed studies without active runs", () => {
   const current = { ...study, plans: [{ version: 1, tasks: [] }], deliverySnapshot: { scopeHash: "scope" }, decisions: [{ id: "gate", gate: "G4", version: 1, status: "approved", scopeHash: "scope" }] };
   function render(currentStudy, runs = [], readonly = false) {
     const view = {};
     const isolated = { ...mocks, "../readOnlyApi": { getReadOnlyApi: () => readonly ? {} : null, projectAssetUrl: url => url } };
     new Function("require", "exports", code)(id => id in isolated ? isolated[id] : require(id), view);
-    return renderToStaticMarkup(React.createElement(view.ResearchTeamDagDialog, { embedded: true, study: currentStudy, metrics: measured, runs, onClose() {} }));
+    return renderToStaticMarkup(React.createElement(view.ResearchTeamDagDialog, { embedded: true, study: currentStudy, metrics: measured, runs, onClose() {}, onOpenDeliverables() {} }));
   }
-  assert.match(render(current), /href="\/api\/research\/studies\/study\/package"[^>]*download=""/);
-  assert.match(render({ ...current, status: "stopped" }), /下载已确认研究包/);
-  assert.doesNotMatch(render(current, [{ id: "old", status: "running" }]), /下载已确认研究包/);
-  assert.doesNotMatch(render(current, [], true), /下载已确认研究包/);
-  assert.doesNotMatch(render({ ...current, decisions: [{ ...current.decisions[0], status: "pending" }] }), /下载已确认研究包/);
+  assert.match(render(current), /查看研究成果/);
+  assert.doesNotMatch(render(current), /下载已确认研究包/);
+  assert.match(render({ ...current, status: "stopped" }), /查看研究成果/);
+  assert.doesNotMatch(render(current, [{ id: "old", status: "running" }]), /查看研究成果/);
+  assert.doesNotMatch(render(current, [], true), /查看研究成果/);
+  assert.doesNotMatch(render({ ...current, decisions: [{ ...current.decisions[0], status: "pending" }] }), /查看研究成果/);
+});
+
+test("the W1 task view renders existing plan and task approvals as read-only graph nodes", () => {
+  let rendered;
+  const tasks = createLiteratureDraft().tasks.map(task => ({ ...task, state: "pending", summary: null, artifacts: [], runIds: [], sessionId: null }));
+  tasks[0].state = "completed";
+  const current = { ...study, mode: "literature", objective: "Evidence review", claims: [], plans: [{ version: 1, workflow: "literature", tasks }], decisions: [{ gate: "G1", version: 1, status: "pending" }] };
+  const graphMocks = {
+    ...mocks,
+    react: { ...React, useId: () => "dag", useRef: value => ({ current: value }), useEffect() {}, useMemo: fn => fn(), useState: initial => [initial === "overview" ? "tasks" : typeof initial === "function" ? initial() : initial, () => {}] },
+    "@xyflow/react": { ...mocks["@xyflow/react"], useReactFlow: () => ({ fitView() {} }), Background: () => null, Controls: () => null, ReactFlow: props => { rendered = props; return null; } },
+  };
+  const view = {};
+  new Function("require", "exports", code)(id => id in graphMocks ? graphMocks[id] : require(id), view);
+  const render = () => renderToStaticMarkup(React.createElement(view.ResearchTeamDagDialog, { embedded: true, study: current, metrics: measured, runs: [], onClose() {} }));
+  render();
+  assert.equal(rendered.nodes.length, 13);
+  assert.equal(rendered.deleteKeyCode, null);
+  assert.equal(rendered.nodesConnectable, false);
+  assert.equal(rendered.nodes.find(node => node.id === workflowGraph.systemNodeIds.scope).data.state, "blocked");
+  current.decisions[0].status = "approved";
+  current.decisions.push({ gate: `G5:${tasks[0].id}`, version: 1, status: "approved", scope: JSON.stringify({ taskId: tasks[0].id, summary: null, artifacts: [] }) });
+  render();
+  assert.equal(rendered.nodes.find(node => node.id === workflowGraph.systemNodeIds.scope).data.state, "completed");
+  assert.equal(rendered.nodes.find(node => node.id === workflowGraph.approvalNodeId(tasks[0].id)).data.state, "completed");
+  assert.ok(rendered.edges.some(edge => edge.source === workflowGraph.approvalNodeId(tasks[0].id) && edge.target === tasks[1].id));
 });

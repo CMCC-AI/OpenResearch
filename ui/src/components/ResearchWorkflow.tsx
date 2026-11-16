@@ -2,21 +2,14 @@ import { useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ArrowRight, CheckCircle2, Circle, CircleDot, GitBranch, ShieldCheck, Users, X } from "lucide-react";
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Node, type NodeProps } from "@xyflow/react";
-import { consultationCoverage, researchWorkflowMode, expertRoles, researchAttention, currentDecisions, researchDagLayout, researchModes, researchProgress, researchTaskStatus, researchWorkflow, workflowStateNames, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
+import { consultationCoverage, researchWorkflowMode, expertRoles, researchAttention, currentDecisions, researchDagLayout, researchModes, researchProgress, researchTaskStatus, researchWorkflow, workflowStateNames, workflowTone, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
 import { ResearchEvidence } from "./ResearchEvidence";
 import { ResearchModulePreview } from "./ResearchModulePreview";
 import { ResearchJourneyIntro } from "./ResearchJourneyIntro";
 import { useDialogFocus } from "./useDialogFocus";
 import { Button, IconButton } from "./ui";
 
-export const workflowTone: Record<WorkflowState, string> = {
-  completed: "border-accent-green bg-accent-green-subtle text-accent-green",
-  running: "border-primary bg-primary-subtle text-primary",
-  blocked: "border-accent-amber bg-accent-amber-subtle text-accent-amber",
-  waiting: "border-border bg-background text-subtext",
-  optional: "border-border bg-surface text-muted",
-  stopped: "border-border bg-surface text-subtext",
-};
+export { workflowTone };
 function StateIcon({ state }: { state: WorkflowState }) {
   const Icon = state === "completed" ? CheckCircle2 : state === "running" ? CircleDot : state === "blocked" ? ShieldCheck : Circle;
   return <Icon size={16} className="shrink-0" aria-hidden="true" />;
@@ -92,7 +85,7 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
           {decisionCards}
         </section>}
         {layer === "execution" && <>
-        <section aria-label="实际执行概览" className="rounded-lg border border-border bg-surface p-3"><h3 className="text-sm font-medium">实际执行概览</h3><p className="mt-2 text-sm">{coverage.dispatched}/{coverage.total} 个任务已派发 · {coverage.completed} 个任务产物已验收</p></section>
+        <section aria-label="实际执行概览" className="rounded-lg border border-border bg-surface p-3"><h3 className="text-sm font-medium">实际执行概览</h3><p className="mt-2 text-sm">{coverage.dispatched}/{coverage.total} 个任务已开始 · {coverage.completed} 个已交付</p></section>
         {study.mode === "team" && <section aria-label="完整研究路径">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-medium">完整研究路径</h3></div>
           <ol className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
@@ -106,16 +99,16 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
         {decisionCards}
         <section aria-label="当前计划专家任务">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <div><h3 className="flex items-center gap-2 text-sm font-medium"><GitBranch size={16} />当前计划 · 专家任务 DAG</h3></div>
-            <div className="flex gap-1" role="group" aria-label="专家任务展示方式"><Button size="small" aria-pressed={view === "dag"} onClick={() => setView("dag")}>依赖图</Button><Button size="small" aria-pressed={view === "list"} onClick={() => setView("list")}>任务列表</Button></div>
+            <div><h3 className="flex items-center gap-2 text-sm font-medium"><GitBranch size={16} />当前计划 · 专家任务流程</h3></div>
+            <div className="flex gap-1" role="group" aria-label="专家任务展示方式"><Button size="small" aria-pressed={view === "dag"} onClick={() => setView("dag")}>流程图</Button><Button size="small" aria-pressed={view === "list"} onClick={() => setView("list")}>任务列表</Button></div>
           </div>
           <div className="mb-2 flex flex-wrap gap-3 text-xs text-subtext" aria-label="状态图例">{(["completed", "running", "blocked", "waiting"] as const).map((state) => <span key={state} className={`flex items-center gap-1 rounded border px-2 py-1 ${workflowTone[state]}`}><StateIcon state={state} />{workflowStateNames[state]}</span>)}</div>
           {!tasks.length ? <div className="rounded-lg border border-dashed border-border bg-surface p-8 text-center"><Users size={24} className="mx-auto mb-2 text-primary" /><p className="text-sm">主理人正在制定计划</p></div> : <>
-            {view === "dag" ? <div className="h-96 overflow-hidden rounded-lg border border-border bg-surface [&_.react-flow__controls-button]:bg-background [&_.react-flow__controls-button]:text-text [&_.react-flow__controls-button]:border-border [&_.react-flow__controls-button_svg]:fill-current" aria-label="专家任务依赖图">
+            {view === "dag" ? <div className="h-96 overflow-hidden rounded-lg border border-border bg-surface [&_.react-flow__controls-button]:bg-background [&_.react-flow__controls-button]:text-text [&_.react-flow__controls-button]:border-border [&_.react-flow__controls-button_svg]:fill-current" aria-label="专家任务流程图">
               <ReactFlow key={`${study.id}-${study.plans.at(-1)?.version}`} nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView minZoom={0.3} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} onNodeClick={(_, node) => setSelected(node.id)} proOptions={{ hideAttribution: true }}><Background /><Controls showInteractive={false} /></ReactFlow>
             </div> : <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">{tasks.map((task) => {
               const status = researchTaskStatus(study, task);
-              return <li key={task.id}><button type="button" aria-pressed={selected === task.id} onClick={() => setSelected(task.id)} className={`w-full rounded-lg border p-3 text-start ${workflowTone[status.state]} ${selected === task.id ? "ring-2 ring-primary" : ""}`}><strong className="text-sm">{task.agent?.name ?? expertRoles[task.role] ?? task.role}</strong><p className="mt-1 text-xs">{task.id} · {status.label}</p><p className="mt-1 text-xs text-subtext">前置：{task.dependsOn.join("、") || "无"}</p></button></li>;
+              return <li key={task.id}><button type="button" aria-pressed={selected === task.id} onClick={() => setSelected(task.id)} className={`w-full rounded-lg border p-3 text-start ${workflowTone[status.state]} ${selected === task.id ? "ring-2 ring-primary" : ""}`}><strong className="text-sm">{task.agent?.name ?? expertRoles[task.role] ?? task.role}</strong><p className="mt-1 text-xs">{task.id} · {status.label}</p>{task.dependsOn.length > 0 && <p className="mt-1 text-xs text-subtext">前置：{task.dependsOn.map((id) => { const parent = tasks.find((entry) => entry.id === id); return parent ? parent.agent?.name ?? expertRoles[parent.role] ?? parent.role : id; }).join("、")}</p>}</button></li>;
             })}</ul>}
             {selectedTask ? <TaskDetails study={study} task={selectedTask} runs={runs} onOpenSession={onOpenSession ? (id) => { onClose(); onOpenSession(id); } : undefined} /> : null}
           </>}
@@ -129,13 +122,16 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
   return embedded ? content : createPortal(<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3 sm:p-6" onClick={onClose}>{content}</div>, document.body);
 }
 export function TaskDetails({ study, task, runs, onOpenSession }: { study: ResearchStudy; task: ResearchTask; runs: { id: string; status: string; cancelRequested?: boolean }[]; onOpenSession?: (sessionId: string) => void }) {
+  const status = researchTaskStatus(study, task);
+  const planTasks = study.plans.at(-1)?.tasks ?? [];
+  const dependencyNames = task.dependsOn.map((id) => { const parent = planTasks.find((entry) => entry.id === id); return parent ? parent.agent?.name ?? expertRoles[parent.role] ?? parent.role : id; });
   return <section className="mt-3 rounded-lg border border-primary bg-primary-subtle p-4 text-sm" aria-label={`任务详情 ${task.id}`}>
-    <div className="flex flex-wrap justify-between gap-2"><strong>{task.agent?.name ?? expertRoles[task.role] ?? task.role} · {task.id}</strong><span className="text-primary">{researchTaskStatus(study, task).label}</span></div>
+    <div className="flex flex-wrap justify-between gap-2"><strong>{task.agent?.name ?? expertRoles[task.role] ?? task.role} · {task.id}</strong><span className="flex items-center gap-1 text-primary"><StateIcon state={status.state} />{status.label}</span></div>
     <p className="mt-2 whitespace-pre-wrap">{task.brief}</p>
-    <p className="mt-2 flex items-center gap-1 text-xs text-subtext"><ArrowRight size={12} />前置任务：{task.dependsOn.join("、") || "无"}</p>
+    {dependencyNames.length > 0 && <p className="mt-2 flex items-center gap-1 text-xs text-subtext"><ArrowRight size={12} />前置：{dependencyNames.join("、")}</p>}
     <p className="mt-1 text-xs text-subtext">要求产物：{task.outputs.join("、")}</p>
-    <div className="mt-3 rounded border border-border bg-background p-3"><p className="text-xs text-subtext">{task.sessionId ? "已派发至真实专家会话" : "尚未派发，未绑定专家会话"}</p>{task.sessionId && <><p className="mt-1 break-all font-mono text-xs text-muted">{task.sessionId}</p>{onOpenSession && <Button size="small" className="mt-2" onClick={() => onOpenSession(task.sessionId!)}>查看专家会话</Button>}</>}</div>
-    {task.artifacts.length > 0 ? <ul className="mt-2 flex flex-col gap-1 text-xs text-accent-green" aria-label="已验收产物">{task.artifacts.map((artifact) => <li key={artifact.path} className="break-all">{artifact.path} · {artifact.bytes} 字节</li>)}</ul> : <p className="mt-2 text-xs text-muted">暂无已验收产物</p>}
+    {task.sessionId && onOpenSession && <Button size="small" className="mt-3" title={task.sessionId} onClick={() => onOpenSession(task.sessionId!)}>查看专家对话</Button>}
+    {task.artifacts.length > 0 && <ul className="mt-3 flex flex-col gap-1 text-xs text-accent-green" aria-label="已交付产物">{task.artifacts.map((artifact) => <li key={artifact.path} className="break-all">{artifact.path} · {artifact.bytes} 字节</li>)}</ul>}
     {task.summary && <p className="mt-2 whitespace-pre-wrap">{task.summary}</p>}
     {task.runIds.map((id) => { const run = runs.find((entry) => entry.id === id); return <p key={id} className="mt-2 break-all font-mono text-xs">Run {id} · {run?.status ?? "状态未知"}{run?.cancelRequested ? " · 已请求取消" : ""}</p>; })}
   </section>;

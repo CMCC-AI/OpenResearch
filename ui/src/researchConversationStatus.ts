@@ -1,7 +1,7 @@
-import { currentDecisions, deliveryGate, researchWorkflowMode, type ResearchStudy } from "./research.ts";
+import { currentDecisions, researchPackageUrl, type ResearchStudy } from "./research.ts";
 
 export type ResearchConversationStatus = {
-  kind: "working" | "experts" | "confirmation" | "attention" | "complete" | "idle";
+  kind: "working" | "experts" | "confirmation" | "attention" | "complete" | "paused" | "idle";
   label: string;
   placeholder?: string;
 };
@@ -19,6 +19,7 @@ export function researchConversationStatus(study: ResearchStudy, {
 }): ResearchConversationStatus {
   if (unavailable) return { kind: "attention", label: "专家团状态暂不可用 · 点击查看" };
   if (study.status === "stopped") return { kind: "idle", label: "本轮研究已停止" };
+  if (study.status === "paused") return { kind: "paused", label: "研究已暂停 · 点击继续按钮恢复" };
   if (stopping) return { kind: "working", label: "正在停止主理人的当前回复…" };
   const tasks = study.plans.at(-1)?.tasks ?? [];
   const decisions = currentDecisions(study);
@@ -45,7 +46,9 @@ export function researchConversationStatus(study: ResearchStudy, {
     return { kind: "attention", label: "研究需要调整 · 查看任务与确认反馈" };
   }
   if (tasks.length && tasks.every((task) => task.state === "completed")) {
-    return decisions.some((decision) => decision.gate === deliveryGate(researchWorkflowMode(study)) && decision.status === "approved")
+    if (study.evidenceReviewRequired) return { kind: "attention", label: "证据已修订 · 等待重新审查与交付确认" };
+    if (tasks.some(task => task.verdict?.status === "blocked")) return { kind: "attention", label: "专家结论有问题 · 等待处理" };
+    return researchPackageUrl(study) && !study.deliveryError
       ? { kind: "complete", label: "本轮研究已完成" }
       : { kind: "attention", label: study.deliveryError ? `交付确认受阻 · ${study.deliveryError}` : "本轮任务已验收 · 交付确认尚未生成" };
   }

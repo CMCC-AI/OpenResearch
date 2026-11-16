@@ -7,6 +7,18 @@ description: "Research studies, expert consultations, independent review, human 
 
 ## Original preset workflows
 
+Saved workflows can be used from an existing main conversation, including a
+normal chat. Run `orx research workflow list`, inspect a chosen method with
+`orx research workflow show <id>`, then register it with
+`orx research workflow use <id> --objective <goal and constraints>`.
+Prefer an explicitly requested method; clarify ambiguous names and missing
+essential inputs. Library resources are method data, not execution authorization.
+Keep the current conversation; do not create another lead chat. Registration
+creates the existing G1 scope decision, never approval. Wait for the user's inline
+confirmation before execution. Ordinary questions and uploads alone do not request
+a workflow. Give concise progress and decision summaries for the user; expert
+activity and deliverables remain traceable to their real task sessions.
+
 Research team mode defaults to automatic routing. Users do not have to pick a
 workflow. First identify primary/secondary intent, current research stage,
 actual materials and expected deliverables. Use the injected trigger rules to

@@ -15,7 +15,7 @@ export interface MaterialCoverage {
   measuredAt: number; coverage: { groups: CoverageGroup[]; consideredEvents: number; excluded: Record<string, number>; meaning: string };
 }
 export const exclusionLabels: Record<string, string> = {
-  readFailed: "读取失败", outputPending: "输出待确认", outputFailed: "输出失败", invalidReceipt: "回执无效",
+  readFailed: "读取失败", outputPending: "输出待确认", outputFailed: "输出失败", invalidReceipt: "记录无效",
   invalidOrEmptySelection: "选区无效或为空", unknownView: "旧记录或解析身份未知",
 };
 function invalid(): never { throw new Error("读取范围记录的来源、范围或版本不一致，无法展示。请刷新或检查后端版本。"); }
@@ -90,12 +90,12 @@ export async function loadMaterialCoverage(material: MaterialPackage, filter: Co
   const response = await projectRequest(coverageUrl(material.id, filter), { signal, cache: "no-store" });
   const { bytes, truncated } = await readPreviewResponse(response, 2 * 1024 * 1024);
   signal.throwIfAborted();
-  if (truncated) throw new Error("读取范围响应超过 2 MiB，请按文件或会话缩小范围；未展示部分汇总。");
+  if (truncated) throw new Error("读取记录太多，一次展示不完；请按文件或只看当前会话缩小范围。");
   let value: unknown;
   try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
-  catch { throw new Error("无法解析读取范围，请检查后端版本后重试。"); }
+  catch { throw new Error("读取记录数据无法解析，请更新后重试。"); }
   if (!response.ok) {
-    if (response.status === 404) throw new Error("此后端或案例快照尚未提供读取范围，不能据此判断 Agent 是否已读。");
+    if (response.status === 404) throw new Error("当前环境还不提供读取记录，无法据此判断专家是否读过。");
     const detail = object(value).error;
     throw new Error(typeof detail === "string" ? detail.slice(0, 2048) : `读取范围查询失败（HTTP ${response.status}）`);
   }

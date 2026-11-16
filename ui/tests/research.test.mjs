@@ -35,7 +35,11 @@ test("current phase distinguishes independent review, blocking gates, and stoppe
   const value = study([task("review", "as-independent-reviewer", [], "running")], [gate("G1", "approved"), gate("G4", "pending")]);
   assert.equal(researchWorkflow(value).find((stage) => stage.id === "review").state, "running");
   assert.equal(researchWorkflow(value).find((stage) => stage.id === "delivery").state, "blocked");
-  assert.match(researchAttention(value), /G4/);
+  assert.match(researchAttention(value), /成果交付/);
+  value.status = "paused";
+  assert.equal(researchAttention(value), "研究已暂停 · 可继续");
+  assert.equal(researchTaskStatus(value, task("review", "as-independent-reviewer", [], "running")).state, "stopped");
+  assert.equal(researchTaskStatus(value, task("review", "as-independent-reviewer", [], "running")).label, "已暂停");
   value.status = "stopped";
   assert.equal(researchWorkflow(value).find((stage) => stage.id === "review").state, "stopped");
   assert.equal(researchAttention(value), "研究已停止");
@@ -67,7 +71,7 @@ test("plan revision and non-experimental consultations do not inherit obsolete p
   value.mode = "design";
   assert.equal(researchWorkflow(value).find((stage) => stage.id === "approval").state, "optional");
   assert.equal(researchWorkflow(value).find((stage) => stage.id === "delivery").state, "waiting");
-  assert.match(researchAttention(value), /G1/);
+  assert.match(researchAttention(value), /研究范围与目标/);
 });
 
 test("verdict gating, task approval, and bounded rework surface as task states", async () => {
@@ -84,12 +88,12 @@ test("verdict gating, task approval, and bounded rework surface as task states",
   const next = task("next", "as-research-synthesizer", ["strategy"]);
   const value = study([write, review, strategy, next], [gate("G1", "approved")]);
   assert.equal(researchTaskStatus(value, review).state, "blocked");
-  assert.match(researchTaskStatus(value, review).label, /结论阻塞/);
+  assert.match(researchTaskStatus(value, review).label, /结论有问题/);
   assert.equal(researchTaskStatus(value, write).state, "running");
   assert.match(researchTaskStatus(value, write).label, /返工修订中 · 第 1 轮/);
   assert.equal(researchTaskStatus(value, strategy).state, "blocked");
-  assert.match(researchTaskStatus(value, strategy).label, /待主理人放行/);
-  assert.match(researchTaskStatus(value, next).label, /等待主理人确认 strategy/);
+  assert.match(researchTaskStatus(value, strategy).label, /等待主理人批准/);
+  assert.match(researchTaskStatus(value, next).label, /等待主理人确认 文献检索策略专家/);
   value.decisions.push({ id: "g5", gate: "G5:strategy", status: "approved", version: 2, scope: "{}" });
   assert.equal(researchTaskStatus(value, strategy).label, "产物已验收");
   assert.match(researchTaskStatus(value, next).label, /已就绪/);

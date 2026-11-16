@@ -61,7 +61,7 @@ test('case copies resolve ranges without private fallback and missing snapshots 
       workspace: { projectId: 'project', sessionId: 'reader', responses: copied ? { [api.coverageUrl('package')]: payload() } : {}, assets: {} } }));
     try {
       if (copied) assert.equal((await api.loadMaterialCoverage(material, {}, new AbortController().signal)).coverage.groups.length, 1);
-      else await assert.rejects(api.loadMaterialCoverage(material, {}, new AbortController().signal), /不能据此判断/);
+      else await assert.rejects(api.loadMaterialCoverage(material, {}, new AbortController().signal), /无法据此判断/);
     } finally { clear(); }
   }
   globalThis.fetch = original;
@@ -69,7 +69,7 @@ test('case copies resolve ranges without private fallback and missing snapshots 
 test('bounded response reading cancels oversized streams and never retries another endpoint', async () => {
   const original = globalThis.fetch; let calls = 0, cancelled = false;
   globalThis.fetch = async () => { calls++; return new Response(new ReadableStream({ pull(controller) { controller.enqueue(new Uint8Array(256 * 1024)); }, cancel() { cancelled = true; } })); };
-  try { await assert.rejects(api.loadMaterialCoverage(material, {}, new AbortController().signal), /超过 2 MiB/); assert.equal(calls, 1); assert.equal(cancelled, true); }
+  try { await assert.rejects(api.loadMaterialCoverage(material, {}, new AbortController().signal), /一次展示不完/); assert.equal(calls, 1); assert.equal(cancelled, true); }
   finally { globalThis.fetch = original; }
 });
 test('backend failures and HTML do not become empty reading results', async () => {
@@ -115,7 +115,7 @@ test('failures remain explicit and retry clears stale errors', async () => {
   nodes(tree).find(n => n.type === 'button' && n.props.children === '重试读取范围').props.onClick();
   assert.match(renderToStaticMarkup(app.render()), /正在汇总/); app.flush();
   app.calls[1].resolve({ ...payload(), coverage:{ groups:[], consideredEvents:0, excluded:{}, meaning:'none' } }); await tick();
-  assert.match(renderToStaticMarkup(app.render()), /不能证明 Agent 未通过其他工具读取/); app.unmount();
+  assert.match(renderToStaticMarkup(app.render()), /专家也可能通过其他方式读过/); app.unmount();
 });
 test('row rendering separates task/plan and page scope, escapes source data, and exposes full identity', () => {
   const app = setup(), value = payload().coverage.groups[0]; value.scope.path = '<script>source</script>'; value.scope.format = 'pdf'; value.scope.page = 2;

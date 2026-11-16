@@ -173,6 +173,86 @@ pub(super) async fn end(
     .map_err(|error| ApiError::from(anyhow!("research end task failed: {error}")))?
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct PauseReq {
+    version: u32,
+}
+
+pub(super) async fn pause(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<PauseReq>,
+) -> ApiResult {
+    browser_decision(&headers)?;
+    reject_if_stopping(&state)?;
+    reject_if_moving(&state)?;
+    tokio::spawn(async move {
+        let gate = state.data_dir_gate.clone().lock_owned().await;
+        reject_if_stopping(&state)?;
+        reject_if_moving(&state)?;
+        // Flip the study to paused first: expert settlement then retires
+        // silently, so interrupting the sessions below cannot fail tasks.
+        let (sessions, lead) = blocking_task(move || {
+            let _gate = gate;
+            let store = Store::open()?;
+            let sessions = store.research_pause(&id, req.version)?;
+            Ok::<_, crate::error::Error>((sessions, store.research_study(&id)?.session_id))
+        })
+        .await
+        .map_err(|error| ApiError::from(anyhow!("research pause failed: {error}")))?
+        .map_err(bad_request)?;
+        // Interrupt the lead's in-flight turn plus every unbound expert session.
+        let mut interrupted = Vec::new();
+        for session in sessions.iter().chain(std::iter::once(&lead)) {
+            if state.chat.interrupt_by_user(session).await.is_ok() {
+                interrupted.push(session.clone());
+            }
+        }
+        Ok(Json(json!({"ok": true, "interrupted": interrupted})))
+    })
+    .await
+    .map_err(|error| ApiError::from(anyhow!("research pause task failed: {error}")))?
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ResumeReq {
+    version: u32,
+}
+
+pub(super) async fn resume(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<ResumeReq>,
+) -> ApiResult {
+    browser_decision(&headers)?;
+    reject_if_stopping(&state)?;
+    reject_if_moving(&state)?;
+    tokio::spawn(async move {
+        let gate = state.data_dir_gate.clone().lock_owned().await;
+        reject_if_stopping(&state)?;
+        reject_if_moving(&state)?;
+        blocking_api(move || {
+            let _gate = gate;
+            let store = Store::open().map_err(bad_request)?;
+            store
+                .research_resume(&id, req.version)
+                .map_err(bad_request)?;
+            // Continue where the study left off instead of waiting for the
+            // background reconcile to notice the reactivated study.
+            crate::commands::research_dispatch::auto_dispatch_sync(&store, &id)
+                .map_err(bad_request)?;
+            Ok(Json(json!({"ok": true})))
+        })
+        .await
+    })
+    .await
+    .map_err(|error| ApiError::from(anyhow!("research resume task failed: {error}")))?
+}
+
 pub(super) async fn decide(
     State(state): State<AppState>,
     Path((id, decision)): Path<(String, String)>,

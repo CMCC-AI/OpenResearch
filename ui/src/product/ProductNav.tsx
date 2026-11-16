@@ -20,8 +20,9 @@ const productLinks = [
 ];
 
 function WorkflowNavigationLink({ projectId, active }: { projectId?: string; active: boolean }) {
-  const content = <><Workflow size={18} className="shrink-0" /><span className="research-nav-label">工作流编排</span></>;
-  const props = { title: "工作流编排", "aria-label": "工作流编排", "aria-current": active ? "page" as const : undefined, className: "product-nav-item flex h-9 items-center gap-2.5 rounded-xl px-3 text-sm font-medium text-text no-underline" };
+  const label = projectId ? "使用工作流" : "工作流编排";
+  const content = <><Workflow size={18} className="shrink-0" /><span className="research-nav-label">{label}</span></>;
+  const props = { title: label, "aria-label": label, "aria-current": active ? "page" as const : undefined, className: "product-nav-item flex h-9 items-center gap-2.5 rounded-xl px-3 text-sm font-medium text-text no-underline" };
   return projectId
     ? <Link to="/projects/$projectId/workflows" params={{ projectId }} {...props}>{content}</Link>
     : <Link to="/workflows" {...props}>{content}</Link>;

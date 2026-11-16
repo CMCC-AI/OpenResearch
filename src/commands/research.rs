@@ -17,6 +17,11 @@ pub struct ResearchArgs {
 pub enum ResearchCommand {
     Status,
     Roles,
+    /// Inspect saved methods or use one in the current conversation.
+    Workflow {
+        #[command(subcommand)]
+        command: WorkflowCommand,
+    },
     Plan {
         #[arg(long)]
         file: String,
@@ -52,6 +57,18 @@ pub enum ResearchCommand {
     /// Stream the approved immutable research ZIP to stdout.
     Export,
 }
+#[derive(Subcommand, Debug)]
+pub enum WorkflowCommand {
+    List,
+    Show {
+        id: String,
+    },
+    Use {
+        id: String,
+        #[arg(long)]
+        objective: String,
+    },
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Finish {
@@ -71,6 +88,27 @@ fn read_request<T: serde::de::DeserializeOwned>(reader: impl Read) -> Result<T> 
 }
 pub async fn run(args: ResearchArgs) -> Result<()> {
     let store = Store::open()?;
+    if let ResearchCommand::Workflow { command } = args.command {
+        let value = match command {
+            WorkflowCommand::List => serde_json::to_value(store.list_workflow_drafts()?.iter().map(|draft| {
+                serde_json::json!({"id":draft.id,"name":draft.input.name,"updatedAt":draft.updated_at,"workflow":draft.input.workflow,"taskCount":draft.input.tasks.len()})
+            }).collect::<Vec<_>>())?,
+            WorkflowCommand::Show { id } => serde_json::to_value(
+                store
+                    .workflow_draft_by_id(&id)?
+                    .ok_or_else(|| anyhow!("工作流不存在"))?,
+            )?,
+            WorkflowCommand::Use { id, objective } => {
+                let session = crate::local::chat::launching_chat_session()
+                    .ok_or_else(|| anyhow!("请在当前主聊天中使用工作流"))?;
+                let (study_id, version, deduplicated) =
+                    store.research_use_workflow(&session, &id, &objective)?;
+                serde_json::json!({"studyId": study_id, "sessionId": session, "version": version, "deduplicated": deduplicated, "next": "在当前聊天等待用户确认研究范围；不要自行批准或提前派发。"})
+            }
+        };
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
     if matches!(args.command, ResearchCommand::Roles) {
         for (id, prompt) in crate::local::research::ROLES {
             println!("{}: {}", id, prompt.lines().next().unwrap_or(id));
@@ -94,6 +132,7 @@ pub async fn run(args: ResearchArgs) -> Result<()> {
             );
         }
         ResearchCommand::Roles => unreachable!(),
+        ResearchCommand::Workflow { .. } => unreachable!(),
         ResearchCommand::Plan { file } => {
             require_lead(lead)?;
             store.research_set_plan(&study.id, read::<PlanInput>(&file)?)?;
@@ -192,7 +231,7 @@ pub async fn run(args: ResearchArgs) -> Result<()> {
             require_lead(lead)?;
             store.research_request_package(&study.id)?;
             println!(
-                "已封存研究包并申请 {} 人工确认；确认后可在科研专家团下载，或运行 orx research export 导出 ZIP。",
+                "已封存研究包并申请 {} 人工确认；确认后可运行 orx research export 导出 ZIP。",
                 crate::local::research::delivery_gate(study.workflow_mode())
             );
         }

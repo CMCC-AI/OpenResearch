@@ -43,7 +43,16 @@ test("completion requires accepted tasks and the current plan's result confirmat
   value.decisions = [decision("approved", 0)];
   assert.notEqual(status(value).kind, "complete");
   value.decisions.push(decision("approved"));
+  assert.notEqual(status(value).kind, "complete");
+  value.decisions.at(-1).scopeHash = "current";
+  value.deliverySnapshot = { scopeHash: "current" };
   assert.equal(status(value).kind, "complete");
+  value.evidenceReviewRequired = true;
+  assert.equal(status(value).kind, "attention");
+  value.evidenceReviewRequired = false;
+  value.plans[0].tasks[0].verdict = { status: "blocked", reasons: ["Review required"] };
+  assert.equal(status(value).kind, "attention");
+  value.plans[0].tasks[0].verdict = null;
   assert.equal(status(value, { busy: true }).kind, "working");
   assert.equal(status(value, { busySessions: new Set(["expert"]) }).kind, "experts");
   for (const runState of ["starting", "running", "unknown"]) {
@@ -59,6 +68,8 @@ test("routed proposal studies use G3 confirmation without implying experiment ex
   value.plans[0].workflow = "proposal";
   assert.notEqual(status(value).kind, "complete");
   value.decisions.push(decision("approved", 1, "G3"));
+  value.decisions.at(-1).scopeHash = "proposal";
+  value.deliverySnapshot = { scopeHash: "proposal" };
   assert.equal(status(value).kind, "complete");
 });
 
@@ -67,6 +78,8 @@ test("failed, stopped, unavailable, and unplanned studies never appear completed
   assert.equal(status(study([task("completed")], [decision("rejected")])).kind, "attention");
   assert.equal(status(study([])).kind, "idle");
   assert.match(status({ ...study(), status: "stopped" }).label, /已停止/);
+  assert.equal(status({ ...study(), status: "paused" }).kind, "paused");
+  assert.match(status({ ...study(), status: "paused" }).label, /已暂停/);
   assert.match(status(study(), { stopping: true }).label, /停止主理人的当前回复/);
   assert.equal(status(study([task("completed")], [decision("approved")]), { unavailable: true }).kind, "attention");
 });

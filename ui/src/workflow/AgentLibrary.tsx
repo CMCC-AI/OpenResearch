@@ -87,7 +87,7 @@ export function AgentLibrary({ agents, onChanged }: { agents: WorkflowAgent[]; o
         : await createWorkflowAgent(form);
       await onChanged();
       setSelectedId(saved.id);
-      showAlert(selected ? "Agent 已保存为新版本，既有研究仍使用原快照" : "自定义 Agent 已创建", "success");
+      showAlert(selected ? "Agent 已保存为新版本；已经在跑的研究继续用原来的版本" : "自定义 Agent 已创建", "success");
     } catch (error) {
       showAlert(error instanceof Error ? error.message : String(error), "error");
     } finally {
@@ -96,7 +96,7 @@ export function AgentLibrary({ agents, onChanged }: { agents: WorkflowAgent[]; o
   }
 
   async function remove(agent: WorkflowAgent) {
-    if (!window.confirm(`删除自定义 Agent“${agent.name}”？已登记计划中的提示词快照会保留。`)) return;
+    if (!window.confirm(`删除自定义 Agent“${agent.name}”？已经在跑的计划仍保留当时的提示词。`)) return;
     setBusy(true);
     try {
       await deleteWorkflowAgent(agent.id);
@@ -144,7 +144,7 @@ export function AgentLibrary({ agents, onChanged }: { agents: WorkflowAgent[]; o
         <div><h2 className="m-0 text-lg font-normal">{selected ? `编辑 ${selected.name}` : "创建自定义 Agent"}</h2><p className="mb-0 mt-1 text-sm text-subtext">自定义 Agent 可与内置专家混合编排。保存修改会递增版本，不会改写已批准任务。</p></div>
         <label className="flex flex-col gap-1.5 text-sm">名称<Input value={form.name} maxLength={120} placeholder="例如：论文统计审查员" onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
         <label className="flex flex-col gap-1.5 text-sm">能力说明<Input value={form.description} maxLength={2048} placeholder="用于识别该 Agent 的职责和适用范围" onChange={(event) => setForm({ ...form, description: event.target.value })} /></label>
-        <label className="flex flex-col gap-1.5 text-sm">角色提示词<textarea className="min-h-64 resize-y rounded-md border border-border bg-background p-3 text-sm text-text outline-none focus:border-text" value={form.prompt} maxLength={24000} placeholder="说明角色职责、使用证据的方式、输出契约和禁止事项" onChange={(event) => setForm({ ...form, prompt: event.target.value })} /></label>
+        <label className="flex flex-col gap-1.5 text-sm">角色提示词<textarea className="min-h-64 resize-y rounded-md border border-border bg-background p-3 text-sm text-text outline-none focus:border-text" value={form.prompt} maxLength={24000} placeholder="说明这个专家的职责、怎么使用证据、要输出什么、不能做什么" onChange={(event) => setForm({ ...form, prompt: event.target.value })} /></label>
         <div className="flex items-center justify-between gap-3">
           <div>{selected && !selected.builtIn && <Button variant="danger" disabled={busy} onClick={() => void remove(selected)}><Trash2 size={14} />删除</Button>}</div>
           <Button variant="primary" disabled={busy || !form.name.trim() || !form.prompt.trim()} onClick={() => void save()}>{selected ? "保存新版本" : "创建 Agent"}</Button>

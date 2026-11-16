@@ -52,7 +52,7 @@ export function WorkspaceTools({ placement = "floating", expanded, experiments, 
   const computeLabel = defaultBackend ? TARGET_LABELS[defaultBackend]() : compute.isPending ? "…" : compute.isError ? m.model_picker_unavailable() : m.settings_not_set();
   const items = [
     ...(readOnly ? [] : [
-      { id: "workflow", label: "科研工作流", Icon: WorkflowIcon, onClick: onWorkflow },
+      { id: "workflow", label: "使用工作流", Icon: WorkflowIcon, onClick: onWorkflow },
       { id: "deliverables", label: "研究成果", Icon: Trophy, onClick: onDeliverables },
     ]),
     { id: "materials", label: "研究材料", Icon: FolderOpen, onClick: onMaterials },

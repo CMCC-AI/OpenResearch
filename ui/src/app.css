@@ -425,22 +425,22 @@
   }
 }
 
-/* 工作流画布：默认连接触点只有 6px，难点中；放大为 14px 并半悬出节点边缘。 */
+/* 工作流画布：默认连接触点只有 6px，难点中；放大为 16px 并在静止时保持可见，圆点即“从这里连线”。 */
 .workflow-canvas .react-flow__handle {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border: 2px solid var(--base);
   background: var(--primary);
-  opacity: 0.4;
+  opacity: 0.75;
   transition: opacity 150ms ease;
 }
 
 .workflow-canvas .react-flow__handle-top {
-  top: -7px;
+  top: -8px;
 }
 
 .workflow-canvas .react-flow__handle-bottom {
-  bottom: -7px;
+  bottom: -8px;
 }
 
 .workflow-canvas .react-flow__node:hover .react-flow__handle,
@@ -448,4 +448,57 @@
 .workflow-canvas .react-flow__handle.connectionindicator,
 .workflow-canvas .react-flow__handle.valid {
   opacity: 1;
+}
+
+/* 系统环节（G1/G4/交付）的圆点只是自动约束线的锚点，不能拖：缩小并灰化，与专家任务的可拖圆点区分。 */
+.workflow-canvas .react-flow__handle:not(.connectionindicator) {
+  width: 10px;
+  height: 10px;
+  border-color: var(--border);
+  background: var(--subtext);
+  opacity: 0.5;
+}
+
+.workflow-canvas .react-flow__handle-top:not(.connectionindicator) {
+  top: -5px;
+}
+
+.workflow-canvas .react-flow__handle-bottom:not(.connectionindicator) {
+  bottom: -5px;
+}
+
+/* 改接点（拖动已有连线端点换专家）：静止时隐形避免和节点圆点叠影，悬停连线或改接点时亮出。 */
+.workflow-canvas .react-flow__edgeupdater {
+  fill: var(--primary);
+  stroke: var(--base);
+  stroke-width: 2;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.workflow-canvas .react-flow__edge:hover .react-flow__edgeupdater,
+.workflow-canvas .react-flow__edgeupdater:hover,
+.workflow-canvas .react-flow__edge.selected .react-flow__edgeupdater,
+.workflow-canvas .react-flow__edge.updating .react-flow__edgeupdater {
+  opacity: 1;
+}
+
+/* 缩放控件跟随主题：ReactFlow 默认白底控件在深色画布上突兀。 */
+.workflow-canvas .react-flow__controls-button {
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+  color: var(--text);
+}
+
+.workflow-canvas .react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.workflow-canvas .react-flow__controls-button:hover:not(:disabled) {
+  background: var(--surface);
+}
+
+.workflow-canvas .react-flow__controls-button:disabled {
+  opacity: 0.45;
 }

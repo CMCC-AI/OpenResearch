@@ -1,4 +1,4 @@
-// 输入绑定、任务确认（G5）、结论门控与有界返工的编排语义测试。
+// 输入绑定、任务确认（G5）、结论把关与有界返工的编排语义测试。
 
 fn finish_with_verdict(store: &Store, study: &Study, task: &str, verdict: &str, reasons: &[&str]) {
     let root = store.research_root(study).unwrap();
@@ -109,7 +109,7 @@ fn pass_verdict_allows_downstream_and_blocked_verdict_refuses_delivery() {
     bind(&store, &study, "review", "s2");
     finish_with_verdict(&store, &study, "review", "pass", &[]);
     let saved = store.research_study(&study.id).unwrap();
-    // review 未启用结论门控，即使写了结论文件也不参与验收。
+    // review 未启用结论把关，即使写了结论文件也不参与验收。
     assert!(saved.task("review").unwrap().verdict.is_none());
     assert!(saved.ready("audit").is_ok());
     // 审计任务启用门控并给出阻塞结论后，全部任务已完成但交付必须被拒绝。
@@ -274,11 +274,11 @@ fn dispatch_prompt_injects_inputs_verdict_and_feedback() {
     let prompt = crate::commands::research_dispatch::task_dispatch_prompt(&store, &saved, entry)
         .unwrap();
     assert!(prompt.contains("返工意见"));
-    // 审稿任务：提示词携带输入产物哈希与结论门控要求。
+    // 审稿任务：提示词携带输入产物哈希与结论把关要求。
     let entry = saved.task("review").unwrap();
     let prompt = crate::commands::research_dispatch::task_dispatch_prompt(&store, &saved, entry)
         .unwrap();
     assert!(prompt.contains("design.md（sha256 前 12 位："));
     assert!(prompt.contains("review.md.verdict.json"));
-    assert!(prompt.contains("结论门控"));
+    assert!(prompt.contains("结论把关"));
 }

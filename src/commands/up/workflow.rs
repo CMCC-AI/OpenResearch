@@ -123,45 +123,74 @@ pub(super) async fn delete_agent(Path(id): Path<String>) -> ApiResult {
     .await
 }
 
-pub(super) async fn global_draft() -> ApiResult {
+/// The workflow library is shared: every project lists and runs every draft,
+/// `projectId` only records where a workflow was created ("" = globally).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CreateWorkflow {
+    #[serde(flatten)]
+    input: WorkflowDraftInput,
+    #[serde(default)]
+    project_id: String,
+}
+
+pub(super) async fn list_workflows() -> ApiResult {
     blocking_api(move || {
-        let draft =
-            Store::open()?.workflow_draft(crate::store::workflow::GLOBAL_WORKFLOW_DRAFT_PROJECT)?;
-        Ok(Json(json!({"draft":draft})))
+        let drafts = Store::open()?.list_workflow_drafts()?;
+        Ok(Json(json!({"drafts":drafts})))
     })
     .await
 }
 
-pub(super) async fn save_global_draft(Json(input): Json<WorkflowDraftInput>) -> ApiResult {
+pub(super) async fn create_workflow(Json(request): Json<CreateWorkflow>) -> ApiResult {
     blocking_api(move || {
         let draft = Store::open()?
-            .save_workflow_draft(crate::store::workflow::GLOBAL_WORKFLOW_DRAFT_PROJECT, input)
+            .create_workflow_draft(&request.project_id, request.input)
             .map_err(bad_request)?;
         Ok(Json(json!({"draft":draft})))
     })
     .await
 }
 
-pub(super) async fn draft(Path(project): Path<String>) -> ApiResult {
+pub(super) async fn get_workflow(Path(id): Path<String>) -> ApiResult {
     blocking_api(move || {
-        let store = Store::open()?;
-        store
-            .get_local_project(&project)?
-            .ok_or_else(|| not_found("project"))?;
-        Ok(Json(json!({"draft":store.workflow_draft(&project)?})))
+        let draft = Store::open()?
+            .workflow_draft_by_id(&id)?
+            .ok_or_else(|| not_found("workflow"))?;
+        Ok(Json(json!({"draft":draft})))
     })
     .await
 }
 
-pub(super) async fn save_draft(
-    Path(project): Path<String>,
+pub(super) async fn save_workflow(
+    Path(id): Path<String>,
     Json(input): Json<WorkflowDraftInput>,
 ) -> ApiResult {
     blocking_api(move || {
         let draft = Store::open()?
-            .save_workflow_draft(&project, input)
+            .save_workflow_draft_by_id(&id, input)
             .map_err(bad_request)?;
         Ok(Json(json!({"draft":draft})))
+    })
+    .await
+}
+
+pub(super) async fn copy_workflow(Path(id): Path<String>) -> ApiResult {
+    blocking_api(move || {
+        let draft = Store::open()?
+            .copy_workflow_draft(&id)
+            .map_err(bad_request)?;
+        Ok(Json(json!({"draft":draft})))
+    })
+    .await
+}
+
+pub(super) async fn delete_workflow(Path(id): Path<String>) -> ApiResult {
+    blocking_api(move || {
+        if !Store::open()?.delete_workflow_draft(&id)? {
+            return Err(not_found("workflow"));
+        }
+        Ok(Json(json!({"ok":true})))
     })
     .await
 }
@@ -187,28 +216,12 @@ pub(super) async fn submit_draft(
             return Err(bad_request("研究目标不能超过 24000 个字符"));
         }
         let store = Store::open()?;
-        let study = store
-            .research_for_session(&session_id)?
-            .ok_or_else(|| bad_request("该会话未启用科研专家模式"))?;
-        let draft = store
-            .workflow_draft_by_id(&request.draft_id)?
-            .ok_or_else(|| not_found("workflow draft"))?;
-        let draft = if draft.project_id == crate::store::workflow::GLOBAL_WORKFLOW_DRAFT_PROJECT {
-            store
-                .save_workflow_draft(&study.project_id, draft.input)
-                .map_err(bad_request)?
-        } else {
-            if draft.project_id != study.project_id {
-                return Err(bad_request("工作流草稿属于其他项目"));
-            }
-            draft
-        };
-        let (version, deduplicated) = store
-            .research_set_plan_idempotent(&study.id, draft.input.into_plan(objective))
+        let (study_id, version, deduplicated) = store
+            .research_use_workflow(&session_id, &request.draft_id, objective)
             .map_err(bad_request)?;
         Ok(Json(json!({
-            "studyId": study.id,
-            "sessionId": study.session_id,
+            "studyId": study_id,
+            "sessionId": session_id,
             "version": version,
             "deduplicated": deduplicated,
         })))

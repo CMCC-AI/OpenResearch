@@ -115,7 +115,7 @@ pub(crate) enum ResearchWakeAction {
 }
 
 /// 组装专家任务的派发提示词：职责与产物要求之外，按需注入
-/// 输入绑定清单、结论门控写作要求与返工意见，自动派发与 CLI 手动派发共用。
+/// 输入绑定清单、结论把关写作要求与返工意见，自动派发与 CLI 手动派发共用。
 pub(crate) fn task_dispatch_prompt(
     store: &Store,
     study: &crate::store::research::Study,
@@ -158,7 +158,7 @@ pub(crate) fn task_dispatch_prompt(
     let verdict_note = if entry.spec.gate_downstream {
         let sidecar = crate::store::research::verdict_path_for(&entry.spec.outputs[0]);
         format!(
-            "\n本任务启用结论门控：完成全部声明产物后，必须另外生成结论文件 {sidecar}（研究根目录相对路径，UTF-8 JSON），内容为 {{\"verdict\":\"pass\",\"reasons\":[]}} 或 {{\"verdict\":\"blocked\",\"reasons\":[\"具体阻塞项…\"]}}；结论为 blocked 时 reasons 必须给出可执行的修订意见，否则无法通过验收。"
+            "\n本任务启用结论把关：完成全部声明产物后，必须另外生成结论文件 {sidecar}（研究根目录相对路径，UTF-8 JSON），内容为 {{\"verdict\":\"pass\",\"reasons\":[]}} 或 {{\"verdict\":\"blocked\",\"reasons\":[\"具体阻塞项…\"]}}；结论为 blocked 时 reasons 必须给出可执行的修订意见，否则无法通过验收。"
         )
     } else {
         String::new()

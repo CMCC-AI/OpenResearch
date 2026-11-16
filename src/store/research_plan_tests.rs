@@ -37,7 +37,7 @@ fn plan_inheritance_hashing_allows_an_independent_writer() {
             tx.commit().unwrap();
             inspected += 1;
             Ok(artifact)
-        })
+        }, false)
         .unwrap();
     assert_eq!(inspected, 3);
     store.research_commit_plan(prepared).unwrap();
@@ -74,6 +74,7 @@ fn plan_inheritance_rejects_concurrent_document_and_activity_without_partial_wri
                 &study.id,
                 plan(),
                 files::PreparedArtifact::inspect,
+                false,
             )
             .unwrap();
         let other = Store::open_at(dir.path().to_path_buf()).unwrap();
@@ -146,6 +147,7 @@ fn plan_inheritance_rechecks_material_ancestry_and_legacy_context_at_commit() {
                 &study.id,
                 plan(),
                 files::PreparedArtifact::inspect,
+                false,
             )
             .unwrap();
         let other = Store::open_at(dir.path().to_path_buf()).unwrap();
@@ -191,6 +193,7 @@ fn plan_inheritance_rejects_post_hash_file_changes_and_preserves_the_old_plan() 
                 &study.id,
                 plan(),
                 files::PreparedArtifact::inspect,
+                false,
             )
             .unwrap();
         let root = store.research_root(&study).unwrap();
@@ -282,6 +285,7 @@ fn plan_inheritance_detects_retargeted_symlinks_and_restored_mtime() {
                 &study.id,
                 plan(),
                 files::PreparedArtifact::inspect,
+                false,
             )
             .unwrap();
         if retarget {

@@ -13,7 +13,7 @@ export const researchModes: Record<ResearchMode, string> = {
 export const researchStates: Record<string, string> = {
   pending: "待执行", running: "执行中 / 待验收", completed: "产物已验收", failed: "未通过", cancelled: "已取消",
 };
-export const gateNames: Record<string, string> = { G1: "研究范围与目标", G2: "资源与权限", G3: "实验方案与执行", G4: "研究包交付" };
+export const gateNames: Record<string, string> = { G1: "研究范围与目标", G2: "资源与权限", G3: "实验方案与执行", G4: "成果交付" };
 /** G5:{任务id} 是任务确认门：任务完成后需主理人批准才放行下游。 */
 export function gateDisplayName(gate: string): string {
   if (gate.startsWith("G5:")) return `任务确认 · ${gate.slice(3)}`;
@@ -28,6 +28,8 @@ export interface ResearchTaskVerdict {
 export interface ResearchTask {
   id: string; role: string; brief: string; dependsOn: string[]; outputs: string[];
   state: string; sessionId: string | null; summary: string | null;
+  previousSessions?: string[];
+  attempts?: number;
   runContract?: { experimentId: string } | null;
   agent?: { id: string; name: string; version: number; prompt: string } | null;
   artifacts: { path: string; sha256: string; bytes: number }[]; runIds: string[];
@@ -45,7 +47,7 @@ export interface ResearchDecision {
 }
 export interface ResearchStudy {
   id: string; sessionId: string; mode: ResearchMode; objective: string; status: string;
-  plans: { version: number; workflow?: PresetWorkflowMode | null; summary: string; tasks: ResearchTask[] }[];
+  plans: { version: number; workflow?: PresetWorkflowMode | null; workflowSource?: { id: string; name: string; updatedAt: number } | null; summary: string; tasks: ResearchTask[] }[];
   decisions: ResearchDecision[];
   deliveryError?: string | null;
   deliverySnapshot?: { scopeHash: string; identityHash: string; archive: { formatVersion: number; sha256: string; bytes: number; manifestSha256: string } };
@@ -131,7 +133,7 @@ export const expertRoles: Record<string, string> = {
   "as-outline-architect": "论证大纲专家",
   "as-paper-evidence-analyst": "论文证据分析专家",
   "as-quality-citation-auditor": "引用审计专家",
-  "as-research-package-curator": "研究包归档专家",
+  "as-research-package-curator": "成果归档专家",
   "as-research-planner": "研究规划专家",
   "as-research-synthesizer": "研究综合专家",
   "as-result-analyst": "结果分析专家",
@@ -141,14 +143,23 @@ export type WorkflowState = "waiting" | "running" | "completed" | "blocked" | "o
 export const workflowStateNames: Record<WorkflowState, string> = {
   waiting: "待推进", running: "进行中", completed: "已完成", blocked: "待处理", optional: "按需安排", stopped: "已停止",
 };
+/** Single state-to-colour language for every research view. */
+export const workflowTone: Record<WorkflowState, string> = {
+  completed: "border-accent-green bg-accent-green-subtle text-accent-green",
+  running: "border-primary bg-primary-subtle text-primary",
+  blocked: "border-accent-amber bg-accent-amber-subtle text-accent-amber",
+  waiting: "border-border bg-background text-subtext",
+  optional: "border-border bg-surface text-muted",
+  stopped: "border-border bg-surface text-subtext",
+};
 export const researchStages = [
   { id: "intake", title: "目标与材料", description: "澄清目标，盘点已有论文、代码和数据", gates: [], roles: ["as-intent-router", "as-asset-auditor", "as-research-planner"] },
   { id: "scope", title: "范围确认", description: "确认研究边界、交付物和停止条件", gates: ["G1"], roles: [] },
   { id: "design", title: "文献与方案", description: "检索证据，设计方法、基线与评价方案", gates: [], roles: ["as-literature-researcher", "as-literature-strategist", "as-paper-evidence-analyst", "as-feasibility-advisor", "as-methodology-designer", "as-experiment-designer", "as-code-data-engineer", "as-outline-architect"] },
   { id: "approval", title: "实验授权", description: "确认算力资源、代码版本和运行方案", gates: ["G2", "G3"], roles: [] },
   { id: "execution", title: "实验与论证", description: "运行实验，分析结果并形成有证据的结论", gates: [], roles: ["as-experiment-operator", "as-experiment-diagnostician", "as-result-analyst", "as-research-synthesizer", "as-evidence-writer", "as-figure-citation-editor"] },
-  { id: "review", title: "独立审查", description: "独立审稿与引用核验，反馈阻塞问题", gates: [], roles: ["as-independent-reviewer", "as-quality-citation-auditor"] },
-  { id: "delivery", title: "研究交付", description: "归档产物和证据，确认研究包", gates: ["G4"], roles: ["as-research-package-curator"] },
+  { id: "review", title: "独立审查", description: "独立审稿与引用核验，提出需要处理的问题", gates: [], roles: ["as-independent-reviewer", "as-quality-citation-auditor"] },
+  { id: "delivery", title: "研究交付", description: "归档产物和证据，确认成果交付", gates: ["G4"], roles: ["as-research-package-curator"] },
 ] as const;
 
 /** Derived from persisted facts; the overview is a guide, not a second scheduler. */
@@ -179,18 +190,19 @@ export function researchWorkflow(study: ResearchStudy) {
 
 export function researchAttention(study: ResearchStudy) {
   if (study.status === "stopped") return "研究已停止";
+  if (study.status === "paused") return "研究已暂停 · 可继续";
   const decisions = currentDecisions(study);
   const rejected = decisions.filter((decision) => decision.status === "rejected");
-  if (rejected.length) return `${[...new Set(rejected.map((decision) => decision.gate.startsWith("G5:") ? gateDisplayName(decision.gate) : decision.gate))].join(" / ")} 已拒绝 · 等待调整计划`;
+  if (rejected.length) return `${[...new Set(rejected.map((decision) => gateDisplayName(decision.gate)))].join(" / ")} 已拒绝 · 等待调整计划`;
   const pending = decisions.filter((decision) => decision.status === "pending");
-  if (pending.length) return `等待你确认 ${[...new Set(pending.map((decision) => decision.gate.startsWith("G5:") ? gateDisplayName(decision.gate) : decision.gate))].join(" / ")}`;
+  if (pending.length) return `等待你确认 ${[...new Set(pending.map((decision) => gateDisplayName(decision.gate)))].join(" / ")}`;
   if (study.evidenceReviewRequired) return "证据已修订 · 等待重新审查与交付确认";
   const tasks = study.plans.at(-1)?.tasks ?? [];
   const failed = tasks.filter((task) => ["failed", "cancelled"].includes(task.state));
   if (failed.length) return `${failed.length} 个任务需处理`;
   const active = tasks.filter((task) => task.state === "running");
   if (active.length) return `${active.length} 位专家执行中 / 待验收`;
-  if (decisions.some((decision) => decision.gate === deliveryGate(researchWorkflowMode(study)) && decision.status === "approved")) return researchWorkflowMode(study) === "proposal" ? "实验方案已确认 · 未授权运行实验" : "当前研究包已批准";
+  if (decisions.some((decision) => decision.gate === deliveryGate(researchWorkflowMode(study)) && decision.status === "approved")) return researchWorkflowMode(study) === "proposal" ? "实验方案已确认 · 未授权运行实验" : "成果已确认";
   if (!tasks.length) return "主理人正在梳理目标与材料";
   if (tasks.every((task) => task.state === "completed")) return study.deliveryError ? `交付确认受阻 · ${study.deliveryError}` : "任务已验收 · 交付确认尚未生成";
   return "计划已登记 · 等待推进就绪任务";
@@ -199,32 +211,33 @@ export function researchAttention(study: ResearchStudy) {
 export function researchTaskStatus(study: ResearchStudy, task: ResearchTask): { state: WorkflowState; label: string } {
   if (study.staleReviewTaskIds?.includes(task.id) && task.state === "completed") return { state: "blocked", label: "证据已修订 · 等待重新审查" };
   if (task.state === "completed") {
-    if (task.verdict?.status === "blocked") return { state: "blocked", label: "结论阻塞 · 等待主理人处理" };
-    if (task.requiresApproval && !currentDecisions(study).some((decision) => decision.gate === `G5:${task.id}` && decision.status === "approved")) return { state: "blocked", label: "已验收 · 待主理人放行" };
+    if (task.verdict?.status === "blocked") return { state: "blocked", label: "结论有问题 · 等待主理人处理" };
+    if (task.requiresApproval && !currentDecisions(study).some((decision) => decision.gate === `G5:${task.id}` && decision.status === "approved")) return { state: "blocked", label: "已验收 · 等待主理人批准" };
     return { state: "completed", label: "产物已验收" };
   }
+  if (study.status === "paused") return { state: "stopped", label: "已暂停" };
   if (study.status === "stopped") return { state: "stopped", label: "已停止" };
   if (task.state === "running") return { state: "running", label: "执行中 / 待验收" };
   if (["failed", "cancelled"].includes(task.state)) return { state: "blocked", label: researchStates[task.state] };
   if (task.state === "pending" && (task.reworkCount ?? 0) > 0) return { state: "running", label: `返工修订中 · 第 ${task.reworkCount} 轮（上限 ${task.maxRework ?? 0} 轮）` };
   const decisions = currentDecisions(study);
-  if (!decisions.some((decision) => decision.gate === "G1" && decision.status === "approved")) return { state: "blocked", label: "等待 G1 范围确认" };
+  if (!decisions.some((decision) => decision.gate === "G1" && decision.status === "approved")) return { state: "blocked", label: "等待你确认研究范围" };
   const tasks = study.plans.at(-1)?.tasks ?? [];
   const depTasks = task.dependsOn.map((id) => tasks.find((entry) => entry.id === id));
   if (depTasks.some((dep) => dep?.state !== "completed")) return { state: "waiting", label: "等待前置任务" };
   const blockedDep = depTasks.find((dep) => dep?.verdict?.status === "blocked");
-  if (blockedDep) return { state: "blocked", label: `前置结论阻塞 · ${blockedDep.id}` };
+  if (blockedDep) return { state: "blocked", label: `前置结论有问题 · ${blockedDep.agent?.name ?? expertRoles[blockedDep.role] ?? blockedDep.role}` };
   const unapprovedDep = depTasks.find((dep) => dep?.requiresApproval && !decisions.some((decision) => decision.gate === `G5:${dep.id}` && decision.status === "approved"));
-  if (unapprovedDep) return { state: "blocked", label: `等待主理人确认 ${unapprovedDep.id}` };
+  if (unapprovedDep) return { state: "blocked", label: `等待主理人确认 ${unapprovedDep.agent?.name ?? expertRoles[unapprovedDep.role] ?? unapprovedDep.role}` };
   if (task.role === "as-experiment-operator") {
     const contract = task.runContract;
-    if (!contract) return { state: "waiting", label: "等待准备运行契约" };
+    if (!contract) return { state: "waiting", label: "正在准备实验运行" };
     const approvals = decisions.filter((decision) => {
       try { return JSON.parse(decision.scope).experimentId === contract.experimentId; } catch { return false; }
     });
     if (["G2", "G3"].some((gate) => !approvals.some((decision) => decision.gate === gate && decision.status === "approved"))) return { state: "blocked", label: "等待 G2 / G3 授权" };
   }
-  return { state: "waiting", label: "已就绪 · 待派发" };
+  return { state: "waiting", label: "已就绪 · 即将开始" };
 }
 
 /** Topological ranks preserve real parallel branches, independent of plan order. */
@@ -291,11 +304,11 @@ export const consultationModules: Record<ConsultationMode, ConsultationModule> =
   review: {
     purpose: "独立检查结论、论证和引用是否得到证据支持。",
     inputs: "待审报告 / 论文、引用来源、已有实验结果与日志，并说明希望重点审查的部分。",
-    deliverables: "独立审稿报告、引用核验记录、阻塞问题与改进清单。",
+    deliverables: "独立审稿报告、引用核验记录、需要处理的问题与改进清单。",
     requiredRoles: ["as-independent-reviewer", "as-quality-citation-auditor"],
     steps: [
       { title: "盘点报告与证据", description: "整理待审结论及其来源。", roles: ["as-intent-router", "as-asset-auditor", "as-paper-evidence-analyst"] },
-      { title: "独立审查论证", description: "检查方法、结论和研究局限，报告阻塞问题。", roles: ["as-independent-reviewer"] },
+      { title: "独立审查论证", description: "检查方法、结论和研究局限，报告需要处理的问题。", roles: ["as-independent-reviewer"] },
       { title: "核验引用", description: "在独立审稿之后审计引用与证据支持。", roles: ["as-quality-citation-auditor"] },
       { title: "汇总审查交付", description: "按需整理问题清单和审查产物。", roles: ["as-research-synthesizer", "as-figure-citation-editor", "as-research-package-curator"] },
     ],

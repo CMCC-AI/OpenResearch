@@ -17,6 +17,13 @@ Claude.local.md
 .agents/skills/
 .cursor/skills/
 
+# Taste skill local gate state and screenshot cache
+.taste-skill/
+
+# Local agent tooling state and test output
+.zcode/
+output/
+
 # Stray SQLite store if the binary is ever run from the repo root
 /orx.db
 /orx.db-wal

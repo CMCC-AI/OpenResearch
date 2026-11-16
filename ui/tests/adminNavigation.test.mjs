@@ -71,7 +71,7 @@ test("product navigation uses the consolidated new conversation entry", () => {
 
 test("workflow navigation opens the selected project and marks only the workflow active", () => {
   const html = researchSidebar({ id: "researcher" }, true, "project-id", "/mobilesci/projects/project-id/workflows");
-  assert.match(html, /href="\/projects\/project-id\/workflows" title="工作流编排" aria-label="工作流编排" aria-current="page"/);
+  assert.match(html, /href="\/projects\/project-id\/workflows" title="使用工作流" aria-label="使用工作流" aria-current="page"/);
   assert.doesNotMatch(html, /aria-label="新对话" aria-current="page"/);
 });
 

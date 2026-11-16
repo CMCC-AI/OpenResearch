@@ -246,3 +246,134 @@ fn research_end_member_union_deduplicates_overlapping_roots_and_legacy_cycles() 
     assert_eq!(members.iter().collect::<HashSet<_>>().len(), 4);
     store.research_end(&study.id, 0, &[]).unwrap();
 }
+
+#[test]
+fn research_pause_soft_returns_running_tasks_and_blocks_until_resume() {
+    let (_dir, store, study) = setup();
+    store.research_set_plan(&study.id, plan()).unwrap();
+    approve(&store, &study, "G1");
+    let wave1 = crate::commands::research_dispatch::auto_dispatch_sync(&store, &study.id).unwrap();
+    assert_eq!(wave1.len(), 1);
+    let bound_session = wave1[0].1.clone();
+
+    // Pausing reports the bound expert session and soft-returns the task.
+    let sessions = store.research_pause(&study.id, 1).unwrap();
+    assert_eq!(sessions, vec![bound_session.clone()]);
+    let paused = store.research_study(&study.id).unwrap();
+    assert_eq!(paused.status, "paused");
+    let design = paused.task("design").unwrap();
+    assert_eq!(design.state, "pending");
+    assert_eq!(design.session_id, None);
+    assert_eq!(design.attempts, 0);
+    // Already-paused pause is idempotent and reports nothing new.
+    assert!(store.research_pause(&study.id, 1).unwrap().is_empty());
+    assert!(store.research_pause(&study.id, 999).is_err());
+
+    // Paused studies stay out of dispatch and reject lifecycle mutations.
+    assert!(
+        crate::commands::research_dispatch::auto_dispatch_sync(&store, &study.id)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(store.research_set_plan(&study.id, plan()).is_err());
+    assert!(store.research_retry_task(&study.id, "design").is_err());
+    let error = format!(
+        "{}",
+        store.research_retry_task(&study.id, "design").unwrap_err()
+    );
+    assert!(error.contains("研究已暂停"), "unexpected error: {error}");
+    assert!(store.research_active_studies().unwrap().is_empty());
+
+    // An interrupted expert settling after the pause retires silently: the
+    // task must stay pending instead of being recorded as failed.
+    store
+        .conn
+        .execute(
+            "UPDATE chat_spawns SET state='running',finished_at=1 WHERE session_id=?1",
+            [&bound_session],
+        )
+        .unwrap();
+    for attempts in [0u32, 2] {
+        store
+            .research_update(&study.id, |s| {
+                s.task_mut("design")?.attempts = attempts;
+                Ok(())
+            })
+            .unwrap();
+        let action = crate::commands::research_dispatch::on_research_spawn_finished(
+            &store,
+            &bound_session,
+            true,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                action,
+                Some(crate::commands::research_dispatch::ResearchWakeAction::RetireSilently)
+            ),
+            "interrupted settlement after pause must retire silently"
+        );
+        let saved = store.research_study(&study.id).unwrap();
+        let design = saved.task("design").unwrap();
+        assert_eq!(design.state, "pending", "attempts={attempts}");
+        assert_eq!(design.attempts, attempts, "pause must not consume attempts");
+    }
+
+    // Resuming dispatches again from where the study stood, attempts intact.
+    store.research_resume(&study.id, 1).unwrap();
+    assert_eq!(store.research_study(&study.id).unwrap().status, "active");
+    store.research_resume(&study.id, 1).unwrap();
+    let wave2 = crate::commands::research_dispatch::auto_dispatch_sync(&store, &study.id).unwrap();
+    assert_eq!(wave2.len(), 1);
+    assert_eq!(wave2[0].0, "design");
+    assert_ne!(wave2[0].1, bound_session, "a fresh expert session is bound");
+    let saved = store.research_study(&study.id).unwrap();
+    assert_eq!(
+        saved.task("design").unwrap().attempts,
+        2,
+        "pause/resume must not consume attempts"
+    );
+    // Resume only works from paused.
+    assert!(store.research_resume(&study.id, 999).is_err());
+}
+
+#[test]
+fn research_end_accepts_paused_studies_and_pause_rejects_stopped_ones() {
+    let (_dir, store, study) = setup();
+    store.research_set_plan(&study.id, plan()).unwrap();
+    approve(&store, &study, "G1");
+    store.research_pause(&study.id, 1).unwrap();
+    // Paused studies carry no running tasks, so ending them stays one step.
+    store.research_end(&study.id, 1, &[]).unwrap();
+    assert_eq!(store.research_study(&study.id).unwrap().status, "stopped");
+    assert!(store.research_pause(&study.id, 1).is_err());
+    let error = format!("{}", store.research_pause(&study.id, 1).unwrap_err());
+    assert!(error.contains("研究已停止"), "unexpected error: {error}");
+    assert!(store.research_resume(&study.id, 1).is_err());
+}
+
+#[test]
+fn paused_and_ended_studies_inject_distinct_turn_context() {
+    let (_dir, store, study) = setup();
+    store.research_set_plan(&study.id, plan()).unwrap();
+    approve(&store, &study, "G1");
+    store.research_pause(&study.id, 1).unwrap();
+    let paused = crate::local::research::turn_context(&store, "lead")
+        .unwrap()
+        .unwrap();
+    assert!(
+        paused.contains("<paused-research>") && paused.contains("已暂停"),
+        "unexpected paused context: {paused}"
+    );
+    assert!(
+        !paused.contains("<ended-research>"),
+        "paused must not use the ended context: {paused}"
+    );
+    store.research_end(&study.id, 1, &[]).unwrap();
+    let ended = crate::local::research::turn_context(&store, "lead")
+        .unwrap()
+        .unwrap();
+    assert!(ended.contains("<ended-research>") && ended.contains("已结束"));
+}
