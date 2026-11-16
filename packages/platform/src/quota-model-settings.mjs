@@ -205,7 +205,10 @@ export function quotaModelSettings(file, { fetcher = fetch } = {}) {
         );
         check(remaining.length >= 1, 400, "至少保留一个可用模型");
         state.document.models = remaining;
-        if (state.document.providers && typeof state.document.providers === "object") {
+        if (
+          state.document.providers &&
+          typeof state.document.providers === "object"
+        ) {
           delete state.document.providers[providerId];
         }
       } else {
@@ -246,13 +249,13 @@ export function quotaModelSettings(file, { fetcher = fetch } = {}) {
           const providerId = model.providerId || "mobilesci";
           const storedProvider = providerMap(state.document)[providerId];
           const siblings = models.filter(
-            (m, i) => i !== index && (m.providerId || "mobilesci") === providerId,
+            (m, i) =>
+              i !== index && (m.providerId || "mobilesci") === providerId,
           );
           if (data.apiKey) model.apiKey = data.apiKey;
           else if (!model.apiKey)
             model.apiKey =
-              storedProvider?.apiKey ||
-              siblings.find((m) => m.apiKey)?.apiKey;
+              storedProvider?.apiKey || siblings.find((m) => m.apiKey)?.apiKey;
           if (!model.baseUrl)
             model.baseUrl =
               storedProvider?.baseUrl ||

@@ -282,10 +282,7 @@ test("quota provider connection, sibling key inheritance, model probing and prov
     assert.deepEqual(probed.models, ["kimi-k2.6", "kimi-k3"]);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, "https://example.invalid/v1/models");
-    assert.equal(
-      calls[0].headers.authorization,
-      `Bearer ${model.apiKey}`,
-    );
+    assert.equal(calls[0].headers.authorization, `Bearer ${model.apiKey}`);
 
     // Reject disconnecting the only remaining provider
     await assert.rejects(
