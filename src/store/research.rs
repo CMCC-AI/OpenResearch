@@ -1453,9 +1453,9 @@ impl Store {
     }
     /// 项目内已通过交付确认的研究，按更新时间倒序，供项目研究成果页列举。
     pub fn research_delivered_studies(&self, project_id: &str) -> Result<Vec<Study>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT document FROM research_studies WHERE project_id=?1 ORDER BY updated_at DESC",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT document FROM research_studies WHERE project_id=?1")?;
         let rows = stmt.query_map([project_id], |r| r.get::<_, String>(0))?;
         let mut studies = Vec::new();
         for row in rows {
@@ -1465,6 +1465,8 @@ impl Store {
                 }
             }
         }
+        // updated_at 只存在于文档 JSON 内，不是表列，须在反序列化后排序。
+        studies.sort_by_key(|study| std::cmp::Reverse(study.updated_at));
         Ok(studies)
     }
     pub fn research_requires_gate(&self, experiment: &str, session: Option<&str>) -> Result<bool> {

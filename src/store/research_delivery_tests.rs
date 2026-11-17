@@ -134,6 +134,55 @@ fn delivery_scope_still_blocks_unfinished_historical_runs_without_reading_their_
         .contains("研究 Run 记录缺失"));
 }
 
+/// 成果页列表按文档内的 updated_at 倒序返回已确认交付的研究；
+/// 回归：不能在 SQL 中引用不存在的 updated_at 表列。
+#[test]
+fn delivered_studies_lists_g4_approved_studies_newest_first() {
+    let (_dir, store, older) = setup();
+    store
+        .conn
+        .execute("INSERT INTO chat_sessions(id,project_id,harness,created_at,updated_at) VALUES('second','project','codex',1,1)", [])
+        .unwrap();
+    let newer = store.research_create("second", "team", "second study").unwrap();
+    for (study, updated_at) in [(&older, 1_000), (&newer, 2_000)] {
+        store.research_set_plan(&study.id, plan()).unwrap();
+        store
+            .research_update(&study.id, |s| s.request_gate("G4", "{}".into()))
+            .unwrap();
+        let pending = store.research_study(&study.id).unwrap();
+        let decision = pending.decisions.last().unwrap().clone();
+        let mut delivered = store.research_study(&study.id).unwrap();
+        delivered.updated_at = updated_at;
+        delivered.delivery_snapshot = Some(DeliverySnapshot {
+            catalog_version: None,
+            scope_hash: decision.scope_hash.clone(),
+            identity_hash: "identity".into(),
+            archive: delivery::ArchiveDescriptor {
+                format_version: 1,
+                sha256: "archive".into(),
+                bytes: 1,
+                manifest_sha256: "manifest".into(),
+            },
+        });
+        delivered.decisions.push(HumanDecision {
+            id: format!("decision-{updated_at}"),
+            gate: decision.gate,
+            scope: decision.scope,
+            scope_hash: decision.scope_hash,
+            version: decision.version,
+            status: "approved".into(),
+            reason: None,
+            approver: None,
+            requested_at: decision.requested_at,
+            decided_at: Some(updated_at),
+        });
+        store.research_save(&delivered).unwrap();
+    }
+    let delivered = store.research_delivered_studies("project").unwrap();
+    let ids: Vec<_> = delivered.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, [newer.id.as_str(), older.id.as_str()]);
+}
+
 #[test]
 fn delivery_scope_requires_logs_for_inherited_current_results() {
     let (_dir, store, study) = delivery_scope_fixture();
