@@ -15,6 +15,14 @@ let monthlyLimit = 2000000,
   pending = true,
   origin;
 let modelRevision = 1;
+let providers = {
+  "moonshotai-cn": {
+    id: "moonshotai-cn",
+    name: "Kimi / Moonshot",
+    baseUrl: "https://example.invalid/v1",
+    hasApiKey: true,
+  },
+};
 let models = [{ id: "kimi", name: "Kimi", providerId: "moonshotai-cn", model: "kimi-test", baseUrl: "https://example.invalid/v1", contextTokens: 262144, maxOutputTokens: 8192, hasApiKey: true, opencode: { reasoning: true } }];
 const modelWrites = [];
 const writes = [],
@@ -84,18 +92,32 @@ const server = http.createServer(async (req, res) => {
       if (req.method === "POST") {
         let body = ""; for await (const part of req) body += part;
         const data = JSON.parse(body);
+        if (data.action === "probeModels") {
+          return send({ models: ["deepseek-chat"] });
+        }
         assert.equal(data.revision, String(modelRevision)); modelWrites.push(data);
-        const index = models.findIndex(m => m.id === data.id);
-        if (data.action === "default") models.unshift(...models.splice(index, 1));
-        else if (data.action === "remove") models.splice(index, 1);
-        else {
+        if (data.action === "connectProvider") {
+          providers[data.providerId] = {
+            id: data.providerId,
+            name: data.providerName || data.providerId,
+            baseUrl: data.baseUrl,
+            hasApiKey: Boolean(data.apiKey || providers[data.providerId]?.hasApiKey),
+          };
+        } else if (data.action === "default") {
+          const index = models.findIndex(m => m.id === data.id);
+          models.unshift(...models.splice(index, 1));
+        } else if (data.action === "remove") {
+          const index = models.findIndex(m => m.id === data.id);
+          models.splice(index, 1);
+        } else {
+          const index = models.findIndex(m => m.id === data.id);
           assert.equal(data.apiKey, index < 0 ? "synthetic-new-key" : "");
           const { apiKey, revision, ...model } = data;
-          if (index < 0) models.push({ ...model, hasApiKey: true }); else models[index] = model;
+          if (index < 0) models.push({ ...model, hasApiKey: true }); else models[index] = { ...model, hasApiKey: true };
         }
         modelRevision++;
       }
-      return send({ enabled: true, backend: "quota", revision: String(modelRevision), models });
+      return send({ enabled: true, backend: "quota", revision: String(modelRevision), providers: Object.values(providers), models });
     }
     if (path === "/api/platform/token-quota") return send(balance());
     if (path === "/api/platform/admin/users" && admin)
@@ -177,32 +199,46 @@ try {
   const page = await admin.newPage();
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(origin + "/mobilesci/admin/opencode");
-  await page.getByLabel("上游模型 ID").waitFor();
-  assert.equal(await page.getByLabel("API Key", { exact: true }).inputValue(), "");
-  await page.getByLabel("显示名称").fill("Kimi updated");
-  await page.getByRole("button", { name: "保存模型接入", exact: true }).click();
+  await page.getByRole("button", { name: "编辑 Kimi 参数", exact: true }).waitFor();
+  await page.getByRole("button", { name: "编辑 Kimi 参数", exact: true }).click();
+  assert.equal(await page.getByLabel("API Key（留空保留供应商凭据）", { exact: true }).inputValue(), "");
+  await page.getByLabel("显示名称", { exact: true }).fill("Kimi updated");
+  await page.getByRole("button", { name: "保存参数", exact: true }).click();
   await page.getByRole("status").filter({hasText: "网关模型清单已保存"}).waitFor();
   assert.equal(models[0].name, "Kimi updated");
   assert.equal(modelWrites.length, 1);
   assert.equal(monthlyLimit, 2000000);
   assert.equal(pending, true);
-  assert.equal(await page.getByRole("button", { name: "移除此模型", exact: true }).isDisabled(), true);
-  await page.getByRole("button", { name: "接入其他模型", exact: true }).click();
-  await page.getByLabel("选择供应商").selectOption("deepseek");
-  await page.getByLabel("模型别名").fill("new-model");
-  await page.getByLabel("显示名称").fill("New Model");
-  await page.getByLabel("服务地址（OpenAI 兼容 Base URL）").fill("https://new.example.invalid/v1");
+  await page.getByRole("switch", { name: "关闭模型 Kimi updated", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "平台至少需要保留 1 个可用模型" }).waitFor();
+
+  await page.getByRole("tab", { name: "提供商", exact: true }).click();
+  await page
+    .getByRole("region", { name: "可连接的提供商", exact: true })
+    .locator("div")
+    .filter({ has: page.getByText("DeepSeek", { exact: true }) })
+    .filter({ has: page.getByRole("button", { name: "连接", exact: true }) })
+    .last()
+    .getByRole("button", { name: "连接", exact: true })
+    .click();
+  assert.equal(await page.getByLabel("API Key", { exact: true }).inputValue(), "");
+  await page.getByLabel("服务地址（OpenAI 兼容 Base URL）", { exact: true }).fill("https://new.example.invalid/v1");
   await page.getByLabel("API Key", { exact: true }).fill("synthetic-new-key");
-  await page.getByLabel("上游模型 ID").fill("provider-model");
-  await page.getByRole("button", { name: "保存模型接入", exact: true }).click();
+  await page.getByRole("button", { name: "保存连接并展开模型", exact: true }).click();
+
+  const deepseekSection = page.getByRole("region", { name: "DeepSeek", exact: true });
+  await deepseekSection.getByRole("button", { name: "添加自定义模型", exact: true }).click();
+  await deepseekSection.getByLabel("上游模型 ID", { exact: true }).fill("provider-model");
+  await deepseekSection.getByLabel("显示名称", { exact: true }).fill("New Model");
+  await deepseekSection.getByRole("button", { name: "确认并启用", exact: true }).click();
   await page.getByRole("status").filter({hasText: "网关模型清单已保存"}).waitFor();
   assert.equal(models.length, 2);
-  const newCard = page.getByRole("article", { name: "New Model", exact: true });
-  await newCard.getByRole("button", { name: "设为默认", exact: true }).click();
-  await newCard.getByRole("button", { name: "当前默认", exact: true }).waitFor();
-  assert.equal(models[0].id, "new-model");
+
+  await deepseekSection.getByRole("button", { name: "设为默认", exact: true }).click();
+  await deepseekSection.getByText("默认模型", { exact: true }).waitFor();
+  assert.equal(models[0].model, "provider-model");
   assert.equal(models[0].providerId, "deepseek");
-  assert.equal(await page.getByLabel("API Key", { exact: true }).inputValue(), "");
+  assert.equal(await page.locator('input[type="password"]').count(), 0);
   await page.locator("main").evaluate(el => el.scrollTop = 0);
   await page.screenshot({path: fileURLToPath(new URL("models-wide.png", artifacts)), fullPage: true});
   await page.setViewportSize({ width: 390, height: 844 });

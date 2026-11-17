@@ -2826,7 +2826,7 @@ async fn a_stalled_process_keeps_its_own_turns_when_it_expires_stale_leases() {
     let host = ctx.host.clone();
     let turns = host.turns.clone().lock_owned().await;
     let root = dir.clone();
-    let (_working, turns) =
+    let (mut working, turns) =
         TurnGuard::claim_locked_with_store(&host, "working", turns, move || Store::open_at(root))
             .await
             .unwrap();
@@ -2845,7 +2845,7 @@ async fn a_stalled_process_keeps_its_own_turns_when_it_expires_stale_leases() {
     stall();
     let turns = host.turns.clone().lock_owned().await;
     let root = dir.clone();
-    let (_other, turns) =
+    let (mut other, turns) =
         TurnGuard::claim_locked_with_store(&host, "other", turns, move || Store::open_at(root))
             .await
             .unwrap();
@@ -2888,8 +2888,8 @@ async fn a_stalled_process_keeps_its_own_turns_when_it_expires_stale_leases() {
         .await
         .unwrap();
     assert!(lost.is_empty());
-    drop(_working);
-    drop(_other);
+    working.release().await;
+    other.release().await;
     drop(host);
     drop(ctx);
     drop(store);
