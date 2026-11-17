@@ -3,19 +3,19 @@
 ## 版本总览（2026-11-17）
 
 - **当前生产上线与最新不可变源码发行**：[v0.2.23-mobilesci.7.1](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.7.1)（固定提交 `47571b04bb074703f43764d7387f98c218f2b88b`，自身完整发行 [CI 42999983526](https://github.com/CMCC-AI/OpenResearch/actions/runs/42999983526) 成功，四个正式附件与干净重建逐字节一致，见[发行回执](evidence/mobilesci-7.1/release-gate.json)）。`.6`、`.7`、`.7.1` 及其附件保持不可变。
-- **当前在研/已锁定候选版本**：`0.2.24-mobilesci.1`（`feat/ai4s-product` 分支 `8d59f3e8` 起锁定版本元数据，`c89fdda4` 为当前最新提交；发布说明见 [`release-notes/v0.2.24-mobilesci.1.md`](../../release-notes/v0.2.24-mobilesci.1.md)）。该版本已完成本地全量 Rust/UI/平台/脚本回归，但**尚未创建 `release/mobilesci-0.2.24-mobilesci.1` 分支、尚未跑发行分支 CI 与打标，生产环境仍运行 `.7.1`**。
+- **当前待发行候选版本**：`0.2.24-mobilesci.1`（`feat/ai4s-product` 分支 `8d59f3e8` 起锁定版本元数据，推进至 `edb38792` 平台同源托管与配额初始化收口；发布说明见 [`release-notes/v0.2.24-mobilesci.1.md`](../../release-notes/v0.2.24-mobilesci.1.md)）。该版本已完成本地全量 Rust/UI/平台/PG 集成/脚本/执行器工具回归，并已通过本地 `hosted-local`（`5400`）交互发布案例确认；**待推分支 `release/mobilesci-0.2.24-mobilesci.1` 跑通完整跨平台发行 CI 并打标，生产环境仍运行 `.7.1`**。
 
 真实上游合并祖先仍为 `v0.2.19`（`1d8a285468aed5d5a1f1ea86ecf6e2f63fcaa8bd`）；[.23](../ai-for-science/upstream-v0.2.23-backports.md)、[.24](../ai-for-science/upstream-v0.2.24-backports.md)、[.25](../ai-for-science/upstream-v0.2.25-review-2026-11-09.md)、[.26](../ai-for-science/upstream-v0.2.26-release-scope.md)均按具体需求选择评估或适配，不表示整版同步。`product-upstream.json` 的 `backportTarget` 已推进至 `v0.2.24`（`status: "partial"`），官方自动更新保持禁用（`product-disabled`）。下一阶段规划与技术债边界见[下一阶段计划](next-cycle-plan.md)。
 
 ## `0.2.24-mobilesci.1` 锁定范围与在研收敛
 
 1. **版本锁定边界**：不等待高风险重型重构（如 `#862 orx-host`、`#885`、`#886`、`#891`、`#938 ACP`），在 `.7.1` 之后收敛高确定性的功能增量与稳定性加固；`8d59f3e8` 锁定 `Cargo.toml`、`Cargo.lock`、`product-upstream.json` 与发布说明。
-2. **核心新增与修复（`47571b04..c89fdda4`）**：
-   - 管理员大模型接入重构为“供应商连接 + 模型开关 + 在线探测”模式（`d4a449d9`、`473c8671`、`4f271b47`）。
+2. **核心新增与修复（`47571b04..edb38792`）**：
+   - 管理员大模型接入重构为“供应商连接 + 模型开关 + 在线探测”模式，支持空模型清单首连供应商、同源私人空间 `shared-origin` 静态托管与 SHA-256 CSP（`d4a449d9`、`473c8671`、`4f271b47`、`9fc673d6`）。
    - 精选案例按主对话公开成果、64 MiB 快照与 `\u0000` 清洗、128 MiB 慢速下载逐块流控、工作区 `tasks` 字段兼容及只读 `/file` 回退产物预览；执行器 `/opt/opencode-npm-cache` 离线预热与超时调整（`352f3e47`～`8ad6954a`）。
-   - 存储/会话/锁稳定性加固：`#985` WAL 初始化、 `#952` 活跃租约保护、`#981` 排空抢占收敛、`#990` + `SourceFile`/`FileLock` 显式解锁、`#962` 代理 `ORX_DATA_DIR` 统一与只读/管道退出、`#923` 原子 `0700` 目录、`#730` 源码归档 LF、`#786` 百分号路径解码（`45d5c6aa`、`19f75bcc`、`68f41ff7`）。
-   - 安全与局部模块化：`#909` 外链 Markdown 图片转链接、`#747` OpenAlex 配置、`#903` Claude 插件清单技能目录、`src/local/chat/` 拆分 `session_env.rs` / `watcher.rs` / `wire.rs`，以及本地一键多用户托管调试脚本 `scripts/hosted-local.mjs`（`21dced48`、`68f41ff7`、`c89fdda4`）。
-3. **待完成发行门禁**：恢复本地 Docker Desktop 后完成 `slot-1` 与 `hosted-local`（`5400`）交互冒烟，从干净目标提交创建 `release/mobilesci-0.2.24-mobilesci.1` 分支运行完整跨平台 `MobileSci source release` CI 并生成正式标签与 Release 资产，再按受控流程安排生产切换。
+   - 存储/会话/锁稳定性加固：`#985` WAL 初始化、`#952` 活跃租约保护、`#981` 排空抢占收敛、`#990` + `SourceFile`/`FileLock` 显式解锁、`#962` 代理 `ORX_DATA_DIR` 统一与只读/管道退出、`#923` 原子 `0700` 目录、`#730` 源码归档 LF、`#786` 百分号路径解码、`#734` 跳过无关云端占位仓库（`45d5c6aa`、`19f75bcc`、`68f41ff7`、`96133c90`）。
+   - 安全、局部模块化与本地调试：`#909` 外链 Markdown 图片转链接、`#747` OpenAlex 配置、`#903` Claude 插件清单技能目录、`chat`/`store`/`up` 模块化拆出，以及 `scripts/hosted-local.mjs`（含 `--with-quotas` 与 `apt-get` 重试，`21dced48`、`68f41ff7`、`c89fdda4`、`edb38792`）。
+3. **待完成发行门禁**：本地 `slot-1` 与 `hosted-local`（`5400`）已实测通过；下一步由最终确认提交切出 `release/mobilesci-0.2.24-mobilesci.1` 分支，运行跨平台 `MobileSci source release` CI 并生成正式标签与 Release 资产，再按受控流程安排 `10.7.0.18` 生产切换。
 
 ## `.7.1` 生产稳定版交付（2026-11-11）
 

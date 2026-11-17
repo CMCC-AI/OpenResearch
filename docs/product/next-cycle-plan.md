@@ -7,9 +7,9 @@
 | 维度 | 当前状态 | 依据与边界 |
 | --- | --- | --- |
 | 生产在线基线（M7） | `v0.2.23-mobilesci.7.1`（`47571b04`）运行中 | 已完成五步交付与生产统一切换，见[交付记录](release-v0.2.23-mobilesci.7-delivery.md) |
-| 新版锁定与阶段 2 收尾 | `0.2.24-mobilesci.1` 已锁定元数据（`8d59f3e8`），分支当前至 `c89fdda4` | 涵盖供应商模型开关管理、案例按对话发布与流控、执行器缓存预热、`.25`/后`.25` 11 项精选加固、文件锁泄漏根治、`chat` 首轮拆分及 `hosted-local` 启动器；**尚未切 `release/*` 分支发 CI 与打标** |
-| 上游选择性回移台账 | `.23` 已收敛；`.24` 16 项中适配 3 项；`.25` 45 项中原 7 项 P1/条件候选已全部落地（含本批 `#734`）；`.26` 2 项已在 `.7.1` 交付 | 见 [`upstream-v0.2.24-backports.md`](../ai-for-science/upstream-v0.2.24-backports.md) 与 [`upstream-v0.2.25-review-2026-11-09.md`](../ai-for-science/upstream-v0.2.25-review-2026-11-09.md) |
-| 本地测试与回归基线 | Rust/UI/平台/脚本全量回归通过 | `cargo fmt/clippy` 零警告、`cargo test --locked`（1523 单元 + 7 个集成测试文件全部通过）、UI 636 项、平台 87 项、脚本 30 项通过；`slot-1` UI(5201)/Backend(4901) 返回 `200`，Docker Desktop 异常待重启后再测 `5300/5400` |
+| 新版锁定与阶段 2 收尾 | `0.2.24-mobilesci.1` 已锁定元数据（`8d59f3e8`），分支收口至 `edb38792` | 涵盖供应商模型开关管理（含空模型库首连与 `shared-origin`）、案例按对话发布与流控、执行器缓存预热、`.25`/后`.25` 稳定性与安全加固、文件锁泄漏根治、`chat`/`store`/`up` 拆分及 `hosted-local`；**本地门禁与案例发布实测已通过，待切 `release/*` 发 CI 与打标** |
+| 上游选择性回移台账 | `.23` 已收敛；`.24` 16 项中适配 3 项；`.25` 45 项中原 7 项 P1/条件候选已全部落地；`.26` 2 项已在 `.7.1` 交付 | 见 [`upstream-v0.2.24-backports.md`](../ai-for-science/upstream-v0.2.24-backports.md) 与 [`upstream-v0.2.25-review-2026-11-09.md`](../ai-for-science/upstream-v0.2.25-review-2026-11-09.md) |
+| 本地测试与回归基线 | Rust/UI/平台（含 PG 集成）/脚本/执行器工具全量通过 | `cargo fmt/clippy` 零警告、`cargo test --locked`（1523 单元 + 7 个集成测试文件全部通过）、UI 636 项、平台 90 单元 + 58 PG 集成、脚本 31 项、部署 66 项、`orx-check-executor-tools` 与 `source-release` 均通过；`slot-1` (`5201/4901`) 与 `hosted-local` (`5400`) 实测就绪，案例发布人工验证通过 |
 | 遗留模块集中度（观察项） | `src/local/chat/mod.rs`（9,863 行）、`src/commands/up.rs`（8,997 行）、`src/store.rs`（3,960 行） | 已拆出 `chat/{session_env,watcher,wire}.rs` 与三大核心文件的 8 个独立测试模块（共削减 11,700+ 行单文件体积）；生产函数按需渐进拆解，不以行数清零做风险重构 |
 
 ---
@@ -18,10 +18,9 @@
 
 ### 阶段 A：Gate 1 — `0.2.24-mobilesci.1` 本地全链路验收与正式发版上线（近期优先）
 
-1. **恢复本地容器环境并完成端到端交互验收**
-   - 修复/重启本机 Docker Desktop，分别验证 `slot-1`（`5201`/`4901` + `5300` 平台联动）与新增一键多用户模式 `./start-hosted-local.command`（`5400` 独立 Compose、`--with-quotas`、`grant-admin`）。
-   - 重点覆盖新增核心路径：管理员供应商连接/在线模型探测/模型开关保存、按主对话发布案例与慢速下载、只读案例缺失 `/file` 回退产物预览、Markdown 外链图片转链接、材料阅读与引用定位。
-2. **执行跨平台发行门禁与打标发布**
+1. **恢复本地容器环境并完成端到端交互验收（已完成）**
+   - 已确认 Docker Desktop、平台 58 项 PG 集成、`slot-1`（`5201`/`4901`）、`hosted-local`（`5400`、`shared-origin` + `--with-quotas` + `orx-check-executor-tools`）全链路回归通过，并在 `5400` 实测发布案例无异常。
+2. **执行跨平台发行门禁与打标发布（下一动作）**
    - 确认发布候选提交后，遵循 `MobileSci source release` 工作流从 `release/mobilesci-0.2.24-mobilesci.1` 触发完整 CI（Linux/macOS/Windows 源码归档哈希一致、Rust 全平台、`ui` 审计与构建、`executor-tools` 离线自检、`platform` PG 集成、macOS/Linux Poppler 真实 PDF）。
    - CI 全绿后创建不可变 Git 标签与 GitHub Release，核对 4 个正式附件摘要并归档发行回执。
 3. **生产受控升级切换（`ssh root@10.7.0.18`）**
