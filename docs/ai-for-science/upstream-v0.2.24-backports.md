@@ -1,6 +1,26 @@
 # OpenResearch v0.2.24 选择性回移台账
 
-## 当前核查结论（2026-11-08）
+## 当前状态总览（2026-11-17）
+
+- **产品与发行身份**：当前生产上线不可变发行为 [`v0.2.23-mobilesci.7.1`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.7.1)（`47571b04`）；当前开发分支 `feat/ai4s-product` 已将产品版本元数据锁定为 `0.2.24-mobilesci.1`（`8d59f3e8`，当前分支头 `c89fdda4`），`product-upstream.json` 的 `backportTarget` 已由 `.23` 更新为 `v0.2.24`（`23a4d67bb5ce3cf9051f8d62b2cd52e93116e16d`，`status: "partial"`），真实 Git 合并祖先仍保持 `v0.2.19`（`1d8a2854`），官方自动更新保持关闭（`product-disabled`）。最新交付规划见[下一阶段计划](../product/next-cycle-plan.md)与[版本发布台账](../product/releases.md)。
+- **`.24`（16 项）结论保持**：`.23 → .24` 固定增量为 16 个提交、140 个文件，**3 项已适配交付**（`#872`、`#698`、`#860`），其余 13 项按既有评估保留（其中 `#869` 观察待复现，重型能力与独立服务不照搬）。
+- **`.25`（45 项）与 `.25+` 选择性加固落地（`.7.1` → `0.2.24-mobilesci.1`）**：
+
+| 提交 / 来源 PR | 实际落地内容与验证范围 | 状态 |
+| --- | --- | --- |
+| `45d5c6aa` / `#985`、`#952`、`#981`、`#990` | SQLite 打开时先设 `busy_timeout` 与 `journal_mode=WAL` 退避重试并合批建表；传递进程活跃租约 `held_turn_leases` 防误回收；`drain_queue` 仅接管 `Draining` 槽位；引入 [`FileLock`](../../src/file_lock.rs) 在析构时显式 `unlock()` | 已合入本地分支，待随 `.24` 发行 |
+| `19f75bcc` / `#962`、`#923`、`#730`、`#786` | `set_chat_session_env` 固定 `ORX_DATA_DIR`、CLI 管道退出与只读降级；Unix 私有目录 `DirBuilder::mode(0o700)` 原子创建与权属复核；`git archive` 注入 `core.autocrlf=false`/`core.eol=lf`；Markdown 产物路径容忍未编码百分号并重建 `ui/dist` | 已合入本地分支，待随 `.24` 发行 |
+| `21dced48` / `#909` | 将 Markdown 中 `https://` 与 `//` 外链图片转为可点击链接，消除 `ArtifactsTab` `<a>` 标签 `node` 属性泄漏并重建 `ui/dist` | 已合入本地分支，待随 `.24` 发行 |
+| `68f41ff7` / `#747`、`#903` + 内部稳健性改造 | 支持 `OPENALEX_MAILTO`/`OPENALEX_API_KEY` 配置并移除默认共享邮箱；支持 Claude 插件 `plugin.json` 自定义 `skills` 与单技能根；拆出 `src/local/chat/{session_env,watcher,wire}.rs`；为 [`SourceFile`](../../src/verified_file.rs) / [`FileLock`](../../src/file_lock.rs) / [`LockedAsyncFile`](../../src/file_lock.rs) 补齐显式 `unlock()` 消除并发归档下载/回收测试竞争 | 已合入本地分支，待随 `.24` 发行 |
+| `.26`（`#922`、`#935`） | `Md` 图片轮播提升至 `stableComponents`；`pendingPlanForTurn` 限定最近用户轮次 | 已于 `.7`/`.7.1` 交付 |
+
+- **当前遗留观察项**：`src/local/chat/mod.rs`（17,396 行）、`src/commands/up.rs`（10,074 行）、`src/store.rs`（7,047 行）体量仍大，后续按功能或缺陷触碰边界渐进拆分；`.25/.26` 重型重写（`#862 orx-host`、`#885`、`#886`、`#891`、`#938 ACP`）及 PR `#17` 继续隔离暂缓。全量本地验证（`cargo fmt/clippy/test --locked`、UI 636 项、平台 87 项、脚本 30 项）已在 `68f41ff7` 全部源码定稿后通过，仍待恢复 Docker Desktop 完成 `hosted-local`/平台联调并执行 `release/mobilesci-0.2.24-mobilesci.1` 跨平台发行 CI。
+
+---
+
+## 历史核查结论（2026-11-08 / 09 快照）
+
+> 以下保留 `.6` 收尾时期对 `.24` 16 个原始提交的历史核查记录与表项，作审计留痕用；最新发行状态、`.25` 新增落地项及技术债闭合进度以上方 **当前状态总览（2026-11-17）** 为准。
 
 2026-11-09 状态补充：.24 选择性回移结论不变；最新交付与暂停边界以[收尾里程碑](closeout-milestone-2026-11-09.md)为准，.25 已另列[45 项核查](upstream-v0.2.25-review-2026-11-09.md)。
 

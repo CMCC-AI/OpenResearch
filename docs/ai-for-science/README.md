@@ -1,5 +1,7 @@
 # AI for Science 开发文档
 
+2026-11-17 状态更新：生产环境当前运行 [`v0.2.23-mobilesci.7.1`](../product/release-v0.2.23-mobilesci.7-delivery.md)；源码分支已完成 `0.2.24-mobilesci.1` 元数据锁定（`8d59f3e8`）及阶段 1/2 稳定性与功能迭代（至 `c89fdda4`），待完成本地容器联调与跨平台发行 CI 后切入发版。最新回移台账见 [v0.2.24 选择性回移台账](upstream-v0.2.24-backports.md)、[v0.2.25 逐项评估](upstream-v0.2.25-review-2026-11-09.md)，版本状态与下一步计划见[版本发布](../product/releases.md)与[下一阶段工作计划](../product/next-cycle-plan.md)。
+
 2026-10-16 更新：科研专家团新入口现采用原版 W1–W4，替代下文历史会诊设计；当前行为见[原版预设流程](preset-workflows.md)。
 
 架构与专家团整理日期：2026-10-10；文献渠道与供应商限制的原核查日期为 2026-09-22。范围：OpenResearch 本地科研执行平台、科研专家团、Deep Literature 文献服务及统一账号；不包含商业伴随服务 openresearch.sh 的服务端源码审计。

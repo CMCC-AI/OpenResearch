@@ -2,7 +2,7 @@
 
 本文是当前运行形态和配置约定的统一入口，更新于 2026-11-12。具体安装步骤引用下方指南；历史团队设计不作为当前私人托管版的权限或部署依据。
 
-当前 MobileSci 生产版本为 `.7.1`：平台、provisioner、四个现用私人执行器及未来镜像／Compose 已统一，实际新用户首次供给及认证桥接验收通过，见[交付回执](release-v0.2.23-mobilesci.7-delivery.md)。下述补丁事件属于历史记录，不覆盖此版本状态。
+当前 MobileSci 生产版本为 `.7.1`：平台、provisioner、四个现用私人执行器及未来镜像／Compose 已统一，实际新用户首次供给及认证桥接验收通过，见[交付回执](release-v0.2.23-mobilesci.7-delivery.md)。当前分支 `feat/ai4s-product` 已锁定 `0.2.24-mobilesci.1` 候选版本并在研收尾，尚未发行与切换生产，见[版本发布](releases.md)与[下一阶段计划](next-cycle-plan.md)。下述补丁事件属于历史记录，不覆盖此版本状态。
 
 ## 运行形态
 
@@ -10,6 +10,7 @@
 | --- | --- | --- |
 | 本地个人版 | 用户电脑上的 orx、SQLite、文件和 Agent；账号服务不接收本地研究数据库 | 构建版使用 `./start-mobilesci.command`；初次配套服务安装见[本地部署](../ai-for-science/startup-and-deployment.md) |
 | 本地源码开发 | dev-slot 隔离的数据目录、后端和 Vite；不代表生产环境 | 使用 `./start-mobilesci-dev.command`；端口由 `scripts/dev-slot.mjs status` 确认，slot-1 通常为后端 4901、前端 5201。见[启动说明](start-mobilesci.md) |
+| 本地多用户托管仿真 | 本机 Docker 中按用户隔离的 executor、数据卷与 PostgreSQL（`15440`） | 使用 `./start-hosted-local.command` / `./stop-hosted-local.command`（默认 `http://127.0.0.1:5400/projects`）；详见[启动说明](start-mobilesci.md#本地多用户托管模式调试hosted-local) |
 | 服务器私人托管版 | 服务端按用户隔离的 executor、HOME 卷、SQLite、文件和 Agent | 用户登录后自动准备私人空间，无需手动配置 connector。通用部署见[自托管 OpenCode](../ai-for-science/self-hosted-opencode.md)，既有 MobileSci 服务器见[部署与升级](deploy-mobilesci.md) |
 | 历史团队原型 | 旧成员、邀请和角色方案的设计与迁移资料 | [多用户平台](../ai-for-science/multi-user-platform.md)和[早期托管设计](../ai-for-science/managed-workspaces.md)按历史资料阅读；不能据此恢复已移除的邀请或成员授权 |
 

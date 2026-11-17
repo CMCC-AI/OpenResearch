@@ -37,6 +37,26 @@ node scripts/dev-slot.mjs stop
 开发槽支持主工作区位于功能分支。Vite 由受管 Node 进程直接启动，避免部分 pnpm 版本分离进程组导致归属检查及停止失败。
 
 
+## 本地多用户托管模式调试（hosted-local）
+
+如需在本机完整复现服务器私人托管架构（平台 + provisioner + 按用户隔离的 Docker 执行器池 + PostgreSQL），可在开启 Docker Desktop 后使用仓库根目录入口：
+
+```bash
+./start-hosted-local.command
+# 或自定义参数启动（例如启用额度模式、指定代理镜像源）
+node scripts/hosted-local.mjs start --with-quotas --port 5400 --capacity 2 --idle-seconds 120
+```
+
+- 启动器采用独立 Compose 项目 `openresearch-hosted-local`（PostgreSQL 监听 `127.0.0.1:15440`，状态目录 `.mobilesci-run/hosted-local/`，不提交到 Git），执行器镜像为 `openresearch-managed-executor:hosted-local`（支持通过 `--apt-mirror` / `--npm-registry` 或环境变量 `APT_MIRROR` / `NPM_REGISTRY` 适配本地网络）。
+- 就绪后默认打开 `http://127.0.0.1:5400/projects`；常用运维命令：
+
+```bash
+node scripts/hosted-local.mjs grant-admin <你的邮箱>
+node scripts/hosted-local.mjs status
+./stop-hosted-local.command            # 保留数据卷与状态目录
+node scripts/hosted-local.mjs stop --clean   # 清理托管容器、数据卷与状态目录
+```
+
 ## 更新本地账号服务
 
 前端热更新不会更新 Docker 内的账号 API。旧容器即使 `/healthz` 正常，也可能缺少 Token 额度接口和对应的跨域处理，页面会显示 `Failed to fetch`。两个启动入口会先检查该接口，避免把旧服务误判为与当前前端兼容。
