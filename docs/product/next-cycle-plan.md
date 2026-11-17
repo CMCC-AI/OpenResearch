@@ -6,34 +6,32 @@
 
 | 维度 | 当前状态 | 依据与边界 |
 | --- | --- | --- |
-| 生产在线基线（M7） | `v0.2.23-mobilesci.7.1`（`47571b04`）运行中 | 已完成五步交付与生产统一切换，见[交付记录](release-v0.2.23-mobilesci.7-delivery.md) |
-| 最新不可变源码发行（Gate 1.2） | [`v0.2.24-mobilesci.1`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.24-mobilesci.1)（`bcb90af4`）已正式发布 | [CI 44041868978](https://github.com/CMCC-AI/OpenResearch/actions/runs/44041868978) 全平台通过并由 `publish` 自动打标发布，4 份源码附件已核验与干净重建逐字节一致；**`feat/ai4s-product` 已进入 Phase 3（B3 第一批已落地），Gate 1.3 `10.7.0.18` 生产切换待独立运维授权执行** |
-| 上游选择性回移台账 | `.23` 已收敛；`.24` 16 项适配 3 项；`.25` 45 项 P1/条件 7 项已落地；`.26` 2 项已交付；`.27` 47 项全量评估完成 | 见 [`upstream-v0.2.24-backports.md`](../ai-for-science/upstream-v0.2.24-backports.md)、[`upstream-v0.2.25-review-2026-11-09.md`](../ai-for-science/upstream-v0.2.25-review-2026-11-09.md) 与 [`upstream-v0.2.27-review-2026-11-17.md`](../ai-for-science/upstream-v0.2.27-review-2026-11-17.md)；`.27` 安全小修（`#924`/`#984`/`aa2a2935`）已在分支落地 |
-| 本地与 CI 回归基线 | 发行基线全量通过 + Phase 3 B3 第一批定向与 UI 构建回归通过 | `.24-mobilesci.1` 完成 [CI 44041868978](https://github.com/CMCC-AI/OpenResearch/actions/runs/44041868978) 全部校验；`feat/ai4s-product` 新增 Phase 3 提交待按仓库校验闭环后再推仓触发增量复核 |
-| 遗留模块集中度（观察项） | `src/local/chat/mod.rs`（9,863 行）、`src/commands/up.rs`（8,997 行）、`src/store.rs`（3,960 行） | 已拆出 `chat/{session_env,watcher,wire}.rs` 与三大核心文件的 8 个独立测试模块（共削减 11,700+ 行单文件体积）；生产函数按需渐进拆解，不以行数清零做风险重构 |
+| 生产在线基线（Gate 1.3 已完成） | [`v0.2.24-mobilesci.1`](release-v0.2.24-mobilesci.1-delivery.md)（`bcb90af4`）运行中 | 已于 2026-11-17 完成 `10.7.0.18` 受控切换：PostgreSQL 与 5 份私人 SQLite 在线备份、58 项隔离集成通过、5 个执行器与平台/gateway/nginx 统一、`/opt/opencode-npm-cache` 与 `opencode 1.18.33` 补齐，详见[交付记录](release-v0.2.24-mobilesci.1-delivery.md)；上一代归档基线为 `v0.2.23-mobilesci.7.1`（`47571b04`） |
+| 不可变源码发行（Gate 1.2 已完成） | [`v0.2.24-mobilesci.1`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.24-mobilesci.1)（`bcb90af4`）已正式发布 | [CI 44041868978](https://github.com/CMCC-AI/OpenResearch/actions/runs/44041868978) 全平台通过并由 `publish` 自动打标发布，4 份源码附件与干净重建逐字节一致 |
+| 上游选择性回移台账 | `.23` 已收敛；`.24` 16 项适配 3 项；`.25` 45 项 P1/条件 7 项已落地；`.26` 2 项已交付；`.27` 47 项全量评估完成并落地 B3 首批 3 项 | 见 [`upstream-v0.2.24-backports.md`](../ai-for-science/upstream-v0.2.24-backports.md)、[`upstream-v0.2.25-review-2026-11-09.md`](../ai-for-science/upstream-v0.2.25-review-2026-11-09.md) 与 [`upstream-v0.2.27-review-2026-11-17.md`](../ai-for-science/upstream-v0.2.27-review-2026-11-17.md)；分支头 `f6d65eaa` 已含 `.27` 首批修补（`#924`/`#984`/`aa2a2935`） |
+| 本地与 CI 回归基线 | 发行基线全量通过 + Phase 3 B3 第一批全量校验通过 | `.24-mobilesci.1` 完成 [CI 44041868978](https://github.com/CMCC-AI/OpenResearch/actions/runs/44041868978)；`feat/ai4s-product` 完成 `fmt/clippy` + `1,524` Rust 单元 + `636` UI 单元 + `ui/dist` 重建并已推送 `origin/feat/ai4s-product` |
+| 遗留模块与技术债观察 | `src/local/chat/mod.rs`（9,874 行）、`src/commands/up.rs`（9,009 行）、`src/store.rs`（3,962 行）、`src/local/opencode.rs`（1,985 行）、`packages/platform/src/server.mjs`（1,621 行） | `chat/mod.rs` 尚余 4 组内联测试与约 4,593 行 `ChatHost` 核心流程；`opencode.rs` 存在单测 >60s 超时等待；`cargo audit` 0 高危阻断项；`10.7.0.18` 历史回滚容器待周期清理 |
 
 ---
 
 ## 二、下一步工作计划（分三阶段推进）
 
-### 阶段 A：Gate 1 — `0.2.24-mobilesci.1` 本地全链路验收与正式发版上线（近期优先）
+### 阶段 A：Gate 1 — `0.2.24-mobilesci.1` 本地验收、源码发版与生产切换（已全部闭环）
 
 1. **恢复本地容器环境并完成端到端交互验收（已完成）**
    - 已确认 Docker Desktop、平台 58 项 PG 集成、`slot-1`（`5201`/`4901`）、`hosted-local`（`5400`、`shared-origin` + `--with-quotas` + `orx-check-executor-tools`）全链路回归通过，并在 `5400` 实测发布案例无异常。
 2. **执行跨平台发行门禁与打标发布（已完成）**
-   - `release/mobilesci-0.2.24-mobilesci.1`（固定提交 `bcb90af4`）已通过 [CI 44041868978](https://github.com/CMCC-AI/OpenResearch/actions/runs/44041868978) 全部跨平台校验并正式发布不可变 GitHub Release [`v0.2.24-mobilesci.1`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.24-mobilesci.1)，4 个源码归档及校验清单已核对逐字节一致。
-3. **生产受控升级切换（`ssh root@10.7.0.18`，下一动作）**
-   - 沿用[运行与部署约定](runtime-and-deployment.md)与 M7 门禁：升级前先完成 PostgreSQL、各用户 SQLite、配置与现有容器备份及实时空闲门禁检查。
-   - 重新构建平台与执行器镜像（同步 `/opt/opencode-npm-cache` 与最新 `orx`、`ui/dist`），同步更新平台、provisioner、存量私人执行器及持久化 Compose 的 `MANAGED_EXECUTOR_IMAGE` 与挂载配置。
-   - 切换后完成只读数据摘要对比、公网入口健康检查、管理员模型开关读写测试及新账号冷启动冒烟。
+   - `release/mobilesci-0.2.24-mobilesci.1`（`bcb90af4`）通过 [CI 44041868978](https://github.com/CMCC-AI/OpenResearch/actions/runs/44041868978) 并发布不可变 GitHub Release [`v0.2.24-mobilesci.1`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.24-mobilesci.1)。
+3. **生产受控升级切换（`ssh root@10.7.0.18`，已完成）**
+   - 2026-11-17 完成 `10.7.0.18` 隔离 PG 58 项复核、PostgreSQL 与 5 份 SQLite 备份、离线编译器/平台/执行器镜像统一切换（同步 `opencode 1.18.33` 与 `/opt/opencode-npm-cache`）、`/opt/mobilesci/current/ui`（327 文件）与 `nginx.conf` `/_orx/runtime` 更新，以及公网入口、管理员模型开关幂等读写与执行器离线缓存验收（见[`.24-mobilesci.1` 交付记录](release-v0.2.24-mobilesci.1-delivery.md)）。
 
-### 阶段 B：Phase 3 — 体验打磨与可控技术债演进（`.24` 上线后持续批次）
+### 阶段 B：Phase 3 — 以 OpenCode 为中心的体验打磨、技术债治理与按需回移（当前主线）
 
 | 批次 | 工作主题 | 触发依据与实施边界 |
 | --- | --- | --- |
-| B1（体验优化） | 配额提示、本地/托管开发流、研究交付流打磨 | 基于真实用户使用 `.24` 的反馈，优化额度预占状态提示、模型探测报错可读性、`hosted-local` 代理构建与多模型切换引导；不放宽计量与来源校验 |
-| B2（结构解耦） | `up.rs` / `store.rs` / `chat/mod.rs` 增量拆解 | 结合实际需求修改按领域拆出高内聚生产子模块，每次拆分独立配齐 clippy 与完整回归，不做无业务伴随的大规模重命名 |
-| B3（上游按需跟踪） | 评估 `v0.2.25` 剩余条件项及 `v0.2.27` 精选补丁 | 已完成 `.27` 47 项评估并落地第一批安全小修（`#924`/`#984`/`aa2a2935`）；下一批重点评审 `#964`（Claude 后台任务回写）与 `#972`（分支分叉 `--resume-session-at`），并按实际复现评估 `#887`/`#720`/`#890`/`#897`/`#996`/`#977` 等，不追逐提交数量 |
+| B1（体验优化） | 配额提示、OpenCode 首连冷启动、本地/托管开发流、研究交付流打磨 | 基于线上 `.24-mobilesci.1` 真实反馈，优化额度预占提示、`opencode` 模型探测报错可读性、`hosted-local` 代理构建与多模型切换引导；不放宽计量与来源校验 |
+| B2（结构与测试债治理） | 核心大文件增量解耦、`opencode.rs` 慢单测治理、`10.7.0.18` 历史回滚清理 | 先抽离 `chat/mod.rs` 剩余 4 组内联测试与 `opencode.rs` `verify_generation_models` >60s 单测超时参数化；结合 OpenCode 轮次/队列需求增量拆出 `ChatHost` 子模块；稳定周期后制定 `10.7.0.18` 历史 `-before-*` 容器清理策略 |
+| B3（上游仅聚焦 OpenCode 与核心基座） | 跳过 Claude/Codex 专属提交，评估 `v0.2.27+` 与 `v0.2.25` 中对 OpenCode 与平台共性有价值的补丁 | 第一批 `#924`/`#984`/`aa2a2935` 已落地（`0d9e220c`）；明确排除 `#964`/`#972`/`#887`；下一批重点评估 `#953`（代理子进程遥测交由 `orx up`）、`#996`（PTY/调度去抖）、`#977`（测试禁用真实 `$HOME`）与 `#995`（单 Agent 模型选择器简洁展示），按需备选 `#994`/`#961`/`#968`/`#897`/`#890` |
 
 ### 阶段 C：重型架构与高成本能力准入边界（保持按需立项）
 

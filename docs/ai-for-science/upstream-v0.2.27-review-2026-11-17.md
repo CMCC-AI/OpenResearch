@@ -4,24 +4,27 @@
 
 - 核查上游标签范围：`v0.2.26`（`e737b04d0491ac7e44962f3d7765c5c242b39461`）→ `v0.2.27`（`9a2949cfe2b7e9336169fcf6ab0c1ba6d4bc24a3`）。
 - 本地 Git 统计：`git rev-list --count v0.2.26..v0.2.27` 为 **47** 个提交；`git diff --shortstat v0.2.26 v0.2.27` 为 **447 个文件、42,456 增行、16,549 删行**。
-- 当前产品基线：已完成 [`v0.2.24-mobilesci.1`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.24-mobilesci.1) 不可变发行（`bcb90af4`）及归档（`5cbd4164`），生产基线仍为 [`v0.2.23-mobilesci.7.1`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.7.1)（待独立运维授权执行 Gate 1.3 切换 `10.7.0.18`）；阶段 3 已启动 **B3（`.27` 选择性审计与最小回移）**。
+- 当前产品基线：已完成 [`v0.2.24-mobilesci.1`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.24-mobilesci.1) 不可变发行（`bcb90af4`）及 **`10.7.0.18` Gate 1.3 受控生产切换**（见[交付记录](../product/release-v0.2.24-mobilesci.1-delivery.md)）；`feat/ai4s-product` 已推进 Phase 3 **B3 第一批（`#924`/`#984`/`aa2a2935`）**。
 - 排除与红线边界：
+  - **OpenCode 主线原则**：本项目主要以 **OpenCode** 为核心编码 Agent，非 OpenCode 的编码 Agent（如 Claude Code、Codex）专属改动不再列入回移候选（故原列待评的 `#964` 与 `#972` 均调整为**不回移**）。
   - **阶段 C 红线 / 不采用基座**：不整批引入 `.25/.26` 未选入的新实验引擎/host 体系（`#862 orx-host`、`#891`、`#950` 删除旧执行路径等）、`alphaXiv` 登录与更新体系、OpenCode/Server 解析或官方托管 Agent 安装向导（与 MobileSci 平台模型/配额管理冲突）、乐观 UI / `react-mutation` 大改与上游版本/CI 规则文件。
   - **已在 `.24-mobilesci.1` 覆盖或等效完成（6 项）**：`#952`、`#962`、`#981`、`#985`、`#990`，以及 `#986` 的同等大项目/超时传输加固（`0e763eee` 等提交已落地）。
 
 ## 一、本批执行结论
 
-1. **B3 第一批安全 bugfix 已直接适配落地（3 项）**：
+1. **B3 第一批安全 bugfix 已落地 `feat/ai4s-product`（3 项，提交 `0d9e220c`）**：
    - **`50e7a803` / `#924`**：修复 `src/remote.rs` 中 `ssh -N -L` 手动转发示例错误将 `<user@host>[:PORT]` 当主机名的问题，改为 `[-p PORT] <host>` 并补全单测。
    - **`6d789043` / `#984`**：修复 `src/commands/up.rs` 中 ConPTY 客户端先断开时未响应 `b"\x1b[6n"` 光标查询导致关闭阻塞的问题，并移植 `closing_a_pty_whose_client_left_returns_promptly`。
    - **`aa2a2935`**：修复 `ui/src/App.tsx` 全屏右侧面板 `[&.max]:z-60` 遮挡 `option-menu`（`z-50`）的层叠 Bug，改为 `[&.max]:z-40` 并重建 `ui/dist`。
-2. **建议后续独立评审批次（P1/P2，2 项为核心 Claude 会话健壮性）**：
-   - **`61aa9bec` / `#964`（965+ / 58-）**：Claude 后台任务/子代理完成后主会话遗漏或未及时记录续轮结果（待结合 MobileSci `src/local/chat/mod.rs`、专家团调度与端到端复现独立评审）。
-   - **`1d9dff32` / `#972`（808+ / 71-）**：分支分叉切换时通过 `--resume-session-at` 显式分叉 Claude 会话，避免污染原分支历史（待与 `#964` 同批核查交互链路）。
-3. **其余按需候选（P2/P3，不急于本轮合入）**：
-   - 测试与 Clippy 稳定性：`0b77b8e1`（`#996`）、`2613102a`（`#977`，仅参考禁止测试写用户 `$HOME` 思路，排除 `orx-host` 相关部分）。
-   - 执行环境与 Slurm/SSH 体验：`33acf6ae`（`#961` Slurm QoS/placement/sbatch 选项）、`65d7824f`（`#994` 断线重连 SSH 工作区，需按 `Ui` 本地适配，跳过 `WorkspaceConnection.tsx`）、`76d28089`（`#968` 防休眠需剥离 `orx-host` 依赖）。
-   - 小修与 UX：`ecec283e`（`#953`）、`61bc7233`（`#969`）、`e1fc9282`（`#970`）、`711f7fc6`（`#995`）、`9ebcd2c3`（`#965`）、`6f2dc9e2`（`#966`）、`a62fde75`（`#983` Windows Mica 侧栏）、`35f54226`（`#942` 退出/重启前确认，改动 26 文件/1682+，需独立需求评估）、`7770ac63`（`#1008` Agent 消息前缀）、`1684fdf0`（`#1007` CI 全量触发参考）。
+2. **明确剔除的非 OpenCode Agent 提交（2 项，原错列待评现正式排除）**：
+   - **`61aa9bec` / `#964`（965+ / 58-）**：仅针对 Claude 后台任务/子代理回写，**不回移**。
+   - **`1d9dff32` / `#972`（808+ / 71-）**：仅针对 Claude `--resume-session-at` 会话分叉，**不回移**。
+3. **后续基于 OpenCode 与平台核心的 B3 优先候选（按价值/风险排序）**：
+   - **`ecec283e` / `#953`（P1/P2，3 文件 +60/-4）**：在 `ORX_LOCAL_SESSION` 对话子进程（含 OpenCode 沙箱调用 `orx` CLI）中不直接发起短生命周期遥测/更新 HTTP 请求，改为写入本地库由 `orx up` 异步补发，消除代理中断误报与子进程重连延迟。
+   - **`0b77b8e1` / `#996`（P2，仅非 `orx-host` 部分）**：修复 `src/commands/up.rs` PTY relay EOF 读取竞态及调度测试宽限计时（跳过 `crates/orx-host`）。
+   - **`2613102a` / `#977`（P2，仅非 `orx-host` 测试隔离参考）**：约束单元测试不触碰真实用户 `$HOME` 目录，降低宿主机状态污染风险。
+   - **`711f7fc6` / `#995`（P3 UX，2 文件 +9/-6）**：当某模型仅由单一 Agent（即 OpenCode）提供时隐藏冗余 Agent 前缀标签，非常契合 MobileSci 当前产品形态。
+   - **其余运维/基础设施按需项**：`33acf6ae`（`#961` Slurm QoS/placement）、`65d7824f`（`#994` 断线重连 SSH 工作区，需按 `Ui` 本地适配，跳过 `WorkspaceConnection.tsx`）、`76d28089`（`#968` 防休眠需剥离 `orx-host` 依赖）、`61bc7233`（`#969`）、`e1fc9282`（`#970`）、`9ebcd2c3`（`#965`）、`6f2dc9e2`（`#966`）、`a62fde75`（`#983`）、`35f54226`（`#942` 退出确认，26 文件大改按需评估）、`7770ac63`（`#1008`）、`1684fdf0`（`#1007`）。
 
 ## 二、v0.2.26..v0.2.27 全量 47 提交逐项判定
 
@@ -34,14 +37,14 @@
 | 5 | `0d20849b` / `#954` | apply UI writes optimistically | 前端乐观更新（67 文件，2421+/1330-） | **排除 / 暂缓**：重构 React 状态流，风险高且不契合当前稳定性基线 |
 | 6 | `ecec283e` / `#953` | leave chat telemetry sends to orx up | `src/telemetry.rs`、`src/updates.rs`（3 文件，60+/4-） | **P2 候选**：减少短生命周期 CLI 退出时遥测竞争 |
 | 7 | `aa2a2935` | show model picker over fullscreen chats | `ui/src/App.tsx` 等（3 文件，3+/3-） | **P1 本批已落地**：`[&.max]:z-40` |
-| 8 | `61aa9bec` / `#964` | record Claude's work after background tasks | `src/local/chat` 等（5 文件，965+/58-） | **P1 重点候选（下一批独立评审）**：Claude 后台任务完结记账与回写 |
+| 8 | `61aa9bec` / `#964` | record Claude's work after background tasks | `src/local/chat` 等（5 文件，965+/58-） | **不回移（仅 Claude Agent）**：本项目基于 OpenCode，不引入 Claude 专属调度改动 |
 | 9 | `9ebcd2c3` / `#965` | Summarize oversized files excluded from project sharing | UI i18n 与提示（13 文件，30+/14-） | **P3 可选**：若启用项目共享超限提示可同步 |
 | 10 | `6f2dc9e2` / `#966` | Ship Unix CLI release archives as gzip | `.github/workflows`、`dist-workspace.toml`（2 文件，4+/2-） | **P3 参考**：仅在调整 `cargo-dist` Unix 打包格式时评估 |
 | 11 | `5b8795e6` / `#955` | sign in to alphaXiv from SSH hosts | SSH alphaXiv 登录（30 文件，1715+/265-） | **排除**：与 MobileSci 本地/统一登录体系不兼容 |
 | 12 | `e1fc9282` / `#970` | move chat search into the toolbar | UI 工具栏搜索（5 文件，27+/13-） | **P3 暂缓**：需与 MobileSci 全局头部布局及半屏规则对齐 |
 | 13 | `61bc7233` / `#969` | report the chat's model with orx feedback | `feedback.rs`、`telemetry.rs`（3 文件，126+/2-） | **P3 可选**：仅反馈附加字段 |
 | 14 | `cd2cae9d` / `#973` | upgrade react-mutation to 4.0.0 | `ui/package.json` 等（3 文件，47+/7-） | **排除**：对应 `#954` 乐观更新栈 |
-| 15 | `1d9dff32` / `#972` | branch Claude's session on fork switches | `src/local/chat` 等（12 文件，808+/71-） | **P1 重点候选（下一批与 `#964` 同评）**：分叉切换不污染原 Claude 会话 |
+| 15 | `1d9dff32` / `#972` | branch Claude's session on fork switches | `src/local/chat` 等（12 文件，808+/71-） | **不回移（仅 Claude Agent）**：仅适配 Claude `--resume-session-at`，OpenCode 无需引入 |
 | 16 | `397e3e68` / `#974` | unblock sign-in on Windows | 桌面 alphaXiv 登录（2 文件，33+/2-） | **排除**：alphaXiv 伴随登录通道 |
 | 17 | `33acf6ae` / `#961` | Slurm QoS, placement and sbatch options | `jobs/slurm.rs`、`local/slurm.rs`（27 文件，1161+/89-） | **P2 按需**：若交付 Slurm 集群高级调度需求时拆分引入 |
 | 18 | `f9ef5ca5` / `#963` | explain OpenResearch boxes that never run | 云箱启动超时诊断（14 文件，1469+/280-） | **排除**：依赖 `openresearch.sh` / 新 `orx-host` 启动流 |
@@ -75,4 +78,4 @@
 | 46 | `1684fdf0` / `#1007` | run every test on PRs, not on canaries | CI 工作流（12 文件，157+/132-） | **P3 CI 参考**：可借鉴 PR 全测拆分思路，但不覆盖 MobileSci 发行流 |
 | 47 | `9a2949cf` / `#1009` | bump version to 0.2.27 | 版本文件（2 文件，2+/2-） | **排除**：MobileSci 保持独立版本号与 `product-upstream.json` 台账 |
 
-> 注：`v0.2.27` 上游 47 个提交中，**6 项已在 `0.2.24-mobilesci.1` 覆盖/等效完成**，**3 项安全故障修补（`#924`、`#984`、`aa2a2935`）在本批直接完成适配落地**，**2 项 Claude 会话健壮性大修（`#964`、`#972`）列为下一批重点独立评审对象**，其余按阶段 C 边界与需求按需触发或排除，不改变 `product-upstream.json` 的 `.24` 锁定目标与 `.19` Git 共同祖先。
+> 注：`v0.2.27` 上游 47 个提交中，**6 项已在 `0.2.24-mobilesci.1` 覆盖/等效完成**，**3 项安全故障修补（`#924`、`#984`、`aa2a2935`）已在 `feat/ai4s-product` 落地（`0d9e220c`）**；按项目聚焦 **OpenCode** 原则，Claude/Codex 专属提交（如 `#964`、`#972`）不再纳入回移，下一批重点聚焦 `#953`、`#996`、`#977` 与 `#995`，不改变 `product-upstream.json` 的 `.24` 锁定目标与 `.19` Git 共同祖先。
