@@ -9820,7 +9820,7 @@ fn materialize_unfinished_turns(
 mod session_env;
 mod watcher;
 use session_env::child_path;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use session_env::{bash_env_hook, zsh_startup_wrapper, zshenv_hook, BIN_DIR_ENV};
 pub use session_env::{
     harness_log, in_local_session, launching_chat_harness, launching_chat_session, prepare_env,
