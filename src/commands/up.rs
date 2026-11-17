@@ -6536,6 +6536,10 @@ fn start_pty_with_env(
     let (kill_tx, kill_rx) = std::sync::mpsc::channel();
     let (event_tx, event_rx) = mpsc::channel(64);
 
+    // ConPTY asks where the cursor is and holds the child's output, and its own
+    // exit, until a terminal answers; a client that leaves first is answered here.
+    let cursor_query_pending = Arc::new(AtomicBool::new(false));
+    let query_seen = cursor_query_pending.clone();
     let output_tx = event_tx.clone();
     std::thread::spawn(move || {
         let mut buf = [0; 8192];
@@ -6543,6 +6547,9 @@ fn start_pty_with_env(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    if buf[..n].windows(4).any(|bytes| bytes == b"\x1b[6n") {
+                        query_seen.store(true, Ordering::SeqCst);
+                    }
                     if output_tx
                         .blocking_send(PtyEvent::Output(buf[..n].to_vec()))
                         .is_err()
@@ -6557,13 +6564,17 @@ fn start_pty_with_env(
     });
     std::thread::spawn(move || {
         while let Ok(bytes) = input_rx.recv() {
+            cursor_query_pending.store(false, Ordering::SeqCst);
             if writer
                 .write_all(&bytes)
                 .and_then(|_| writer.flush())
                 .is_err()
             {
-                break;
+                return;
             }
+        }
+        if cursor_query_pending.load(Ordering::SeqCst) {
+            let _ = writer.write_all(b"\x1b[1;1R").and_then(|_| writer.flush());
         }
     });
     std::thread::spawn(move || loop {

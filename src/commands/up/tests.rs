@@ -518,6 +518,35 @@ fn ssh_connection_failure_is_a_persistable_preflight_result() {
     assert!(test.tested_at > 0);
 }
 
+/// ConPTY waits on its cursor query until answered, and closing it waits on that.
+#[tokio::test]
+async fn closing_a_pty_whose_client_left_returns_promptly() {
+    let (program, args) = if cfg!(windows) {
+        ("cmd", vec!["/c".into(), "echo ready & pause".into()])
+    } else {
+        ("sh", vec!["-c".into(), "echo ready; read _".into()])
+    };
+    let PtySession {
+        master,
+        input,
+        mut events,
+        kill,
+    } = start_pty(program, args).unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(10), events.recv()).await;
+    assert!(matches!(first, Ok(Some(PtyEvent::Output(_)))));
+
+    // The order `relay_pty` tears down in when its socket closes.
+    let _ = kill.send(());
+    drop((events, input));
+    let (dropped, done) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(master);
+        let _ = dropped.send(());
+    });
+    done.recv_timeout(Duration::from_secs(10))
+        .expect("closing the PTY blocked its caller");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn pty_relays_input_output_resize_exit_and_cancel() {
