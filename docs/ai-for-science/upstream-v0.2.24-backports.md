@@ -2,20 +2,21 @@
 
 ## 当前状态总览（2026-11-17）
 
-- **产品与发行身份**：当前生产上线不可变发行为 [`v0.2.23-mobilesci.7.1`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.7.1)（`47571b04`）；当前开发分支 `feat/ai4s-product` 已将产品版本元数据锁定为 `0.2.24-mobilesci.1`（`8d59f3e8`，当前分支头 `c89fdda4`），`product-upstream.json` 的 `backportTarget` 已由 `.23` 更新为 `v0.2.24`（`23a4d67bb5ce3cf9051f8d62b2cd52e93116e16d`，`status: "partial"`），真实 Git 合并祖先仍保持 `v0.2.19`（`1d8a2854`），官方自动更新保持关闭（`product-disabled`）。最新交付规划见[下一阶段计划](../product/next-cycle-plan.md)与[版本发布台账](../product/releases.md)。
+- **产品与发行身份**：当前生产上线不可变发行仍为 [`v0.2.23-mobilesci.7.1`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.7.1)（`47571b04`）；[`v0.2.24-mobilesci.1`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.24-mobilesci.1)（`bcb90af4`）已通过 [CI 44041868978](https://github.com/CMCC-AI/OpenResearch/actions/runs/44041868978) 完成跨平台构建与不可变发布（待独立运维授权执行 `10.7.0.18` 生产切换）。当前开发分支 `feat/ai4s-product` 保持 `productVersion = 0.2.24-mobilesci.1` 与 `backportTarget = v0.2.24`（`23a4d67bb5ce3cf9051f8d62b2cd52e93116e16d`，`status: "partial"`），真实 Git 合并祖先仍保持 `v0.2.19`（`1d8a2854`），官方自动更新保持关闭（`product-disabled`）。最新交付规划见[下一阶段计划](../product/next-cycle-plan.md)、[版本发布台账](../product/releases.md)与 [v0.2.27 47 项逐项评估](upstream-v0.2.27-review-2026-11-17.md)。
 - **`.24`（16 项）结论保持**：`.23 → .24` 固定增量为 16 个提交、140 个文件，**3 项已适配交付**（`#872`、`#698`、`#860`），其余 13 项按既有评估保留（其中 `#869` 观察待复现，重型能力与独立服务不照搬）。
-- **`.25`（45 项）与 `.25+` 选择性加固落地（`.7.1` → `0.2.24-mobilesci.1`）**：
+- **`.25`（45 项）与 `.27`（47 项）选择性加固落地**：
 
 | 提交 / 来源 PR | 实际落地内容与验证范围 | 状态 |
 | --- | --- | --- |
-| `45d5c6aa` / `#985`、`#952`、`#981`、`#990` | SQLite 打开时先设 `busy_timeout` 与 `journal_mode=WAL` 退避重试并合批建表；传递进程活跃租约 `held_turn_leases` 防误回收；`drain_queue` 仅接管 `Draining` 槽位；引入 [`FileLock`](../../src/file_lock.rs) 在析构时显式 `unlock()` | 已合入本地分支，待随 `.24` 发行 |
-| `19f75bcc` / `#962`、`#923`、`#730`、`#786` | `set_chat_session_env` 固定 `ORX_DATA_DIR`、CLI 管道退出与只读降级；Unix 私有目录 `DirBuilder::mode(0o700)` 原子创建与权属复核；`git archive` 注入 `core.autocrlf=false`/`core.eol=lf`；Markdown 产物路径容忍未编码百分号并重建 `ui/dist` | 已合入本地分支，待随 `.24` 发行 |
-| `21dced48` / `#909` | 将 Markdown 中 `https://` 与 `//` 外链图片转为可点击链接，消除 `ArtifactsTab` `<a>` 标签 `node` 属性泄漏并重建 `ui/dist` | 已合入本地分支，待随 `.24` 发行 |
-| `68f41ff7` / `#747`、`#903` + 内部稳健性改造 | 支持 `OPENALEX_MAILTO`/`OPENALEX_API_KEY` 配置并移除默认共享邮箱；支持 Claude 插件 `plugin.json` 自定义 `skills` 与单技能根；拆出 `src/local/chat/{session_env,watcher,wire}.rs`；为 [`SourceFile`](../../src/verified_file.rs) / [`FileLock`](../../src/file_lock.rs) / [`LockedAsyncFile`](../../src/file_lock.rs) 补齐显式 `unlock()` 消除并发归档下载/回收测试竞争 | 已合入本地分支，待随 `.24` 发行 |
-| 本批技术债清理 / `#734` + 单测模块化 | `src/local/storage.rs` 跳过无关外部仓库的 macOS 云端占位文件，消除每次 CLI 前的潜在 iCloud/Dropbox 阻塞；将 [`src/local/chat/mod.rs`](../../src/local/chat/mod.rs) 6 组内联测试（7,540 行）、[`src/store.rs`](../../src/store.rs) `tests`（3,085 行）与 [`src/commands/up.rs`](../../src/commands/up.rs) `tests`（1,075 行）拆入独立测试文件 | 已合入本地分支，待随 `.24` 发行 |
+| `45d5c6aa` / `#985`、`#952`、`#981`、`#990` | SQLite 打开时先设 `busy_timeout` 与 `journal_mode=WAL` 退避重试并合批建表；传递进程活跃租约 `held_turn_leases` 防误回收；`drain_queue` 仅接管 `Draining` 槽位；引入 [`FileLock`](../../src/file_lock.rs) 在析构时显式 `unlock()` | 已随 `.24-mobilesci.1` 发行 |
+| `19f75bcc` / `#962`、`#923`、`#730`、`#786` | `set_chat_session_env` 固定 `ORX_DATA_DIR`、CLI 管道退出与只读降级；Unix 私有目录 `DirBuilder::mode(0o700)` 原子创建与权属复核；`git archive` 注入 `core.autocrlf=false`/`core.eol=lf`；Markdown 产物路径容忍未编码百分号并重建 `ui/dist` | 已随 `.24-mobilesci.1` 发行 |
+| `21dced48` / `#909` | 将 Markdown 中 `https://` 与 `//` 外链图片转为可点击链接，消除 `ArtifactsTab` `<a>` 标签 `node` 属性泄漏并重建 `ui/dist` | 已随 `.24-mobilesci.1` 发行 |
+| `68f41ff7` / `#747`、`#903` + 内部稳健性改造 | 支持 `OPENALEX_MAILTO`/`OPENALEX_API_KEY` 配置并移除默认共享邮箱；支持 Claude 插件 `plugin.json` 自定义 `skills` 与单技能根；拆出 `src/local/chat/{session_env,watcher,wire}.rs`；为 [`SourceFile`](../../src/verified_file.rs) / [`FileLock`](../../src/file_lock.rs) / [`LockedAsyncFile`](../../src/file_lock.rs) 补齐显式 `unlock()` 消除并发归档下载/回收测试竞争 | 已随 `.24-mobilesci.1` 发行 |
+| 技术债清理 / `#734` + 单测模块化 | `src/local/storage.rs` 跳过无关外部仓库的 macOS 云端占位文件，消除每次 CLI 前的潜在 iCloud/Dropbox 阻塞；将 [`src/local/chat/mod.rs`](../../src/local/chat/mod.rs) 6 组内联测试（7,540 行）、[`src/store.rs`](../../src/store.rs) `tests`（3,085 行）与 [`src/commands/up.rs`](../../src/commands/up.rs) `tests`（1,075 行）拆入独立测试文件 | 已随 `.24-mobilesci.1` 发行 |
 | `.26`（`#922`、`#935`） | `Md` 图片轮播提升至 `stableComponents`；`pendingPlanForTurn` 限定最近用户轮次 | 已于 `.7`/`.7.1` 交付 |
+| Phase 3 B3 第一批（`.27` `#924`、`#984`、`aa2a2935`） | `src/remote.rs` 修正 `ssh -N -L [-p PORT] <host>` 手动端口语法；`src/commands/up.rs` ConPTY 客户端退出响应 `b"\x1b[6n"` 并补全单测；`ui/src/App.tsx` 全屏右侧面板 `[&.max]:z-60` → `[&.max]:z-40` 避免遮挡模型选择器并重建 `ui/dist` | 已合入 `feat/ai4s-product`（`.24-mobilesci.1` 之后增量） |
 
-- **当前遗留观察项**：三大核心文件剔除内联测试后体积已显著下降（`src/local/chat/mod.rs` 17,396 → 9,863 行、`src/commands/up.rs` 10,074 → 8,997 行、`src/store.rs` 7,047 → 3,960 行），后续仅按功能或缺陷触碰边界继续渐进拆出生产子模块；`.25/.26` 重型重写（`#862 orx-host`、`#885`、`#886`、`#891`、`#938 ACP`）及 PR `#17` 继续隔离暂缓。全量本地验证（`cargo fmt/clippy/test --locked` 1,523 单元 + 7 个集成测试套、UI 636 项、平台 87 项、脚本 30 项）已通过，仍待恢复 Docker Desktop 完成 `hosted-local`/平台联调并执行 `release/mobilesci-0.2.24-mobilesci.1` 跨平台发行 CI。
+- **当前遗留观察项**：三大核心文件剔除内联测试后体积保持收敛（`src/local/chat/mod.rs`、`src/commands/up.rs`、`src/store.rs`），后续按功能/缺陷触碰边界继续渐进拆出生产子模块；`.25`–`.27` 重型重写（`#862 orx-host`、`#885`、`#886`、`#891`、`#938`、`#950`、`#954`、`#979`、`#1002` 等）继续隔离排除，**PR `#17` 已关闭清理**（仓库当前无未合入打开 PR，固定数据复跑若后续重提仍受阶段 C 四要素准入约束）。`.27` 下一批重点待评项为 `#964`（Claude 后台任务回写）与 `#972`（分支分叉 `--resume-session-at`）。
 
 ---
 

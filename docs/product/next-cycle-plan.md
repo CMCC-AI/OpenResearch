@@ -7,9 +7,9 @@
 | 维度 | 当前状态 | 依据与边界 |
 | --- | --- | --- |
 | 生产在线基线（M7） | `v0.2.23-mobilesci.7.1`（`47571b04`）运行中 | 已完成五步交付与生产统一切换，见[交付记录](release-v0.2.23-mobilesci.7-delivery.md) |
-| 最新不可变源码发行（Gate 1.2） | [`v0.2.24-mobilesci.1`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.24-mobilesci.1)（`bcb90af4`）已正式发布 | [CI 44041868978](https://github.com/CMCC-AI/OpenResearch/actions/runs/44041868978) 全平台通过并由 `publish` 自动打标发布，4 份源码附件已核验与干净重建逐字节一致；**下一步为 Gate 1.3 `10.7.0.18` 生产切换** |
-| 上游选择性回移台账 | `.23` 已收敛；`.24` 16 项中适配 3 项；`.25` 45 项中原 7 项 P1/条件候选已全部落地；`.26` 2 项已在 `.7.1` 交付 | 见 [`upstream-v0.2.24-backports.md`](../ai-for-science/upstream-v0.2.24-backports.md) 与 [`upstream-v0.2.25-review-2026-11-09.md`](../ai-for-science/upstream-v0.2.25-review-2026-11-09.md) |
-| 本地与 CI 回归基线 | Rust/UI/平台（含 PG 集成）/脚本/三平台源码归档/浏览器验收全量通过 | 本地实测 + GitHub Actions `44041868978`（Linux `fmt/clippy/test/audit/Real PDF/Playwright`、Linux AppImage x86_64/aarch64、macOS ARM64 & Real PDF、Windows build/test、executor offline tools、PG 17 集成全通过） |
+| 最新不可变源码发行（Gate 1.2） | [`v0.2.24-mobilesci.1`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.24-mobilesci.1)（`bcb90af4`）已正式发布 | [CI 44041868978](https://github.com/CMCC-AI/OpenResearch/actions/runs/44041868978) 全平台通过并由 `publish` 自动打标发布，4 份源码附件已核验与干净重建逐字节一致；**`feat/ai4s-product` 已进入 Phase 3（B3 第一批已落地），Gate 1.3 `10.7.0.18` 生产切换待独立运维授权执行** |
+| 上游选择性回移台账 | `.23` 已收敛；`.24` 16 项适配 3 项；`.25` 45 项 P1/条件 7 项已落地；`.26` 2 项已交付；`.27` 47 项全量评估完成 | 见 [`upstream-v0.2.24-backports.md`](../ai-for-science/upstream-v0.2.24-backports.md)、[`upstream-v0.2.25-review-2026-11-09.md`](../ai-for-science/upstream-v0.2.25-review-2026-11-09.md) 与 [`upstream-v0.2.27-review-2026-11-17.md`](../ai-for-science/upstream-v0.2.27-review-2026-11-17.md)；`.27` 安全小修（`#924`/`#984`/`aa2a2935`）已在分支落地 |
+| 本地与 CI 回归基线 | 发行基线全量通过 + Phase 3 B3 第一批定向与 UI 构建回归通过 | `.24-mobilesci.1` 完成 [CI 44041868978](https://github.com/CMCC-AI/OpenResearch/actions/runs/44041868978) 全部校验；`feat/ai4s-product` 新增 Phase 3 提交待按仓库校验闭环后再推仓触发增量复核 |
 | 遗留模块集中度（观察项） | `src/local/chat/mod.rs`（9,863 行）、`src/commands/up.rs`（8,997 行）、`src/store.rs`（3,960 行） | 已拆出 `chat/{session_env,watcher,wire}.rs` 与三大核心文件的 8 个独立测试模块（共削减 11,700+ 行单文件体积）；生产函数按需渐进拆解，不以行数清零做风险重构 |
 
 ---
@@ -33,14 +33,14 @@
 | --- | --- | --- |
 | B1（体验优化） | 配额提示、本地/托管开发流、研究交付流打磨 | 基于真实用户使用 `.24` 的反馈，优化额度预占状态提示、模型探测报错可读性、`hosted-local` 代理构建与多模型切换引导；不放宽计量与来源校验 |
 | B2（结构解耦） | `up.rs` / `store.rs` / `chat/mod.rs` 增量拆解 | 结合实际需求修改按领域拆出高内聚生产子模块，每次拆分独立配齐 clippy 与完整回归，不做无业务伴随的大规模重命名 |
-| B3（上游按需跟踪） | 评估 `v0.2.25` 剩余条件项及官方后续版本（`v0.2.27+`）小修 | 按实际复现评估 `#887`（Codex 相对配置）、`#720`（Windows 不可信链接回退）、`#890`（虚拟列表无障碍）、`#897`（取消日志收尾）等补丁；不追逐提交数量 |
+| B3（上游按需跟踪） | 评估 `v0.2.25` 剩余条件项及 `v0.2.27` 精选补丁 | 已完成 `.27` 47 项评估并落地第一批安全小修（`#924`/`#984`/`aa2a2935`）；下一批重点评审 `#964`（Claude 后台任务回写）与 `#972`（分支分叉 `--resume-session-at`），并按实际复现评估 `#887`/`#720`/`#890`/`#897`/`#996`/`#977` 等，不追逐提交数量 |
 
 ### 阶段 C：重型架构与高成本能力准入边界（保持按需立项）
 
 以下方向继续执行**四要素准入**（明确受影响用户、真实复现/使用证据、最小交付改动、长期维护成本评审），未满足前不进入常规迭代：
 
-- **上游大型架构重写**：`#862 orx-host` 新实验引擎（225 文件）、`#938` ACP 常驻代理体系、`#885` 新子代理协议、`#886` CodeMirror 输入器重写、`#891` 多机工作区切换、`#873` `.orx` 项目分享、`#877` `openresearch.sh` 云发布。
-- **产品扩展专题**：PR `#17` 固定数据复跑（含冻结输入集删除保护语义）、跨 Run 指标趋势对比、完整环境镜像封存、签名桌面安装包（macOS/Windows/Linux 自有更新通道与签名链）。
+- **上游大型架构重写**：`#862 orx-host` / `#950` 新实验引擎体系、`#938` ACP 常驻代理体系、`#885` 新子代理协议、`#886` CodeMirror 输入器重写、`#891` 多机工作区切换、`#873` `.orx` 项目分享、`#877` `openresearch.sh` 云发布、`#978`/`#979` 官方托管 Agent 向导、`#954` 乐观 UI。
+- **产品扩展专题**：固定数据复跑（原 PR `#17` 已清理关闭，后续若重提需明确冻结输入集删除保护语义）、跨 Run 指标趋势对比、完整环境镜像封存、签名桌面安装包（macOS/Windows/Linux 自有更新通道与签名链）。
 
 ---
 
