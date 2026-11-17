@@ -2,8 +2,8 @@
 
 ## 版本总览（2026-11-17）
 
-- **当前生产上线与最新不可变源码发行**：[v0.2.23-mobilesci.7.1](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.7.1)（固定提交 `47571b04bb074703f43764d7387f98c218f2b88b`，自身完整发行 [CI 42999983526](https://github.com/CMCC-AI/OpenResearch/actions/runs/42999983526) 成功，四个正式附件与干净重建逐字节一致，见[发行回执](evidence/mobilesci-7.1/release-gate.json)）。`.6`、`.7`、`.7.1` 及其附件保持不可变。
-- **当前待发行候选版本**：`0.2.24-mobilesci.1`（`feat/ai4s-product` 分支 `8d59f3e8` 起锁定版本元数据，推进至 `edb38792` 平台同源托管与配额初始化收口；发布说明见 [`release-notes/v0.2.24-mobilesci.1.md`](../../release-notes/v0.2.24-mobilesci.1.md)）。该版本已完成本地全量 Rust/UI/平台/PG 集成/脚本/执行器工具回归，并已通过本地 `hosted-local`（`5400`）交互发布案例确认；**待推分支 `release/mobilesci-0.2.24-mobilesci.1` 跑通完整跨平台发行 CI 并打标，生产环境仍运行 `.7.1`**。
+- **最新不可变源码发行（Gate 1.2 已发布）**：[v0.2.24-mobilesci.1](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.24-mobilesci.1)（固定提交 `bcb90af4fd3dd3250d52f23b94dcbb12d87f8bbb`，`release/mobilesci-0.2.24-mobilesci.1` 完整发行 [CI 44041868978](https://github.com/CMCC-AI/OpenResearch/actions/runs/44041868978) 全绿通过，发布于 `2026-11-17T08:08:48Z`；下载 `MobileSci-0.2.24-mobilesci.1.tar.gz`/`.zip`/`SHA256SUMS`/`source-release.json` 四附件已核验与干净重建逐字节一致；发布说明见 [`release-notes/v0.2.24-mobilesci.1.md`](../../release-notes/v0.2.24-mobilesci.1.md)）。
+- **当前生产服务器运行版本**：[v0.2.23-mobilesci.7.1](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.23-mobilesci.7.1)（固定提交 `47571b04bb074703f43764d7387f98c218f2b88b`，自身完整发行 [CI 42999983526](https://github.com/CMCC-AI/OpenResearch/actions/runs/42999983526) 成功，见[发行回执](evidence/mobilesci-7.1/release-gate.json)）。`.6`、`.7`、`.7.1` 与 `.24-mobilesci.1` 标签及附件保持不可变；`.24-mobilesci.1` 待 Gate 1.3 维护窗口切换上线 `10.7.0.18`。
 
 真实上游合并祖先仍为 `v0.2.19`（`1d8a285468aed5d5a1f1ea86ecf6e2f63fcaa8bd`）；[.23](../ai-for-science/upstream-v0.2.23-backports.md)、[.24](../ai-for-science/upstream-v0.2.24-backports.md)、[.25](../ai-for-science/upstream-v0.2.25-review-2026-11-09.md)、[.26](../ai-for-science/upstream-v0.2.26-release-scope.md)均按具体需求选择评估或适配，不表示整版同步。`product-upstream.json` 的 `backportTarget` 已推进至 `v0.2.24`（`status: "partial"`），官方自动更新保持禁用（`product-disabled`）。下一阶段规划与技术债边界见[下一阶段计划](next-cycle-plan.md)。
 
@@ -15,7 +15,9 @@
    - 精选案例按主对话公开成果、64 MiB 快照与 `\u0000` 清洗、128 MiB 慢速下载逐块流控、工作区 `tasks` 字段兼容及只读 `/file` 回退产物预览；执行器 `/opt/opencode-npm-cache` 离线预热与超时调整（`352f3e47`～`8ad6954a`）。
    - 存储/会话/锁稳定性加固：`#985` WAL 初始化、`#952` 活跃租约保护、`#981` 排空抢占收敛、`#990` + `SourceFile`/`FileLock` 显式解锁、`#962` 代理 `ORX_DATA_DIR` 统一与只读/管道退出、`#923` 原子 `0700` 目录、`#730` 源码归档 LF、`#786` 百分号路径解码、`#734` 跳过无关云端占位仓库（`45d5c6aa`、`19f75bcc`、`68f41ff7`、`96133c90`）。
    - 安全、局部模块化与本地调试：`#909` 外链 Markdown 图片转链接、`#747` OpenAlex 配置、`#903` Claude 插件清单技能目录、`chat`/`store`/`up` 模块化拆出，以及 `scripts/hosted-local.mjs`（含 `--with-quotas` 与 `apt-get` 重试，`21dced48`、`68f41ff7`、`c89fdda4`、`edb38792`）。
-3. **待完成发行门禁**：本地 `slot-1` 与 `hosted-local`（`5400`）已实测通过；下一步由最终确认提交切出 `release/mobilesci-0.2.24-mobilesci.1` 分支，运行跨平台 `MobileSci source release` CI 并生成正式标签与 Release 资产，再按受控流程安排 `10.7.0.18` 生产切换。
+3. **已通过发行门禁（`bcb90af4`）与待完成上线动作**：
+   - `bcb90af4` 已补充 `quinn-udp 0.5.16`（修复 `RUSTSEC-2026-0538`）、Windows 测试条件导入、`checkpoint_tests` 显式释放异步句柄及同步新版供应商/开关 UI 的 Playwright 额度管理验收，[CI 44041868978](https://github.com/CMCC-AI/OpenResearch/actions/runs/44041868978) 全部 13 项检查及 `publish` 通过并生成不可变 Release [v0.2.24-mobilesci.1](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.24-mobilesci.1)。
+   - 剩余上线动作：按受控维护窗口对 `10.7.0.18` 执行备份、镜像重建与生产切换（Gate 1.3）。
 
 ## `.7.1` 生产稳定版交付（2026-11-11）
 

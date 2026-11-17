@@ -7,9 +7,9 @@
 | 维度 | 当前状态 | 依据与边界 |
 | --- | --- | --- |
 | 生产在线基线（M7） | `v0.2.23-mobilesci.7.1`（`47571b04`）运行中 | 已完成五步交付与生产统一切换，见[交付记录](release-v0.2.23-mobilesci.7-delivery.md) |
-| 新版锁定与阶段 2 收尾 | `0.2.24-mobilesci.1` 已锁定元数据（`8d59f3e8`），分支收口至 `edb38792` | 涵盖供应商模型开关管理（含空模型库首连与 `shared-origin`）、案例按对话发布与流控、执行器缓存预热、`.25`/后`.25` 稳定性与安全加固、文件锁泄漏根治、`chat`/`store`/`up` 拆分及 `hosted-local`；**本地门禁与案例发布实测已通过，待切 `release/*` 发 CI 与打标** |
+| 最新不可变源码发行（Gate 1.2） | [`v0.2.24-mobilesci.1`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.24-mobilesci.1)（`bcb90af4`）已正式发布 | [CI 44041868978](https://github.com/CMCC-AI/OpenResearch/actions/runs/44041868978) 全平台通过并由 `publish` 自动打标发布，4 份源码附件已核验与干净重建逐字节一致；**下一步为 Gate 1.3 `10.7.0.18` 生产切换** |
 | 上游选择性回移台账 | `.23` 已收敛；`.24` 16 项中适配 3 项；`.25` 45 项中原 7 项 P1/条件候选已全部落地；`.26` 2 项已在 `.7.1` 交付 | 见 [`upstream-v0.2.24-backports.md`](../ai-for-science/upstream-v0.2.24-backports.md) 与 [`upstream-v0.2.25-review-2026-11-09.md`](../ai-for-science/upstream-v0.2.25-review-2026-11-09.md) |
-| 本地测试与回归基线 | Rust/UI/平台（含 PG 集成）/脚本/执行器工具全量通过 | `cargo fmt/clippy` 零警告、`cargo test --locked`（1523 单元 + 7 个集成测试文件全部通过）、UI 636 项、平台 90 单元 + 58 PG 集成、脚本 31 项、部署 66 项、`orx-check-executor-tools` 与 `source-release` 均通过；`slot-1` (`5201/4901`) 与 `hosted-local` (`5400`) 实测就绪，案例发布人工验证通过 |
+| 本地与 CI 回归基线 | Rust/UI/平台（含 PG 集成）/脚本/三平台源码归档/浏览器验收全量通过 | 本地实测 + GitHub Actions `44041868978`（Linux `fmt/clippy/test/audit/Real PDF/Playwright`、Linux AppImage x86_64/aarch64、macOS ARM64 & Real PDF、Windows build/test、executor offline tools、PG 17 集成全通过） |
 | 遗留模块集中度（观察项） | `src/local/chat/mod.rs`（9,863 行）、`src/commands/up.rs`（8,997 行）、`src/store.rs`（3,960 行） | 已拆出 `chat/{session_env,watcher,wire}.rs` 与三大核心文件的 8 个独立测试模块（共削减 11,700+ 行单文件体积）；生产函数按需渐进拆解，不以行数清零做风险重构 |
 
 ---
@@ -20,10 +20,9 @@
 
 1. **恢复本地容器环境并完成端到端交互验收（已完成）**
    - 已确认 Docker Desktop、平台 58 项 PG 集成、`slot-1`（`5201`/`4901`）、`hosted-local`（`5400`、`shared-origin` + `--with-quotas` + `orx-check-executor-tools`）全链路回归通过，并在 `5400` 实测发布案例无异常。
-2. **执行跨平台发行门禁与打标发布（下一动作）**
-   - 确认发布候选提交后，遵循 `MobileSci source release` 工作流从 `release/mobilesci-0.2.24-mobilesci.1` 触发完整 CI（Linux/macOS/Windows 源码归档哈希一致、Rust 全平台、`ui` 审计与构建、`executor-tools` 离线自检、`platform` PG 集成、macOS/Linux Poppler 真实 PDF）。
-   - CI 全绿后创建不可变 Git 标签与 GitHub Release，核对 4 个正式附件摘要并归档发行回执。
-3. **生产受控升级切换（`ssh root@10.7.0.18`）**
+2. **执行跨平台发行门禁与打标发布（已完成）**
+   - `release/mobilesci-0.2.24-mobilesci.1`（固定提交 `bcb90af4`）已通过 [CI 44041868978](https://github.com/CMCC-AI/OpenResearch/actions/runs/44041868978) 全部跨平台校验并正式发布不可变 GitHub Release [`v0.2.24-mobilesci.1`](https://github.com/CMCC-AI/OpenResearch/releases/tag/v0.2.24-mobilesci.1)，4 个源码归档及校验清单已核对逐字节一致。
+3. **生产受控升级切换（`ssh root@10.7.0.18`，下一动作）**
    - 沿用[运行与部署约定](runtime-and-deployment.md)与 M7 门禁：升级前先完成 PostgreSQL、各用户 SQLite、配置与现有容器备份及实时空闲门禁检查。
    - 重新构建平台与执行器镜像（同步 `/opt/opencode-npm-cache` 与最新 `orx`、`ui/dist`），同步更新平台、provisioner、存量私人执行器及持久化 Compose 的 `MANAGED_EXECUTOR_IMAGE` 与挂载配置。
    - 切换后完成只读数据摘要对比、公网入口健康检查、管理员模型开关读写测试及新账号冷启动冒烟。
