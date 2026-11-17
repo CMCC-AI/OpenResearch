@@ -296,3 +296,48 @@ test("quota provider connection, sibling key inheritance, model probing and prov
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("quota settings allow connecting a first provider from an empty catalog before enabling models", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "quota-empty-init-"));
+  const file = join(dir, "models.json");
+  try {
+    await writeFile(file, JSON.stringify({ providers: {}, models: [] }));
+    await assert.rejects(loadQuotaModels(file), { status: 503 });
+    const allowEmpty = await loadQuotaModels(file, { allowEmpty: true });
+    assert.deepEqual(allowEmpty, []);
+
+    const settings = quotaModelSettings(file);
+    let state = await settings.read();
+    assert.equal(state.backend, "quota");
+    assert.deepEqual(state.models, []);
+    assert.deepEqual(state.providers, []);
+
+    state = await settings.connectProvider({
+      providerId: "deepseek",
+      providerName: "DeepSeek",
+      baseUrl: "https://api.deepseek.com/v1",
+      apiKey: "secret-deepseek-key",
+      revision: state.revision,
+    });
+    assert.equal(state.providers.length, 1);
+    assert.equal(state.providers[0].id, "deepseek");
+    assert.equal(state.models.length, 0);
+
+    state = await settings.save({
+      id: "deepseek-chat",
+      name: "DeepSeek V3",
+      providerId: "deepseek",
+      providerName: "DeepSeek",
+      model: "deepseek-chat",
+      baseUrl: "https://api.deepseek.com/v1",
+      apiKey: "",
+      contextTokens: 65536,
+      maxOutputTokens: 8192,
+      revision: state.revision,
+    });
+    assert.equal(state.models.length, 1);
+    assert.equal((await loadQuotaModels(file)).length, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

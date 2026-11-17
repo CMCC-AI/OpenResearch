@@ -17,6 +17,7 @@ import { featuredCaseRoutes } from "./featured-cases.mjs";
 import { storageAccess, storageSettings } from "./storage.mjs";
 import { researchLimit } from "./research-limits.mjs";
 import { leaseRuntime, personalRuntimeTunnel } from "./runtime-pool.mjs";
+import { createHash } from "node:crypto";
 import http from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
@@ -172,6 +173,27 @@ export function configuration(env = process.env) {
   };
 }
 const publicDir = fileURLToPath(new URL("../public", import.meta.url));
+const portalAssets = new Set([
+  "/",
+  "/_account/login",
+  "/platform.js",
+  "/platform.css",
+  "/brand.svg",
+  "/workspace-enter.html",
+  "/workspace-enter.js",
+]);
+const inlineScriptHashes = (html) => {
+  const hashes = [];
+  for (const match of html.matchAll(
+    /<script(?![^>]*\bsrc\s*=)[^>]*>([\s\S]*?)<\/script>/gi,
+  )) {
+    if (match[1])
+      hashes.push(
+        `'sha256-${createHash("sha256").update(match[1], "utf8").digest("base64")}'`,
+      );
+  }
+  return hashes;
+};
 const json = (res, value, status = 200) => {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(value));
@@ -199,7 +221,7 @@ export async function createPlatform(
 ) {
   config.tokenQuota ||= { enabled: false, monthlyTokens: 2000000 };
   if (config.tokenQuota.enabled)
-    await loadQuotaModels(config.tokenQuota.modelsFile);
+    await loadQuotaModels(config.tokenQuota.modelsFile, { allowEmpty: true });
   const quota = tokenQuotas(pool, config.tokenQuota.monthlyTokens);
   const quotaRoutes = tokenQuotaRoutes({ config, pool, quota, input, json });
   const gateway = modelGateway({
@@ -421,16 +443,30 @@ export async function createPlatform(
     const types = {
       ".html": "text/html; charset=utf-8",
       ".js": "application/javascript",
+      ".mjs": "application/javascript",
       ".css": "text/css",
+      ".json": "application/json; charset=utf-8",
       ".svg": "image/svg+xml",
       ".png": "image/png",
+      ".webp": "image/webp",
       ".ico": "image/x-icon",
+      ".woff": "font/woff",
       ".woff2": "font/woff2",
+      ".ttf": "font/ttf",
+      ".wasm": "application/wasm",
     };
-    res.writeHead(200, {
+    const bytes = await readFile(file);
+    const headers = {
       "content-type": types[extname(file)] || "application/octet-stream",
-    });
-    res.end(await readFile(file));
+    };
+    if (directory === config.ui && extname(file) === ".html") {
+      headers["content-security-policy"] = contentSecurityPolicy(
+        ["'self'", ...inlineScriptHashes(bytes.toString("utf8"))],
+        "'self'",
+      );
+    }
+    res.writeHead(200, headers);
+    res.end(bytes);
   }
   const accounts = accountRoutes({
     config,
@@ -566,15 +602,16 @@ export async function createPlatform(
     }
     await accounts.admin(req, res, path, s);
   }
+  const contentSecurityPolicy = (
+    scriptSources = ["'self'"],
+    baseUri = "'none'",
+  ) =>
+    `default-src 'self'; script-src ${scriptSources.join(" ")}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri ${baseUri}; frame-ancestors 'none'; form-action 'self' ${config.origin.protocol}//*.${config.origin.host}`;
   const server = http.createServer(async (req, res) => {
     res.setHeader("cache-control", "no-store");
     res.setHeader("referrer-policy", "no-referrer");
     res.setHeader("x-content-type-options", "nosniff");
-    res.setHeader(
-      "content-security-policy",
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' " +
-        `${config.origin.protocol}//*.${config.origin.host}`,
-    );
+    res.setHeader("content-security-policy", contentSecurityPolicy());
     if (config.secure)
       res.setHeader(
         "strict-transport-security",
@@ -1003,8 +1040,28 @@ export async function createPlatform(
         }
         throw new HttpError(405, "不支持的操作");
       }
+      if (
+        config.sharedOriginSpaces &&
+        path === "/_orx/runtime" &&
+        req.method === "GET"
+      )
+        return json(res, {
+          kind: "local",
+          version: "platform",
+          accountUrl: config.origin.origin,
+        });
       if (!path.startsWith("/api/platform/")) {
         check(req.method === "GET" || req.method === "HEAD", 405);
+        if (config.sharedOriginSpaces) {
+          if (portalAssets.has(path))
+            return await staticFile(
+              res,
+              publicDir,
+              path === "/_account/login" ? "/" : path,
+            );
+          check(!path.startsWith("/api/"), 404, "接口不存在");
+          return await staticFile(res, config.ui, path);
+        }
         if (config.privateSpaces && path === "/projects") {
           res.writeHead(303, { location: "/" });
           return res.end();

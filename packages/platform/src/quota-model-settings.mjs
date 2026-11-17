@@ -78,7 +78,7 @@ export function quotaModelSettings(file, { fetcher = fetch } = {}) {
     try {
       const text = await readFile(file, "utf8");
       const document = JSON.parse(text);
-      validateQuotaModels(document);
+      validateQuotaModels(document, { allowEmpty: true });
       return { document, revision: revision(text) };
     } catch {
       throw new HttpError(503, "平台模型配置不可用，请检查清单文件及权限");
@@ -278,7 +278,9 @@ export function quotaModelSettings(file, { fetcher = fetch } = {}) {
         }
       }
       try {
-        validateQuotaModels(state.document);
+        validateQuotaModels(state.document, {
+          allowEmpty: action === "connectProvider",
+        });
       } catch {
         throw new HttpError(
           400,

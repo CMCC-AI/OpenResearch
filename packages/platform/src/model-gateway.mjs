@@ -56,19 +56,19 @@ function safeMetadata(value) {
     ([key, item]) => !secretFields.has(key.toLowerCase()) && safeMetadata(item),
   );
 }
-export async function loadQuotaModels(file) {
+export async function loadQuotaModels(file, options = {}) {
   let document;
   try {
     document = JSON.parse(await readFile(file, "utf8"));
   } catch {
     throw new HttpError(503, "平台模型配置不可用");
   }
-  return validateQuotaModels(document);
+  return validateQuotaModels(document, options);
 }
-export function validateQuotaModels(document) {
+export function validateQuotaModels(document, { allowEmpty = false } = {}) {
   check(
     Array.isArray(document.models) &&
-      document.models.length > 0 &&
+      (allowEmpty ? document.models.length >= 0 : document.models.length > 0) &&
       document.models.length <= 100,
     503,
     "平台模型列表无效",
