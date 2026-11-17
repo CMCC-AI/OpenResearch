@@ -360,6 +360,7 @@ mod tests {
                 FlowPoint { x: 20.0, y: 40.0 },
             )]),
             viewport: None,
+            frames: Vec::new(),
         };
         let created = store
             .create_workflow_draft("project", input.clone())
@@ -387,6 +388,42 @@ mod tests {
         assert_eq!(restored.input.positions[":system:G1"].y, -180.0);
         assert!(restored.input.into_plan("Run goal").tasks.is_empty());
         drop(store);
+    }
+
+    #[test]
+    fn drafts_round_trip_stage_frames() {
+        let (root, store) = fixture();
+        let input = WorkflowDraftInput {
+            name: "Framed plan".into(),
+            objective: String::new(),
+            summary: String::new(),
+            workflow: "literature".into(),
+            tasks: vec![],
+            positions: std::collections::HashMap::new(),
+            viewport: None,
+            frames: vec![crate::workflow::FlowFrame {
+                id: "stage-1".into(),
+                title: "检索阶段".into(),
+                x: -320.0,
+                y: -180.0,
+                width: 640.0,
+                height: 480.0,
+            }],
+        };
+        let created = store.create_workflow_draft("project", input).unwrap();
+        drop(store);
+        let store = Store::open_at(root.clone()).unwrap();
+        let restored = store.workflow_draft_by_id(&created.id).unwrap().unwrap();
+        let frames = restored.input.frames;
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].title, "检索阶段");
+        assert_eq!(frames[0].width, 640.0);
+        // 旧草稿没有 frames 字段：读取按空数组处理，不受影响。
+        let legacy: WorkflowDraftInput =
+            serde_json::from_str(r#"{"name":"Legacy","workflow":"literature","tasks":[]}"#)
+                .unwrap();
+        assert!(legacy.frames.is_empty());
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -401,6 +438,7 @@ mod tests {
             tasks: vec![],
             positions: std::collections::HashMap::new(),
             viewport: None,
+            frames: Vec::new(),
         };
         let created = store.create_workflow_draft("project", input).unwrap();
         assert_eq!(
@@ -427,6 +465,7 @@ mod tests {
             tasks: vec![],
             positions: std::collections::HashMap::new(),
             viewport: None,
+            frames: Vec::new(),
         };
         let global = store
             .create_workflow_draft(GLOBAL_WORKFLOW_DRAFT_PROJECT, input.clone())
@@ -534,6 +573,7 @@ mod tests {
                     tasks: vec![],
                     positions: std::collections::HashMap::new(),
                     viewport: None,
+                    frames: Vec::new(),
                 },
             )
             .unwrap();

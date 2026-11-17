@@ -23,6 +23,8 @@ export interface WorkflowGraphEdge {
   target: string;
   // 只有原有任务依赖可编辑，展示端点和实际依赖分开记录。
   dependency?: { source: string; target: string };
+  /** 分流节点连出的线携带分支标记，画布据此标注「成立 / 不成立」。 */
+  branch?: "then" | "else";
 }
 
 // 三个固定系统节点的说明集中在这里：画布渲染与节点库静态展示共用，避免两处文案漂移。
@@ -79,7 +81,15 @@ export function buildWorkflowGraph(tasks: WorkflowTask[], positions: Record<stri
 
   const edges: WorkflowGraphEdge[] = [];
   function edge(source: string, target: string, dependency?: WorkflowGraphEdge["dependency"]) {
-    edges.push({ id: dependency ? `${dependency.source}->${dependency.target}` : `:system:${source}->${target}`, source, target, dependency });
+    const sourceTask = byId.get(source);
+    const targetTask = byId.get(target);
+    edges.push({
+      id: dependency ? `${dependency.source}->${dependency.target}` : `:system:${source}->${target}`,
+      source,
+      target,
+      dependency,
+      branch: sourceTask?.kind === "route" ? (targetTask?.routeBranch === "else" ? "else" : targetTask?.routeBranch === "then" ? "then" : undefined) : undefined,
+    });
   }
   const byId = new Map(tasks.map((task) => [task.id, task]));
   const hasDownstream = new Set(tasks.flatMap((task) => task.dependsOn));

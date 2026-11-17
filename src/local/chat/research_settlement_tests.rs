@@ -35,6 +35,10 @@ async fn research_settlement_source_errors_preserve_helper_and_do_not_starve_oth
                     requires_approval: false,
                     gate_downstream: false,
                     max_rework: 0,
+                    kind: String::new(),
+                    route: None,
+                    route_branch: String::new(),
+                    wait_for: String::new(),
                 })
                 .collect(),
             },

@@ -204,6 +204,10 @@ impl Store {
                         || prev.spec.brief != spec.brief
                         || prev.spec.outputs != spec.outputs
                         || prev.spec.depends_on != spec.depends_on
+                        || prev.spec.kind != spec.kind
+                        || prev.spec.route != spec.route
+                        || prev.spec.route_branch != spec.route_branch
+                        || prev.spec.wait_for != spec.wait_for
                         || !same_agent(prev, &spec.role, &agents)
                     {
                         continue;
@@ -309,6 +313,10 @@ impl Store {
                         || prev.spec.outputs != spec.outputs
                         || prev.spec.depends_on != spec.depends_on
                         || prev.spec.inputs != spec.inputs
+                        || prev.spec.kind != spec.kind
+                        || prev.spec.route != spec.route
+                        || prev.spec.route_branch != spec.route_branch
+                        || prev.spec.wait_for != spec.wait_for
                         || !same_agent(prev, &spec.role, &agents)
                         || !spec.depends_on.iter().all(|d| inherited_ids.contains(d))
                     {
@@ -375,6 +383,9 @@ impl Store {
                             verdict: prev.verdict.clone(),
                             rework_count: prev.rework_count,
                             rework_feedback: prev.rework_feedback.clone(),
+                            route_decision: prev.route_decision.clone(),
+                            foreach_items: prev.foreach_items.clone(),
+                            foreach_runs: prev.foreach_runs.clone(),
                         });
                         continue;
                     }
@@ -400,6 +411,9 @@ impl Store {
                     verdict: None,
                     rework_count: 0,
                     rework_feedback: None,
+                    route_decision: None,
+                    foreach_items: None,
+                    foreach_runs: vec![],
                 });
             }
             study.delivery_error = None;

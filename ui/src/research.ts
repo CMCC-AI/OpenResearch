@@ -40,6 +40,11 @@ export interface ResearchTask {
   verdict?: ResearchTaskVerdict | null;
   reworkCount?: number;
   reworkFeedback?: string | null;
+  /** 节点类型：缺省为专家任务；"route" 为条件分流节点（引擎判定，不派发专家）。 */
+  kind?: "agent" | "route";
+  routeBranch?: "then" | "else";
+  waitFor?: "all" | "any";
+  routeDecision?: { outcome: "matched" | "unmatched"; basis: string; decidedAt: number } | null;
 }
 export interface ResearchDecision {
   id: string; gate: string; version: number; scope: string; scopeHash: string;
@@ -113,7 +118,8 @@ export function currentDecisions(study: ResearchStudy): ResearchDecision[] {
 }
 export function researchProgress(study: ResearchStudy) {
   const tasks = study.plans.at(-1)?.tasks ?? [];
-  return { completed: tasks.filter((task) => task.state === "completed").length, total: tasks.length };
+  // 进度按「已完成 + 已跳过」计：被分流跳过的任务对流程而言已经尘埃落定。
+  return { completed: tasks.filter((task) => task.state === "completed" || task.state === "skipped").length, total: tasks.length };
 }
 
 export const expertRoles: Record<string, string> = {
@@ -178,7 +184,7 @@ export function researchWorkflow(study: ResearchStudy) {
     else if (members.some((task) => task.state === "failed" || task.state === "cancelled") || gates.some((gate) => gate.status === "rejected")) state = "blocked";
     else if (gates.some((gate) => gate.status === "pending")) state = "blocked";
     else if (members.some((task) => task.state === "running")) state = "running";
-    else if ((members.length > 0 || gates.length > 0) && members.every((task) => task.state === "completed") && gates.every((gate) => gate.status === "approved") && (stage.id !== "delivery" || gates.some((gate) => gate.gate === deliveryGate(researchWorkflowMode(study))))) state = "completed";
+    else if ((members.length > 0 || gates.length > 0) && members.every((task) => task.state === "completed" || task.state === "skipped") && gates.every((gate) => gate.status === "approved") && (stage.id !== "delivery" || gates.some((gate) => gate.gate === deliveryGate(researchWorkflowMode(study))))) state = "completed";
     else if (stage.id === "intake" && tasks.length === 0) state = "running";
     else if (stage.id === "intake" && members.length === 0 && study.plans.length > 0) state = "completed";
     else if (members.length === 0 && stage.gates.length === 0 && study.plans.length > 0) state = "optional";
@@ -204,12 +210,19 @@ export function researchAttention(study: ResearchStudy) {
   if (active.length) return `${active.length} 位专家执行中 / 待验收`;
   if (decisions.some((decision) => decision.gate === deliveryGate(researchWorkflowMode(study)) && decision.status === "approved")) return researchWorkflowMode(study) === "proposal" ? "实验方案已确认 · 未授权运行实验" : "成果已确认";
   if (!tasks.length) return "主理人正在梳理目标与材料";
-  if (tasks.every((task) => task.state === "completed")) return study.deliveryError ? `交付确认受阻 · ${study.deliveryError}` : "任务已验收 · 交付确认尚未生成";
+  if (tasks.every((task) => task.state === "completed" || task.state === "skipped")) return study.deliveryError ? `交付确认受阻 · ${study.deliveryError}` : "任务已验收 · 交付确认尚未生成";
   return "计划已登记 · 等待推进就绪任务";
 }
 
 export function researchTaskStatus(study: ResearchStudy, task: ResearchTask): { state: WorkflowState; label: string } {
   if (study.staleReviewTaskIds?.includes(task.id) && task.state === "completed") return { state: "blocked", label: "证据已修订 · 等待重新审查" };
+  if (task.state === "skipped") return { state: "optional", label: "已跳过 · 分流未走此分支" };
+  if (task.state === "completed" && task.kind === "route") {
+    const decision = task.routeDecision;
+    return decision?.outcome === "matched"
+      ? { state: "completed", label: `已走「成立」分支 · ${decision.basis}` }
+      : { state: "completed", label: `已走「不成立」分支 · ${decision?.basis ?? "等待判定"}` };
+  }
   if (task.state === "completed") {
     if (task.verdict?.status === "blocked") return { state: "blocked", label: "结论有问题 · 等待主理人处理" };
     if (task.requiresApproval && !currentDecisions(study).some((decision) => decision.gate === `G5:${task.id}` && decision.status === "approved")) return { state: "blocked", label: "已验收 · 等待主理人批准" };
@@ -224,7 +237,8 @@ export function researchTaskStatus(study: ResearchStudy, task: ResearchTask): { 
   if (!decisions.some((decision) => decision.gate === "G1" && decision.status === "approved")) return { state: "blocked", label: "等待你确认研究范围" };
   const tasks = study.plans.at(-1)?.tasks ?? [];
   const depTasks = task.dependsOn.map((id) => tasks.find((entry) => entry.id === id));
-  if (depTasks.some((dep) => dep?.state !== "completed")) return { state: "waiting", label: "等待前置任务" };
+  // 被分流跳过的前置按「无需执行」处理：默认汇合下不阻塞派发。
+  if (depTasks.some((dep) => dep?.state !== "completed" && dep?.state !== "skipped")) return { state: "waiting", label: "等待前置任务" };
   const blockedDep = depTasks.find((dep) => dep?.verdict?.status === "blocked");
   if (blockedDep) return { state: "blocked", label: `前置结论有问题 · ${blockedDep.agent?.name ?? expertRoles[blockedDep.role] ?? blockedDep.role}` };
   const unapprovedDep = depTasks.find((dep) => dep?.requiresApproval && !decisions.some((decision) => decision.gate === `G5:${dep.id}` && decision.status === "approved"));

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
-import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Connection, type Edge, type EdgeChange, type Node, type NodeChange, type NodeProps, type ReactFlowInstance } from "@xyflow/react";
-import { Bot, CircleHelp, FileText, GripVertical, PackageCheck, Plus, RefreshCw, ShieldCheck, Split, Trash2, X } from "lucide-react";
+import { Background, Controls, Handle, MarkerType, NodeResizeControl, Position, ReactFlow, type Connection, type Edge, type EdgeChange, type Node, type NodeChange, type NodeProps, type ReactFlowInstance } from "@xyflow/react";
+import { Bot, CircleHelp, FileText, Frame, GripVertical, PackageCheck, Plus, RefreshCw, ShieldCheck, Split, Trash2, X } from "lucide-react";
 import { Button } from "../components/ui";
 import { Switch } from "../components/ui/Switch";
-import { addAgentTask, connectWorkflowTasks, reconnectWorkflowTasks, removeWorkflowTask, MAX_REWORK, type FlowPoint, type WorkflowAgent, type WorkflowDraftInput, type WorkflowTask } from "./model";
+import { addAgentTask, addRouteTask, addWorkflowFrame, connectWorkflowTasks, reconnectWorkflowTasks, removeWorkflowFrame, removeWorkflowTask, updateWorkflowFrame, MAX_REWORK, ROUTE_ELSE, ROUTE_THEN, type FlowPoint, type WorkflowAgent, type WorkflowDraftInput, type WorkflowFrame, type WorkflowTask } from "./model";
 import { approvalNodeId, buildWorkflowGraph, fixedSystemData, systemNodeIds } from "./graph";
 import { SystemNodeCard, type SystemNode } from "./SystemNode";
 
@@ -11,6 +11,10 @@ import { SystemNodeCard, type SystemNode } from "./SystemNode";
 const AGENT_MIME = "application/x-orx-agent";
 // 拖拽添加系统环节（G1/G4/研究交付）时，携带系统节点 id。
 export const SYSTEM_MIME = "application/x-orx-system-node";
+// 拖拽添加条件分流节点时使用；阶段分组通过按钮添加，不需要拖拽 MIME。
+export const ROUTE_MIME = "application/x-orx-route-node";
+// 画布上阶段分组框节点的 id 前缀，与任务 ID、系统节点 ID 区分。
+const FRAME_PREFIX = "frame:";
 
 type AgentNodeData = {
   taskId: string;
@@ -51,8 +55,63 @@ function AgentNodeCard({ data, selected }: NodeProps<AgentNode>) {
   </div>;
 }
 
-type CanvasNode = AgentNode | SystemNode;
-const nodeTypes = { agent: AgentNodeCard, system: SystemNodeCard };
+// 条件分流节点：引擎在运行时判定条件并放行其中一条分支，画布上先行声明条件与两条出口。
+type RouteNodeData = {
+  taskId: string;
+  brief: string;
+  condition: string;
+  thenTargets: string;
+  elseTargets: string;
+  onDelete: () => void;
+};
+type RouteNode = Node<RouteNodeData, "route">;
+
+function RouteNodeCard({ data, selected }: NodeProps<RouteNode>) {
+  return <div className={`group relative w-56 rounded-lg border-2 border-dashed bg-background shadow-sm transition-shadow ${selected ? "border-primary ring-2 ring-primary/20" : "border-primary/50 hover:shadow-control-subtle"}`}>
+    <Handle type="target" position={Position.Top} />
+    <div className="flex items-start gap-2.5 px-3 pb-1.5 pt-2.5">
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary" aria-hidden="true"><Split size={15} /></span>
+      <div className="min-w-0 flex-1">
+        <strong className="block truncate text-sm text-text">{data.brief || "条件分流"}</strong>
+        <span className="block truncate font-mono text-xs text-subtext">{data.taskId}</span>
+      </div>
+      <button type="button" className="nodrag absolute end-2 top-2 hidden h-6 w-6 items-center justify-center rounded-md border border-border bg-background text-subtext hover:border-accent-red hover:text-accent-red group-hover:flex" aria-label={`删除分流节点 ${data.taskId}`} title="删除分流节点" onClick={data.onDelete}>
+        <Trash2 size={12} />
+      </button>
+    </div>
+    <p className="mb-1.5 line-clamp-2 px-3 text-xs leading-4 text-subtext">{data.condition}</p>
+    <div className="flex flex-col gap-0.5 border-t border-border px-3 py-1.5 text-xs text-subtext">
+      <span className="truncate">成立 → {data.thenTargets || "未连接"}</span>
+      <span className="truncate">不成立 → {data.elseTargets || "未连接"}</span>
+    </div>
+    <Handle type="source" position={Position.Bottom} />
+  </div>;
+}
+
+// 阶段分组框：纯展示容器，放在其他节点下层，可拖动、可调整大小。
+type FrameNodeData = {
+  frameId: string;
+  title: string;
+  onChange: (update: { title?: string; width?: number; height?: number }) => void;
+  onDelete: () => void;
+};
+type FrameNode = Node<FrameNodeData, "frame">;
+
+function FrameNodeCard({ data, selected }: NodeProps<FrameNode>) {
+  return <div className={`relative h-full w-full rounded-xl border-2 border-dashed ${selected ? "border-subtext bg-surface/60" : "border-border bg-surface/40"}`}>
+    {selected && <NodeResizeControl minWidth={160} minHeight={120} className="!border-none" />}
+    <span className="pointer-events-none absolute -top-3 start-3 max-w-[calc(100%-1.5rem)] truncate rounded bg-background px-1.5 text-xs text-subtext">{data.title}</span>
+  </div>;
+}
+
+type CanvasNode = AgentNode | SystemNode | RouteNode | FrameNode;
+const nodeTypes = { agent: AgentNodeCard, system: SystemNodeCard, route: RouteNodeCard, frame: FrameNodeCard };
+
+function routeConditionText(task: WorkflowTask): string {
+  if (!task.route) return "尚未设置分流条件";
+  if (task.route.on === "failure") return "任一直接前置执行失败即走「成立」分支";
+  return `前置结论为「${task.route.verdictIs === "blocked" ? "有问题" : "通过"}」时走「成立」分支`;
+}
 
 function WorkflowHelp({ onClose }: { onClose: () => void }) {
   useEffect(() => {
@@ -70,6 +129,8 @@ function WorkflowHelp({ onClose }: { onClose: () => void }) {
     <dl className="m-0 flex flex-col gap-2.5 text-subtext">
       <div><dt className="font-normal text-text">节点 = 专家任务</dt><dd className="m-0">把左侧专家拖进画布即成一个任务节点；画布上只摆你添加的专家任务，节点描述谁做什么、产出什么；开启「完成后需主理人确认」会生成任务检查点。范围确认与交付确认在提交后的聊天与运行视图展示。</dd></div>
       <div><dt className="font-normal text-text">连线 = 先后顺序</dt><dd className="m-0">从上方专家的底部拖线到下方专家的顶部，表示「前者做完，后者才开始」。拖住实线两端的小圆点，可以把它改接到别的专家；选中实线后按 Delete 删除；虚线是系统自带的，不能改也不能删。系统环节（范围确认、交付确认、研究交付）不用手动连线：放进画布后，与任务的约束线自动生成。「需主理人确认」和「结论把关」决定下游任务什么时候开始。</dd></div>
+      <div><dt className="font-normal text-text">条件分流 = 走其中一条</dt><dd className="m-0">从节点库拖入「条件分流」，从上游连一条线进来，再向下连出两条线：第一条标「成立」，第二条标「不成立」。运行时按前置结论（通过 / 有问题）或失败情况自动选一条，另一条显示「已跳过」。</dd></div>
+      <div><dt className="font-normal text-text">阶段分组 = 只帮忙看</dt><dd className="m-0">节点多时，用「阶段分组」框把节点圈成几个阶段。它只作展示，不进入执行计划。</dd></div>
       <div><dt className="font-normal text-text">产物 = 可追溯的输出</dt><dd className="m-0">每个节点声明输出文件路径；提交后专家把结果写入研究目录，供下游专家与审查引用。</dd></div>
       <div><dt className="font-normal text-text">在对话中使用</dt><dd className="m-0">把方法带回聊天，直接描述你的需求；AI 会给出执行计划，你确认后专家开始工作，进展和成果都在同一个对话里。</dd></div>
     </dl>
@@ -90,29 +151,80 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
   // 编辑画布只呈现主理人显式添加的内容：固定链路（G1/G4/交付）留在节点库说明与运行视图，不自动铺上画布。
   const graph = useMemo(() => buildWorkflowGraph(draft.tasks, draft.positions, { fixedChain: "never" }), [draft.tasks, draft.positions]);
   const agentNames = useMemo(() => new Map(agents.map((agent) => [agent.id, agent.name])), [agents]);
-  const nodes = useMemo<CanvasNode[]>(() => [...draft.tasks.map((task, index): AgentNode => ({
-    id: task.id,
-    type: "agent",
-    position: graph.taskPositions[index],
-    ariaLabel: `专家任务 ${task.id}`,
-    selected: selected === task.id,
-    data: {
-      taskId: task.id,
-      roleName: agentNames.get(task.role) ?? task.role,
-      brief: task.brief,
-      outputCount: task.outputs.length,
-      dependencyCount: task.dependsOn.length,
-      requiresApproval: !!task.requiresApproval,
-      gateDownstream: !!task.gateDownstream,
-      maxRework: task.maxRework ?? 0,
-      onDelete: () => {
-        onChange(removeWorkflowTask(draft, task.id));
-        setSelected(null);
+  const nodes = useMemo<CanvasNode[]>(() => [
+    // 分组框最先入列：相同层级下先入列的节点画在下层，框垫在任务节点下面。
+    ...(draft.frames ?? []).map((frame): FrameNode => ({
+      id: `${FRAME_PREFIX}${frame.id}`,
+      type: "frame",
+      position: { x: frame.x, y: frame.y },
+      width: frame.width,
+      height: frame.height,
+      zIndex: 0,
+      ariaLabel: `阶段分组 ${frame.title}`,
+      selected: selected === `${FRAME_PREFIX}${frame.id}`,
+      deletable: true,
+      data: {
+        frameId: frame.id,
+        title: frame.title,
+        onChange: (update) => onChange(updateWorkflowFrame(draft, frame.id, update)),
+        onDelete: () => {
+          onChange(removeWorkflowFrame(draft, frame.id));
+          setSelected(null);
+        },
       },
-    },
-  })), ...graph.systemNodes.map((node): SystemNode => ({ ...node, type: "system", selected: selected === node.id, // 检查点随任务配置生成不可删；拖入的系统环节可删除。
-    deletable: !node.data.taskId, connectable: false, ariaLabel: node.data.title,
-    data: node.data.taskId ? node.data : { ...node.data, onDelete: () => removeSystemNode(node.id) } }))], [draft, graph, selected, agentNames, onChange]);
+    })),
+    ...draft.tasks.map((task): AgentNode | RouteNode => {
+      if (task.kind === "route") {
+        const children = draft.tasks.filter((candidate) => candidate.dependsOn.includes(task.id));
+        const names = (branch: string) => children
+          .filter((candidate) => (candidate.routeBranch ?? ROUTE_THEN) === branch)
+          .map((candidate) => agentNames.get(candidate.role) ?? candidate.id)
+          .join("、");
+        return {
+          id: task.id,
+          type: "route",
+          position: graph.taskPositions[draft.tasks.indexOf(task)],
+          ariaLabel: `条件分流 ${task.id}`,
+          selected: selected === task.id,
+          data: {
+            taskId: task.id,
+            brief: task.brief,
+            condition: routeConditionText(task),
+            thenTargets: names(ROUTE_THEN),
+            elseTargets: names(ROUTE_ELSE),
+            onDelete: () => {
+              onChange(removeWorkflowTask(draft, task.id));
+              setSelected(null);
+            },
+          },
+        };
+      }
+      return {
+        id: task.id,
+        type: "agent",
+        position: graph.taskPositions[draft.tasks.indexOf(task)],
+        ariaLabel: `专家任务 ${task.id}`,
+        selected: selected === task.id,
+        data: {
+          taskId: task.id,
+          roleName: agentNames.get(task.role) ?? task.role,
+          brief: task.brief,
+          outputCount: task.outputs.length,
+          dependencyCount: task.dependsOn.length,
+          requiresApproval: !!task.requiresApproval,
+          gateDownstream: !!task.gateDownstream,
+          maxRework: task.maxRework ?? 0,
+          onDelete: () => {
+            onChange(removeWorkflowTask(draft, task.id));
+            setSelected(null);
+          },
+        },
+      };
+    }),
+    ...graph.systemNodes.map((node): SystemNode => ({ ...node, type: "system", selected: selected === node.id, // 检查点随任务配置生成不可删；拖入的系统环节可删除。
+      deletable: !node.data.taskId, connectable: false, ariaLabel: node.data.title,
+      data: node.data.taskId ? node.data : { ...node.data, onDelete: () => removeSystemNode(node.id) } })),
+  ], [draft, graph, selected, agentNames, onChange]);
   const edges = useMemo<Edge[]>(() => graph.edges.map((edge) => ({
     ...edge,
     deletable: !!edge.dependency,
@@ -121,9 +233,32 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
     type: "smoothstep",
     interactionWidth: 24,
     markerEnd: { type: MarkerType.ArrowClosed },
-    style: edge.dependency ? undefined : { strokeDasharray: "5 4" },
+    label: edge.branch ? (edge.branch === ROUTE_THEN ? "成立" : "不成立") : undefined,
+    labelShowBg: true,
+    labelBgPadding: [4, 2],
+    labelBgBorderRadius: 4,
+    labelStyle: { fontSize: 11, fill: edge.branch === ROUTE_ELSE ? "var(--color-text-subtext, #6b7280)" : "var(--color-text, #111827)" },
+    style: edge.dependency
+      ? (edge.branch === ROUTE_ELSE ? { strokeDasharray: "5 4" } : undefined)
+      : { strokeDasharray: "5 4" },
   })), [graph]);
   const selectedTask = draft.tasks.find((task) => task.id === selected) ?? null;
+  const selectedFrame = selected?.startsWith(FRAME_PREFIX)
+    ? (draft.frames ?? []).find((frame) => frame.id === selected.slice(FRAME_PREFIX.length)) ?? null
+    : null;
+  // 分流节点的条件来源只允许「已开启结论把关」的直接前置产物。
+  const gatedDepOutputs = useMemo(() => (selectedTask?.kind === "route"
+    ? selectedTask.dependsOn.flatMap((dependency) => {
+      const parent = draft.tasks.find((task) => task.id === dependency);
+      return parent?.gateDownstream ? parent.outputs : [];
+    })
+    : []), [selectedTask, draft.tasks]);
+  const routeParent = useMemo(() => (selectedTask?.routeBranch
+    ? draft.tasks.find((task) => task.kind === "route" && selectedTask.dependsOn.includes(task.id)) ?? null
+    : null), [selectedTask, draft.tasks]);
+  const routeChildren = useMemo(() => (selectedTask?.kind === "route"
+    ? draft.tasks.filter((task) => task.dependsOn.includes(selectedTask.id))
+    : []), [selectedTask, draft.tasks]);
   // 空白画布不渲染固定链路：从节点库选中 G1/G4/交付时，用静态说明展示属性面板。
   const selectedSystem = graph.systemNodes.find((node) => node.id === selected)
     ?? (selected && fixedSystemData(selected) ? { id: selected, position: { x: 0, y: 0 }, data: fixedSystemData(selected)! } : null);
@@ -140,12 +275,27 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
     let next = draft;
     for (const change of changes) {
       if (change.type === "position" && change.position) {
-        const positions = { ...next.positions, [change.id]: change.position as FlowPoint };
-        next = { ...next, positions };
+        if (change.id.startsWith(FRAME_PREFIX)) {
+          // 分组框的坐标存在 frames 里，不进 positions。
+          const frameId = change.id.slice(FRAME_PREFIX.length);
+          next = updateWorkflowFrame(next, frameId, change.position as FlowPoint);
+        } else {
+          const positions = { ...next.positions, [change.id]: change.position as FlowPoint };
+          next = { ...next, positions };
+        }
+      } else if (change.type === "dimensions" && change.resizing === false && change.id.startsWith(FRAME_PREFIX)) {
+        // 缩放结束（resizing=false）时落一次最终尺寸，避免拖拽期间高频写入。
+        const frameId = change.id.slice(FRAME_PREFIX.length);
+        const width = change.dimensions?.width;
+        const height = change.dimensions?.height;
+        if (width != null && height != null) next = updateWorkflowFrame(next, frameId, { width, height });
       } else if (change.type === "select") {
         setSelected(change.selected ? change.id : null);
       } else if (change.type === "remove") {
-        if (next.tasks.some((task) => task.id === change.id)) {
+        if (change.id.startsWith(FRAME_PREFIX)) {
+          next = removeWorkflowFrame(next, change.id.slice(FRAME_PREFIX.length));
+          if (selected === change.id) setSelected(null);
+        } else if (next.tasks.some((task) => task.id === change.id)) {
           next = removeWorkflowTask(next, change.id);
           if (selected === change.id) setSelected(null);
         } else if (fixedSystemData(change.id) && next.positions[change.id] !== undefined) {
@@ -169,7 +319,13 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
       const { source, target } = dependency;
       next = {
         ...next,
-        tasks: next.tasks.map((task) => task.id === target ? { ...task, dependsOn: task.dependsOn.filter((id) => id !== source) } : task),
+        tasks: next.tasks.map((task) => {
+          if (task.id !== target) return task;
+          const updated = { ...task, dependsOn: task.dependsOn.filter((id) => id !== source) };
+          // 删掉分流连线后，若任务不再挂在任何分流下，分支标记随之失效。
+          const stillRouted = updated.dependsOn.some((id) => next.tasks.find((candidate) => candidate.id === id)?.kind === "route");
+          return stillRouted ? updated : { ...updated, routeBranch: undefined };
+        }),
       };
     }
     if (next !== draft) onChange(next);
@@ -230,7 +386,7 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
   }
 
   function isLibraryDrag(event: DragEvent<HTMLDivElement>) {
-    return event.dataTransfer.types.includes(AGENT_MIME) || event.dataTransfer.types.includes(SYSTEM_MIME);
+    return event.dataTransfer.types.includes(AGENT_MIME) || event.dataTransfer.types.includes(SYSTEM_MIME) || event.dataTransfer.types.includes(ROUTE_MIME);
   }
 
   function onDragOverCanvas(event: DragEvent<HTMLDivElement>) {
@@ -258,11 +414,39 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
       onChange(addAgentTask(draft, agent, drop));
       return;
     }
+    if (event.dataTransfer.getData(ROUTE_MIME)) {
+      // 分流节点较窄（224px），落点水平居中对准光标。
+      const routeDrop = point ? { x: point.x - 112, y: point.y - 24 } : undefined;
+      const added = addRouteTask(draft, routeDrop);
+      onChange(added);
+      setSelected(added.tasks[added.tasks.length - 1].id);
+      return;
+    }
     const systemId = event.dataTransfer.getData(SYSTEM_MIME);
     if (!fixedSystemData(systemId)) return;
     // 系统环节“存在即渲染”：写入坐标键即放置，删除节点即移除。
     onChange({ ...draft, positions: { ...draft.positions, [systemId]: drop ?? { x: 0, y: 0 } } });
     setSelected(systemId);
+  }
+
+  // 阶段分组通过按钮添加：放在当前视口中心，主理人再拖动调整范围。
+  function addFrame() {
+    const bounds = flowRef.current?.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+    const index = (draft.frames?.length ?? 0) + 1;
+    const frame: WorkflowFrame = {
+      id: `stage-${index}`,
+      title: `阶段 ${index}`,
+      x: (bounds?.x ?? 0) - 240,
+      y: (bounds?.y ?? 0) - 180,
+      width: 480,
+      height: 360,
+    };
+    let unique = frame;
+    while ((draft.frames ?? []).some((entry) => entry.id === unique.id)) {
+      unique = { ...unique, id: `${frame.id}-${Date.now()}` };
+    }
+    onChange(addWorkflowFrame(draft, unique));
+    setSelected(`${FRAME_PREFIX}${unique.id}`);
   }
 
   // 窄于 xl 时三栏纵向堆叠并整页滚动；xl 起恢复三栏各自滚动，避免两栏被画布挤成细条。
@@ -279,6 +463,19 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
         {[{ id: systemNodeIds.scope, title: "G1 · 研究范围确认" }, { id: systemNodeIds.delivery, title: "G4 · 交付确认" }].map(({ id, title }) => <button key={id} type="button" draggable title={`拖拽「${title}」到画布放置；点击查看说明`} onDragStart={dragSystem(id)} aria-pressed={selected === id} className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-start text-sm hover:bg-surface" onClick={() => selectSystem(id)}><ShieldCheck size={15} className="shrink-0 text-subtext" />{title}</button>)}
         <button type="button" disabled={!selectedTask || !!selectedTask.requiresApproval} className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-start text-sm hover:bg-surface disabled:opacity-50" onClick={addApproval}><ShieldCheck size={15} className="shrink-0 text-subtext" />任务后人工确认<Plus size={14} className="ms-auto shrink-0 text-subtext" /></button>
         <p className="mx-2 my-1 text-xs leading-4 text-subtext">先选择专家任务，再为它设置人工确认。</p>
+        <div draggable title="拖拽「条件分流」到画布放置" onDragStart={(event) => { event.dataTransfer.setData(ROUTE_MIME, "route"); event.dataTransfer.effectAllowed = "copy"; }} className="flex cursor-grab items-start gap-2 rounded-md border border-transparent px-2 py-2 text-start hover:border-border hover:bg-surface active:cursor-grabbing">
+          <Split size={15} className="mt-0.5 shrink-0 text-subtext" aria-hidden="true" />
+          <span className="min-w-0 flex-1">
+            <strong className="block truncate text-sm font-normal text-text">条件分流</strong>
+            <span className="block truncate text-xs text-subtext">按上游结论或失败情况，走其中一条分支</span>
+          </span>
+        </div>
+        <p className="mx-2 my-1 text-xs leading-4 text-subtext">拖入后从分流节点连出两条线：第一条标「成立」，第二条标「不成立」。</p>
+      </section>
+      <section aria-label="阶段分组" className="mb-4">
+        <h3 className="mb-1 text-sm font-normal text-subtext">阶段分组</h3>
+        <button type="button" className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-start text-sm hover:bg-surface" onClick={addFrame}><Frame size={15} className="shrink-0 text-subtext" />添加阶段分组<Plus size={14} className="ms-auto shrink-0 text-subtext" /></button>
+        <p className="mx-2 my-1 text-xs leading-4 text-subtext">画布放不下时，用分组框把节点圈成几个阶段，只作展示，不影响执行。</p>
       </section>
       <section aria-label="专家任务">
       <h3 className="mb-1 text-sm font-normal text-subtext">专家任务</h3>
@@ -329,7 +526,11 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
       {error && <div role="alert" className="absolute inset-x-3 bottom-3 rounded-md border border-accent-red bg-background px-3 py-2 text-sm text-accent-red">{error}</div>}
     </div>
     <aside className="p-4 xl:min-h-0 xl:overflow-y-auto xl:border-s xl:border-border">
-      {selectedSystem ? <div className="flex flex-col gap-3 text-sm">
+      {selectedFrame ? <div className="flex flex-col gap-3 text-sm">
+        <div className="flex items-start justify-between gap-2"><h2 className="m-0 text-base font-normal">阶段分组</h2><Button size="small" variant="danger" aria-label="删除阶段分组" onClick={() => { onChange(removeWorkflowFrame(draft, selectedFrame.id)); setSelected(null); }}><Trash2 size={14} /></Button></div>
+        <label className="flex flex-col gap-1.5 text-sm">名称<input className="h-8 rounded-md border border-border bg-background px-2 text-sm text-text" value={selectedFrame.title} maxLength={60} onChange={(event) => onChange(updateWorkflowFrame(draft, selectedFrame.id, { title: event.target.value }))} /></label>
+        <p className="m-0 rounded-md border border-border bg-surface p-3 text-xs leading-5 text-subtext">分组框只是画布上的展示辅助，把节点圈成阶段；不进入执行计划，也不影响任何确认。</p>
+      </div> : selectedSystem ? <div className="flex flex-col gap-3 text-sm">
         <h2 className="m-0 text-base font-normal">{selectedSystem.data.title}</h2>
         <span className="text-xs text-subtext">{selectedSystem.data.taskId ? "任务检查点 · 随任务配置生成" : "系统环节 · 运行时执行"}</span>
         <p className="m-0 leading-5 text-subtext">{selectedSystem.data.description}</p>
@@ -339,6 +540,37 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
         {!selectedSystem.data.taskId && <p className="m-0 text-xs leading-4 text-subtext">系统环节的连线由系统自动维护，不用手动拖线。</p>}
         {!selectedSystem.data.taskId && draft.positions[selectedSystem.id] !== undefined && <Button variant="danger" onClick={() => removeSystemNode(selectedSystem.id)}><Trash2 size={14} />从画布移除</Button>}
         <p className="m-0 rounded-md border border-border bg-surface p-3 text-xs leading-5 text-subtext">{selectedSystem.data.label}。此处是草稿设计，不表示已批准或已交付。</p>
+      </div> : selectedTask?.kind === "route" ? <div className="flex flex-col gap-3">
+        <div className="flex items-start justify-between gap-2"><div><h2 className="m-0 text-base font-normal">{selectedTask.brief || "条件分流"}</h2><p className="mb-0 mt-1 text-sm text-subtext">运行到此处时自动判定，只放行其中一条分支</p></div><Button size="small" variant="danger" aria-label="删除分流节点" onClick={() => deleteTask(selectedTask.id)}><Trash2 size={14} /></Button></div>
+        <label className="flex flex-col gap-1.5 text-sm">名称<input className="h-8 rounded-md border border-border bg-background px-2 text-sm text-text" value={selectedTask.brief} maxLength={120} onChange={(event) => updateTask(selectedTask.id, { brief: event.target.value })} /></label>
+        <label className="flex flex-col gap-1.5 text-sm">判断依据<select className="h-8 rounded-md border border-border bg-background px-2 text-sm text-text" value={selectedTask.route?.on ?? "verdict"} onChange={(event) => updateTask(selectedTask.id, { route: { on: event.target.value as "verdict" | "failure", source: "", verdictIs: "pass" } })}>
+          <option value="verdict">上游任务的结论（通过 / 有问题）</option>
+          <option value="failure">上游任务执行失败</option>
+        </select></label>
+        {selectedTask.route?.on === "verdict" && <>
+          <label className="flex flex-col gap-1.5 text-sm">读取哪个结论<select className="h-8 rounded-md border border-border bg-background px-2 text-sm text-text" value={selectedTask.route?.source ?? ""} onChange={(event) => updateTask(selectedTask.id, { route: { ...selectedTask.route!, source: event.target.value } })}>
+            <option value="">先选择前置任务的结论产物</option>
+            {gatedDepOutputs.map((output) => <option key={output} value={output}>{output}</option>)}
+          </select></label>
+          {!gatedDepOutputs.length && <p className="m-0 text-xs leading-4 text-subtext">还没有可选的结论：先连线一个开启了「结论把关」的任务。</p>}
+          <label className="flex flex-col gap-1.5 text-sm">结论为什么时走「成立」分支<select className="h-8 rounded-md border border-border bg-background px-2 text-sm text-text" value={selectedTask.route?.verdictIs ?? "pass"} onChange={(event) => updateTask(selectedTask.id, { route: { ...selectedTask.route!, verdictIs: event.target.value as "pass" | "blocked" } })}>
+            <option value="pass">结论为「通过」</option>
+            <option value="blocked">结论为「有问题」</option>
+          </select></label>
+        </>}
+        {selectedTask.route?.on === "failure" && <p className="m-0 rounded-md border border-border bg-surface p-3 text-xs leading-5 text-subtext">任一直接前置执行失败时走「成立」分支；全部正常完成时走「不成立」分支。失败的判定只看执行结果，不看结论内容。</p>}
+        <div className="flex flex-col gap-1.5 text-sm">
+          <span>分支走向（从分流节点连出的任务）</span>
+          {routeChildren.length ? <div className="flex flex-col gap-1.5 rounded-md border border-border p-2.5">
+            {routeChildren.map((child) => <div key={child.id} className="flex items-center justify-between gap-2">
+              <span className="min-w-0 truncate">{(agentNames.get(child.role) ?? child.brief) || child.id}</span>
+              <span className="flex shrink-0 gap-1">
+                {[["then", "成立"], ["else", "不成立"]].map(([value, name]) => <button key={value} type="button" aria-pressed={(child.routeBranch ?? "") === value} className={`rounded-md border px-2 py-0.5 text-xs ${(child.routeBranch ?? "") === value ? "border-primary bg-primary/10 text-primary" : "border-border text-subtext hover:bg-surface"}`} onClick={() => onChange({ ...draft, tasks: draft.tasks.map((task) => task.id === child.id ? { ...task, routeBranch: value as "then" | "else" } : task) })}>{name}</button>)}
+              </span>
+            </div>)}
+          </div> : <span className="text-subtext">还没有后续任务：从分流节点向下连出两条线。</span>}
+        </div>
+        <p className="m-0 rounded-md border border-border bg-surface p-3 text-xs leading-5 text-subtext">运行时判定会记录在研究动态里；没被选中的分支显示「已跳过」，不算失败。两条分支都必须有任务，提交前会检查。</p>
       </div> : selectedTask ? <div className="flex flex-col gap-3">
         <div className="flex items-start justify-between gap-2"><div><h2 className="m-0 text-base font-normal">{selectedTask.id}</h2><p className="mb-0 mt-1 text-sm text-subtext">任务 ID 在提交后保持不变</p></div><Button size="small" variant="danger" aria-label="删除任务" onClick={() => deleteTask(selectedTask.id)}><Trash2 size={14} /></Button></div>
         <label className="flex flex-col gap-1.5 text-sm">Agent<select className="h-8 rounded-md border border-border bg-background px-2 text-sm text-text" value={selectedTask.role} onChange={(event) => updateTask(selectedTask.id, { role: event.target.value })}>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
@@ -356,6 +588,19 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
             </label>)}
           </div> : <span className="text-subtext">还没有直接前置任务：先连线，再从这里勾选要读取的上游产物。</span>}
         </div>
+        {routeParent && <div className="flex flex-col gap-1.5 text-sm">
+          <span>分支走向（挂在「{routeParent.brief || "条件分流"}」之下）</span>
+          <span className="flex gap-1">
+            {[["then", "成立"], ["else", "不成立"]].map(([value, name]) => <button key={value} type="button" aria-pressed={(selectedTask.routeBranch ?? "") === value} className={`rounded-md border px-2 py-0.5 text-xs ${(selectedTask.routeBranch ?? "") === value ? "border-primary bg-primary/10 text-primary" : "border-border text-subtext hover:bg-surface"}`} onClick={() => updateTask(selectedTask.id, { routeBranch: value as "then" | "else" })}>{name}</button>)}
+          </span>
+        </div>}
+        {selectedTask.dependsOn.length >= 2 && <label className="flex items-center justify-between gap-2 text-sm text-subtext">
+          汇合方式
+          <select className="h-8 rounded-md border border-border bg-background px-2 text-sm text-text" value={selectedTask.waitFor ?? "all"} onChange={(event) => updateTask(selectedTask.id, { waitFor: event.target.value === "any" ? "any" : undefined })}>
+            <option value="all">等全部前置完成</option>
+            <option value="any">任一前置完成即继续</option>
+          </select>
+        </label>}
         <div className="flex flex-col gap-2.5 rounded-md border border-border p-3">
           <span className="text-sm text-text">流程控制</span>
           <label className="flex items-center justify-between gap-2 text-sm text-subtext">
@@ -372,10 +617,10 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
               {Array.from({ length: MAX_REWORK + 1 }, (_, rounds) => <option key={rounds} value={rounds}>{rounds === 0 ? "不自动返工" : `最多 ${rounds} 轮`}</option>)}
             </select>
           </label>}
-          <p className="m-0 text-xs leading-4 text-subtext">开启后，如果任务结论有问题，系统会带着问题说明自动重跑它的前置任务和下游任务，每轮单独记录；这个轮数上限会写进你确认的计划。</p>
+          <p className="m-0 text-xs leading-4 text-subtext">开启后，如果任务结论有问题，系统会带着问题说明自动重跑它的前置任务和下游任务，每轮单独记录；这个轮数上限会写进你确认的计划。如果不想暂停而是自动走备用路径，用「条件分流」节点。</p>
         </div>
         <div className="rounded-md border border-border bg-surface p-3 text-sm leading-5 text-subtext">{selectedTask.dependsOn.length > 0 && <>前置任务：{selectedTask.dependsOn.map((id) => draft.tasks.find((task) => task.id === id)).map((task) => task ? agentNames.get(task.role) ?? task.role : "").join("、")}<br /></>}产物必须位于研究目录内，且不能与其他任务重复。</div>
-      </div> : <div className="p-3 text-sm text-subtext"><h2 className="m-0 mb-2 text-base font-normal text-text">节点属性</h2><p>选择专家任务编辑简报与产物；选择系统节点查看输入、确认或交付说明。</p><p>提交后会请你确认研究范围；你批准后专家才开始工作。</p></div>}
+      </div> : <div className="p-3 text-sm text-subtext"><h2 className="m-0 mb-2 text-base font-normal text-text">节点属性</h2><p>选择专家任务编辑简报与产物；选择分流节点设置判断条件；选择系统节点查看输入、确认或交付说明。</p><p>提交后会请你确认研究范围；你批准后专家才开始工作。</p></div>}
     </aside>
   </div>;
 }

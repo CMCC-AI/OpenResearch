@@ -232,3 +232,20 @@ test("research duration advances only during measured active time and keeps unkn
   assert.equal(researchDuration({ ...metrics, activeDurationComplete: false, running: false }, 999999), "≥1分02秒");
   assert.equal(researchDuration({ ...metrics, activeDurationComplete: true, running: false }, 999999), "1分02秒");
 });
+
+test("skipped tasks and route decisions read as plain-language statuses", () => {
+  const skipped = { ...task("fix", "as-research-synthesizer", [], "skipped") };
+  const status = researchTaskStatus(study([skipped]), skipped);
+  assert.equal(status.state, "optional");
+  assert.equal(status.label, "已跳过 · 分流未走此分支");
+  const routed = { ...task("brancher", "", ["design"], "completed"), kind: "route", routeDecision: { outcome: "matched", basis: "上游结论为 blocked", decidedAt: 1 } };
+  const routedStatus = researchTaskStatus(study([routed]), routed);
+  assert.equal(routedStatus.state, "completed");
+  assert.match(routedStatus.label, /成立/);
+  assert.match(routedStatus.label, /blocked/);
+  // 跳过的前置不阻塞下游状态判断；全部完成或跳过即视为流程走完。
+  const downstream = { ...task("next", "as-research-synthesizer", ["fix"]) };
+  const value = study([{ ...skipped }, downstream], [gate("G1", "approved")]);
+  assert.equal(researchTaskStatus(value, downstream).state, "waiting");
+  assert.deepEqual(researchProgress({ plans: [{ version: 1, tasks: [{ state: "completed" }, { state: "skipped" }, { state: "pending" }] }] }), { completed: 2, total: 3 });
+});

@@ -272,6 +272,23 @@ pub(crate) fn auto_dispatch_ignoring_session(
     let Ok(plan) = study.plan() else {
         return Ok(Vec::new());
     };
+    if plan
+        .tasks
+        .iter()
+        .any(|t| t.spec.kind == crate::store::research::ROUTE_KIND)
+    {
+        // 有分流节点时先求值并持久化：skipped 传播与分支放行要发生在就绪判定之前。
+        store.research_update(study_id, |s| {
+            if s.status != "active" {
+                return Ok(());
+            }
+            s.resolve_routes()
+        })?;
+    }
+    let study = store.research_study(study_id)?;
+    let Ok(plan) = study.plan() else {
+        return Ok(Vec::new());
+    };
     let ready_ids: Vec<String> = plan
         .tasks
         .iter()
@@ -354,10 +371,12 @@ pub(crate) fn reconcile_active_studies_with_checks(
     for study in studies {
         auto_dispatch_sync(store, &study.id)?;
         let updated = store.research_study(&study.id)?;
-        if updated
-            .plan()
-            .is_ok_and(|p| !p.tasks.is_empty() && p.tasks.iter().all(|t| t.state == "completed"))
-        {
+        if updated.plan().is_ok_and(|p| {
+            !p.tasks.is_empty()
+                && p.tasks
+                    .iter()
+                    .all(|t| matches!(t.state.as_str(), "completed" | "skipped"))
+        }) {
             let version = updated.plan()?.version;
             if checks
                 .get(&updated.id)
@@ -491,10 +510,12 @@ pub(crate) fn on_research_spawn_finished(
     }
     let mut package_error = None;
     let mut valid_package_hash = None;
-    if study
-        .plan()
-        .is_ok_and(|p| !p.tasks.is_empty() && p.tasks.iter().all(|t| t.state == "completed"))
-    {
+    if study.plan().is_ok_and(|p| {
+        !p.tasks.is_empty()
+            && p.tasks
+                .iter()
+                .all(|t| matches!(t.state.as_str(), "completed" | "skipped"))
+    }) {
         let gate = crate::local::research::delivery_gate(study.workflow_mode()).to_string();
         let identity = store.research_delivery_identity(&study)?;
         let outcome = store
@@ -553,6 +574,23 @@ fn research_wakeup_text(
         .filter(|t| t.state == "completed")
         .map(|t| t.spec.id.as_str())
         .collect();
+    let skipped: Vec<&str> = plan
+        .tasks
+        .iter()
+        .filter(|t| t.state == "skipped")
+        .map(|t| t.spec.id.as_str())
+        .collect();
+    // 进度按「已完成 + 已跳过」计：被分流跳过的任务对流程而言已经尘埃落定。
+    let done = completed.len() + skipped.len();
+    let skipped_note = if skipped.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "。另有 {} 项因分流未走此分支而跳过：[{}]",
+            skipped.len(),
+            skipped.join(", ")
+        )
+    };
     let failed: Vec<String> = plan
         .tasks
         .iter()
@@ -567,11 +605,10 @@ fn research_wakeup_text(
         .collect();
     if !failed.is_empty() {
         return Ok(format!(
-            "[orx 研究编排] 专家任务未通过验收：{}。已完成任务（{}/{}）：[{}]。若仅需原地重跑失败任务，请执行 `orx research retry <task-id>`；若需根据审稿或诊断反馈调整计划，请执行 `orx research plan --file <path>`（只有任务输入与实际流程未变且产物有效的已完成任务才会继承，无需重跑）。",
+            "[orx 研究编排] 专家任务未通过验收：{}。已完成任务（{done}/{total}）：[{}]{}。若仅需原地重跑失败任务，请执行 `orx research retry <task-id>`；若需根据审稿或诊断反馈调整计划，请执行 `orx research plan --file <path>`（只有任务输入与实际流程未变且产物有效的已完成任务才会继承，无需重跑）。",
             failed.join("；"),
-            completed.len(),
-            total,
-            completed.join(", ")
+            completed.join(", "),
+            skipped_note
         ));
     }
     let awaiting: Vec<&str> = plan
@@ -596,9 +633,8 @@ fn research_wakeup_text(
         .collect();
     if !awaiting.is_empty() {
         return Ok(format!(
-            "[orx 研究编排] 任务 {} 已完成并通过产物验收，正在等待主理人在人工确认页批准任务确认后才会派发其下游任务（进度 {}/{}）。请向用户说明该任务的核心产出与批准影响，并提示其到研究面板处理；请勿擅自派发任务或修订计划。",
+            "[orx 研究编排] 任务 {} 已完成并通过产物验收，正在等待主理人在人工确认页批准任务确认后才会派发其下游任务（进度 {done}/{}）。请向用户说明该任务的核心产出与批准影响，并提示其到研究面板处理；请勿擅自派发任务或修订计划。",
             awaiting.join("、"),
-            completed.len(),
             total
         ));
     }
@@ -623,12 +659,12 @@ fn research_wakeup_text(
             blocked.join("；")
         ));
     }
-    if completed.len() == total {
+    if done == total {
         let gate = crate::local::research::delivery_gate(study.workflow_mode());
         if let Some(err) = package_error {
             return Ok(format!(
-                "[orx 研究编排] 当前计划（v{}）全部 {} 个专家任务均已完成，但最终交付校验未通过（原因：{}），未能发起有效的 {} 确认申请。请执行 `orx research plan --file <path>` 提交修订计划，对受影响的任务及独立审稿/引用审计节点设置 `\"forceRerun\": true` 重新执行与审查（未受影响且产物完好的前置任务会自动继承）。",
-                plan.version, total, err, gate
+                "[orx 研究编排] 当前计划（v{}）全部任务均已完成或跳过，但最终交付校验未通过（原因：{}），未能发起有效的 {} 确认申请。请执行 `orx research plan --file <path>` 提交修订计划，对受影响的任务及独立审稿/引用审计节点设置 `\"forceRerun\": true` 重新执行与审查（未受影响且产物完好的前置任务会自动继承）。",
+                plan.version, err, gate
             ));
         }
         let has_matching_delivery_gate = valid_package_hash.is_some_and(|hash| {
@@ -641,37 +677,37 @@ fn research_wakeup_text(
         });
         if !has_matching_delivery_gate {
             return Ok(format!(
-                "[orx 研究编排] 当前计划（v{}）全部 {} 个专家任务均已完成，但尚未生成匹配当前交付范围的 {} 确认申请。请执行 `orx research package` 检查交付范围，若存在证据或产物变更请通过 `orx research plan --file <path>` 设置 `\"forceRerun\": true` 重新执行受影响任务。",
-                plan.version, total, gate
+                "[orx 研究编排] 当前计划（v{}）全部任务均已完成或跳过，但尚未生成匹配当前交付范围的 {} 确认申请。请执行 `orx research package` 检查交付范围，若存在证据或产物变更请通过 `orx research plan --file <path>` 设置 `\"forceRerun\": true` 重新执行受影响任务。",
+                plan.version, gate
             ));
         }
         return Ok(format!(
-            "[orx 研究编排] 当前计划（v{}）全部 {} 个专家任务均已完成并通过产物 SHA-256 验收，系统已自动发起 {} 交付确认申请。请直接向用户总结本次研究的核心结论、证据状态与局限性，并提示用户在人工确认页面处理 {}，在产物页面查看和下载文件；请勿重新调用 `orx research plan` 或派发任务。",
-            plan.version, total, gate, gate
+            "[orx 研究编排] 当前计划（v{}）全部任务均已完成或跳过{}，系统已自动发起 {} 交付确认申请。请直接向用户总结本次研究的核心结论、证据状态与局限性，并提示用户在人工确认页面处理 {}，在产物页面查看和下载文件；请勿重新调用 `orx research plan` 或派发任务。",
+            plan.version, skipped_note, gate, gate
         ));
     }
     if let Some(exp_task) = plan.tasks.iter().find(|t| {
         t.state == "pending"
             && t.spec.role == "as-experiment-operator"
             && t.run_contract.is_none()
-            && t.spec
-                .depends_on
-                .iter()
-                .all(|d| study.task(d).is_ok_and(|dep| dep.state == "completed"))
+            && t.spec.depends_on.iter().all(|d| {
+                study
+                    .task(d)
+                    .is_ok_and(|dep| matches!(dep.state.as_str(), "completed" | "skipped"))
+            })
     }) {
         return Ok(format!(
-            "[orx 研究编排] 前置专家任务已自动完成并验收（进度 {}/{}）。下一环节实验执行任务 `{}` 需要绑定运行契约。请检查代码分支并提交实验代码后，立即执行 `orx research prepare-run {} <experiment-id> --backend <backend>` 申请 G2/G3 审批；请勿重新调用 `orx research plan`。",
-            completed.len(),
+            "[orx 研究编排] 前置专家任务已自动完成并验收（进度 {done}/{}）。下一环节实验执行任务 `{}` 需要绑定运行契约。请检查代码分支并提交实验代码后，立即执行 `orx research prepare-run {} <experiment-id> --backend <backend>` 申请 G2/G3 审批；请勿重新调用 `orx research plan`。",
             total,
             exp_task.spec.id,
             exp_task.spec.id
         ));
     }
     Ok(format!(
-        "[orx 研究编排] 阶段任务已更新（已完成 {}/{}：[{}]）。请查看当前研究状态并继续推进剩余步骤；严禁无故调用 `orx research plan` 重置已有进度。",
-        completed.len(),
+        "[orx 研究编排] 阶段任务已更新（已完成 {done}/{}：[{}]{}）。请查看当前研究状态并继续推进剩余步骤；严禁无故调用 `orx research plan` 重置已有进度。",
         total,
-        completed.join(", ")
+        completed.join(", "),
+        skipped_note
     ))
 }
 

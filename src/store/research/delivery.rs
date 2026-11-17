@@ -178,7 +178,11 @@ impl Store {
         mut after_file: impl FnMut(&str) -> Result<()>,
     ) -> Result<PreparedDelivery> {
         let plan = study.plan()?;
-        if plan.tasks.iter().any(|t| t.state != "completed") {
+        if plan
+            .tasks
+            .iter()
+            .any(|t| !matches!(t.state.as_str(), "completed" | "skipped"))
+        {
             return Err(anyhow!("全部计划任务必须通过验收后才能申请交付确认"));
         }
         if plan

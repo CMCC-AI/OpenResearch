@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{anyhow, Result};
-use crate::store::research::{PlanInput, TaskSpec};
+use crate::store::research::{validate_route_rules, PlanInput, TaskSpec, ROUTE_KIND};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -74,6 +74,18 @@ pub struct FlowViewport {
     pub zoom: f64,
 }
 
+/// 阶段分组框：纯展示，只占画布空间，不进入执行计划，也不参与批准与等价比对。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FlowFrame {
+    pub id: String,
+    pub title: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkflowDraftInput {
@@ -90,6 +102,8 @@ pub struct WorkflowDraftInput {
     pub positions: HashMap<String, FlowPoint>,
     #[serde(default)]
     pub viewport: Option<FlowViewport>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frames: Vec<FlowFrame>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -134,6 +148,8 @@ pub fn plan_summary(workflow: &str, objective: &str, tasks: &[TaskSpec]) -> Stri
     let approvals = tasks.iter().filter(|t| t.requires_approval).count();
     let gates = tasks.iter().filter(|t| t.gate_downstream).count();
     let rework: u32 = tasks.iter().map(|t| t.max_rework).sum();
+    let routes = tasks.iter().filter(|t| t.kind == ROUTE_KIND).count();
+    let joins = tasks.iter().filter(|t| t.wait_for == "any").count();
     let mut controls = Vec::new();
     if approvals > 0 {
         controls.push(format!("{approvals} 项完成后需主理人确认"));
@@ -143,6 +159,12 @@ pub fn plan_summary(workflow: &str, objective: &str, tasks: &[TaskSpec]) -> Stri
     }
     if rework > 0 {
         controls.push(format!("自动返工上限共 {rework} 轮"));
+    }
+    if routes > 0 {
+        controls.push(format!("包含 {routes} 个条件分流"));
+    }
+    if joins > 0 {
+        controls.push(format!("{joins} 项按任一完成汇合"));
     }
     let controls = if controls.is_empty() {
         String::new()
@@ -180,10 +202,40 @@ pub fn validate_draft(input: &WorkflowDraftInput) -> Result<()> {
     if input.tasks.len() > 40 {
         return Err(anyhow!("工作流最多包含 40 个任务"));
     }
+    validate_route_rules(&input.tasks)?;
     // 40 个任务、每任务最多一个确认检查点，以及输入、G1、G4、交付。
     // 展示节点只占布局空间，不消耗专家任务名额，也不进入 PlanInput。
     if input.positions.len() > 84 {
         return Err(anyhow!("工作流最多保存 84 个节点坐标"));
+    }
+    // 阶段分组框只占画布空间：上限独立于任务与坐标，超限拒绝保存。
+    if input.frames.len() > 12 {
+        return Err(anyhow!("工作流最多包含 12 个阶段分组"));
+    }
+    for frame in &input.frames {
+        if frame.id.is_empty()
+            || frame.id.len() > 80
+            || !frame
+                .id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(anyhow!("阶段分组 ID 仅允许字母、数字、横线和下划线"));
+        }
+        if frame.title.trim().is_empty() || frame.title.len() > 60 {
+            return Err(anyhow!("阶段分组名称需要为 1–60 个字符"));
+        }
+        if !frame.x.is_finite()
+            || !frame.y.is_finite()
+            || !frame.width.is_finite()
+            || !frame.height.is_finite()
+            || frame.width < 160.0
+            || frame.height < 120.0
+            || frame.width > 6000.0
+            || frame.height > 6000.0
+        {
+            return Err(anyhow!("阶段分组尺寸无效"));
+        }
     }
     if input
         .positions
@@ -217,6 +269,10 @@ mod tests {
             requires_approval: false,
             gate_downstream: false,
             max_rework: 0,
+            kind: String::new(),
+            route: None,
+            route_branch: String::new(),
+            wait_for: String::new(),
         }
     }
 
@@ -244,6 +300,7 @@ mod tests {
             tasks: tasks.clone(),
             positions,
             viewport: None,
+            frames: Vec::new(),
         };
         validate_draft(&draft).unwrap();
         assert_eq!(draft.clone().into_plan("Goal").tasks, tasks);
@@ -306,5 +363,118 @@ mod tests {
         assert!(summary.contains(&excerpt));
         assert!(summary.contains("…"));
         assert!(summary.chars().count() < 260);
+    }
+    #[test]
+    fn plan_summary_mentions_routes_and_joins_deterministically() {
+        let mut tasks = vec![
+            summary_task("design"),
+            summary_task("review"),
+            summary_task("audit"),
+        ];
+        tasks[1].kind = "route".into();
+        tasks[1].role = String::new();
+        tasks[1].outputs = vec![];
+        tasks[1].route = Some(crate::store::research::RouteSpec {
+            on: "verdict".into(),
+            source: "design/result.md".into(),
+            verdict_is: "blocked".into(),
+        });
+        tasks[1].depends_on = vec!["design".into()];
+        tasks[2].wait_for = "any".into();
+        tasks[2].depends_on = vec!["review".into(), "design".into()];
+        let first = plan_summary("custom", "综述目标", &tasks);
+        let second = plan_summary("custom", "综述目标", &tasks);
+        assert_eq!(first, second);
+        assert!(first.contains("包含 1 个条件分流"));
+        assert!(first.contains("1 项按任一完成汇合"));
+        // 分流条件属于 spec 字段：计划等价比对按 spec 逐字段比较（TaskSpec PartialEq），
+        // verdict 变化会判定为不同计划并生成新版本重新确认 G1；摘要只承担可读性与计数。
+        let mut flipped = tasks.clone();
+        flipped[1].route.as_mut().unwrap().verdict_is = "pass".into();
+        assert_ne!(tasks[1], flipped[1]);
+    }
+
+    #[test]
+    fn draft_frames_are_capped_and_validated() {
+        let mut draft = WorkflowDraftInput {
+            name: "Frames".into(),
+            objective: String::new(),
+            summary: String::new(),
+            workflow: "custom".into(),
+            tasks: vec![summary_task("task-1")],
+            positions: HashMap::new(),
+            viewport: None,
+            frames: vec![FlowFrame {
+                id: "stage-1".into(),
+                title: "检索阶段".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 480.0,
+                height: 360.0,
+            }],
+        };
+        validate_draft(&draft).unwrap();
+        // 名称过长、尺寸过小、数量超限都要被拒绝。
+        draft.frames[0].title = String::new();
+        assert!(validate_draft(&draft).is_err());
+        draft.frames[0].title = "检索阶段".into();
+        draft.frames[0].width = 100.0;
+        assert!(validate_draft(&draft).is_err());
+        draft.frames[0].width = 480.0;
+        for index in 1..=12 {
+            draft.frames.push(FlowFrame {
+                id: format!("stage-{index}"),
+                title: format!("阶段 {index}"),
+                x: 0.0,
+                y: 0.0,
+                width: 480.0,
+                height: 360.0,
+            });
+        }
+        assert!(validate_draft(&draft).is_err());
+        draft.frames.truncate(11);
+        validate_draft(&draft).unwrap();
+    }
+
+    #[test]
+    fn draft_route_tasks_validate_topology_before_save() {
+        let mut design = summary_task("design");
+        design.gate_downstream = true;
+        let mut route = summary_task("route-1");
+        route.kind = "route".into();
+        route.role = String::new();
+        route.outputs = vec![];
+        route.brief = "分流".into();
+        route.depends_on = vec!["design".into()];
+        route.route = Some(crate::store::research::RouteSpec {
+            on: "verdict".into(),
+            source: "design/result.md".into(),
+            verdict_is: "blocked".into(),
+        });
+        let mut fix = summary_task("fix");
+        fix.route_branch = "then".into();
+        fix.depends_on = vec!["route-1".into()];
+        let mut redo = summary_task("redo");
+        redo.route_branch = "else".into();
+        redo.depends_on = vec!["route-1".into()];
+        let draft = WorkflowDraftInput {
+            name: "Routed".into(),
+            objective: String::new(),
+            summary: String::new(),
+            workflow: "custom".into(),
+            tasks: vec![design, route, fix, redo],
+            positions: HashMap::new(),
+            viewport: None,
+            frames: Vec::new(),
+        };
+        validate_draft(&draft).unwrap();
+        // 「不成立」分支缺失时拒绝保存。
+        let mut missing_else = draft.clone();
+        missing_else.tasks[3].route_branch = "then".into();
+        assert!(validate_draft(&missing_else).is_err());
+        // 来源任务未开启结论把关时拒绝保存。
+        let mut ungated = draft.clone();
+        ungated.tasks[0].gate_downstream = false;
+        assert!(validate_draft(&ungated).is_err());
     }
 }

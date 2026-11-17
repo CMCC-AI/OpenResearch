@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { addAgentTask, connectWorkflowTasks, createBlankDraft, createLiteratureDraft, reconnectWorkflowTasks, removeWorkflowTask, validateWorkflowDraft } from "../src/workflow/model.ts";
+import { addAgentTask, addRouteTask, addWorkflowFrame, connectWorkflowTasks, createBlankDraft, createLiteratureDraft, reconnectWorkflowTasks, removeWorkflowFrame, removeWorkflowTask, updateWorkflowFrame, validateWorkflowDraft } from "../src/workflow/model.ts";
 import { parseDestination } from "../src/workspaceState.ts";
 
 function agentsFor(draft) {
@@ -116,4 +116,87 @@ test("input bindings and rework limits are validated against direct dependencies
   review.gateDownstream = true;
   review.maxRework = 4;
   assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((error) => error.includes("返工上限需为 0–3 的整数")));
+});
+
+// —— 条件分流、汇合与阶段分组（批次一）——
+
+const gateAgent = { id: "agent-gate", name: "Gate keeper", description: "", prompt: "", version: 1, builtIn: false, createdAt: 1, updatedAt: 1 };
+const fixAgent = { id: "agent-fix", name: "Fixer", description: "", prompt: "", version: 1, builtIn: false, createdAt: 1, updatedAt: 1 };
+const keepAgent = { id: "agent-keep", name: "Keeper", description: "", prompt: "", version: 1, builtIn: false, createdAt: 1, updatedAt: 1 };
+
+function routedDraft() {
+  let draft = createBlankDraft();
+  draft = addAgentTask(draft, gateAgent);
+  draft = addAgentTask(draft, keepAgent);
+  // 把关任务不能是根节点：task-1 → task-2（结论把关）→ route → 两条分支。
+  draft = connectWorkflowTasks(draft, "task-1", "task-2");
+  draft.tasks[1].gateDownstream = true;
+  draft.tasks[1].outputs = ["design.md"];
+  draft = addRouteTask(draft);
+  const routeId = draft.tasks.at(-1).id;
+  draft = connectWorkflowTasks(draft, "task-2", routeId);
+  draft = addAgentTask(draft, fixAgent);
+  draft = addAgentTask(draft, keepAgent);
+  // 从分流节点连出的两条线：第一条自动标「成立」，第二条标「不成立」。
+  draft = connectWorkflowTasks(draft, routeId, "task-4");
+  draft = connectWorkflowTasks(draft, routeId, "task-5");
+  draft = { ...draft, tasks: draft.tasks.map((task) => task.kind === "route" ? { ...task, route: { on: "verdict", source: "design.md", verdictIs: "blocked" } } : task) };
+  return draft;
+}
+
+test("route nodes label the first outgoing branch then, the second else", () => {
+  const draft = routedDraft();
+  assert.equal(draft.tasks.find((task) => task.id === "task-4").routeBranch, "then");
+  assert.equal(draft.tasks.find((task) => task.id === "task-5").routeBranch, "else");
+  assert.deepEqual(validateWorkflowDraft(draft, agentsFor(draft)), []);
+});
+
+test("route drafts refuse to save without both branches or a gated source", () => {
+  const draft = routedDraft();
+  // 拆掉「不成立」分支：两条分支都必须有后续任务。
+  const missingElse = removeWorkflowTask(draft, "task-4");
+  assert.ok(validateWorkflowDraft(missingElse, agentsFor(missingElse)).some((message) => message.includes("两条分支")));
+  // 来源任务没开结论把关：分流没有可读取的结论。
+  const ungated = { ...draft, tasks: draft.tasks.map((task) => task.id === "task-2" ? { ...task, gateDownstream: false } : task) };
+  assert.ok(validateWorkflowDraft(ungated, agentsFor(ungated)).some((message) => message.includes("结论把关")));
+  // 来源产物不属于任何前置任务：先连线再选结论。
+  const foreign = { ...draft, tasks: draft.tasks.map((task) => task.kind === "route" ? { ...task, route: { on: "verdict", source: "other.md", verdictIs: "pass" } } : task) };
+  assert.ok(validateWorkflowDraft(foreign, agentsFor(foreign)).some((message) => message.includes("条件来源")));
+  // 分流节点不产出文件。
+  const withOutputs = { ...draft, tasks: draft.tasks.map((task) => task.kind === "route" ? { ...task, outputs: ["route.md"] } : task) };
+  assert.ok(validateWorkflowDraft(withOutputs, agentsFor(withOutputs)).some((message) => message.includes("不产出文件")));
+});
+
+test("removing a route node clears stale branch labels on its children", () => {
+  const draft = routedDraft();
+  const removed = removeWorkflowTask(draft, draft.tasks.find((task) => task.kind === "route").id);
+  assert.equal(removed.tasks.find((task) => task.id === "task-4").routeBranch, undefined);
+  assert.equal(removed.tasks.find((task) => task.id === "task-5").routeBranch, undefined);
+});
+
+test("join-any strategy needs at least two incoming connections", () => {
+  let draft = createBlankDraft();
+  draft = addAgentTask(draft, gateAgent);
+  draft = addAgentTask(draft, fixAgent);
+  draft = { ...draft, tasks: draft.tasks.map((task) => task.id === "task-2" ? { ...task, dependsOn: ["task-1"], waitFor: "any" } : task) };
+  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((message) => message.includes("至少两条前置")));
+  draft = { ...draft, tasks: draft.tasks.map((task) => task.id === "task-2" ? { ...task, dependsOn: ["task-1"], waitFor: undefined } : task) };
+  assert.deepEqual(validateWorkflowDraft(draft, agentsFor(draft)), []);
+});
+
+test("stage frames save, rename and enforce the cap", () => {
+  let draft = createBlankDraft();
+  draft = addAgentTask(draft, gateAgent);
+  draft = addWorkflowFrame(draft, { id: "stage-1", title: "检索", x: 0, y: 0, width: 480, height: 360 });
+  draft = updateWorkflowFrame(draft, "stage-1", { title: "检索与筛选" });
+  assert.equal(draft.frames.at(-1).title, "检索与筛选");
+  assert.deepEqual(validateWorkflowDraft(draft, agentsFor(draft)), []);
+  for (let index = 2; index <= 13; index += 1) {
+    draft = addWorkflowFrame(draft, { id: `stage-${index}`, title: `阶段 ${index}`, x: 0, y: 0, width: 480, height: 360 });
+  }
+  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((message) => message.includes("12 个阶段分组")));
+  draft = removeWorkflowFrame(draft, "stage-13");
+  assert.deepEqual(validateWorkflowDraft(draft, agentsFor(draft)), []);
+  draft = removeWorkflowFrame(draft, "stage-12");
+  assert.equal(draft.frames.length, 11);
 });

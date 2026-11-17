@@ -45,7 +45,7 @@ export function researchConversationStatus(study: ResearchStudy, {
     || tasks.some((task) => ["failed", "cancelled"].includes(task.state))) {
     return { kind: "attention", label: "研究需要调整 · 查看任务与确认反馈" };
   }
-  if (tasks.length && tasks.every((task) => task.state === "completed")) {
+  if (tasks.length && tasks.every((task) => task.state === "completed" || task.state === "skipped")) {
     if (study.evidenceReviewRequired) return { kind: "attention", label: "证据已修订 · 等待重新审查与交付确认" };
     if (tasks.some(task => task.verdict?.status === "blocked")) return { kind: "attention", label: "专家结论有问题 · 等待处理" };
     return researchPackageUrl(study) && !study.deliveryError

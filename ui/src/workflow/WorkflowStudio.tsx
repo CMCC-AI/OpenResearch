@@ -22,6 +22,8 @@ function draftInput(draft: WorkflowDraft): WorkflowDraftInput {
     tasks: draft.tasks,
     positions: draft.positions,
     viewport: draft.viewport,
+    // 阶段分组只占画布空间；旧草稿没有 frames 字段，按空数组处理。
+    frames: draft.frames ?? [],
   };
 }
 
