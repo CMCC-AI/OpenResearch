@@ -12,6 +12,10 @@ test('hosted-local parseArgs parses start, stop, status, and grant-admin options
   assert.equal(start.capacity, 4)
   assert.equal(start.idleSeconds, 60)
 
+  const noQuotas = parseArgs(['start', '--no-quotas'])
+  assert.equal(noQuotas.withQuotas, false)
+  assert.equal(noQuotas.quotasFlag, false)
+
   const stop = parseArgs(['stop', '--clean'])
   assert.equal(stop.command, 'stop')
   assert.equal(stop.clean, true)
