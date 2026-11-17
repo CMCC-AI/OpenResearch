@@ -2,11 +2,11 @@
 
 ## 落地状态更新（2026-11-17）
 
-2026-11-13 至 2026-11-16 期间，已在 `feat/ai4s-product`（`0.2.24-mobilesci.1` 候选分支）将下表原建议优先/条件候选中的 **6 项** 全部适配落地并完成本地全量回归（尚未创建正式发行标签）：
+2026-11-13 至 2026-11-17 期间，已在 `feat/ai4s-product`（`0.2.24-mobilesci.1` 候选分支）将下表原建议优先/条件候选中的 **7 项** 适配落地并完成本地全量回归（尚未创建正式发行标签）：
 
 - **批次 A（边界与源码一致性，提交 `19f75bcc`）**：`#923` 原子创建 `0700` 私有目录并检验归属、`#730` 实验源码归档固定 LF、`#786` Markdown 产物链接兼容裸 `%` 并重编 `ui/dist`。
 - **批次 B（科研网络与外部链接安全，提交 `21dced48`、`68f41ff7`）**：`#909` Markdown 外链 `https://`/`//` 图片转安全链接（含 `ArtifactsTab` 渲染修复）、`#747` 支持 `OPENALEX_MAILTO`/`OPENALEX_API_KEY` 配置且默认不再附带共享邮箱。
-- **批次 C（按明确场景选入，提交 `68f41ff7`）**：`#903` 支持读取 Claude 插件清单 `plugin.json` 自定义 `skills` 目录及单技能根插件。
+- **批次 C（按明确场景选入，提交 `68f41ff7` 及本批）**：`#903` 支持读取 Claude 插件清单 `plugin.json` 自定义 `skills` 目录及单技能根插件；`#734` 在每次 CLI 命令前的存储预检中跳过外部无关仓库的 macOS 云端占位文件（迁移全量扫描保持完整）。
 
 以下保留 2026-11-09 对 `.25` 45 个提交的逐项原始判定，并同步更新上述 6 项的当前处理状态与文末批次表。
 
@@ -71,7 +71,7 @@ P1 表示优先验证并小范围修补；P2 表示有用户场景/复现再排�
 | 33. [`b17b7471`](https://github.com/alphaXiv/OpenResearch/commit/b17b747166602d123d0fa1724221cf2d5631e3a9) | fix(windows): keep LF bytes in source snapshots (#730)<br>1 文件；`src/compute.rs` | **已适配落地（`19f75bcc`）**。`compute::archive` 已注入 `-c core.autocrlf=false -c core.eol=lf`，保障实验 tar/ZIP 源码快照跨平台换行一致。 | P1，已合入 |
 | 34. [`2cef81de`](https://github.com/alphaXiv/OpenResearch/commit/2cef81def5c99b8daeefeb2b3a5cfde1843f141c) | fix(windows): fall back to hard links and copies when links are untrusted (#720)<br>1 文件；`src/local/native_store.rs` | **条件候选**。Windows ERROR_UNTRUSTED_MOUNT_POINT 时链接改硬链接/副本。本地仍用 reconcile_link，需普通用户 Windows 复现；官方 copy_tree 不同步删除，可能残留旧配置，不能原样采用而声称完整同步。保留冲突备份、标记、跨卷及更新语义。 | P2 |
 | 35. [`d3fdcbea`](https://github.com/alphaXiv/OpenResearch/commit/d3fdcbeac3331f599f793e82b8adf879052572f0) | fix(ui): prevent automatic remote Markdown images (#909)<br>7 文件；`ui/src/api.ts`、`ui/src/components/ArtifactsTab.tsx`、`ui/src/components/LibraryPicker.tsx` | **已适配落地（`21dced48`）**。在 `markdownTarget.ts`、`remarkFigures.ts`、`Md.tsx` 与 `ArtifactsTab.tsx` 中将 `https://`/`//` 外链图片转为可点击链接，保留本地受权图表且不泄漏 `<a>` 的 `node` 属性，重建 `ui/dist` 并通过全部 636 项 UI 单测。 | P1，已合入 |
-| 36. [`66ddab77`](https://github.com/alphaXiv/OpenResearch/commit/66ddab77bf3d28279d4fe5dd30922fe302d7509c) | Skip cloud-only files of unrelated repositories in the per-command storage check (#734)<br>1 文件；`src/local/storage.rs` | **条件候选**。每条 CLI 命令的存储检查跳过无关仓库的 macOS 云端占位文件，避免 File Provider 下载阻塞；真实迁移仍扫描全部。本地 storage.rs 有同类检查，若有 iCloud/Dropbox 复现可小范围回移，不吞掉当前指定材料读取错误。 | P2 |
+| 36. [`66ddab77`](https://github.com/alphaXiv/OpenResearch/commit/66ddab77bf3d28279d4fe5dd30922fe302d7509c) | Skip cloud-only files of unrelated repositories in the per-command storage check (#734)<br>1 文件；`src/local/storage.rs` | **已适配落地（`src/local/storage.rs`）**。`prepare()` 调用 `scan(&target, &mappings, &cloud_only)` 跳过无关外部仓库的 macOS `SF_DATALESS` 占位文件；`references()`/`migrate()` 仍全量扫描，并通过 `cloud_only_external_projects_are_only_skipped_by_storage_checks` 回归。 | P2，已合入 |
 | 37. [`4e534e7c`](https://github.com/alphaXiv/OpenResearch/commit/4e534e7ccb7a5f9603470b94f372ed135ab04e69) | feat: orx up --host 0.0.0.0 for a trusted LAN (#375)<br>9 文件；`AGENTS.md`、`arc/dashboard.md`、`arc/remote.md` | **不照搬**。显式 LAN 监听/可信网络策略。托管版已有账号与代理边界，不能把 --host 0.0.0.0 等同于放宽 CORS/来源校验；本地确有 LAN 场景时独立评估认证与文档。 | 按需 |
 | 38. [`5d4ab714`](https://github.com/alphaXiv/OpenResearch/commit/5d4ab714e676f51468342dd9071472aba0617aaa) | fix(ui): decode artifact link paths once (OR-607) (#786)<br>4 文件；`ui/src/components/ArtifactsTab.tsx`、`ui/src/markdownTarget.ts`、`ui/tests/artifactLinks.test.mjs` | **已适配落地（`19f75bcc`）**。`resolveMarkdownTarget` 已兼容未编码百分号并避免二次解码，保留 NUL/越界拒绝、query/hash 与版本键语义并重编 `ui/dist`。 | P1，已合入 |
 | 39. [`8c35e4f8`](https://github.com/alphaXiv/OpenResearch/commit/8c35e4f88a0daead1cba899a6552f9897eedc354) | chore: new agent instructions (#918)<br>32 文件；`.agents/skills/orx-accessibility/SKILL.md`、`.agents/skills/orx-copy/SKILL.md`、`.agents/skills/orx-flows/SKILL.md` | **择取**。Agent 指引/技能与发行流程文档，32 文件。保留本地 AGENTS 中文提交规范、私人账号、材料及生产暂停规则；仅采用经过本地验证的开发知识，不整篇覆盖。 | P3 |
@@ -88,6 +88,6 @@ P1 表示优先验证并小范围修补；P2 表示有用户场景/复现再排�
 | --- | --- | --- |
 | A：边界与源码一致性 | `#923`、`#730`、`#786` 均已适配至 `19f75bcc` | 本地全量 Rust/UI 回归通过；跨平台（含 Windows/Linux）CI 待 `.24` 发行分支一并验收 |
 | B：科研网络读取 | `#909`（`21dced48`）、`#747`（`68f41ff7`）已合入并重建 `ui/dist` | UI 636 项单测与 Rust OpenAlex 单测通过；不触发隐式外链图片请求 |
-| C：明确场景才启动 | `#903` Claude plugin skills（`68f41ff7`）已落地；其余（Codex 相对配置、`#720`、`#734`、`#766`、`#897` 等）继续按需 | 先记录用户/复现、最小修补及维护成本，再选其中一项；不以“未实施数量”驱动排期 |
+| C：明确场景才启动 | `#903`（`68f41ff7`）、`#734`（已合入本地分支）已落地；其余（Codex 相对配置、`#720`、`#766`、`#897` 等）继续按需 | 先记录用户/复现、最小修补及维护成本，再选其中一项；不以“未实施数量”驱动排期 |
 
 A/B 只是建议，不能绕过用户当前“先本地启动测试、生产暂停”的安排。即使源码通过并合入，也不能自动替换当前 .6、移动不可变标签或认定生产验收完成。

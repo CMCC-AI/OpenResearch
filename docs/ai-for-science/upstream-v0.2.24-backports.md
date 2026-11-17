@@ -12,9 +12,10 @@
 | `19f75bcc` / `#962`、`#923`、`#730`、`#786` | `set_chat_session_env` 固定 `ORX_DATA_DIR`、CLI 管道退出与只读降级；Unix 私有目录 `DirBuilder::mode(0o700)` 原子创建与权属复核；`git archive` 注入 `core.autocrlf=false`/`core.eol=lf`；Markdown 产物路径容忍未编码百分号并重建 `ui/dist` | 已合入本地分支，待随 `.24` 发行 |
 | `21dced48` / `#909` | 将 Markdown 中 `https://` 与 `//` 外链图片转为可点击链接，消除 `ArtifactsTab` `<a>` 标签 `node` 属性泄漏并重建 `ui/dist` | 已合入本地分支，待随 `.24` 发行 |
 | `68f41ff7` / `#747`、`#903` + 内部稳健性改造 | 支持 `OPENALEX_MAILTO`/`OPENALEX_API_KEY` 配置并移除默认共享邮箱；支持 Claude 插件 `plugin.json` 自定义 `skills` 与单技能根；拆出 `src/local/chat/{session_env,watcher,wire}.rs`；为 [`SourceFile`](../../src/verified_file.rs) / [`FileLock`](../../src/file_lock.rs) / [`LockedAsyncFile`](../../src/file_lock.rs) 补齐显式 `unlock()` 消除并发归档下载/回收测试竞争 | 已合入本地分支，待随 `.24` 发行 |
+| 本批技术债清理 / `#734` + 单测模块化 | `src/local/storage.rs` 跳过无关外部仓库的 macOS 云端占位文件，消除每次 CLI 前的潜在 iCloud/Dropbox 阻塞；将 [`src/local/chat/mod.rs`](../../src/local/chat/mod.rs) 6 组内联测试（7,540 行）、[`src/store.rs`](../../src/store.rs) `tests`（3,085 行）与 [`src/commands/up.rs`](../../src/commands/up.rs) `tests`（1,075 行）拆入独立测试文件 | 已合入本地分支，待随 `.24` 发行 |
 | `.26`（`#922`、`#935`） | `Md` 图片轮播提升至 `stableComponents`；`pendingPlanForTurn` 限定最近用户轮次 | 已于 `.7`/`.7.1` 交付 |
 
-- **当前遗留观察项**：`src/local/chat/mod.rs`（17,396 行）、`src/commands/up.rs`（10,074 行）、`src/store.rs`（7,047 行）体量仍大，后续按功能或缺陷触碰边界渐进拆分；`.25/.26` 重型重写（`#862 orx-host`、`#885`、`#886`、`#891`、`#938 ACP`）及 PR `#17` 继续隔离暂缓。全量本地验证（`cargo fmt/clippy/test --locked`、UI 636 项、平台 87 项、脚本 30 项）已在 `68f41ff7` 全部源码定稿后通过，仍待恢复 Docker Desktop 完成 `hosted-local`/平台联调并执行 `release/mobilesci-0.2.24-mobilesci.1` 跨平台发行 CI。
+- **当前遗留观察项**：三大核心文件剔除内联测试后体积已显著下降（`src/local/chat/mod.rs` 17,396 → 9,863 行、`src/commands/up.rs` 10,074 → 8,997 行、`src/store.rs` 7,047 → 3,960 行），后续仅按功能或缺陷触碰边界继续渐进拆出生产子模块；`.25/.26` 重型重写（`#862 orx-host`、`#885`、`#886`、`#891`、`#938 ACP`）及 PR `#17` 继续隔离暂缓。全量本地验证（`cargo fmt/clippy/test --locked` 1,523 单元 + 7 个集成测试套、UI 636 项、平台 87 项、脚本 30 项）已通过，仍待恢复 Docker Desktop 完成 `hosted-local`/平台联调并执行 `release/mobilesci-0.2.24-mobilesci.1` 跨平台发行 CI。
 
 ---
 
