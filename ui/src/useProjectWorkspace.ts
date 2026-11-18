@@ -40,6 +40,13 @@ const subscribeErrors = (listener: () => void) => { errorListeners.add(listener)
 const newTaskPromotions = new Map<string, string>();
 const projectCache = new Map<string, ProjectWorkspace>();
 export const getCachedProjectWorkspace = (projectId: string) => projectCache.get(projectId);
+export function seedProjectWorkspaceCache(projectId: string, saved: ProjectWorkspace | null | undefined) {
+  projectCache.set(projectId, {
+    ...emptyProjectWorkspace(),
+    ...saved,
+    tasks: saved?.tasks && typeof saved.tasks === "object" && !Array.isArray(saved.tasks) ? saved.tasks : {},
+  });
+}
 export function clearProjectWorkspaceCache() {
   epoch++;
   projectCache.clear();
@@ -145,7 +152,7 @@ export function useProjectWorkspace(props: Props): {
   const saveError = useSyncExternalStore(subscribeErrors, () => projectId ? saveErrors.get(projectId) ?? null : null);
   const [readError, setReadError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const [loadedProject, setLoadedProject] = useState<string | null>(null);
+  const [loadedProject, setLoadedProject] = useState<string | null>(() => (projectId && projectCache.has(projectId) ? projectId : null));
   const [renderedScope, setRenderedScope] = useState<string | null>(null);
   const appliedScope = useRef<string | null>(null);
   const appliedPane = useRef<string | null>(null);
@@ -166,16 +173,12 @@ export function useProjectWorkspace(props: Props): {
     let live = true;
     const visit = epoch;
     setReadError(null);
+    if (!projectId) { setLoadedProject(null); return; }
+    if (projectCache.has(projectId)) { setLoadedProject(projectId); return; }
     setLoadedProject(null);
-    if (!projectId) return;
-    if (projectCache.has(projectId)) setLoadedProject(projectId);
-    else void queryClient.fetchQuery(getProjectUiStateQuery(projectId)).then((saved) => {
+    void queryClient.fetchQuery(getProjectUiStateQuery(projectId)).then((saved) => {
       if (!live || visit !== epoch) return;
-      projectCache.set(projectId, {
-        ...emptyProjectWorkspace(),
-        ...saved,
-        tasks: saved?.tasks && typeof saved.tasks === "object" && !Array.isArray(saved.tasks) ? saved.tasks : {},
-      });
+      seedProjectWorkspaceCache(projectId, saved);
       setLoadedProject(projectId);
     }).catch((error: unknown) => {
       if (live && visit === epoch) setReadError(error instanceof Error ? error.message : String(error));

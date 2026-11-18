@@ -1,5 +1,15 @@
 # 官方 v0.2.25 逐项回移评估（2026-11-09）
 
+## 落地状态更新（2026-11-17）
+
+2026-11-13 至 2026-11-17 期间，已在 `feat/ai4s-product`（`0.2.24-mobilesci.1` 候选分支）将下表原建议优先/条件候选中的 **7 项** 适配落地并完成本地全量回归（尚未创建正式发行标签）：
+
+- **批次 A（边界与源码一致性，提交 `19f75bcc`）**：`#923` 原子创建 `0700` 私有目录并检验归属、`#730` 实验源码归档固定 LF、`#786` Markdown 产物链接兼容裸 `%` 并重编 `ui/dist`。
+- **批次 B（科研网络与外部链接安全，提交 `21dced48`、`68f41ff7`）**：`#909` Markdown 外链 `https://`/`//` 图片转安全链接（含 `ArtifactsTab` 渲染修复）、`#747` 支持 `OPENALEX_MAILTO`/`OPENALEX_API_KEY` 配置且默认不再附带共享邮箱。
+- **批次 C（按明确场景选入，提交 `68f41ff7` 及本批）**：`#903` 支持读取 Claude 插件清单 `plugin.json` 自定义 `skills` 目录及单技能根插件；`#734` 在每次 CLI 命令前的存储预检中跳过外部无关仓库的 macOS 云端占位文件（迁移全量扫描保持完整）。
+
+以下保留 2026-11-09 对 `.25` 45 个提交的逐项原始判定，并同步更新上述 6 项的当前处理状态与文末批次表。
+
 ## 固定来源与判断边界
 
 核查[官方 v0.2.25 发行](https://github.com/alphaXiv/OpenResearch/releases/tag/v0.2.25)与固定标签差异，发布时间为 2026-11-07 01:29:21 UTC（上海 09:29:21）。比较起点 `v0.2.24=23a4d67bb5ce3cf9051f8d62b2cd52e93116e16d`，终点 `v0.2.25=c9123a6f70828f8021e11f6b9a16197ce77f53f9`。
@@ -57,27 +67,27 @@ P1 表示优先验证并小范围修补；P2 表示有用户场景/复现再排�
 | 29. [`9a5693aa`](https://github.com/alphaXiv/OpenResearch/commit/9a5693aa5a9f6ce9468eae43dca174face3dc833) | fix(windows): let normal users launch SSH runs (#915)<br>8 文件；`Cargo.toml`、`src/commands/up/api_v2.rs`、`src/commands/up/api_v2/tests.rs` | **依赖未采用**。Windows 普通用户 SSH 服务目录仅写 DACL，避免 Set-Acl 涉及 SACL 权限；另有新引擎 askpass/内存处理。当前没有 src/jobs/ssh/service 模块，不可作为现有函数直接回移；若引入该服务，普通用户 ACL 验收是前置条件。 | P2 |
 | 30. [`272e5aa3`](https://github.com/alphaXiv/OpenResearch/commit/272e5aa311b45fb0bbb35e50d183707ea7c50923) | fix(engine): give box runs 15 minutes to collect (#916)<br>9 文件；`arc/experiments.md`、`arc/remote.md`、`crates/orx-host-proto/FROZEN.md` | **依赖未采用**。新引擎 box 收集容忍 15 分钟；当前无该 engine，禁止把新引擎超时盲目改到旧 SSH/实验时限。 | P3 |
 | 31. [`a4e78a20`](https://github.com/alphaXiv/OpenResearch/commit/a4e78a2092077f5f4fc494a3f12805f69bebfa73) | fix: accept symlinked run-artifact directories (#789)<br>2 文件；`src/compute.rs`、`src/store.rs` | **拆分评估**。允许快照目录及 artifact 根为符号链接。当前 compute/store 的拒绝链接是保护，且已有冻结输入/引用留存约束；不能照搬放宽项目删除。只有明确目录重定向需求时讨论所有权、根身份及删除边界。 | P2 |
-| 32. [`9752ab4b`](https://github.com/alphaXiv/OpenResearch/commit/9752ab4b4502e6ff0d44b93cb7d18a24f3232110) | fix: send OPENALEX_API_KEY to OpenAlex (#747)<br>4 文件；`arc/storage.md`、`src/client.rs`、`src/config.rs` | **部分已有**。OpenAlex Bearer API Key 已在本地 openalex_request 实现，且保留 20 秒超时/公共读取策略；不要重复实施。缺口是 config::openalex_mailto 仍默认共享邮箱，查询总附带 mailto；可择取可选且过滤空值的联系人配置，并用离线 HTTP 夹具覆盖检索、单篇及 bioRxiv 路由。 | P1 |
-| 33. [`b17b7471`](https://github.com/alphaXiv/OpenResearch/commit/b17b747166602d123d0fa1724221cf2d5631e3a9) | fix(windows): keep LF bytes in source snapshots (#730)<br>1 文件；`src/compute.rs` | **优先候选**。compute::archive 当前直接 git archive；Windows core.autocrlf/core.eol 可改变每次实验 tar/ZIP 源码字节。回移单次命令 -c core.autocrlf=false -c core.eol=lf，验证两格式字节与提交一致。现有 Node 发行归档摘要门禁不覆盖这个 Run 快照路径。 | P1 |
+| 32. [`9752ab4b`](https://github.com/alphaXiv/OpenResearch/commit/9752ab4b4502e6ff0d44b93cb7d18a24f3232110) | fix: send OPENALEX_API_KEY to OpenAlex (#747)<br>4 文件；`arc/storage.md`、`src/client.rs`、`src/config.rs` | **已适配落地（`68f41ff7`）**。`config::openalex_mailto` 已改为可选 `Option<String>`，新增 `openalex_api_key` 配置并接入 `openalex_discovery_url` / `openalex_request`，保留 20 秒超时与公共读取策略并通过 OpenAlex 单测回归。 | P1，已合入 |
+| 33. [`b17b7471`](https://github.com/alphaXiv/OpenResearch/commit/b17b747166602d123d0fa1724221cf2d5631e3a9) | fix(windows): keep LF bytes in source snapshots (#730)<br>1 文件；`src/compute.rs` | **已适配落地（`19f75bcc`）**。`compute::archive` 已注入 `-c core.autocrlf=false -c core.eol=lf`，保障实验 tar/ZIP 源码快照跨平台换行一致。 | P1，已合入 |
 | 34. [`2cef81de`](https://github.com/alphaXiv/OpenResearch/commit/2cef81def5c99b8daeefeb2b3a5cfde1843f141c) | fix(windows): fall back to hard links and copies when links are untrusted (#720)<br>1 文件；`src/local/native_store.rs` | **条件候选**。Windows ERROR_UNTRUSTED_MOUNT_POINT 时链接改硬链接/副本。本地仍用 reconcile_link，需普通用户 Windows 复现；官方 copy_tree 不同步删除，可能残留旧配置，不能原样采用而声称完整同步。保留冲突备份、标记、跨卷及更新语义。 | P2 |
-| 35. [`d3fdcbea`](https://github.com/alphaXiv/OpenResearch/commit/d3fdcbeac3331f599f793e82b8adf879052572f0) | fix(ui): prevent automatic remote Markdown images (#909)<br>7 文件；`ui/src/api.ts`、`ui/src/components/ArtifactsTab.tsx`、`ui/src/components/LibraryPicker.tsx` | **优先候选**。Markdown 网络图片默认变链接并禁止报告远程资源，减少未可信科研文本触发外部请求。本地 Md/ChatImageScope 仍有图片候选解析；适配时区分材料/案例本地资源与用户显式外链，保留本地图表/PDF相关图片。须验证零隐式网络请求及本地资源不回退，不照搬本地不存在的 LibraryPicker。 | P1 |
-| 36. [`66ddab77`](https://github.com/alphaXiv/OpenResearch/commit/66ddab77bf3d28279d4fe5dd30922fe302d7509c) | Skip cloud-only files of unrelated repositories in the per-command storage check (#734)<br>1 文件；`src/local/storage.rs` | **条件候选**。每条 CLI 命令的存储检查跳过无关仓库的 macOS 云端占位文件，避免 File Provider 下载阻塞；真实迁移仍扫描全部。本地 storage.rs 有同类检查，若有 iCloud/Dropbox 复现可小范围回移，不吞掉当前指定材料读取错误。 | P2 |
+| 35. [`d3fdcbea`](https://github.com/alphaXiv/OpenResearch/commit/d3fdcbeac3331f599f793e82b8adf879052572f0) | fix(ui): prevent automatic remote Markdown images (#909)<br>7 文件；`ui/src/api.ts`、`ui/src/components/ArtifactsTab.tsx`、`ui/src/components/LibraryPicker.tsx` | **已适配落地（`21dced48`）**。在 `markdownTarget.ts`、`remarkFigures.ts`、`Md.tsx` 与 `ArtifactsTab.tsx` 中将 `https://`/`//` 外链图片转为可点击链接，保留本地受权图表且不泄漏 `<a>` 的 `node` 属性，重建 `ui/dist` 并通过全部 636 项 UI 单测。 | P1，已合入 |
+| 36. [`66ddab77`](https://github.com/alphaXiv/OpenResearch/commit/66ddab77bf3d28279d4fe5dd30922fe302d7509c) | Skip cloud-only files of unrelated repositories in the per-command storage check (#734)<br>1 文件；`src/local/storage.rs` | **已适配落地（`src/local/storage.rs`）**。`prepare()` 调用 `scan(&target, &mappings, &cloud_only)` 跳过无关外部仓库的 macOS `SF_DATALESS` 占位文件；`references()`/`migrate()` 仍全量扫描，并通过 `cloud_only_external_projects_are_only_skipped_by_storage_checks` 回归。 | P2，已合入 |
 | 37. [`4e534e7c`](https://github.com/alphaXiv/OpenResearch/commit/4e534e7ccb7a5f9603470b94f372ed135ab04e69) | feat: orx up --host 0.0.0.0 for a trusted LAN (#375)<br>9 文件；`AGENTS.md`、`arc/dashboard.md`、`arc/remote.md` | **不照搬**。显式 LAN 监听/可信网络策略。托管版已有账号与代理边界，不能把 --host 0.0.0.0 等同于放宽 CORS/来源校验；本地确有 LAN 场景时独立评估认证与文档。 | 按需 |
-| 38. [`5d4ab714`](https://github.com/alphaXiv/OpenResearch/commit/5d4ab714e676f51468342dd9071472aba0617aaa) | fix(ui): decode artifact link paths once (OR-607) (#786)<br>4 文件；`ui/src/components/ArtifactsTab.tsx`、`ui/src/markdownTarget.ts`、`ui/tests/artifactLinks.test.mjs` | **优先候选**。产物链接复用 resolveMarkdownTarget，容忍未编码百分号并只解码一次。本地该函数仍直接 decodeURIComponent，50%off 等合法文件名可被拒绝；适配到产物、材料、案例共同解析入口，保留 NUL/越界拒绝、%25/双编码、query/hash 及版本键语义。 | P1 |
+| 38. [`5d4ab714`](https://github.com/alphaXiv/OpenResearch/commit/5d4ab714e676f51468342dd9071472aba0617aaa) | fix(ui): decode artifact link paths once (OR-607) (#786)<br>4 文件；`ui/src/components/ArtifactsTab.tsx`、`ui/src/markdownTarget.ts`、`ui/tests/artifactLinks.test.mjs` | **已适配落地（`19f75bcc`）**。`resolveMarkdownTarget` 已兼容未编码百分号并避免二次解码，保留 NUL/越界拒绝、query/hash 与版本键语义并重编 `ui/dist`。 | P1，已合入 |
 | 39. [`8c35e4f8`](https://github.com/alphaXiv/OpenResearch/commit/8c35e4f88a0daead1cba899a6552f9897eedc354) | chore: new agent instructions (#918)<br>32 文件；`.agents/skills/orx-accessibility/SKILL.md`、`.agents/skills/orx-copy/SKILL.md`、`.agents/skills/orx-flows/SKILL.md` | **择取**。Agent 指引/技能与发行流程文档，32 文件。保留本地 AGENTS 中文提交规范、私人账号、材料及生产暂停规则；仅采用经过本地验证的开发知识，不整篇覆盖。 | P3 |
-| 40. [`5a6227f1`](https://github.com/alphaXiv/OpenResearch/commit/5a6227f1dd7a19b3e9b23501c2c8baba6c2c79d5) | fix: find Claude Code plugin skills the manifest declares (#903)<br>2 文件；`src/local/harness/claude.rs`、`src/local/user_skills.rs` | **条件候选**。Claude plugin.json 的自定义 skills 根及单 SKILL.md 插件。本地 installed_plugin_skills_dirs 只枚举 installPath/skills，存在可定位的兼容缺口；有此类插件用户时适配 ./ 相对路径、越界/坏清单及符号链接边界，不能把插件正文当权限来源。 | P2 |
+| 40. [`5a6227f1`](https://github.com/alphaXiv/OpenResearch/commit/5a6227f1dd7a19b3e9b23501c2c8baba6c2c79d5) | fix: find Claude Code plugin skills the manifest declares (#903)<br>2 文件；`src/local/harness/claude.rs`、`src/local/user_skills.rs` | **已适配落地（`68f41ff7`）**。支持解析 Claude 插件清单 `plugin.json` 声明的自定义 `skills` 目录及单 `SKILL.md` 插件根目录，保留路径边界与 symlink 防护并通过专项单测。 | P2，已合入 |
 | 41. [`7566455e`](https://github.com/alphaXiv/OpenResearch/commit/7566455e251ae4b9da58bde4b699409ffcdbc2fa) | Fall back to a writable config home when bootstrapping rental boxes (OR-589) (#766)<br>1 文件；`src/jobs/rental.rs` | **条件候选**。rental 安装与 supervisor 在 ~/.config 不可写时回退到 $HOME/.orx/config。本地 rental.rs 无该前缀；有租用后端场景可独立采用，保留远端登录、XDG 优先级及失败显式报错，用非 root 只读目录夹具证明。 | P2 |
 | 42. [`52a3ca22`](https://github.com/alphaXiv/OpenResearch/commit/52a3ca22971f4042da4c73f1f3fca8e04aca9089) | fix(windows): keep SSH logins across restarts (#917)<br>10 文件；`arc/remote.md`、`dev.ts`、`src/commands/up/api_v2.rs` | **依赖未采用**。Windows SSH 持久服务/子进程跨客户端重启，839 增行且涉及新 engine transport 和服务 hold。当前没有该服务模块；与 #915 成套设计，不能作为小补丁直接引入。 | 需求 |
 | 43. [`cb6af8de`](https://github.com/alphaXiv/OpenResearch/commit/cb6af8de19c6cc43d7c531b9bd054e53e2388261) | chore: release v0.2.25 (#920)<br>2 文件；`Cargo.lock`、`Cargo.toml` | **不照搬**。官方版本号/产物清单到 .25。本项目仍 .6 独立产品版本、.19 真实祖先及 .23 部分回移；评估或适配几个补丁不构成全量同步。 | 保持 |
 | 44. [`76e11182`](https://github.com/alphaXiv/OpenResearch/commit/76e111820ceb74231b47f0cbce71167d6a1777d6) | fix: embed release hosts in telemetry check (#921)<br>2 文件；`.github/workflows/release.yml`、`.github/workflows/telemetry-contract.yml` | **依赖未采用**。新 host 发行产物嵌入遥测配置。当前无该产物；保留本地遥测隔离/默认行为，不因发布工作流参考而启用数据上传。 | 保持 |
-| 45. [`c9123a6f`](https://github.com/alphaXiv/OpenResearch/commit/c9123a6f70828f8021e11f6b9a16197ce77f53f9) | fix: create private runtime dir atomically (#923)<br>1 文件；`src/commands/remote_host.rs` | **优先候选**。Unix runtime 目录以 DirBuilder.mode(0700) 原子创建，AlreadyExists 后校验归属/目录/权限，避免并发创建误失败及 chmod 前窗口。本地 ensure_private_dir 仍 exists→create_dir→chmod，触发路径一致；适配时保留符号链接拒绝，补 16 并发及不安全目录回归。 | P1 |
+| 45. [`c9123a6f`](https://github.com/alphaXiv/OpenResearch/commit/c9123a6f70828f8021e11f6b9a16197ce77f53f9) | fix: create private runtime dir atomically (#923)<br>1 文件；`src/commands/remote_host.rs` | **已适配落地（`19f75bcc`）**。`ensure_private_dir` 已改为 `DirBuilder::mode(0o700)` 原子创建并在 `AlreadyExists` 时复核目录归属、类型与权限。 | P1，已合入 |
 
-## 后续小批次验收建议
+## 后续小批次验收建议（2026-11-17 更新）
 
-| 批次 | 最小改动 | 完成依据与影响范围 |
+| 批次 | 最小改动 | 当前状态与完成依据 |
 | --- | --- | --- |
-| A：边界与源码一致性 | #923、#730、#786 分别提交，失败可独立回退 | Unix 并发/不安全目录；Windows autocrlf 开启时 tar/ZIP LF 字节；Markdown 百分号、双编码、越界、query/hash 与材料/案例路径。各补丁自身完整 CI 在实际模拟合并上通过；UI 变更重建 dist |
-| B：科研网络读取 | #909 独立默认策略；#747 只补 mailto | 不触发隐式第三方图片请求且本地受权图仍可见；OpenAlex 无默认共享邮箱、显式邮箱/Key 正确、无密钥泄漏；不调用真实模型或实验 |
-| C：明确场景才启动 | Codex 相对配置、Claude plugin skills、Linux 粘贴、云占位文件、rental、旧后端日志收尾 | 先记录用户/复现、最小修补及维护成本，再选其中一项；不以“未实施数量”驱动排期 |
+| A：边界与源码一致性 | `#923`、`#730`、`#786` 均已适配至 `19f75bcc` | 本地全量 Rust/UI 回归通过；跨平台（含 Windows/Linux）CI 待 `.24` 发行分支一并验收 |
+| B：科研网络读取 | `#909`（`21dced48`）、`#747`（`68f41ff7`）已合入并重建 `ui/dist` | UI 636 项单测与 Rust OpenAlex 单测通过；不触发隐式外链图片请求 |
+| C：明确场景才启动 | `#903`（`68f41ff7`）、`#734`（已合入本地分支）已落地；其余（Codex 相对配置、`#720`、`#766`、`#897` 等）继续按需 | 先记录用户/复现、最小修补及维护成本，再选其中一项；不以“未实施数量”驱动排期 |
 
 A/B 只是建议，不能绕过用户当前“先本地启动测试、生产暂停”的安排。即使源码通过并合入，也不能自动替换当前 .6、移动不可变标签或认定生产验收完成。

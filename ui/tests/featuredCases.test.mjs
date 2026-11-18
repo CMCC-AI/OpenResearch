@@ -31,17 +31,30 @@ const markdown = load("../src/components/Md.tsx", {
   "./ImageCarousel": {ImageCarousel:({children})=>children,ImageCarouselContext:React.createContext(null)},
   "../imageZoom": {}, "../markdownTarget": markdownTarget,
 });
-function components(rows=[detail],admin=false,queryResult=null) {
+function components(rows=[detail],admin=false,queryResult=null,progressSnapshot=null,cachedList=rows) {
+  const clientStub = {
+    getQueryData: () => ({ cases: cachedList }),
+    prefetchQuery: async () => {},
+  };
   return load("../src/product/FeaturedCases.tsx",{
-    "@tanstack/react-query":{useQuery:()=>queryResult??({data:{cases:rows},isPending:false,error:null})},
-    "@tanstack/react-router":{Link:({to,params,children,...props})=>React.createElement("a",{...props,href:params?`/cases/${params.caseId}`:to},children)},
+    "@tanstack/react-query":{isCancelledError:()=>false,useQuery:()=>queryResult??({data:{cases:rows},isPending:false,isFetching:false,error:null,refetch:async()=>{}})},
+    "@tanstack/react-router":{Link:({to,params,children,...props})=>React.createElement("a",{...props,href:params?`/cases/${params.caseId}`:to},children),useNavigate:()=>async()=>{}},
     "./ReadOnlyProject":{ReadOnlyProject:(props)=>{mountedWorkspace=props;return React.createElement("div",{"data-project-workspace":"readonly"},props.id)}},
     "./captureNativeProject":{captureNativeProject:async()=>{throw Error("No live source reads during render")}},
     "./AuthSession":{useAuthSession:()=>({accountUrl:"http://localhost:5300",user:{id:"reader",isAdmin:admin}})},
     "./CloudWorkspace":{isCloudWorkspace:()=>false},
     "./ProductNav":{PlatformFrame:({children})=>children},
-    "../components/ui":{Button:({children,...props})=>React.createElement("button",props,children)},
-    "./featuredCasesApi":{caseRequest:async()=>({cases:rows}),caseFileBlob:async()=>{throw Error("No download during render")}},
+    "../components/ui":{Button:({children,...props})=>React.createElement("button",props,children),Spinner:()=>React.createElement("span",{"data-spinner":"true"})},
+    "../components/ProgressBar":{ProgressBar:({value,max,label,caption})=>React.createElement("div",{"data-progressbar":"true","data-value":value,"data-max":max},label,caption)},
+    "../queries/client":{queryClient:clientStub},
+    "./featuredCasesApi":{
+      caseRequest:async()=>({cases:rows}),
+      caseDetailRequest:async()=>detail,
+      caseDetailMeta:async()=>detail,
+      getCaseLoadProgress:()=>progressSnapshot,
+      subscribeCaseLoadProgress:()=>()=>{},
+      caseFileBlob:async()=>{throw Error("No download during render")},
+    },
   });
 }
 test("published cards open the case record, with no template or private project action",()=>{
@@ -61,10 +74,61 @@ test("case detail mounts the project App in read-only mode with the complete sna
   assert.ok(renderToStaticMarkup(React.createElement(publicPage.CaseDetailPage,{caseId:detail.id})).includes('data-project-workspace="readonly"'));
 });
 
-test("a failed availability recheck hides previously cached case content",()=>{
-  const {CaseDetailPage}=components([],false,{data:detail,error:new Error("案例已下架"),isPending:false});
+test("a failed availability recheck hides previously cached case content and renders retry",()=>{
+  const {CaseDetailPage}=components([],false,{data:detail,error:new Error("案例已下架"),isPending:false,isFetching:false,refetch:async()=>{}});
   const html=renderToStaticMarkup(React.createElement(CaseDetailPage,{caseId:detail.id}));
-  assert.ok(html.includes("案例已下架"));assert.equal(html.includes("完整结果"),false);assert.equal(html.includes("下载完整文件"),false);
+  assert.ok(html.includes("案例已下架"));assert.ok(html.includes("重试"));assert.ok(html.includes("返回精选案例"));
+  assert.equal(html.includes("完整结果"),false);assert.equal(html.includes("下载完整文件"),false);
+});
+
+test("case detail immediately renders loading progress, cached case preview, and smooth content entry",()=>{
+  const pending=components([detail],false,{data:undefined,error:null,isPending:true,isFetching:true,refetch:async()=>{}},{phase:"downloading",loadedBytes:512*1024,totalBytes:1024*1024},[detail]);
+  const pendingHtml=renderToStaticMarkup(React.createElement(pending.CaseDetailPage,{caseId:detail.id}));
+  assert.ok(pendingHtml.includes("一个真实项目"));
+  assert.ok(pendingHtml.includes("正在下载研究记录与成果快照"));
+  assert.ok(pendingHtml.includes('data-progressbar="true"'));
+  assert.ok(pendingHtml.includes("50%"));
+
+  const nativeDetail={...detail,snapshot:{...detail.snapshot,workspace:{version:1,projectId:"source",sessionId:"session",responses:{},assets:{}}}};
+  const ready=components([],false,{data:nativeDetail,error:null,isPending:false,isFetching:false,refetch:async()=>{}});
+  const readyHtml=renderToStaticMarkup(React.createElement(ready.CaseDetailPage,{caseId:detail.id}));
+  assert.ok(readyHtml.includes("case-content-enter"));
+});
+
+test("caseDetailRequest streams chunked JSON and emits download/parsing progress", async () => {
+  const api = load("../src/product/featuredCasesApi.ts", {
+    "../appBasePath": { appHref: (p) => p },
+    "./caseSnapshot": { snapshotMessages },
+    "../api": {},
+  });
+  const payload = JSON.stringify({ id: "c1", title: "案例", snapshot: { sessions: [] }, files: [] });
+  const bytes = new TextEncoder().encode(payload);
+  const half = Math.floor(bytes.length / 2);
+  const originalFetch = globalThis.fetch;
+  const seen = [];
+  const key = "test-progress";
+  const unsubscribe = api.subscribeCaseLoadProgress(key, () => {
+    const current = api.getCaseLoadProgress(key);
+    if (current) seen.push(current.phase);
+  });
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes.slice(0, half));
+      controller.enqueue(bytes.slice(half));
+      controller.close();
+    },
+  }), { headers: { "content-length": String(bytes.length) } });
+  try {
+    const result = await api.caseDetailRequest("http://localhost:5300", "cases/c1", { progressKey: key });
+    assert.equal(result.id, "c1");
+    assert.ok(seen.includes("connecting"));
+    assert.ok(seen.includes("downloading"));
+    assert.ok(seen.includes("parsing"));
+    assert.equal(api.getCaseLoadProgress(key), null);
+  } finally {
+    unsubscribe();
+    globalThis.fetch = originalFetch;
+  }
 });
 test("snapshot capture includes archived and branched chats, refuses active or changing sources",async()=>{
   const rows=[{id:"newer",createdAt:20,updatedAt:20,title:"已归档",archived:true,busy:false},{id:"older",createdAt:10,updatedAt:10,title:"主研究",busy:false}];

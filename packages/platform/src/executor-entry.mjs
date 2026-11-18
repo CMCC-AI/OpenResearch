@@ -62,7 +62,7 @@ const stop = () => {
 for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, stop);
 orx.on("exit", stop);
 try {
-  for (let n = 0; n < 60; n++) {
+  for (let n = 0; n < 200; n++) {
     if (stopped) throw new Error("OpenResearch exited");
     try {
       const response = await fetch("http://127.0.0.1:4791/api/health", {
@@ -70,8 +70,8 @@ try {
       });
       if (response.ok) break;
     } catch {}
-    if (n === 59) throw new Error("OpenResearch did not become ready");
-    await new Promise((done) => setTimeout(done, 1000));
+    if (n === 199) throw new Error("OpenResearch did not become ready");
+    await new Promise((done) => setTimeout(done, 150));
   }
   connector = spawn(process.execPath, ["src/runner.mjs"], { stdio: "inherit" });
   connector.on("exit", stop);

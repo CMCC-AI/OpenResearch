@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
+import { gunzipSync } from "node:zlib";
 import {
   featuredCaseRoutes,
   jsonbSafe,
@@ -465,4 +466,100 @@ test("conversation cases preserve their source while old project snapshots remai
   assert.throws(() => normalizeNativeWorkspace(workspace));
   delete workspace.sourceSessionId;
   assert.deepEqual(normalizeNativeWorkspace(workspace), workspace);
+});
+
+test("case detail supports lightweight meta=1 check and gzip compression with uncompressed size header", async () => {
+  const caseId = "11111111-1111-4111-8111-111111111111";
+  const row = {
+    id: caseId,
+    title: "研究案例",
+    summary: "摘要",
+    category: "人工智能",
+    status: "published",
+    revision: 3,
+    sort_order: 0,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-02T00:00:00Z",
+    published_at: "2026-01-02T00:00:00Z",
+    snapshot: {
+      sessions: [
+        {
+          title: "s",
+          messages: [
+            { id: "m1", role: "assistant", content: "内容".repeat(1500) },
+          ],
+        },
+      ],
+    },
+  };
+  let jsonOut;
+  const route = featuredCaseRoutes({
+    config: {
+      origin: new URL("http://localhost:5300"),
+      appOrigin: "http://localhost:5201",
+    },
+    pool: {
+      query: async (sql) => {
+        if (sql.includes("FROM featured_case_files")) return { rows: [] };
+        return {
+          rows: [
+            sql.includes(",snapshot")
+              ? row
+              : (({ snapshot: _s, ...meta }) => meta)(row),
+          ],
+        };
+      },
+    },
+    session: async () => ({ user_id: "reader", is_admin: false }),
+    json: (_res, data) => {
+      jsonOut = data;
+    },
+    audit: async () => {},
+    limit: async () => {},
+  });
+  await route(
+    {
+      method: "GET",
+      url: `/api/platform/cases/${caseId}?meta=1`,
+      headers: { origin: "http://localhost:5201" },
+    },
+    { setHeader() {} },
+    `/api/platform/cases/${caseId}`,
+  );
+  assert.equal(jsonOut.revision, 3);
+  assert.equal("snapshot" in jsonOut, false);
+  assert.equal("files" in jsonOut, false);
+
+  const headers = {};
+  let statusCode = 0;
+  let bodyBuf;
+  await route(
+    {
+      method: "GET",
+      url: `/api/platform/cases/${caseId}`,
+      headers: {
+        origin: "http://localhost:5201",
+        "accept-encoding": "gzip, deflate",
+      },
+    },
+    {
+      setHeader(k, v) {
+        headers[k.toLowerCase()] = v;
+      },
+      writeHead(code, h) {
+        statusCode = code;
+        Object.assign(headers, h);
+      },
+      end(chunk) {
+        bodyBuf = chunk;
+      },
+    },
+    `/api/platform/cases/${caseId}`,
+  );
+  assert.equal(statusCode, 200);
+  assert.equal(headers["content-encoding"], "gzip");
+  assert.ok(Number(headers["x-case-json-bytes"]) > bodyBuf.length);
+  const decoded = JSON.parse(gunzipSync(bodyBuf).toString("utf8"));
+  assert.equal(decoded.id, caseId);
+  assert.equal(decoded.snapshot.sessions[0].title, "s");
 });

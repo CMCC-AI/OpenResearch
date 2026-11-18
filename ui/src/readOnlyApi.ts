@@ -24,7 +24,9 @@ export function canonicalRequest(url: string) {
 }
 
 export function createReadOnlyProjectApi({ id, base, admin, workspace }: { id: string; base: string; admin: boolean; workspace: NativeProjectSnapshot }): ReadOnlyApi {
-    const responses = structuredClone(workspace.responses);
+    // Shallow copy top-level map instead of deep-cloning tens of MB synchronously;
+    // the only mutable paths below (/ui-state and /branch) replace entries copy-on-write.
+    const responses: Record<string, unknown> = { ...workspace.responses };
     const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
     return {
       id, projectId: workspace.projectId, sessionId: workspace.sessionId,
@@ -41,9 +43,11 @@ export function createReadOnlyProjectApi({ id, base, admin, workspace }: { id: s
           if (key.endsWith("/ui-state")) { responses[key] = key === "/api/settings/ui-state" ? { ...(responses[key] as object), ...body } : body; return json(responses[key]); }
           const branch = key.match(/^\/api\/chat\/sessions\/([^/]+)\/branch$/);
           if (branch) {
-            const saved = responses[`/api/chat/sessions/${branch[1]}/messages`] as { messages: {id:string}[]; activeLeafId: string } | undefined;
+            const branchKey = `/api/chat/sessions/${branch[1]}/messages`;
+            const saved = responses[branchKey] as { messages: {id:string}[]; activeLeafId: string } | undefined;
             if (!saved?.messages.some((message) => message.id === body.leafId)) return json({ error: "分支不存在" }, 404);
-            saved.activeLeafId = body.leafId; return json({ ok: true });
+            responses[branchKey] = { ...saved, activeLeafId: body.leafId };
+            return json({ ok: true });
           }
           return json({ error: "此案例仅供浏览，不能更改项目或执行操作。" }, 403);
         }

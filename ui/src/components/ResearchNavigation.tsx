@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { sidebarClasses } from "../sidebarLayout";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueries, useQuery } from "@tanstack/react-query";
@@ -14,6 +14,7 @@ import { SessionFilterMenu, SessionRow, type SessionFilter } from "./NativeSideb
 import { m } from "../paraglide/messages.js";
 import { isSidebarSession } from "../researchSessions";
 import { useOptionalAuthSession } from "../product/AuthSession";
+import { readSidebarProjectsSnapshot, readSidebarSessionsSnapshot, writeSidebarProjectsSnapshot, writeSidebarSessionsSnapshot } from "../sidebarSnapshot";
 import { IconButton, Button, showAlert } from "./ui";
 
 export function ResearchNavigationMore({ onClick, indented = true }: { onClick: () => void; indented?: boolean }) {
@@ -30,16 +31,39 @@ export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
   const navigate = useNavigate();
   const sessionNavigation = useSessionNavigation(true);
   useLocale();
-  const canPublish = useOptionalAuthSession()?.user?.isAdmin === true;
-  const projects = useQuery({ ...listProjectsQuery(true), enabled });
-  const activity = useQuery({ ...listProjectActivityQuery(true), enabled });
+  const auth = useOptionalAuthSession();
+  const userId = auth?.user?.id;
+  const canPublish = auth?.user?.isAdmin === true;
+  const cachedProjects = useMemo(() => readSidebarProjectsSnapshot(userId), [userId]);
+  const projects = useQuery({ ...listProjectsQuery(true), enabled, ...(cachedProjects ? { placeholderData: cachedProjects } : {}) });
+  const activity = useQuery({ ...listProjectActivityQuery(true), enabled: enabled && !projects.isPlaceholderData });
   const [filter, setFilter] = useState<SessionFilter>("active");
   const [grouping, setGrouping] = useState<"projects" | "list">(() => { try { return localStorage.getItem("sidebar-grouping") === "list" ? "list" : "projects"; } catch { return "projects"; } });
   const [pinned, setPinned] = useState(() => storedIds("sidebar-pinned-projects"));
   const [collapsed, setCollapsed] = useState(() => storedIds("sidebar-collapsed-projects"));
   const [limits, setLimits] = useState<Record<string, number>>({});
   const sorted = [...(projects.data ?? [])].sort((a, b) => Number(pinned.includes(b.id)) - Number(pinned.includes(a.id)) || (activity.data?.find((row) => row.projectId === b.id)?.lastActivityAt ?? b.updatedAt) - (activity.data?.find((row) => row.projectId === a.id)?.lastActivityAt ?? a.updatedAt));
-  const sessions = useQueries({ queries: sorted.map((project) => ({ ...listChatSessionsQuery(project.id, true), enabled: enabled && (grouping === "list" || !collapsed.includes(project.id)), refetchInterval: 5000 })) });
+  const sessions = useQueries({
+    queries: sorted.map((project) => {
+      const cachedSessions = readSidebarSessionsSnapshot(userId, project.id);
+      return {
+        ...listChatSessionsQuery(project.id, true),
+        enabled: enabled && !projects.isPlaceholderData && (grouping === "list" || !collapsed.includes(project.id)),
+        refetchInterval: 5000,
+        ...(cachedSessions ? { placeholderData: cachedSessions } : {}),
+      };
+    }),
+  });
+  useEffect(() => {
+    if (userId && projects.data && !projects.isPlaceholderData) writeSidebarProjectsSnapshot(userId, projects.data);
+  }, [userId, projects.data, projects.isPlaceholderData]);
+  useEffect(() => {
+    if (!userId || projects.isPlaceholderData) return;
+    sorted.forEach((project, index) => {
+      const query = sessions[index];
+      if (query?.data && !query.isPlaceholderData) writeSidebarSessionsSnapshot(userId, project.id, query.data);
+    });
+  }, [userId, projects.isPlaceholderData, sorted, sessions]);
   const toggleId = (id: string, values: string[], update: (next: string[]) => void, key: string) => {
     const next = values.includes(id) ? values.filter((value) => value !== id) : [...values, id];
     update(next); try { localStorage.setItem(key, JSON.stringify(next)); } catch { /* Preferences are optional. */ }
@@ -54,11 +78,22 @@ export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
     onRename={(title) => void act(() => renameChatSession(session.id, title, true), session)}
     onSetArchived={(archived) => void act(() => setChatSessionArchived(session.id, archived, true), session)}
     onDelete={() => { if (window.confirm(m.chat_delete_session_confirm({ title: session.title || m.chat_untitled() }))) void act(() => deleteChatSession(session.id, true), session); }} />;
+  const skeleton = <div role="status" aria-busy="true" aria-label="正在准备项目列表" className="flex flex-col gap-2.5 px-2 py-1">
+    <p className="m-0 text-xs text-subtext">正在准备项目列表…</p>
+    <div aria-hidden="true" className="flex flex-col gap-2 motion-safe:animate-pulse">
+      <div className="h-4 w-3/4 rounded bg-panel" />
+      <div className="ms-3 h-3.5 w-2/3 rounded bg-panel" />
+      <div className="ms-3 h-3.5 w-1/2 rounded bg-panel" />
+      <div className="mt-1 h-4 w-4/5 rounded bg-panel" />
+      <div className="ms-3 h-3.5 w-3/5 rounded bg-panel" />
+    </div>
+  </div>;
   return <>
     <div className="research-projects flex min-h-0 flex-1 flex-col">
       <div className={sidebarClasses.heading}><h2 className={sidebarClasses.label}>{grouping === "projects" ? m.projects_home_projects() : m.chat_all_sessions()}</h2><div className={sidebarClasses.actions}><IconButton size="small" aria-label={m.projects_home_new_project()} onClick={() => void navigate({ to: "/projects", search: { new: true } })}><FolderPlus size={15} /></IconButton><SessionFilterMenu value={filter} onChange={setFilter} grouping={grouping} onGroupingChange={(next) => { setGrouping(next); try { localStorage.setItem("sidebar-grouping", next); } catch { /* optional */ } }} /></div></div>
       <div className="rail-body min-h-0 flex-1 overflow-y-auto">
-        {!enabled && !projects.data ? <p className="px-2 text-xs text-subtext">返回工作区后加载研究项目</p> : projects.error ? <div className="px-2 text-xs text-accent-red">项目读取失败<Button size="small" onClick={() => void projects.refetch()}>重试</Button></div> : projects.isPending ? <p className="px-2 text-xs text-subtext">正在读取项目…</p> : !sorted.length ? <p className="px-2 text-xs text-subtext">尚无项目，点击上方按钮新建</p> : grouping === "list" ? <>{matching(sessions.flatMap((query) => query.data ?? [])).map(renderSession)}{sessions.some((query) => query.isPending) && <p className={`m-0 ${sidebarClasses.status}`}>正在读取会话…</p>}{sessions.some((query) => query.error) && <Button size="small" onClick={() => sessions.forEach((query) => { if (query.error) void query.refetch(); })}>重试会话列表</Button>}</> : sorted.map((project, index) => {
+        {projects.isPlaceholderData && <p role="status" className="m-0 px-2 pb-1 text-xs text-subtext">正在唤醒工作环境，同步最新项目…</p>}
+        {!enabled && !projects.data ? <p className="px-2 text-xs text-subtext">返回工作区后加载研究项目</p> : projects.error ? <div className="px-2 text-xs text-accent-red">项目读取失败<Button size="small" onClick={() => void projects.refetch()}>重试</Button></div> : projects.isPending ? skeleton : !sorted.length ? <p className="px-2 text-xs text-subtext">尚无项目，点击上方按钮新建</p> : grouping === "list" ? <>{matching(sessions.flatMap((query) => query.data ?? [])).map(renderSession)}{sessions.some((query) => query.isPending) && <p className={`m-0 ${sidebarClasses.status}`}>正在读取会话…</p>}{sessions.some((query) => query.error) && <Button size="small" onClick={() => sessions.forEach((query) => { if (query.error) void query.refetch(); })}>重试会话列表</Button>}</> : sorted.map((project, index) => {
           const query = sessions[index];
           const rows = matching(query.data ?? []);
           const limit = limits[project.id] ?? 6;

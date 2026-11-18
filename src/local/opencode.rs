@@ -567,6 +567,21 @@ async fn verify_generation_models_with_timeout(
     model: &str,
     initialization_timeout: Duration,
 ) -> Result<()> {
+    verify_generation_models_with_timeouts(
+        endpoint,
+        model,
+        initialization_timeout,
+        Duration::from_secs(30),
+    )
+    .await
+}
+
+async fn verify_generation_models_with_timeouts(
+    endpoint: &AgentEndpoint,
+    model: &str,
+    initialization_timeout: Duration,
+    mismatch_timeout: Duration,
+) -> Result<()> {
     let path = match endpoint.protocol {
         Protocol::V1 => "/agent",
         Protocol::V2 => "/api/agent",
@@ -609,7 +624,7 @@ async fn verify_generation_models_with_timeout(
             // A responsive configuration with the wrong model is a separate
             // failure from cold-start dependency installation.
             let since = mismatch_since.get_or_insert_with(Instant::now);
-            if since.elapsed() >= Duration::from_secs(30) {
+            if since.elapsed() >= mismatch_timeout {
                 return Err(anyhow!("OpenCode's effective {} model does not match the selected model. Check managed OpenCode settings.", mismatch.unwrap()));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1764,7 +1779,13 @@ mod tests {
                     }),
                 );
                 let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-                let result = verify_generation_models(&endpoint, "custom/selected").await;
+                let result = verify_generation_models_with_timeouts(
+                    &endpoint,
+                    "custom/selected",
+                    Duration::from_millis(500),
+                    Duration::from_millis(50),
+                )
+                .await;
                 assert_eq!(result.is_ok(), expected, "{result:?}");
                 server.abort();
             }

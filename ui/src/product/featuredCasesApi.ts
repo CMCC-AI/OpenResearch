@@ -12,6 +12,51 @@ export interface FeaturedCase {
 export interface CaseFile { id: string; name: string; size: number; sha256: string }
 export interface FeaturedCaseDetail extends FeaturedCase { snapshot: CaseSnapshot; files: CaseFile[]; source_project_id?: string; expected_file_count?: number }
 
+export interface CaseLoadProgress {
+  phase: "connecting" | "downloading" | "parsing";
+  loadedBytes: number;
+  totalBytes: number | null;
+}
+
+const progressSnapshots = new Map<string, CaseLoadProgress>();
+const progressListeners = new Map<string, Set<() => void>>();
+
+function notifyProgress(key: string) {
+  const listeners = progressListeners.get(key);
+  if (!listeners) return;
+  for (const listener of listeners) listener();
+}
+
+function setCaseLoadProgress(key: string | undefined, progress: CaseLoadProgress) {
+  if (!key) return;
+  progressSnapshots.set(key, progress);
+  notifyProgress(key);
+}
+
+function clearCaseLoadProgress(key: string | undefined) {
+  if (!key || !progressSnapshots.has(key)) return;
+  progressSnapshots.delete(key);
+  notifyProgress(key);
+}
+
+export function getCaseLoadProgress(key: string | undefined): CaseLoadProgress | null {
+  return key ? progressSnapshots.get(key) ?? null : null;
+}
+
+export function subscribeCaseLoadProgress(key: string | undefined, listener: () => void) {
+  if (!key) return () => {};
+  let set = progressListeners.get(key);
+  if (!set) {
+    set = new Set();
+    progressListeners.set(key, set);
+  }
+  set.add(listener);
+  return () => {
+    set.delete(listener);
+    if (set.size === 0) progressListeners.delete(key);
+  };
+}
+
 export async function caseRequest<T>(base: string, path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${base}/api/platform/${path}`, { ...init, credentials: "include", cache: "no-store" });
   if (!response.ok) {
@@ -19,6 +64,67 @@ export async function caseRequest<T>(base: string, path: string, init: RequestIn
     throw new Error(value?.error || `请求失败（${response.status}）`);
   }
   return response.json() as Promise<T>;
+}
+
+export async function caseDetailMeta(base: string, caseId: string, admin: boolean, signal?: AbortSignal): Promise<FeaturedCase> {
+  return caseRequest<FeaturedCase>(base, `${admin ? "admin/cases" : "cases"}/${encodeURIComponent(caseId)}?meta=1`, { signal });
+}
+
+export async function caseDetailRequest(
+  base: string,
+  path: string,
+  options: { signal?: AbortSignal; progressKey?: string } = {},
+): Promise<FeaturedCaseDetail> {
+  const { signal, progressKey } = options;
+  setCaseLoadProgress(progressKey, { phase: "connecting", loadedBytes: 0, totalBytes: null });
+  try {
+    const response = await fetch(`${base}/api/platform/${path}`, { credentials: "include", cache: "no-store", signal });
+    if (!response.ok) {
+      const value = await response.json().catch(() => null) as { error?: string } | null;
+      throw new Error(value?.error || `请求失败（${response.status}）`);
+    }
+    const reader = response.body?.getReader();
+    if (!reader) {
+      setCaseLoadProgress(progressKey, { phase: "parsing", loadedBytes: 0, totalBytes: null });
+      return await response.json() as FeaturedCaseDetail;
+    }
+    const rawHeader = Number(response.headers.get("x-case-json-bytes"));
+    const hasExactRawBytes = Number.isFinite(rawHeader) && rawHeader > 0;
+    const contentEncoding = response.headers.get("content-encoding")?.toLowerCase() ?? "";
+    const lengthHeader = Number(response.headers.get("content-length"));
+    let totalBytes: number | null = hasExactRawBytes
+      ? rawHeader
+      : !contentEncoding && Number.isFinite(lengthHeader) && lengthHeader > 0
+        ? lengthHeader
+        : null;
+    const chunks: Uint8Array[] = [];
+    let loadedBytes = 0;
+    let lastEmit = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      loadedBytes += value.byteLength;
+      if (totalBytes !== null && !hasExactRawBytes && loadedBytes > totalBytes) totalBytes = null;
+      const now = Date.now();
+      if (lastEmit === 0 || now - lastEmit >= 50) {
+        lastEmit = now;
+        setCaseLoadProgress(progressKey, { phase: "downloading", loadedBytes, totalBytes });
+      }
+    }
+    setCaseLoadProgress(progressKey, { phase: "parsing", loadedBytes, totalBytes: loadedBytes || totalBytes });
+    if (loadedBytes > 256 * 1024) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      signal?.throwIfAborted();
+    }
+    const decoder = new TextDecoder("utf-8");
+    let jsonText = "";
+    for (const chunk of chunks) jsonText += decoder.decode(chunk, { stream: true });
+    jsonText += decoder.decode();
+    return JSON.parse(jsonText) as FeaturedCaseDetail;
+  } finally {
+    clearCaseLoadProgress(progressKey);
+  }
 }
 export const caseWrite = <T,>(base: string, path: string, data: unknown) => caseRequest<T>(base, path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(data) });
 

@@ -1860,7 +1860,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
         {workspaceCardVisible && workspaceTools}
         {mainView === "chat" && panelOpen && (
           <aside
-            className={`right-pane relative shrink-0 min-w-0 w-(--panel-width) flex flex-col mt-5 win-titlebar:mt-10 me-3.5 mb-5 ms-3.5 bg-canvas [&.max]:fixed [&.max]:inset-2.5 mac-titlebar:[&.max]:top-8 win-titlebar:[&.max]:top-10 [&.max]:m-0 [&.max]:z-60 [&.max]:shadow-panel-max border border-border rounded-lg overflow-hidden shadow-elevated ${panelMax ? "max" : ""}`}
+            className={`right-pane relative shrink-0 min-w-0 w-(--panel-width) flex flex-col mt-5 win-titlebar:mt-10 me-3.5 mb-5 ms-3.5 bg-canvas [&.max]:fixed [&.max]:inset-2.5 mac-titlebar:[&.max]:top-8 win-titlebar:[&.max]:top-10 [&.max]:m-0 [&.max]:z-40 [&.max]:shadow-panel-max border border-border rounded-lg overflow-hidden shadow-elevated ${panelMax ? "max" : ""}`}
             style={panelMax ? undefined : { "--panel-width": `${panelWidth}px` } as CSSProperties}
             data-onboarding="experiments"
           >

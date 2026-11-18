@@ -1,4 +1,5 @@
 import * as runtimeRequest from "../src/runtimeRequest.ts";
+import * as sidebarSnapshot from "../src/sidebarSnapshot.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -131,7 +132,7 @@ test("the original sidebar renders project menus and new-chat controls while a c
       return React.createElement("span", {}, props.session.title);
     } },
     "../paraglide/messages.js": { m: messages }, "../researchSessions": { isSidebarSession: () => true },
-    "../product/AuthSession": { useOptionalAuthSession: () => ({ user: {} }) }, "./ui": ui,
+    "../product/AuthSession": { useOptionalAuthSession: () => ({ user: {} }) }, "../sidebarSnapshot": sidebarSnapshot, "./ui": ui,
   });
   try {
     const html = renderToStaticMarkup(React.createElement(ResearchProjectNavigation, { enabled: true }));
@@ -231,6 +232,7 @@ test("the real home SessionRow opens the personal session with its saved pane",a
     "../workspaceState":workspace,"../useSessionNavigation":{useSessionNavigation:personal=>{assert.equal(personal,true);return n.nav;}},
     "../api":f.api,"./ProjectInfoCard":{ProjectInfoCard:()=>null},"./NativeSidebarRows":{SessionFilterMenu:()=>null,SessionRow:props=>{open=props.onOpen;return React.createElement("span",{},props.session.title);}},
     "../paraglide/messages.js":{m:messages},"../researchSessions":{isSidebarSession:()=>true},"../product/AuthSession":{useOptionalAuthSession:()=>({user:{}})},
+    "../sidebarSnapshot":sidebarSnapshot,
     "./ui":{Button:({children})=>children,IconButton:({children})=>children,showAlert:()=>{}},
   });
   globalThis.fetch=async()=>Response.json({version:1,tasks:{s:{active:{kind:"side",sessionId:"own-side"}}}});
@@ -244,4 +246,46 @@ test("the real home SessionRow opens the personal session with its saved pane",a
     open();await settleNavigation();assert.deepEqual(routes,[{href:workspace.taskLocation("source","s",{kind:"side",sessionId:"own-side"})}]);
     assert.equal(routes[0].href.startsWith("/projects/"),true);
   }finally{n.cleanup();globalThis.fetch=originalFetch;f.cleanup();}
+});
+
+test("navigation renders a skeleton before cached projects arrive and shows wakeup notice with placeholder data", async () => {
+  const React = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const f = fixture();
+  const project = { id: "mine", name: "缓存项目", updatedAt: 1, repoPath: "/mine" };
+  let mode = "pending";
+  const { ResearchProjectNavigation } = load("../src/components/ResearchNavigation.tsx", {
+    "../sidebarLayout": { sidebarClasses: {} },
+    "@tanstack/react-router": { useNavigate: () => () => {} },
+    "@tanstack/react-query": {
+      useQuery: ({ queryKey }) => {
+        if (queryKey[2] !== "listProjects") return { data: [], isPending: false };
+        if (mode === "pending") return { data: undefined, isPending: true, isPlaceholderData: false };
+        return { data: [project], isPending: false, isPlaceholderData: true };
+      },
+      useQueries: ({ queries }) => queries.map((query) => {
+        assert.equal(query.enabled, false, "session queries must wait until live projects arrive");
+        return { data: [{ id: "s1", projectId: "mine", title: "缓存会话", updatedAt: 1 }], isPlaceholderData: true };
+      }),
+    },
+    "../queries/projects": f.projects, "../queries/chat": f.chats, "../locale": { useLocale: () => "zh-CN" },
+    "../workspaceState": {}, "../useSessionNavigation": { useSessionNavigation: () => ({ open: () => {} }) }, "../api": f.api,
+    "./ProjectInfoCard": { ProjectInfoCard: ({ project: p }) => React.createElement("span", {}, p.name) },
+    "./NativeSidebarRows": { SessionFilterMenu: () => null, SessionRow: ({ session }) => React.createElement("span", {}, session.title) },
+    "../paraglide/messages.js": { m: messages }, "../researchSessions": { isSidebarSession: () => true },
+    "../product/AuthSession": { useOptionalAuthSession: () => ({ user: { id: "u1" } }) }, "../sidebarSnapshot": sidebarSnapshot,
+    "./ui": { Button: ({ children }) => children, IconButton: ({ children }) => children, showAlert: () => {} },
+  });
+  try {
+    const pendingHtml = renderToStaticMarkup(React.createElement(ResearchProjectNavigation, { enabled: true }));
+    assert.match(pendingHtml, /正在准备项目列表/);
+    assert.match(pendingHtml, /aria-busy="true"/);
+    mode = "placeholder";
+    const cachedHtml = renderToStaticMarkup(React.createElement(ResearchProjectNavigation, { enabled: true }));
+    assert.match(cachedHtml, /正在唤醒工作环境/);
+    assert.match(cachedHtml, /缓存项目/);
+    assert.match(cachedHtml, /缓存会话/);
+  } finally {
+    f.cleanup();
+  }
 });

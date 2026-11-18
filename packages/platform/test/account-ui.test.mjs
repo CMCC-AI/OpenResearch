@@ -170,3 +170,17 @@ test("legacy account URLs redirect into workspace settings for ordinary and admi
       );
     }
 });
+
+test("shared-origin workspace login pre-wakes personal space before redirecting", async () => {
+  const b = browser({
+    "/api/platform/me": { name: "Researcher", isAdmin: false },
+    "/api/platform/capabilities": {
+      privateSpaces: true,
+      sharedOriginSpaces: true,
+      openResearchAppUrl: "http://localhost:4791/projects",
+    },
+  });
+  await b.ui.load();
+  assert.ok(b.calls.includes("/api/platform/personal-space"));
+  assert.deepEqual(b.redirects, ["http://localhost:4791/projects"]);
+});

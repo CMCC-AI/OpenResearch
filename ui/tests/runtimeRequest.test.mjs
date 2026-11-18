@@ -18,9 +18,9 @@ test("a submitted operation waits for compute and executes once with its origina
   const result = runtimeFetch("/api/chat/sessions/session/messages", { method: "POST", body });
   await flush();
   assert.equal(executed, 0);
-  t.mock.timers.tick(1500); await flush();
+  t.mock.timers.tick(400); await flush();
   assert.equal(executed, 0);
-  t.mock.timers.tick(1500);
+  t.mock.timers.tick(700);
   assert.equal((await result).status, 200);
   assert.equal(executed, 1);
 });

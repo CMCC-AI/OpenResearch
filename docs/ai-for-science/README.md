@@ -1,5 +1,7 @@
 # AI for Science 开发文档
 
+2026-11-17 状态更新：生产环境 `10.7.0.18` 已完成 Gate 1.3 受控切换至 [`v0.2.24-mobilesci.1`](../product/release-v0.2.24-mobilesci.1-delivery.md)（`bcb90af4`，[CI 44041868978](https://github.com/CMCC-AI/OpenResearch/actions/runs/44041868978)）。`feat/ai4s-product` 已清理 PR `#17` 并进入 **Phase 3**：已完成 `.27` 47 项评估与 B3 第一批 3 项安全小修（`#924`/`#984`/`aa2a2935`），后续明确以 **OpenCode** 与平台核心为重心，不再回移其他编码 Agent（Claude/Codex）专属改动。最新台账见 [v0.2.24 选择性回移台账](upstream-v0.2.24-backports.md)、[v0.2.25 逐项评估](upstream-v0.2.25-review-2026-11-09.md)与 [v0.2.27 逐项评估](upstream-v0.2.27-review-2026-11-17.md)，版本状态与下一步计划见[版本发布](../product/releases.md)与[下一阶段工作计划](../product/next-cycle-plan.md)。
+
 2026-10-16 更新：科研专家团新入口现采用原版 W1–W4，替代下文历史会诊设计；当前行为见[原版预设流程](preset-workflows.md)。
 
 架构与专家团整理日期：2026-10-10；文献渠道与供应商限制的原核查日期为 2026-09-22。范围：OpenResearch 本地科研执行平台、科研专家团、Deep Literature 文献服务及统一账号；不包含商业伴随服务 openresearch.sh 的服务端源码审计。
