@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { gzip } from "node:zlib";
 import { transaction } from "./db.mjs";
 import { body } from "./tunnel.mjs";
 import {
@@ -8,6 +9,11 @@ import {
   browserSessionOrigin,
   workspaceOrigin,
 } from "./security.mjs";
+
+const gzipAsync = (buf) =>
+  new Promise((resolve, reject) =>
+    gzip(buf, (error, result) => (error ? reject(error) : resolve(result))),
+  );
 
 export const CASE_FILE_LIMIT = 25 * 1024 * 1024;
 export const CASE_TOTAL_LIMIT = 200 * 1024 * 1024;
@@ -794,7 +800,7 @@ export function featuredCaseRoutes({
     res.setHeader("vary", "Origin");
     res.setHeader(
       "access-control-expose-headers",
-      "content-length,content-range,accept-ranges,x-openresearch-presentation",
+      "content-length,content-range,accept-ranges,x-openresearch-presentation,x-case-json-bytes",
     );
     res.setHeader("cache-control", "private, no-store");
     if (req.method === "OPTIONS") {
@@ -1060,6 +1066,18 @@ export function featuredCaseRoutes({
       return true;
     }
     if (!action && req.method === "GET") {
+      const metaOnly =
+        Boolean(req.url) &&
+        new URL(req.url, config.origin).searchParams.get("meta") === "1";
+      if (metaOnly) {
+        const result = await pool.query(
+          `SELECT ${fields}${admin ? ",source_project_id,expected_file_count,snapshot #>> '{workspace,sourceSessionId}' AS source_session_id" : ""} FROM featured_cases WHERE id=$1 ${admin ? "" : "AND status='published'"}`,
+          [caseId],
+        );
+        check(result.rows[0], 404, "案例不存在或尚未发布");
+        json(res, result.rows[0]);
+        return true;
+      }
       const result = await pool.query(
         `SELECT ${fields},snapshot${admin ? ",source_project_id,expected_file_count,snapshot #>> '{workspace,sourceSessionId}' AS source_session_id" : ""} FROM featured_cases WHERE id=$1 ${admin ? "" : "AND status='published'"}`,
         [caseId],
@@ -1069,7 +1087,30 @@ export function featuredCaseRoutes({
         "SELECT id,name,size,sha256 FROM featured_case_files WHERE case_id=$1 ORDER BY name,id",
         [caseId],
       );
-      json(res, { ...result.rows[0], files: files.rows });
+      const payload = { ...result.rows[0], files: files.rows };
+      const acceptsGzip = String(req.headers?.["accept-encoding"] ?? "")
+        .toLowerCase()
+        .includes("gzip");
+      if (
+        acceptsGzip &&
+        typeof res.writeHead === "function" &&
+        typeof res.end === "function"
+      ) {
+        const raw = Buffer.from(JSON.stringify(payload), "utf8");
+        if (raw.length >= 2048) {
+          const compressed = await gzipAsync(raw);
+          res.setHeader("vary", "Origin, Accept-Encoding");
+          res.writeHead(200, {
+            "content-type": "application/json; charset=utf-8",
+            "content-encoding": "gzip",
+            "content-length": compressed.length,
+            "x-case-json-bytes": String(raw.length),
+          });
+          res.end(compressed);
+          return true;
+        }
+      }
+      json(res, payload);
       return true;
     }
     check(admin, 405);

@@ -3,10 +3,11 @@ import { useRouter, useRouterState } from "@tanstack/react-router";
 import App from "../App";
 import { stripAppBase } from "../appBasePath";
 import { PlatformFrame } from "./ProductNav";
-import { clearProjectWorkspaceCache } from "../useProjectWorkspace";
+import { clearProjectWorkspaceCache, seedProjectWorkspaceCache } from "../useProjectWorkspace";
 import { resetGlobalWorkspace } from "../workspacePersistence";
 import { useRuntime } from "../RemoteRuntime";
 import { queryClient } from "../queries/client";
+import { seedReadOnlyWorkspace } from "../queries/seedReadOnly";
 import { createReadOnlyProjectApi, installReadOnlyApi } from "../readOnlyApi";
 import { parsePane } from "../workspaceState";
 import { ReadOnlyWorkspaceContext, type ReadOnlyWorkspaceData } from "../components/ReadOnlyWorkspace";
@@ -22,6 +23,8 @@ export function ReadOnlyProject({ id, base, admin, workspace }: { id: string; ba
   useLayoutEffect(() => {
     clearProjectWorkspaceCache(); resetGlobalWorkspace();
     const clear = installReadOnlyApi(createReadOnlyProjectApi({ id, base, admin, workspace }));
+    const savedWorkspace = seedReadOnlyWorkspace(queryClient, id, workspace);
+    if (savedWorkspace !== null) seedProjectWorkspaceCache?.(workspace.projectId, savedWorkspace);
     let disposed = false;
     const dispose = () => {
       if (disposed) return;
@@ -38,5 +41,5 @@ export function ReadOnlyProject({ id, base, admin, workspace }: { id: string; ba
     return () => { unsubscribe(); dispose(); };
   }, [id, base, admin, workspace, router]);
   const data = useMemo<ReadOnlyWorkspaceData>(() => ({ native: true, sourceFilesRetained: Boolean(workspace.fileScope), preview: admin, caseId: id, initialSessionId: workspace.sessionId, research: {}, messages: {} }), [id, workspace.sessionId, workspace.fileScope, admin]);
-  return ready ? <ReadOnlyWorkspaceContext value={data}><div className="flex h-full min-h-0 flex-col">{workspace.fileScope && <p role="note" className="m-0 shrink-0 border-b border-border bg-background px-4 py-2 text-xs text-subtext">本案例仅公开选定成果。项目工作区、原始上传件和未选成果留在原项目；对话保留文件引用，未公开的原件无法在此预览或下载。</p>}<div className="min-h-0 flex-1"><App projectId={workspace.projectId} runtime={runtime} pane={pane} /></div></div></ReadOnlyWorkspaceContext> : <PlatformFrame title="研究过程"><p className="p-6 text-sm text-subtext">正在打开项目历史记录…</p></PlatformFrame>;
+  return ready ? <ReadOnlyWorkspaceContext value={data}><div className="case-content-enter flex h-full min-h-0 flex-col">{workspace.fileScope && <p role="note" className="m-0 shrink-0 border-b border-border bg-background px-4 py-2 text-xs text-subtext">本案例仅公开选定成果。项目工作区、原始上传件和未选成果留在原项目；对话保留文件引用，未公开的原件无法在此预览或下载。</p>}<div className="min-h-0 flex-1"><App projectId={workspace.projectId} runtime={runtime} pane={pane} /></div></div></ReadOnlyWorkspaceContext> : <PlatformFrame title="研究过程"><p className="p-6 text-sm text-subtext">正在打开项目历史记录…</p></PlatformFrame>;
 }

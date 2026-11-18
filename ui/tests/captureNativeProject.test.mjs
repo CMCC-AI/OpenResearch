@@ -3,6 +3,7 @@ import * as runtimeRequest from "../src/runtimeRequest.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { gzip } from "node:zlib";
 import test from "node:test";
 import ts from "typescript";
 import { canonicalRequest, createReadOnlyProjectApi } from "../src/readOnlyApi.ts";
@@ -17,6 +18,7 @@ const validator = {};
 new Function("require", "exports", validatorCode)((name) => {
   if (name === "./security.mjs") return security;
   if (name === "node:crypto") return { createHash };
+  if (name === "node:zlib") return { gzip };
   if (name === "./db.mjs" || name === "./tunnel.mjs") return {};
   throw new Error(`Unexpected validator import: ${name}`);
 }, validator);

@@ -39,6 +39,7 @@ function mountCase(id = "example") {
     "../workspacePersistence": { resetGlobalWorkspace: () => { resets++; } },
     "../RemoteRuntime": { useRuntime: () => ({ kind: "local" }) },
     "../queries/client": { queryClient: client },
+    "../queries/seedReadOnly": load("../src/queries/seedReadOnly.ts", { "../readOnlyApi": readOnlyApi }),
     "../readOnlyApi": readOnlyApi,
     "../workspaceState": { parsePane: () => undefined },
     "../components/ReadOnlyWorkspace": {},
