@@ -84,6 +84,91 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn('npm ci', dockerfile)
         self.assertIn('node_modules', dockerfile)
 
+    def test_deepxiv_adapter_enables_auto_sso_with_loop_guard(self):
+        import deepxiv_adapter
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        (root / 'src/components/auth').mkdir(parents=True)
+        (root / 'src/app/api/auth/openresearch/complete').mkdir(parents=True)
+        (root / 'src/app/api/auth/openresearch/callback').mkdir(parents=True)
+        (root / 'src/lib/papers').mkdir(parents=True)
+        (root / 'next.config.ts').write_text("const c = { output: 'standalone', };\n")
+        (root / 'Dockerfile').write_text('CMD ["node", "server.js"]\n')
+        (root / 'src/lib/sso-config.ts').write_text(
+            "if (url.protocol !== 'https:' && url.hostname !== 'localhost') {}\n"
+            "const r = { redirectUri: `${publicOrigin}/api/auth/openresearch/callback` };\n"
+        )
+        (root / 'src/app/api/auth/openresearch/complete/route.ts').write_text("return new URL('/projects', destination);\n")
+        (root / 'src/app/api/auth/openresearch/callback/route.ts').write_text("return new URL(flow.returnTo, config.publicOrigin);\n")
+        (root / 'src/lib/papers/store.ts').write_text("export const x = '/api/papers';\n")
+        (root / 'src/app/layout.tsx').write_text("""import { EmbeddedAuthBoundary } from '@/components/auth/EmbeddedAuthBoundary';
+import { isManagedAuth, ssoConfig } from '@/lib/sso-config';
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  await connection();
+  return (
+    <html lang="zh-CN" suppressHydrationWarning>
+      <body>
+        <EmbeddedAuthBoundary platformOrigin={isManagedAuth() ? ssoConfig().platformOrigin : null}>
+          {children}
+        </EmbeddedAuthBoundary>
+      </body>
+    </html>
+  );
+}
+""")
+        boundary_source = """'use client';
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+export function EmbeddedAuthBoundary({
+  children,
+  platformOrigin,
+}: {
+  children: ReactNode;
+  platformOrigin: string | null;
+}) {
+  const [status, setStatus] = useState<'loading' | 'ready' | 'anonymous' | 'error'>(
+    platformOrigin ? 'loading' : 'ready',
+  );
+  const [storagePrefix, setStoragePrefix] = useState('');
+  useEffect(() => {
+    if (!platformOrigin) return;
+    return () => {};
+  }, [platformOrigin]);
+
+  const logout = () => {
+    window.location.assign(platformOrigin!);
+  };
+  if (platformOrigin && status !== 'ready') {
+    const returnTo = '/';
+    return (
+      <main>
+        <section>
+          <h1>{status === 'loading' ? '正在验证统一登录' : status === 'error' ? '认证服务暂时不可用' : '使用科研平台账户登录'}</h1>
+          <p>{status === 'anonymous'
+              ? '登录 OpenResearch 后即可继续阅读论文、保存笔记并返回研究工作流。'
+              : status === 'error' ? '无法确认当前账户状态，请稍后重试。' : '正在安全连接 OpenResearch 与 DeepLiterature…'}</p>
+          {status === 'anonymous' && (
+            <a href={`/api/auth/openresearch/start?returnTo=${encodeURIComponent(returnTo)}`}>进入 OpenResearch 登录 →</a>
+          )}
+        </section>
+      </main>
+    );
+  }
+  return <div key={storagePrefix}>{children}</div>;
+}
+"""
+        (root / 'src/components/auth/EmbeddedAuthBoundary.tsx').write_text(boundary_source)
+        deepxiv_adapter.adapt(root)
+        adapted_layout = (root / 'src/app/layout.tsx').read_text()
+        self.assertIn('initialUserId={initialUserId}', adapted_layout)
+        self.assertIn('getCurrentUser', adapted_layout)
+        adapted = (root / 'src/components/auth/EmbeddedAuthBoundary.tsx').read_text()
+        self.assertIn('initialUserId = null', adapted)
+        self.assertIn('deeplit_auto_sso_at', adapted)
+        self.assertIn("window.location.replace(`/deepxiv/api/auth/openresearch/start?returnTo=${encodeURIComponent(returnTo)}`)", adapted)
+        self.assertIn('进入 MobileSci 登录', adapted)
+        self.assertIn('manualLogin', adapted)
+
 
 if __name__ == '__main__':
     unittest.main()

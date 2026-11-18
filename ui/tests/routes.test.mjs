@@ -126,10 +126,45 @@ test("product start links only support blank project creation", async () => {
   assert.deepEqual(parseProjectsSearch({ paper: "arxiv:2401.00001" }), { new: undefined });
 });
 
-test("Deep Literature links reuse the synchronized session instead of restarting SSO", () => {
+test("Deep Literature links route through SSO start when unified auth is active and preserve /deepxiv subpaths", () => {
   const source = readFileSync(new URL("../src/product/LiteraturePage.tsx", import.meta.url), "utf8");
-  assert.match(source, /new URL\(destination,/);
-  assert.doesNotMatch(source, /api\/auth\/openresearch\/start/);
+  const code = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  const exports = {};
+  const mocks = {
+    react,
+    "react/jsx-runtime": jsx,
+    "@tanstack/react-query": query,
+    "lucide-react": new Proxy({}, { get: () => () => null }),
+    "../api": {},
+    "./AuthSession": { useOptionalAuthSession: () => null },
+    "./ProductNav": { PlatformFrame: () => null },
+  };
+  new Function("require", "exports", code)((id) => {
+    if (id in mocks) return mocks[id];
+    throw new Error(`Unexpected dependency: ${id}`);
+  }, exports);
+
+  assert.equal(
+    exports.deepLiteratureUrl("http://localhost:3000", "/library", false),
+    "http://localhost:3000/library",
+  );
+  assert.equal(
+    exports.deepLiteratureUrl("http://49.232.238.110:20281/deepxiv", "/library", false),
+    "http://49.232.238.110:20281/deepxiv/library",
+  );
+  assert.equal(
+    exports.deepLiteratureUrl("http://49.232.238.110:20281/deepxiv", "/library", true),
+    "http://49.232.238.110:20281/deepxiv/api/auth/openresearch/start?returnTo=%2Flibrary",
+  );
+  assert.equal(
+    exports.deepLiteratureUrl("http://49.232.238.110:20281/deepxiv", "/abs/2611.01234", true),
+    "http://49.232.238.110:20281/deepxiv/api/auth/openresearch/start?returnTo=%2Fabs%2F2611.01234",
+  );
+  assert.match(source, /Boolean\(auth\?\.user && auth\?\.deepLiteratureUrl\)/);
+  assert.match(source, /refetchOnWindowFocus:\s*false/);
+  assert.doesNotMatch(source, /opacity-60/);
 });
 
 test("project search validates every pane variant and rejects malformed panes", async () => {
