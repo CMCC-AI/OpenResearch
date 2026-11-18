@@ -301,6 +301,13 @@ async function load() {
   if (!new URLSearchParams(location.search).has("account")) {
     if (capabilities.privateSpaces && !capabilities.sharedOriginSpaces)
       return hostedHome(capabilities);
+    if (capabilities.privateSpaces && capabilities.sharedOriginSpaces)
+      fetch("/api/platform/personal-space", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+        keepalive: true,
+      }).catch(() => {});
     location.replace(capabilities.openResearchAppUrl);
     return;
   }

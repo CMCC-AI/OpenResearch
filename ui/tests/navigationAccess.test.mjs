@@ -1,4 +1,5 @@
 import * as appBase from "../src/appBasePath.ts";
+import * as sidebarSnapshot from "../src/sidebarSnapshot.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -12,6 +13,7 @@ function authGate(pathname, user, loading = false, canAccessResearch = true, pri
   const exports = {};
   const mocks = {
     "../runtimeRequest": { cancelRuntimeRequests: () => {} },
+    "../sidebarSnapshot": sidebarSnapshot,
     "../appBasePath": appBase,
     "../pendingSubmissions": { pendingOwner: (account, id) => JSON.stringify([account, id]), revokePendingOwner: async owner => { lifecycle.push(["clear-pending", owner]); } },
     react: { ...React, useState: () => { const values = [loading, user, canAccessResearch, null, null, privateResearch]; return [values[stateIndex++], () => {}]; }, useEffect: () => {}, useCallback: (fn) => fn, useMemo: (fn) => fn() },

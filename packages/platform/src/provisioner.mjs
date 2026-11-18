@@ -208,9 +208,9 @@ export function runtimeConfig(workspace, env) {
         "-e",
         'fetch("http://127.0.0.1:4791/api/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))',
       ],
-      Interval: 5000000000,
+      Interval: 1500000000,
       Timeout: 3000000000,
-      Retries: 12,
+      Retries: 20,
       StartPeriod: 30000000000,
     },
   };
@@ -316,14 +316,25 @@ async function main() {
     });
   while (!stopping) {
     let workspace;
+    let fastPoll = false;
     try {
       await transaction(pool, async (db) => {
         await scheduleRuntimes(db, process.env, docker);
         const { rows } = await db.query(
-          "SELECT * FROM workspace_runtimes WHERE ((desired='deleted' AND status<>'deleted') OR status IN ('queued','starting','ready')) AND (checked_at IS NULL OR checked_at<now()-interval '10 seconds') ORDER BY checked_at NULLS FIRST LIMIT 1 FOR UPDATE SKIP LOCKED",
+          `SELECT * FROM workspace_runtimes
+           WHERE ((desired='deleted' AND status<>'deleted')
+                  OR status IN ('queued','starting')
+                  OR (status='ready' AND (checked_at IS NULL OR checked_at<now()-interval '10 seconds')))
+           ORDER BY CASE WHEN desired='deleted' OR status IN ('queued','starting') THEN 0 ELSE 1 END,
+                    checked_at NULLS FIRST
+           LIMIT 1 FOR UPDATE SKIP LOCKED`,
         );
         if (!rows.length) return;
         workspace = rows[0].workspace_id;
+        fastPoll =
+          rows[0].desired === "deleted" ||
+          rows[0].status === "queued" ||
+          rows[0].status === "starting";
         await reconcile(db, rows[0]);
       });
     } catch (error) {
@@ -336,7 +347,7 @@ async function main() {
           )
           .catch(() => {});
     }
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await new Promise((resolve) => setTimeout(resolve, fastPoll ? 400 : 1500));
   }
   await pool.end();
 }

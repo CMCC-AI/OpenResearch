@@ -195,8 +195,12 @@ const inlineScriptHashes = (html) => {
   return hashes;
 };
 const json = (res, value, status = 200) => {
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(value));
+  const payload = Buffer.from(JSON.stringify(value), "utf8");
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": payload.length,
+  });
+  res.end(payload);
 };
 const input = async (req) => {
   check(req.headers["content-type"]?.split(";")[0] === "application/json", 415);
@@ -1525,6 +1529,11 @@ export async function createPlatform(
         check(rows[0], 401);
         const runner = rows[0];
         check(!tunnels.has(runner.workspace_id), 409, "执行器已连接");
+        if (config.managed)
+          await pool.query(
+            "UPDATE workspace_runtimes SET status='ready',error=NULL,checked_at=now() WHERE workspace_id=$1 AND desired='running' AND status='starting'",
+            [runner.workspace_id],
+          );
         wss.handleUpgrade(req, socket, head, (ws) => {
           const tunnel = new Tunnel(ws);
           tunnels.set(runner.workspace_id, tunnel);
