@@ -81,7 +81,7 @@ test("a blank draft keeps the pipeline library visible while the canvas stays em
   h.render().find(node => node.type === "button" && JSON.stringify(node.props.children).includes("研究交付")).props.onClick();
   text = labels();
   assert.ok(text.includes("系统环节 · 运行时执行"));
-  assert.ok(text.includes("确认后在“研究成果”页查看与下载成果"));
+  assert.ok(text.includes("交付确认后在当前对话查看研究成果"));
 });
 
 test("agent entries are drag sources; dropping on the canvas adds the dragged agent", () => {

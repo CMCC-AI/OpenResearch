@@ -655,6 +655,15 @@ pub fn list_uploaded() -> Vec<UserSkill> {
     list_uploaded_in(&root())
 }
 
+/// Upload names only, same listing semantics as the library view — the store's
+/// legacy-global seeding scans with this so its snapshot matches what users see.
+pub(crate) fn uploaded_names_in(root: &Path) -> Vec<String> {
+    list_uploaded_in(root)
+        .into_iter()
+        .map(|skill| skill.name)
+        .collect()
+}
+
 fn list_in(root: &Path, mirrored: &[Mirrored]) -> Vec<UserSkill> {
     let mut out = list_uploaded_in(root);
     for m in mirrored {
@@ -774,6 +783,59 @@ fn delete_in(root: &Path, name: &str) -> Result<()> {
 
 // --- session wiring -----------------------------------------------------------
 
+/// 本会话应携带的上传技能:存量(legacy 全局)+ 绑定到当前项目的 + 该会话绑定
+/// 的专家任务所挂载的技能(与 MCP 同路:会话层原生加载,不进提示词)。绑定
+/// 关系每次现查 SQLite;store 打不开时退回全部上传——技能注入不能拖垮会话
+/// 启动。`/名字` 显式唤起不经过这里,始终可用。
+pub fn session_allowed_skills(
+    project_id: &str,
+    session_id: &str,
+) -> std::collections::BTreeSet<String> {
+    let all = || {
+        list_uploaded_in(&root())
+            .into_iter()
+            .map(|skill| skill.name)
+            .collect::<std::collections::BTreeSet<String>>()
+    };
+    let Ok(store) = crate::store::Store::open() else {
+        return all();
+    };
+    let mut names = store
+        .skill_bindings_for_scope(crate::store::skills::SCOPE_PROJECT, project_id)
+        .unwrap_or_default();
+    names.extend(store.legacy_global_skills().unwrap_or_default());
+    names.extend(agent_bound_skills(&store, session_id).unwrap_or_default());
+    // 绑定残留(技能已删)不进会话。
+    let live = all();
+    names
+        .into_iter()
+        .filter(|name| live.contains(name))
+        .collect()
+}
+
+/// 专家任务冻结的技能名单。计划版本不匹配按空处理,与 MCP 快照解析同规;
+/// 普通聊天会话与内置专家没有冻结快照,返回空列表。
+fn agent_bound_skills(
+    store: &crate::store::Store,
+    session_id: &str,
+) -> crate::error::Result<Vec<String>> {
+    let Some((task_id, version)) = store.research_session_task(session_id)? else {
+        return Ok(Vec::new());
+    };
+    let Some(study) = store.research_for_session(session_id)? else {
+        return Ok(Vec::new());
+    };
+    if study.plan()?.version != version {
+        return Ok(Vec::new());
+    }
+    let task = study.task(&task_id)?;
+    Ok(task
+        .agent
+        .as_ref()
+        .map(|agent| agent.user_skills.clone())
+        .unwrap_or_default())
+}
+
 /// A manifest of the skill dirs [`write_into_session`] wrote last turn. It is
 /// the record of what we own: only a dir named here may be replaced or pruned,
 /// which keeps us off the built-in `orx-*` skills and off any `.claude/skills`
@@ -787,15 +849,31 @@ const MANAGED_MANIFEST: &str = ".orx-user-skills";
 /// `ensure_playbook`: a folder whose source changed is replaced, one that no
 /// longer applies is pruned, and one we don't own is left alone — so a session's
 /// skills track their sources with no drift and no collateral damage.
-pub fn write_into_session(worktree: &Path, skills_dir_rel: &str) -> Result<()> {
-    write_into_session_in(&root(), worktree, skills_dir_rel)
+///
+/// `allowed` is the session's effective scope — legacy uploads plus the skills
+/// bound to this project (see [`session_allowed_skills`]). Bindings decide
+/// reach; `/name` still resolves any upload without a copy.
+pub fn write_into_session(
+    worktree: &Path,
+    skills_dir_rel: &str,
+    allowed: &std::collections::BTreeSet<String>,
+) -> Result<()> {
+    write_into_session_in(&root(), worktree, skills_dir_rel, allowed)
 }
 
-fn write_into_session_in(root: &Path, worktree: &Path, skills_dir_rel: &str) -> Result<()> {
+fn write_into_session_in(
+    root: &Path,
+    worktree: &Path,
+    skills_dir_rel: &str,
+    allowed: &std::collections::BTreeSet<String>,
+) -> Result<()> {
     let base = worktree.join(skills_dir_rel);
     let previous = previously_managed(&base).unwrap_or_default();
     let mut managed: Vec<String> = Vec::new();
     for (name, src) in source_dirs(root, &[]) {
+        if !allowed.contains(&name) {
+            continue;
+        }
         let src_tally = tally_all(&src);
         let dest = base.join(&name);
         let current = dest_matches_source(&src, src_tally, &dest);
@@ -1141,6 +1219,13 @@ mod tests {
 
     fn temp_root() -> PathBuf {
         std::env::temp_dir().join(format!("orx-user-skills-test-{}", uuid::Uuid::new_v4()))
+    }
+
+    /// 旧的全量语义:生效集合 = 该 store 的全部上传。
+    fn write_into_session_all(root: &Path, wt: &Path, rel: &str) -> Result<()> {
+        let allowed: std::collections::BTreeSet<String> =
+            uploaded_names_in(root).into_iter().collect();
+        write_into_session_in(root, wt, rel, &allowed)
     }
 
     fn skill_md(name: &str) -> String {
@@ -1512,7 +1597,7 @@ mod tests {
         ];
         save_skill_md_in(&root, skill_md_desc("dup", "UPLOADED").as_bytes()).unwrap();
 
-        write_into_session_in(&root, &wt, ".claude/skills").unwrap();
+        write_into_session_all(&root, &wt, ".claude/skills").unwrap();
         assert!(!wt.join(".claude/skills/solo/SKILL.md").exists());
         assert_eq!(list_in(&root, &mirrored).len(), 2);
         let dup = fs::read_to_string(wt.join(".claude/skills/dup/SKILL.md")).unwrap();
@@ -1555,7 +1640,7 @@ mod tests {
             ),
         ];
 
-        write_into_session_in(&root, &wt, ".claude/skills").unwrap();
+        write_into_session_all(&root, &wt, ".claude/skills").unwrap();
         assert!(
             !wt.join(".claude/skills/native").exists(),
             "Claude Code already loads its own skills from the user's home dir"
@@ -1590,6 +1675,31 @@ mod tests {
     }
 
     #[test]
+    fn write_into_session_respects_allowed_scope() {
+        let root = temp_root();
+        let wt = temp_root();
+        let rel = ".claude/skills";
+        save_skill_md_in(&root, skill_md("scoped-in").as_bytes()).unwrap();
+        save_skill_md_in(&root, skill_md("scoped-out").as_bytes()).unwrap();
+
+        let mut allowed = std::collections::BTreeSet::new();
+        allowed.insert("scoped-in".to_string());
+        write_into_session_in(&root, &wt, rel, &allowed).unwrap();
+        assert!(wt.join(rel).join("scoped-in/SKILL.md").exists());
+        assert!(
+            !wt.join(rel).join("scoped-out").exists(),
+            "未进生效集合的技能不得写入会话"
+        );
+
+        // 收回生效集合:上一轮写入的技能按 manifest 管辖被剪掉。
+        let empty = std::collections::BTreeSet::new();
+        write_into_session_in(&root, &wt, rel, &empty).unwrap();
+        assert!(!wt.join(rel).join("scoped-in").exists());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&wt);
+    }
+
+    #[test]
     fn write_into_session_prunes_skills_that_no_longer_apply() {
         let root = temp_root();
         let agent_dir = temp_root();
@@ -1603,7 +1713,7 @@ mod tests {
         )];
         save_skill_md_in(&root, skill_md("keep").as_bytes()).unwrap();
         save_skill_md_in(&root, skill_md("gone").as_bytes()).unwrap();
-        write_into_session_in(&root, &wt, rel).unwrap();
+        write_into_session_all(&root, &wt, rel).unwrap();
         assert!(wt.join(rel).join("keep/SKILL.md").exists());
         assert!(wt.join(rel).join("gone/SKILL.md").exists());
         // Simulate a copy owned by the previous mirroring implementation.
@@ -1613,7 +1723,7 @@ mod tests {
 
         // Delete one skill and uninstall the mirrored one, re-run: both must go.
         delete_in(&root, "gone").unwrap();
-        write_into_session_in(&root, &wt, rel).unwrap();
+        write_into_session_all(&root, &wt, rel).unwrap();
         assert!(wt.join(rel).join("keep/SKILL.md").exists());
         assert!(
             !wt.join(rel).join("gone").exists(),
@@ -1732,7 +1842,7 @@ mod tests {
         )
         .unwrap()
         .contains("Source collision"));
-        write_into_session_in(&root, &wt, rel).unwrap();
+        write_into_session_all(&root, &wt, rel).unwrap();
         assert!(instructions_in(
             &root,
             &[],
@@ -1748,7 +1858,7 @@ mod tests {
             "a skill dir we never wrote is not ours to replace"
         );
         // ...and it is never pruned either, since it never enters the manifest.
-        write_into_session_in(&root, &wt, rel).unwrap();
+        write_into_session_all(&root, &wt, rel).unwrap();
         assert!(committed.join("SKILL.md").exists());
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&wt);
@@ -1767,9 +1877,9 @@ mod tests {
         let vendored = wt.join(rel).join("shared");
         copy_dir_all(&store_dir(&root).join("shared"), &vendored).unwrap();
         fs::write(wt.join(rel).join(MANAGED_MANIFEST), "something-else\n").unwrap();
-        write_into_session_in(&root, &wt, rel).unwrap();
+        write_into_session_all(&root, &wt, rel).unwrap();
         delete_in(&root, "shared").unwrap();
-        write_into_session_in(&root, &wt, rel).unwrap();
+        write_into_session_all(&root, &wt, rel).unwrap();
         assert!(
             vendored.join("SKILL.md").exists(),
             "a dir the manifest never claimed must not become prunable"
@@ -1778,7 +1888,7 @@ mod tests {
         // A missing manifest does not transfer ownership of a project skill.
         save_skill_md_in(&root, skill_md("shared").as_bytes()).unwrap();
         fs::remove_file(wt.join(rel).join(MANAGED_MANIFEST)).unwrap();
-        write_into_session_in(&root, &wt, rel).unwrap();
+        write_into_session_all(&root, &wt, rel).unwrap();
         assert!(!previously_managed(&wt.join(rel))
             .unwrap()
             .contains(&"shared".to_string()));
@@ -1791,10 +1901,10 @@ mod tests {
         let root = temp_root();
         let wt = temp_root();
         save_skill_md_in(&root, skill_md("shared").as_bytes()).unwrap();
-        write_into_session_in(&root, &wt, ".claude/skills").unwrap();
+        write_into_session_all(&root, &wt, ".claude/skills").unwrap();
         let session_file = wt.join(".claude/skills/shared/SKILL.md");
         fs::remove_file(wt.join(".claude/skills").join(MANAGED_MANIFEST)).unwrap();
-        write_into_session_in(&root, &wt, ".claude/skills").unwrap();
+        write_into_session_all(&root, &wt, ".claude/skills").unwrap();
         let upload = instructions_in(&root, &[], "shared", Some(&session_file), None).unwrap();
         assert!(upload.contains(
             &store_dir(&root)
@@ -2022,7 +2132,7 @@ mod tests {
         save_skill_md_in(&root, skill_md("linked").as_bytes()).unwrap();
         let source = store_dir(&root).join("linked");
         std::os::unix::fs::symlink("SKILL.md", source.join("alias.md")).unwrap();
-        write_into_session_in(&root, &wt, ".claude/skills").unwrap();
+        write_into_session_all(&root, &wt, ".claude/skills").unwrap();
         assert!(dest_matches_source(
             &source,
             tally_all(&source),
@@ -2048,13 +2158,13 @@ mod tests {
         let rel = ".claude/skills";
         save_skill_md_in(&root, skill_md("steady").as_bytes()).unwrap();
 
-        write_into_session_in(&root, &wt, rel).unwrap();
+        write_into_session_all(&root, &wt, rel).unwrap();
         let written = wt.join(rel).join("steady/SKILL.md");
         let first = fs::metadata(&written).unwrap().ino();
 
         // A second turn with an unchanged source must leave the file alone. The
         // inode is the witness: a re-copy removes the dir and writes a new file.
-        write_into_session_in(&root, &wt, rel).unwrap();
+        write_into_session_all(&root, &wt, rel).unwrap();
         assert_eq!(fs::metadata(&written).unwrap().ino(), first);
 
         // Editing the source does bring the copy forward.
@@ -2063,7 +2173,7 @@ mod tests {
             skill_md_desc("steady", "Now it says something else. Use when testing.").as_bytes(),
         )
         .unwrap();
-        write_into_session_in(&root, &wt, rel).unwrap();
+        write_into_session_all(&root, &wt, rel).unwrap();
         assert!(fs::read_to_string(&written)
             .unwrap()
             .contains("something else"));
@@ -2078,9 +2188,9 @@ mod tests {
         save_skill_md_in(&root, skill_md("updated").as_bytes()).unwrap();
         let source = store_dir(&root).join("updated/reference.txt");
         fs::write(&source, "old").unwrap();
-        write_into_session_in(&root, &wt, ".agents/skills").unwrap();
+        write_into_session_all(&root, &wt, ".agents/skills").unwrap();
         fs::write(&source, "new").unwrap();
-        write_into_session_in(&root, &wt, ".agents/skills").unwrap();
+        write_into_session_all(&root, &wt, ".agents/skills").unwrap();
         assert_eq!(
             fs::read_to_string(wt.join(".agents/skills/updated/reference.txt")).unwrap(),
             "new"
@@ -2149,7 +2259,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(list_in(&root, &mirrored).len(), 1);
-        write_into_session_in(&root, &wt, ".claude/skills").unwrap();
+        write_into_session_all(&root, &wt, ".claude/skills").unwrap();
         assert!(!wt.join(".claude/skills/huge").exists());
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&agent_dir);
@@ -2185,7 +2295,7 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].origin.as_deref(), Some("runpod"));
 
-        write_into_session_in(&root, &wt, ".agents/skills").unwrap();
+        write_into_session_all(&root, &wt, ".agents/skills").unwrap();
         assert!(!wt.join(".agents/skills/flash").exists());
         assert_eq!(
             instructions_in(&root, &mirrored, "flash", None, None).unwrap(),
@@ -2211,7 +2321,7 @@ mod tests {
         )
         .unwrap();
 
-        write_into_session_in(&root, &wt, rel).unwrap();
+        write_into_session_all(&root, &wt, rel).unwrap();
         assert!(
             outsider.is_dir(),
             "a `..` name must never reach remove_dir_all"
@@ -2266,7 +2376,7 @@ mod tests {
             ),
         ];
 
-        write_into_session_in(&root, &wt, ".claude/skills").unwrap();
+        write_into_session_all(&root, &wt, ".claude/skills").unwrap();
         assert!(
             !wt.join(".claude/skills/pdf").exists(),
             "the session must not run Codex's `pdf` while the dashboard shows Claude Code's"

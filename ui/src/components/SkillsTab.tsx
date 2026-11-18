@@ -29,7 +29,7 @@ const SKILL_NAME_CLASS_NAME = "text-sm font-normal text-text";
 const ROW_DETAIL_CLASS_NAME = "mt-1 mb-0 text-sm leading-relaxed text-text";
 
 /** Read a File into base64 (strips the `data:...;base64,` prefix). */
-function fileToBase64(file: File): Promise<string> {
+export function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {

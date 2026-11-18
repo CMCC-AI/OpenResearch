@@ -6,7 +6,8 @@ import { parseDestination, parsePane, type Pane } from "../workspaceState";
 
 export const Route = createFileRoute("/projects/$projectId")({
   validateSearch: (search): { pane?: Pane } => ({ pane: parsePane(search.pane) }),
-  beforeLoad: ({ location }) => { if (!parseDestination(location.pathname)) throw notFound(); },
+  // Retired deliverables URLs pass through so the child route can redirect to the conversation.
+  beforeLoad: ({ location }) => { if (!parseDestination(location.pathname) && !location.pathname.endsWith("/deliverables")) throw notFound(); },
   component: ProjectLayout,
 });
 

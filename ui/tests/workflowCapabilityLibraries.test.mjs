@@ -1,0 +1,147 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import test from "node:test";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import ts from "typescript";
+
+const require = createRequire(import.meta.url);
+const servers = [
+  { id: "mcp-rsi", name: "codegraph", transport: "stdio", command: "npx", args: ["-y", "codegraph-mcp"], env: { TOKEN: "s" }, url: "", headers: {}, description: "代码图谱检索", enabled: true, createdAt: 1, updatedAt: 1 },
+  { id: "mcp-remote", name: "papers", transport: "http", command: "", args: [], env: {}, url: "https://mcp.example.com/v1", headers: {}, description: "文献服务", enabled: false, createdAt: 1, updatedAt: 2 },
+];
+
+// 能力库三组件共用一套轻量 mock：api 调用只记录不发请求，图标与 ui 基件替身为纯元素。
+const calls = [];
+const mocks = {
+  "../api": {
+    createWorkflowAgent: async (input) => { calls.push(["createWorkflowAgent", input]); return { id: "agent-new", version: 1, builtIn: false, ...input }; },
+    updateWorkflowAgent: async (id, input) => { calls.push(["updateWorkflowAgent", id, input]); return { id, version: 2, builtIn: false, ...input }; },
+    deleteWorkflowAgent: async () => ({ ok: true }),
+    listMcpServers: async () => servers,
+    importMcpConfig: async (text) => { calls.push(["importMcpConfig", text]); return { created: 1, updated: 1, names: ["codegraph", "papers"], errors: [] }; },
+    updateMcpServer: async (id, input) => { calls.push(["updateMcpServer", id, input]); return { id, ...input }; },
+    deleteMcpServer: async () => ({ ok: true }),
+    testMcpServer: async (input) => { calls.push(["testMcpServer", input]); return { ok: true, tools: ["search", "fetch"] }; },
+    uploadUserSkill: async (req) => { calls.push(["uploadUserSkill", req]); return { name: "uploaded" }; },
+    deleteUserSkill: async () => ({ ok: true }),
+    bindSkill: async (req) => { calls.push(["bindSkill", req]); return { ok: true }; },
+    unbindSkill: async (req) => { calls.push(["unbindSkill", req]); return { ok: true }; },
+    demoteLegacySkill: async (name) => { calls.push(["demoteLegacySkill", name]); return { ok: true }; },
+  },
+  "../components/ui": {
+    Badge: ({ children }) => React.createElement("span", { "data-badge": Array.isArray(children) ? children.join("") : String(children) }, children),
+    Button: ({ children, ...props }) => React.createElement("button", props, children),
+    Input: (props) => React.createElement("input", props),
+    showAlert: () => {},
+  },
+  "../components/SkillsTab": { fileToBase64: async () => "ZmFrZQ==" },
+  "@tanstack/react-query": { useQuery: () => ({ data: servers, isPending: false, refetch() {} }) },
+  "../queries/client": { workspaceKey: (...parts) => parts, queryClient: { invalidateQueries() {} } },
+  "lucide-react": new Proxy({}, { get: (_, name) => (props) => React.createElement("i", { "data-icon": String(name), ...props }) }),
+};
+function loadComponent(file) {
+  const code = ts.transpileModule(readFileSync(new URL(file, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+  const exported = {};
+  new Function("require", "exports", code)((id) => (id in mocks ? mocks[id] : require(id)), exported);
+  return exported;
+}
+
+test("McpLibrary is paste-first: import saves directly, entries list with enable badges", () => {
+  const { McpLibrary } = loadComponent("../src/workflow/McpLibrary.tsx");
+  const html = renderToStaticMarkup(React.createElement(McpLibrary));
+  // 主路径：粘贴配置导入即保存，不再有手动字段表单。
+  assert.match(html, /导入并保存/);
+  assert.match(html, /mcpServers JSON 与 Codex 的 TOML/);
+  assert.match(html, /同名服务自动覆盖更新/);
+  assert.doesNotMatch(html, /启动参数/);
+  // 列表条目带启停状态与命令摘要；密钥值永不出现在页面上。
+  assert.match(html, /codegraph/);
+  assert.match(html, /data-badge="启用"/);
+  assert.match(html, /papers/);
+  assert.match(html, /mcp\.example\.com/);
+  assert.match(html, /只存本机/);
+  assert.doesNotMatch(html, /TOKEN=s/);
+});
+
+test("SkillsLibrary groups builtin modules and user skills; uploads and deletes stay user-owned", () => {
+  const { SkillsLibrary } = loadComponent("../src/workflow/SkillsLibrary.tsx");
+  const skills = [
+    { name: "orx-lit-review", description: "文献综述指南", source: "builtin", origin: null, bytes: null, updatedAt: null },
+    { name: "my-lab-protocol", description: null, source: "user", origin: null, bytes: 2048, updatedAt: 1700000000000 },
+    { name: "mirrored-skill", description: null, source: "user", origin: "claude", bytes: 1024, updatedAt: 1700000000000 },
+  ];
+  const html = renderToStaticMarkup(React.createElement(SkillsLibrary, { skills, agents: [], projects: [], onChanged: async () => {} }));
+  assert.match(html, /我的技能（2）/);
+  assert.match(html, /内置技能（1）/);
+  assert.match(html, /orx-lit-review/);
+  assert.match(html, /data-badge="内置"/);
+  // 镜像技能在列表里标注来源，上传技能标注“本地上传”。
+  assert.match(html, /mirrored-skill/);
+  assert.match(html, /本地上传/);
+  assert.match(html, /orx skills add/);
+  // 库说明讲清生效模型：默认不生效、按处绑定、/名字 唤起。
+  assert.match(html, /默认不生效/);
+  assert.match(html, /\/技能名/);
+  // 未选中详情时展示库说明，不渲染删除按钮。
+  assert.doesNotMatch(html, /删除/);
+});
+
+test("SkillsLibrary shows the effective scope with legacy badge, project checkboxes and bound experts", () => {
+  const { SkillsLibrary, SkillScopeSection } = loadComponent("../src/workflow/SkillsLibrary.tsx");
+  const agents = [{ id: "agent-quant", name: "量化分析师", description: "", prompt: "", version: 1, builtIn: false, createdAt: 1, updatedAt: 1, mcpServers: [], userSkills: ["legacy-lab"] }];
+  const skills = [
+    { name: "legacy-lab", description: null, source: "user", origin: null, bytes: 512, updatedAt: 1, legacyGlobal: true, boundProjects: ["proj-1"], boundAgents: ["agent-quant"] },
+    { name: "fresh-skill", description: null, source: "user", origin: null, bytes: 128, updatedAt: 2, legacyGlobal: false, boundProjects: [], boundAgents: [] },
+  ];
+  const projects = [{ id: "proj-1", name: "电池材料综述", slug: "battery", githubOwner: "", githubRepo: "", baselineBranch: "main", repoPath: "", path: "", githubEnabled: false, artifactsDir: "", createdAt: 1, updatedAt: 1 }];
+  const library = renderToStaticMarkup(React.createElement(SkillsLibrary, { skills, agents, projects, onChanged: async () => {} }));
+  // 列表行：legacy 技能带“全局”徽标；库说明讲清默认不生效。
+  assert.match(library, /data-badge="全局"/);
+  assert.match(library, /默认不生效/);
+  // 生效范围区块：legacy 有“改为按需绑定”入口并点出挂载的专家；新技能给项目勾选。
+  const legacyScope = renderToStaticMarkup(React.createElement(SkillScopeSection, {
+    skill: skills[0], projects, busy: false,
+    scopeSummary: "历史上传，保留全局生效：所有会话自动携带。",
+    boundAgentNames: ["量化分析师"],
+    onToggleProject: () => {}, onDemote: () => {},
+  }));
+  assert.match(legacyScope, /历史上传，保留全局生效/);
+  assert.match(legacyScope, /改为按需绑定/);
+  assert.match(legacyScope, /电池材料综述/);
+  assert.match(legacyScope, /量化分析师/);
+  const freshScope = renderToStaticMarkup(React.createElement(SkillScopeSection, {
+    skill: skills[1], projects, busy: false,
+    scopeSummary: "未绑定：不随任何会话自动携带；对话里输入 /技能名 仍可直接使用。",
+    boundAgentNames: [],
+    onToggleProject: () => {}, onDemote: () => {},
+  }));
+  assert.match(freshScope, /在哪些项目自动携带/);
+  assert.match(freshScope, /还没有专家挂载这个技能/);
+});
+
+test("custom agents attach MCP servers; the create form lists every server as a checkbox", () => {
+  const exported = loadComponent("../src/workflow/AgentLibrary.tsx");
+  const agents = [
+    { id: "as-asset-auditor", name: "科研资产盘点专家", description: "", prompt: "", version: 0, builtIn: true, createdAt: 0, updatedAt: 0, mcpServers: [], skills: [{ name: "orx-git", description: "Git 操作指南" }], toolPermissions: ["不得自行批准 G1–G4"] },
+    { id: "agent-quant", name: "量化分析师", description: "", prompt: "", version: 1, builtIn: false, createdAt: 1, updatedAt: 1, mcpServers: ["mcp-rsi"] },
+  ];
+  // 无选中：新建表单带“MCP 服务”复选框组，列出全部已登记服务。
+  const blank = renderToStaticMarkup(React.createElement(exported.AgentLibrary, { agents, mcpServers: servers, onChanged: async () => {} }));
+  assert.match(blank, /创建自定义 Agent/);
+  assert.match(blank, /MCP 服务/);
+  assert.match(blank, /codegraph/);
+  assert.match(blank, /papers/);
+  assert.match(blank, /该专家工作时可以调用这些服务/);
+  // 空服务库时引导去 MCP 页，而不是渲染空复选框组。
+  const noServers = renderToStaticMarkup(React.createElement(exported.AgentLibrary, { agents, mcpServers: [], onChanged: async () => {} }));
+  assert.match(noServers, /还没有登记 MCP 服务/);
+  // “使用的技能”复选框组：列出上传技能；空库时引导去 Skills 页。
+  const withSkills = renderToStaticMarkup(React.createElement(exported.AgentLibrary, { agents, mcpServers: servers, userSkills: [{ name: "my-lab-protocol", source: "user" }], onChanged: async () => {} }));
+  assert.match(withSkills, /使用的技能/);
+  assert.match(withSkills, /my-lab-protocol/);
+  assert.match(withSkills, /未勾选的技能不生效/);
+  const noSkills = renderToStaticMarkup(React.createElement(exported.AgentLibrary, { agents, mcpServers: servers, userSkills: [], onChanged: async () => {} }));
+  assert.match(noSkills, /还没有上传技能/);
+});

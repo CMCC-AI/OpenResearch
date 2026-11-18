@@ -696,7 +696,7 @@
   "model_picker_more": "{count} more — search to find",
   "model_picker_use_id": "Use “{id}” as the model ID",
   "model_picker_unverified": "Unverified",
-  "skills_overview_description": "Customize the skills and LaTeX templates available across your projects. Upload them here, or ask an MobileSci agent to create and add them for you.",
+  "skills_overview_description": "Customize skills and LaTeX templates. An uploaded skill only enters sessions that carry it — bound to a project or a custom agent; typing /skillname in a chat always works. Upload here, or ask an MobileSci agent to create and add them for you.",
   "new_project_run_before_create": "Run {command} before creating the project.",
   "settings_login_help": "Run {command} in a terminal to sign in.",
   "settings_openresearch_setting_up": "Setting up…",

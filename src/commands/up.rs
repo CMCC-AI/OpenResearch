@@ -53,6 +53,7 @@ pub(crate) mod compute_settings;
 mod event_stream;
 mod harness_setup;
 mod materials;
+mod mcp;
 mod message_delta;
 #[cfg(test)]
 mod submission_tests;
@@ -520,6 +521,20 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
             "/api/workflow/agents/{id}",
             axum::routing::put(workflow::update_agent).delete(workflow::delete_agent),
         )
+        .route("/api/workflow/skills", get(workflow::skills))
+        .route(
+            "/api/mcp/servers",
+            get(mcp::servers).post(mcp::create_server),
+        )
+        .route(
+            "/api/mcp/servers/{id}",
+            axum::routing::put(mcp::update_server).delete(mcp::delete_server),
+        )
+        .route("/api/mcp/test", post(mcp::test_server))
+        .route("/api/mcp/parse", post(mcp::parse_config))
+        .route("/api/mcp/import", post(mcp::import_config))
+        .route("/api/mcp/proposals/{session_id}", get(mcp::proposals))
+        .route("/api/mcp/proposals/{id}/decide", post(mcp::decide_proposal))
         .route(
             "/api/workflows",
             get(workflow::list_workflows).post(workflow::create_workflow),
@@ -547,6 +562,10 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
         .route(
             "/api/research/studies/{id}/decisions/{decision}",
             post(research::decide),
+        )
+        .route(
+            "/api/research/studies/{id}/tasks/{task_id}/submit",
+            post(research::submit_human),
         )
         .route("/api/onboarding/complete", post(complete_onboarding))
         .route("/api/project-path/status", get(project_path_status))
@@ -794,6 +813,11 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
             get(list_user_skills)
                 .post(upload_user_skill)
                 .delete(delete_user_skill),
+        )
+        .route("/api/skill-bindings", post(bind_skill).delete(unbind_skill))
+        .route(
+            "/api/skill-bindings/legacy/{name}/demote",
+            post(demote_legacy_skill),
         )
         .route(
             "/api/latex-templates",
@@ -1327,11 +1351,79 @@ struct DeleteByNameQ {
 }
 
 async fn delete_user_skill(Query(q): Query<DeleteByNameQ>) -> ApiResult {
-    tokio::task::spawn_blocking(move || crate::local::user_skills::delete(&q.name))
-        .await
-        .map_err(|e| ApiError::from(anyhow!(e)))?
-        .map_err(bad_request)?;
-    Ok(Json(json!({ "ok": true })))
+    blocking_api(move || {
+        crate::local::user_skills::delete(&q.name).map_err(bad_request)?;
+        // 技能没了，绑定关系一并清掉，避免残留引用出现在生效范围里。
+        Store::open()?
+            .purge_skill_bindings(&q.name)
+            .map_err(bad_request)?;
+        Ok(Json(json!({ "ok": true })))
+    })
+    .await
+}
+
+/// 技能绑定/解绑：`scopeKind` 为 `project`（研究项目）或 `agent`（自定义专家）。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillBindingReq {
+    scope_kind: String,
+    scope_id: String,
+    skill_name: String,
+}
+
+async fn bind_skill(Json(req): Json<SkillBindingReq>) -> ApiResult {
+    blocking_api(move || {
+        let store = Store::open()?;
+        ensure_binding_target_exists(&store, &req)?;
+        store
+            .bind_skill(&req.scope_kind, &req.scope_id, &req.skill_name)
+            .map_err(bad_request)?;
+        Ok(Json(json!({ "ok": true })))
+    })
+    .await
+}
+
+async fn unbind_skill(Json(req): Json<SkillBindingReq>) -> ApiResult {
+    blocking_api(move || {
+        Store::open()?
+            .unbind_skill(&req.scope_kind, &req.scope_id, &req.skill_name)
+            .map_err(bad_request)?;
+        Ok(Json(json!({ "ok": true })))
+    })
+    .await
+}
+
+/// 绑定目标必须真实存在：项目或自定义专家。技能本身的存在性由注入阶段兜底
+/// （已删除的技能自然跳过），这里只挡住指错对象的绑定。
+fn ensure_binding_target_exists(store: &Store, req: &SkillBindingReq) -> Result<()> {
+    match req.scope_kind.as_str() {
+        crate::store::skills::SCOPE_PROJECT => {
+            if store.get_local_project(&req.scope_id)?.is_none() {
+                return Err(anyhow!("未知项目: {}", req.scope_id));
+            }
+        }
+        crate::store::skills::SCOPE_AGENT => {
+            if store.workflow_agent(&req.scope_id)?.is_none() {
+                return Err(anyhow!("未知自定义专家: {}", req.scope_id));
+            }
+        }
+        other => return Err(anyhow!("未知的技能生效范围: {other}")),
+    }
+    Ok(())
+}
+
+/// 存量技能从“保留全局”改为按需绑定：之后只随绑定的项目/专家生效。
+async fn demote_legacy_skill(Path(name): Path<String>) -> ApiResult {
+    blocking_api(move || {
+        let demoted = Store::open()?
+            .demote_legacy_global_skill(&name)
+            .map_err(bad_request)?;
+        if !demoted {
+            return Err(not_found("legacy skill"));
+        }
+        Ok(Json(json!({ "ok": true })))
+    })
+    .await
 }
 
 fn latex_template_json(t: &crate::local::latex_templates::LatexTemplate) -> Value {

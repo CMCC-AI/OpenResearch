@@ -34,6 +34,7 @@ pub mod login;
 pub mod logout;
 pub mod logs;
 pub mod materials;
+pub mod mcp;
 pub mod mcp_gate;
 pub mod metrics;
 pub mod orgs;

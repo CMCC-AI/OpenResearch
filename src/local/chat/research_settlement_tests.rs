@@ -39,6 +39,8 @@ async fn research_settlement_source_errors_preserve_helper_and_do_not_starve_oth
                     route: None,
                     route_branch: String::new(),
                     wait_for: String::new(),
+                    for_each: None,
+                    wait_step: None,
                 })
                 .collect(),
             },

@@ -2363,6 +2363,8 @@ export const pauseResearchStudy = (studyId: string, version: number) =>
   post<{ ok: boolean; interrupted?: string[] }>(`/api/research/studies/${studyId}/pause`, { version });
 export const resumeResearchStudy = (studyId: string, version: number) =>
   post<{ ok: boolean }>(`/api/research/studies/${studyId}/resume`, { version });
+export const submitHumanTaskOutput = (studyId: string, taskId: string, content: string) =>
+  post<{ ok: boolean }>(`/api/research/studies/${studyId}/tasks/${taskId}/submit`, { content });
 
 // Workflow Studio resources remain local and compile into the native research plan.
 export const listWorkflowAgents = (signal?: AbortSignal) =>
@@ -2373,6 +2375,31 @@ export const updateWorkflowAgent = (id: string, input: import("./workflow/model"
   put<{ agent: import("./workflow/model").WorkflowAgent }>(`/api/workflow/agents/${encodeURIComponent(id)}`, input).then((result) => result.agent);
 export const deleteWorkflowAgent = (id: string) =>
   writeResponse(`/api/workflow/agents/${encodeURIComponent(id)}`, { method: "DELETE" }).then((response) => json<{ ok: boolean }>(response));
+// MCP 服务登记与能力库技能视图，与 Agents 平行的工作流资源。
+export const listMcpServers = (signal?: AbortSignal) =>
+  get<{ servers: import("./workflow/model").McpServer[] }>("/api/mcp/servers", signal).then((result) => result.servers);
+export const importMcpConfig = (text: string) =>
+  post<{ created: number; updated: number; names: string[]; errors: string[] }>("/api/mcp/import", { text });
+export const updateMcpServer = (id: string, input: import("./workflow/model").McpServerInput) =>
+  put<{ server: import("./workflow/model").McpServer }>(`/api/mcp/servers/${encodeURIComponent(id)}`, input).then((result) => result.server);
+export const deleteMcpServer = (id: string) =>
+  writeResponse(`/api/mcp/servers/${encodeURIComponent(id)}`, { method: "DELETE" }).then((response) => json<{ ok: boolean }>(response));
+export const testMcpServer = (input: import("./workflow/model").McpServerInput) =>
+  post<{ ok: boolean; tools?: string[]; error?: string }>("/api/mcp/test", input);
+export const listPendingMcpProposals = (sessionId: string, signal?: AbortSignal) =>
+  get<{ proposals: import("./workflow/model").McpProposal[] }>(`/api/mcp/proposals/${encodeURIComponent(sessionId)}`, signal).then((result) => result.proposals);
+export const decideMcpProposal = (id: string, approve: boolean) =>
+  post<{ proposal: import("./workflow/model").McpProposal; server?: import("./workflow/model").McpServer | null }>(`/api/mcp/proposals/${encodeURIComponent(id)}/decide`, { approve });
+export const listWorkflowSkills = (signal?: AbortSignal) =>
+  get<{ skills: import("./workflow/model").WorkflowLibrarySkill[] }>("/api/workflow/skills", signal).then((result) => result.skills);
+// 技能生效范围：上传后默认不生效，绑定到项目或自定义专家才随对应会话携带。
+export const bindSkill = (req: { scopeKind: "project" | "agent"; scopeId: string; skillName: string }) =>
+  post<{ ok: boolean }>("/api/skill-bindings", req);
+export const unbindSkill = (req: { scopeKind: "project" | "agent"; scopeId: string; skillName: string }) =>
+  writeResponse("/api/skill-bindings", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) }).then((response) => json<{ ok: boolean }>(response));
+// 历史上传的技能从“保留全局”改为按需绑定。
+export const demoteLegacySkill = (name: string) =>
+  post<{ ok: boolean }>(`/api/skill-bindings/legacy/${encodeURIComponent(name)}/demote`, {});
 // The workflow library is shared: every project lists and runs every draft,
 // and `projectId` on a draft only records where it was created ("" = globally).
 export const listWorkflows = (signal?: AbortSignal) =>
@@ -2389,5 +2416,3 @@ export const deleteWorkflow = (id: string) =>
   writeResponse(`/api/workflows/${encodeURIComponent(id)}`, { method: "DELETE" }).then((response) => json<{ ok: boolean }>(response));
 export const submitWorkflowDraft = (sessionId: string, draftId: string, objective: string) =>
   post<{ studyId: string; sessionId: string; version: number; deduplicated: boolean }>(`/api/research/sessions/${encodeURIComponent(sessionId)}/workflow-plan`, { draftId, objective });
-export const listResearchDeliveries = (projectId: string, signal?: AbortSignal) =>
-  get<{ deliveries: import("./research").ResearchDeliveryEntry[] }>(`/api/projects/${encodeURIComponent(projectId)}/research/deliveries`, signal).then((result) => result.deliveries);

@@ -127,6 +127,9 @@ enum Command {
     /// Add reusable skills to the local OpenResearch library.
     Skills(LibraryArgs),
 
+    /// Propose or list MCP servers; registration needs user confirmation in chat.
+    Mcp(McpArgs),
+
     /// Add reusable LaTeX templates to the local OpenResearch library.
     Templates(LibraryArgs),
 
@@ -742,6 +745,24 @@ pub struct LibraryArgs {
     pub command: LibraryCommand,
 }
 
+#[derive(Args, Debug)]
+pub struct McpArgs {
+    #[command(subcommand)]
+    pub command: McpCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum McpCommand {
+    /// File a pending MCP server proposal; the user confirms it from the chat
+    /// card before the service is registered and mounted anywhere.
+    Propose {
+        #[arg(long)]
+        file: String,
+    },
+    /// List enabled MCP servers available for mounting on custom agents.
+    List,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum LibraryCommand {
     /// Save a file or ZIP across projects; replaces an existing entry of the same name.
@@ -1301,6 +1322,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Exp(_) => "exp",
         Command::Skill(_) => "skill",
         Command::Skills(_) => "skills",
+        Command::Mcp(_) => "mcp",
         Command::Templates(_) => "templates",
         Command::InstallSkills(_) => "install-skills",
         Command::Discover(_) => "discover",
@@ -1358,6 +1380,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Exp(args) => commands::exp::run(args).await,
         Command::Skill(args) => commands::skill::run(args).await,
         Command::Skills(args) => commands::library::skills(args),
+        Command::Mcp(args) => commands::mcp::run(args),
         Command::Templates(args) => commands::library::templates(args),
         Command::InstallSkills(args) => commands::install_skills::run(args).await,
         Command::Discover(args) => commands::discover::run(args).await,

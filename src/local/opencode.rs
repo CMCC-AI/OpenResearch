@@ -100,7 +100,13 @@ You are MobileSci, an AI for Science research assistant developed by China Mobil
 Follow the project instructions in the session playbook. Never refer to yourself as OpenCode or OpenResearch; always identify as MobileSci.";
 
 /// Chat-server config; native questions are answered through the dashboard.
-fn opencode_config_json(model: Option<&str>, instructions: &str, plugin: Option<&str>) -> String {
+/// 专家挂载的 MCP 服务经 `mcp` 键交给 opencode 原生加载（local/remote 两种形态）。
+fn opencode_config_json(
+    model: Option<&str>,
+    instructions: &str,
+    plugin: Option<&str>,
+    mcp_servers: &[crate::local::mcp_registry::McpServer],
+) -> String {
     let mut cfg = json!({
         "$schema": "https://opencode.ai/config.json",
         "agent": {
@@ -127,6 +133,33 @@ fn opencode_config_json(model: Option<&str>, instructions: &str, plugin: Option<
         },
         "instructions": [instructions],
     });
+    if !mcp_servers.is_empty() {
+        let mut mcp = serde_json::Map::new();
+        for server in mcp_servers {
+            let entry = match server.transport {
+                crate::local::mcp_registry::McpTransport::Stdio => {
+                    let mut command = vec![server.command.clone()];
+                    command.extend(server.args.iter().cloned());
+                    let mut entry = json!({"type": "local", "command": command, "enabled": true});
+                    if !server.env.is_empty() {
+                        entry["environment"] =
+                            serde_json::to_value(&server.env).unwrap_or_default();
+                    }
+                    entry
+                }
+                crate::local::mcp_registry::McpTransport::Http => {
+                    let mut entry = json!({"type": "remote", "url": server.url, "enabled": true});
+                    if !server.headers.is_empty() {
+                        entry["headers"] =
+                            serde_json::to_value(&server.headers).unwrap_or_default();
+                    }
+                    entry
+                }
+            };
+            mcp.insert(server.name.clone(), entry);
+        }
+        cfg["mcp"] = Value::Object(mcp);
+    }
     if let Some(plugin) = plugin {
         cfg["plugin"] = json!([plugin]);
     }
@@ -342,8 +375,10 @@ pub fn ensure_playbook(
     // semantics) so this session's agent discovers them natively.
     if let Some(dir) = session_skills_dir {
         super::agent_skills::ensure_session_skills(&workdir, dir)?;
-        // Explicit uploads land beside the built-ins; discovered skills stay native.
-        super::user_skills::write_into_session(&workdir, dir)?;
+        // 按生效范围写入:存量 + 绑定到本项目的 + 本会话专家任务挂载的技能;
+        // `/名字` 唤起不依赖这份拷贝。发现的技能仍归各自 harness 所有。
+        let allowed = super::user_skills::session_allowed_skills(&project.id, session_id);
+        super::user_skills::write_into_session(&workdir, dir, &allowed)?;
     }
     // LaTeX templates the agent copies from, written fresh for the same reason —
     // and independent of the skills dir, since no harness owns them.
@@ -366,6 +401,7 @@ fn write_agent_files(
     model: Option<&str>,
     session_id: &str,
     protocol: Protocol,
+    mcp_servers: &[crate::local::mcp_registry::McpServer],
 ) -> Result<(PathBuf, Option<PathBuf>)> {
     // Source of truth for the session-skills dir is the harness trait.
     use crate::local::harness::Harness;
@@ -390,14 +426,19 @@ fn write_agent_files(
             .join("opencode.json");
         std::fs::write(
             &path,
-            opencode_config_json(model, &playbook.to_string_lossy(), plugin.as_deref()),
+            opencode_config_json(
+                model,
+                &playbook.to_string_lossy(),
+                plugin.as_deref(),
+                mcp_servers,
+            ),
         )
         .map_err(|e| anyhow!("Could not write {}: {}", path.display(), e))?;
         Some(path)
     } else {
         std::fs::write(
             repo.join("opencode.json"),
-            opencode_config_json(model, PLAYBOOK_REL, plugin.as_deref()),
+            opencode_config_json(model, PLAYBOOK_REL, plugin.as_deref(), mcp_servers),
         )
         .map_err(|e| anyhow!("Could not write opencode.json: {}", e))?;
         None
@@ -464,7 +505,10 @@ async fn spawn_agent(
         let session = session_id.to_string();
         let protocol = binary.protocol;
         tokio::task::spawn_blocking(move || {
-            write_agent_files(&project, model.as_deref(), &session, protocol)
+            // 专家挂载的 MCP 服务在 spawn 时解析一次；serve 子进程的配置只在启动时读取，
+            // 注册表编辑对已运行的会话生效要等下次重启会话。
+            let mcp_servers = crate::local::research::resolve_session_mcp(&session);
+            write_agent_files(&project, model.as_deref(), &session, protocol, &mcp_servers)
         })
         .await
         .map_err(|e| anyhow!("agent file task failed: {e}"))??
@@ -1182,6 +1226,7 @@ mod tests {
             Some("cloud/selected"),
             "playbook",
             None,
+            &[],
         ))
         .unwrap();
         assert!(config["permission"].get("question").is_none());

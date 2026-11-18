@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { Bot, Plus, Trash2 } from "lucide-react";
 import { createWorkflowAgent, deleteWorkflowAgent, updateWorkflowAgent } from "../api";
 import { Badge, Button, Input, showAlert } from "../components/ui";
-import type { WorkflowAgent, WorkflowAgentInput, WorkflowAgentSkill } from "./model";
+import type { WorkflowAgent, WorkflowAgentInput, WorkflowAgentSkill, WorkflowLibrarySkill, McpServer } from "./model";
 
-const emptyAgent: WorkflowAgentInput = { name: "", description: "", prompt: "" };
+const emptyAgent: WorkflowAgentInput = { name: "", description: "", prompt: "", mcpServers: [], userSkills: [] };
 
 /** 内置 skill 名称对非开发者不直观；悬浮展开名称与用途说明（内容来自后端技能描述）。 */
 function SkillBadge({ skill }: { skill: WorkflowAgentSkill }) {
@@ -70,13 +70,13 @@ function SkillBadge({ skill }: { skill: WorkflowAgentSkill }) {
   </span>;
 }
 
-export function AgentLibrary({ agents, onChanged }: { agents: WorkflowAgent[]; onChanged: () => Promise<unknown> }) {
+export function AgentLibrary({ agents, mcpServers = [], userSkills = [], onChanged }: { agents: WorkflowAgent[]; mcpServers?: McpServer[]; userSkills?: WorkflowLibrarySkill[]; onChanged: () => Promise<unknown> }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = agents.find((agent) => agent.id === selectedId) ?? null;
   const [form, setForm] = useState<WorkflowAgentInput>(emptyAgent);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    setForm(selected ? { name: selected.name, description: selected.description, prompt: selected.prompt } : emptyAgent);
+    setForm(selected ? { name: selected.name, description: selected.description, prompt: selected.prompt, mcpServers: selected.mcpServers ?? [], userSkills: selected.userSkills ?? [] } : emptyAgent);
   }, [selectedId]);
 
   async function save() {
@@ -145,6 +145,24 @@ export function AgentLibrary({ agents, onChanged }: { agents: WorkflowAgent[]; o
         <label className="flex flex-col gap-1.5 text-sm">名称<Input value={form.name} maxLength={120} placeholder="例如：论文统计审查员" onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
         <label className="flex flex-col gap-1.5 text-sm">能力说明<Input value={form.description} maxLength={2048} placeholder="用于识别该 Agent 的职责和适用范围" onChange={(event) => setForm({ ...form, description: event.target.value })} /></label>
         <label className="flex flex-col gap-1.5 text-sm">角色提示词<textarea className="min-h-64 resize-y rounded-md border border-border bg-background p-3 text-sm text-text outline-none focus:border-text" value={form.prompt} maxLength={24000} placeholder="说明这个专家的职责、怎么使用证据、要输出什么、不能做什么" onChange={(event) => setForm({ ...form, prompt: event.target.value })} /></label>
+        <fieldset className="m-0 min-w-0 border-0 p-0 flex flex-col gap-1.5 text-sm">
+          <legend className="p-0">MCP 服务<span className="ms-2 text-xs font-normal text-subtext">该专家工作时可以调用这些服务</span></legend>
+          {mcpServers.length === 0 ? <p className="m-0 rounded-md border border-border bg-background p-3 text-subtext">还没有登记 MCP 服务；可先到 MCP 页添加，或在对话里让 AI 提议。</p> : <div className="flex flex-col gap-1.5 rounded-md border border-border bg-background p-3">
+            {mcpServers.map((server) => <label key={server.id} className="flex items-start gap-2">
+              <input type="checkbox" className="mt-1" checked={form.mcpServers.includes(server.id)} onChange={(event) => setForm({ ...form, mcpServers: event.target.checked ? [...form.mcpServers, server.id] : form.mcpServers.filter((id) => id !== server.id) })} />
+              <span className="min-w-0"><span className="text-text">{server.name}</span>{server.description && <span className="ms-2 text-xs text-subtext">{server.description}</span>}</span>
+            </label>)}
+          </div>}
+        </fieldset>
+        <fieldset className="m-0 min-w-0 border-0 p-0 flex flex-col gap-1.5 text-sm">
+          <legend className="p-0">使用的技能<span className="ms-2 text-xs font-normal text-subtext">该专家工作时自动携带这些技能；未勾选的技能不生效</span></legend>
+          {userSkills.length === 0 ? <p className="m-0 rounded-md border border-border bg-background p-3 text-subtext">还没有上传技能；可先到 Skills 页上传，或在对话里让 AI 登记。</p> : <div className="flex flex-col gap-1.5 rounded-md border border-border bg-background p-3">
+            {userSkills.map((skill) => <label key={skill.name} className="flex items-start gap-2">
+              <input type="checkbox" className="mt-1" checked={form.userSkills.includes(skill.name)} onChange={(event) => setForm({ ...form, userSkills: event.target.checked ? [...form.userSkills, skill.name] : form.userSkills.filter((name) => name !== skill.name) })} />
+              <span className="min-w-0"><span className="text-text">{skill.name}</span>{skill.description && <span className="ms-2 text-xs text-subtext">{skill.description}</span>}</span>
+            </label>)}
+          </div>}
+        </fieldset>
         <div className="flex items-center justify-between gap-3">
           <div>{selected && !selected.builtIn && <Button variant="danger" disabled={busy} onClick={() => void remove(selected)}><Trash2 size={14} />删除</Button>}</div>
           <Button variant="primary" disabled={busy || !form.name.trim() || !form.prompt.trim()} onClick={() => void save()}>{selected ? "保存新版本" : "创建 Agent"}</Button>

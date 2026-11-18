@@ -7,7 +7,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{now_ms, Store, StoredRun};
+use super::{now_ms, Store, StoredChatMessage, StoredRun};
 use crate::error::{anyhow, Result};
 
 mod archive_retention;
@@ -73,6 +73,23 @@ pub struct TaskSpec {
     /// kind = "foreach" 时的逐项处理定义；其他节点必须留空。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub for_each: Option<ForEachSpec>,
+    /// kind = "wait" 时的等待定义；其他节点必须留空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_step: Option<WaitStepSpec>,
+}
+/// 事件等待定义：等研究根目录下指定路径出现；超时转失败等待主理人处理。
+/// 时间点等待（等次日数据等）暂未纳入，待真实场景出现再评审。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WaitStepSpec {
+    /// 等待出现的路径（研究根目录相对路径；出现即通过，不看内容）。
+    pub source: String,
+    /// 等待超时分钟数；0 表示不限时（默认），超时后任务转失败。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub timeout_minutes: u32,
+}
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 fn is_zero(value: &u32) -> bool {
     *value == 0
@@ -135,7 +152,10 @@ pub fn parse_items(path: &str, bytes: &[u8]) -> Result<Vec<ForEachItem>> {
             ));
         }
         if item.title.len() > 120 {
-            return Err(anyhow!("清单文件 {path} 的项标题不能超过 120 字: {}", item.id));
+            return Err(anyhow!(
+                "清单文件 {path} 的项标题不能超过 120 字: {}",
+                item.id
+            ));
         }
         if !seen.insert(item.id.clone()) {
             return Err(anyhow!("清单文件 {path} 的项 id 重复: {}", item.id));
@@ -298,6 +318,9 @@ pub struct ResearchTask {
     /// 已结束的迭代记录，按执行顺序追加；`session_id` 始终指向当前正在执行的迭代。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub foreach_runs: Vec<ForeachRun>,
+    /// 事件等待开始计时的时间戳；进入等待时记录，超时判定与界面提示共用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_started_at: Option<i64>,
 }
 /// 逐项处理的一次迭代记录；失败迭代 `artifact` 为空、`ok` 为 false。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -667,7 +690,7 @@ impl Study {
         } else if satisfied < task.spec.depends_on.len() {
             return Err(anyhow!("前置任务未全部通过产物验收或被分流跳过"));
         }
-        if task.spec.role == "as-experiment-operator" {
+        if task.spec.role == "as-experiment-operator" || task.spec.kind == "experiment" {
             let scope = task.run_gate_scope()?;
             self.require_gate("G2", &scope)?;
             self.require_gate("G3", &scope)?;
@@ -790,6 +813,38 @@ impl Study {
             }
         }
     }
+    /// 就绪的人工任务转入等待主理人产出：不派发专家会话，提交产物即验收完成。
+    /// 幂等；在分流求值与派发判定之前调用。
+    pub fn resolve_human_tasks(&mut self) {
+        loop {
+            let mut changed = false;
+            let candidates: Vec<String> = self
+                .plan()
+                .map(|plan| {
+                    plan.tasks
+                        .iter()
+                        .filter(|task| task.spec.kind == "human" && task.state == "pending")
+                        .map(|task| task.spec.id.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            for task_id in candidates {
+                if self.ready(&task_id).is_ok() {
+                    let task = self.task_mut(&task_id);
+                    if let Ok(task) = task {
+                        if task.state == "pending" && task.session_id.is_none() {
+                            task.state = TASK_AWAITING.into();
+                            task.summary = Some("等待主理人完成并提交产物。".into());
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                return;
+            }
+        }
+    }
 }
 /// 分流谓词求值：返回 None 表示触发条件未就绪。
 fn route_outcome(route: &RouteSpec, deps: &[ResearchTask]) -> Option<(bool, String)> {
@@ -835,6 +890,29 @@ fn route_outcome(route: &RouteSpec, deps: &[ResearchTask]) -> Option<(bool, Stri
         }
         _ => None,
     }
+}
+/// 逐项任务的当前迭代：按已结束迭代数取下一项并展开产物路径；非逐项任务返回 None。
+pub fn foreach_current_step(task: &ResearchTask) -> Result<Option<(ForEachItem, String)>> {
+    if task.spec.kind != "foreach" {
+        return Ok(None);
+    }
+    let spec = task
+        .spec
+        .for_each
+        .as_ref()
+        .ok_or_else(|| anyhow!("逐项任务缺少逐项定义: {}", task.spec.id))?;
+    let items = task
+        .foreach_items
+        .as_ref()
+        .ok_or_else(|| anyhow!("逐项清单尚未就绪: {}", task.spec.id))?;
+    let index = task.foreach_runs.len();
+    let item = items
+        .get(index)
+        .ok_or_else(|| anyhow!("逐项清单为空或已越界: {}", task.spec.id))?;
+    Ok(Some((
+        item.clone(),
+        item_path_for(&spec.item_output, &item.id),
+    )))
 }
 impl ResearchTask {
     /// 该任务是否以 verdict 方式读取指定上游的结论（分流节点的预期读取路径）。
@@ -884,7 +962,10 @@ fn rework_upstream_tasks(study: &mut Study, gate_task_id: &str, reasons: &[Strin
     for task_id in &reset_ids {
         let task = study.task_mut(task_id)?;
         if task.spec.role == "as-experiment-operator"
-            || !matches!(task.state.as_str(), "completed" | "failed" | "skipped")
+            || !matches!(
+                task.state.as_str(),
+                "completed" | "failed" | "skipped" | "awaiting"
+            )
         {
             continue;
         }
@@ -897,6 +978,18 @@ fn rework_upstream_tasks(study: &mut Study, gate_task_id: &str, reasons: &[Strin
         task.rework_feedback = None;
         // 分流节点连同其历史判定一起重置：重新求值后才放行对应分支。
         task.route_decision = None;
+        // 逐项任务连同清单与全部迭代一起重置：就绪后重新物化清单再逐项执行。
+        if task.spec.kind == "foreach" {
+            task.foreach_items = None;
+            task.foreach_runs.clear();
+        }
+        // 实验节点归档旧运行并等待重新提交；等待节点清空计时重新等待。
+        if task.spec.kind == "experiment" && !task.run_ids.is_empty() {
+            task.previous_run_ids.append(&mut task.run_ids);
+        }
+        if task.spec.kind == "wait" {
+            task.wait_started_at = None;
+        }
         task.state = "pending".into();
         if deps.contains(task_id) {
             task.rework_feedback = Some(feedback.clone());
@@ -975,14 +1068,10 @@ pub(crate) fn validate_plan_with_roles(
         {
             return Err(anyhow!("任务 ID 仅允许字母、数字、横线和下划线"));
         }
-        // 分流节点不选择专家、不产出文件；角色与产物校验只针对专家任务，
-        // 分流自身的条件与分支规则统一在 validate_route_rules 中检查。
-        let is_route = task.kind == ROUTE_KIND;
-        if is_route {
-            if task.brief.trim().is_empty() || task.brief.len() > 24000 {
-                return Err(anyhow!("分流节点需要名称说明: {}", task.id));
-            }
-        } else {
+        // 非专家节点（分流/逐项/人工）不选择专家；角色与产物数量校验只针对专家任务，
+        // 各类型自身的条件规则统一在 validate_route_rules 中检查。
+        let is_agent = task.kind.is_empty() || task.kind == "agent";
+        if is_agent {
             validate_role(&task.role)?;
             if task.brief.trim().is_empty()
                 || task.brief.len() > 24000
@@ -990,6 +1079,10 @@ pub(crate) fn validate_plan_with_roles(
                 || task.outputs.len() > 30
             {
                 return Err(anyhow!("每个任务需要简报和 1–30 个产物路径"));
+            }
+        } else {
+            if task.brief.trim().is_empty() || task.brief.len() > 24000 {
+                return Err(anyhow!("节点 {} 需要名称说明", task.id));
             }
         }
         if task.depends_on.iter().any(|d| !ids.contains(d)) {
@@ -1161,8 +1254,20 @@ pub fn validate_route_rules(tasks: &[TaskSpec]) -> Result<()> {
                 if task.route.is_some() {
                     return Err(anyhow!("任务 {} 不是分流节点，不能配置分流条件", task.id));
                 }
+                if task.for_each.is_some() {
+                    return Err(anyhow!("任务 {} 不是逐项任务，不能配置逐项处理", task.id));
+                }
+                if task.wait_step.is_some() {
+                    return Err(anyhow!("任务 {} 不是等待节点，不能配置事件等待", task.id));
+                }
             }
             "route" => {
+                if task.for_each.is_some() {
+                    return Err(anyhow!("分流节点 {} 不能配置逐项处理", task.id));
+                }
+                if task.wait_step.is_some() {
+                    return Err(anyhow!("分流节点 {} 不能配置事件等待", task.id));
+                }
                 if !task.role.is_empty() {
                     return Err(anyhow!("分流节点 {} 不选择专家", task.id));
                 }
@@ -1233,6 +1338,185 @@ pub fn validate_route_rules(tasks: &[TaskSpec]) -> Result<()> {
                     other => {
                         return Err(anyhow!("分流节点 {} 的条件类型无效: {other}", task.id));
                     }
+                }
+            }
+            "foreach" => {
+                if !task.role.is_empty() {
+                    return Err(anyhow!(
+                        "逐项任务 {} 不选择专家：每项的专家角色由逐项简报决定",
+                        task.id
+                    ));
+                }
+                if !task.outputs.is_empty() {
+                    return Err(anyhow!(
+                        "逐项任务 {} 不直接声明产物：逐项产物由模板按项展开",
+                        task.id
+                    ));
+                }
+                if !task.inputs.is_empty() {
+                    return Err(anyhow!(
+                        "逐项任务 {} 不声明输入产物：列表来源即它的输入",
+                        task.id
+                    ));
+                }
+                if task.requires_approval || task.gate_downstream || task.max_rework > 0 {
+                    return Err(anyhow!(
+                        "逐项任务 {} 不支持完成后确认、结论把关或返工",
+                        task.id
+                    ));
+                }
+                if task.route.is_some() {
+                    return Err(anyhow!("逐项任务 {} 不能配置分流条件", task.id));
+                }
+                if !task.route_branch.is_empty() {
+                    return Err(anyhow!("逐项任务 {} 不设置分支标记", task.id));
+                }
+                if task.wait_step.is_some() {
+                    return Err(anyhow!("逐项任务 {} 不能配置事件等待", task.id));
+                }
+                if task.depends_on.is_empty() {
+                    return Err(anyhow!(
+                        "逐项任务 {} 需要至少一个前置任务：先连一条线上来",
+                        task.id
+                    ));
+                }
+                let Some(for_each) = task.for_each.as_ref() else {
+                    return Err(anyhow!("逐项任务 {} 缺少逐项处理定义", task.id));
+                };
+                let owner = tasks.iter().find(|candidate| {
+                    candidate
+                        .outputs
+                        .iter()
+                        .any(|output| output == &for_each.source)
+                });
+                let Some(owner) = owner else {
+                    return Err(anyhow!(
+                        "逐项任务 {} 的列表来源 {} 不是任何任务的产物",
+                        task.id,
+                        for_each.source
+                    ));
+                };
+                if !task.depends_on.contains(&owner.id) {
+                    return Err(anyhow!(
+                        "逐项任务 {} 的列表来源必须来自直接前置任务的产物",
+                        task.id
+                    ));
+                }
+                if !for_each.item_output.contains("{item}") {
+                    return Err(anyhow!(
+                        "逐项任务 {} 的产物模板必须包含 {{item}} 占位",
+                        task.id
+                    ));
+                }
+                if !safe_relative(&for_each.item_output.replace("{item}", "x")) {
+                    return Err(anyhow!("逐项任务 {} 的产物模板路径越界", task.id));
+                }
+                if for_each.item_brief.trim().is_empty() || for_each.item_brief.len() > 24000 {
+                    return Err(anyhow!("逐项任务 {} 需要逐项简报（1–24000 字）", task.id));
+                }
+                if !matches!(for_each.on_failure.as_str(), "" | "pause" | "skip") {
+                    return Err(anyhow!(
+                        "逐项任务 {} 的失败策略无效: {}（只允许暂停或跳过继续）",
+                        task.id,
+                        for_each.on_failure
+                    ));
+                }
+            }
+            "human" => {
+                if !task.role.is_empty() {
+                    return Err(anyhow!("人工任务 {} 不选择专家：由主理人亲自完成", task.id));
+                }
+                if task.outputs.len() != 1 {
+                    return Err(anyhow!(
+                        "人工任务 {} 需要恰好一个产物路径：主理人的提交会写入它",
+                        task.id
+                    ));
+                }
+                if task.requires_approval {
+                    return Err(anyhow!(
+                        "人工任务 {} 不需要完成后确认：主理人提交本身就是产出",
+                        task.id
+                    ));
+                }
+                if task.gate_downstream || task.max_rework > 0 {
+                    return Err(anyhow!("人工任务 {} 不支持结论把关或返工", task.id));
+                }
+                if task.route.is_some()
+                    || task.for_each.is_some()
+                    || task.wait_step.is_some()
+                    || !task.route_branch.is_empty()
+                {
+                    return Err(anyhow!(
+                        "人工任务 {} 不支持分流、逐项、等待或分支配置",
+                        task.id
+                    ));
+                }
+            }
+            "experiment" => {
+                if !task.role.is_empty() {
+                    return Err(anyhow!(
+                        "实验节点 {} 不选择专家：运行由引擎按已批准的契约提交",
+                        task.id
+                    ));
+                }
+                if task.outputs.is_empty() || task.outputs.len() > 30 {
+                    return Err(anyhow!(
+                        "实验节点 {} 需要 1–30 个产物路径：运行结束后按它们验收",
+                        task.id
+                    ));
+                }
+                if task.requires_approval {
+                    return Err(anyhow!(
+                        "实验节点 {} 不需要完成后确认：G2/G3 批准即授权运行",
+                        task.id
+                    ));
+                }
+                if task.gate_downstream || task.max_rework > 0 {
+                    return Err(anyhow!("实验节点 {} 不支持结论把关或返工", task.id));
+                }
+                if task.route.is_some()
+                    || task.for_each.is_some()
+                    || task.wait_step.is_some()
+                    || !task.route_branch.is_empty()
+                {
+                    return Err(anyhow!(
+                        "实验节点 {} 不支持分流、逐项、等待或分支配置",
+                        task.id
+                    ));
+                }
+            }
+            "wait" => {
+                if !task.role.is_empty() {
+                    return Err(anyhow!("等待节点 {} 不选择专家", task.id));
+                }
+                if !task.outputs.is_empty() {
+                    return Err(anyhow!("等待节点 {} 不产出文件", task.id));
+                }
+                if !task.inputs.is_empty() {
+                    return Err(anyhow!("等待节点 {} 不读取输入产物", task.id));
+                }
+                if task.requires_approval || task.gate_downstream || task.max_rework > 0 {
+                    return Err(anyhow!(
+                        "等待节点 {} 不支持完成后确认、结论把关或返工",
+                        task.id
+                    ));
+                }
+                if task.route.is_some() || task.for_each.is_some() || !task.route_branch.is_empty()
+                {
+                    return Err(anyhow!("等待节点 {} 不支持分流、逐项或分支配置", task.id));
+                }
+                let Some(wait_step) = task.wait_step.as_ref() else {
+                    return Err(anyhow!("等待节点 {} 缺少等待定义", task.id));
+                };
+                if !safe_relative(&wait_step.source) {
+                    return Err(anyhow!(
+                        "等待节点 {} 的等待路径越界: {}",
+                        task.id,
+                        wait_step.source
+                    ));
+                }
+                if wait_step.timeout_minutes > 24 * 60 {
+                    return Err(anyhow!("等待节点 {} 的超时不能超过 24 小时", task.id));
                 }
             }
             other => {
@@ -1431,6 +1715,51 @@ impl Store {
         )?;
         Ok(study)
     }
+    /// 研究目标以真实用户消息开场。画布、脚本与测试脚本常经 API 建会话并登记
+    /// 计划，全程未经过聊天发送，对话记录里就只剩模型回复。计划首次落库时若
+    /// 会话尚无任何用户消息，把目标播种成开场提问（真实 StoredChatMessage，
+    /// 置为 active leaf，后续唤醒与回复经 upsert_chat_message_on_branch 接在
+    /// 它下面）。聊天里的正常发送流先有用户消息，此处自动跳过，不会重复。
+    pub fn research_ensure_objective_message(&self, study: &Study) -> Result<()> {
+        let has_user: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM chat_messages WHERE session_id = ?1 AND role = 'user')",
+            params![study.session_id],
+            |row| row.get(0),
+        )?;
+        if has_user {
+            return Ok(());
+        }
+        let id = format!("research-objective-{}", study.id);
+        let parts = serde_json::to_string(&vec![crate::local::chat::WirePart::text(
+            format!("{id}-part"),
+            study.objective.clone(),
+        )])?;
+        let created_at: i64 = self
+            .conn
+            .query_row(
+                "SELECT created_at FROM chat_sessions WHERE id = ?1",
+                params![study.session_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or_else(now_ms);
+        self.upsert_chat_message(&StoredChatMessage {
+            id: id.clone(),
+            session_id: study.session_id.clone(),
+            role: "user".into(),
+            parts_json: parts,
+            created_at,
+            completed_at: None,
+            parent_id: None,
+            base_native_session_id: None,
+            result_native_session_id: None,
+        })?;
+        self.conn.execute(
+            "UPDATE chat_sessions SET active_leaf_id = ?2 WHERE id = ?1 AND active_leaf_id IS NULL",
+            params![study.session_id, id],
+        )?;
+        Ok(())
+    }
     pub fn research_log_path(&self, run_id: &str) -> Result<PathBuf> {
         if !run_id
             .chars()
@@ -1467,6 +1796,7 @@ impl Store {
         let mut study = self.research_study(study_id)?;
         // 派发前先求值就绪的分流节点：分支放行与 skipped 传播要在就绪判定之前完成。
         study.resolve_routes()?;
+        study.resolve_human_tasks();
         study.ready(task_id)?;
         let root = self.research_root(&study)?;
         for dependency in &study.task(task_id)?.spec.depends_on {
@@ -1511,7 +1841,7 @@ impl Store {
             study.require_gate("G1", &study.plan_scope()?)?;
             let version = study.plan()?.version;
             let task = study.task(task_id)?;
-            if task.spec.role != "as-experiment-operator"
+            if task.spec.role != "as-experiment-operator" && task.spec.kind != "experiment"
                 || !matches!(task.state.as_str(), "pending" | "failed")
             {
                 return Err(anyhow!("只能为待执行或失败待重试的实验执行任务准备运行"));
@@ -1796,10 +2126,176 @@ impl Store {
             task.attempts += 1;
             task.pending_nudge = None;
             task.pending_nudge_turn_id = None;
+            // 逐项任务重试：移除末尾失败迭代，从该项重新执行（清单保持不变）。
+            if task.spec.kind == "foreach" && task.foreach_runs.last().is_some_and(|run| !run.ok) {
+                task.foreach_runs.pop();
+            }
+            // 事件等待重试：清掉旧计时起点，从本次重试重新计时（与返工路径同语义），
+            // 否则已超时的等待节点会带着旧起点立即再次判超时，重试走不通。
+            if task.spec.kind == "wait" {
+                task.wait_started_at = None;
+            }
             task.state = "pending".into();
             task.summary = None;
             Ok(())
         })
+    }
+    /// 实验节点挂接引擎提交的运行：仅接受待提交状态的任务；重复挂接同一 Run 幂等跳过。
+    pub fn research_attach_experiment_run(
+        &self,
+        study_id: &str,
+        task_id: &str,
+        run_id: &str,
+    ) -> Result<()> {
+        self.research_update(study_id, |study| {
+            study.ensure_active()?;
+            let task = study.task_mut(task_id)?;
+            if task.spec.kind != "experiment" {
+                return Err(anyhow!("只有实验节点可以挂接引擎提交的运行"));
+            }
+            if task.state != "pending" {
+                return Err(anyhow!("实验节点不在待提交状态"));
+            }
+            // reserve 阶段已登记 run_id 时（提交检查先行写入），仍要完成状态迁移。
+            if !task.run_ids.iter().any(|id| id == run_id) {
+                task.run_ids.push(run_id.into());
+                task.attempts += 1;
+            }
+            task.state = "running".into();
+            task.summary = Some(format!(
+                "运行已提交（Run: {run_id}），等待结束后按产物验收。"
+            ));
+            Ok(())
+        })
+    }
+    /// 实验节点的运行终态验收：全部 Run 到达终态后按声明产物收束（幂等，reconcile 周期调用）。
+    /// 运行成功但产物缺失/为空按失败处理，等待主理人重试；失败不伪装为下游可用。
+    pub fn research_reconcile_experiment_tasks(&self, study_id: &str) -> Result<()> {
+        let study = self.research_study(study_id)?;
+        if study.status != "active" {
+            return Ok(());
+        }
+        let pending: Vec<(String, Vec<String>)> = study
+            .plan()
+            .ok()
+            .map(|plan| {
+                plan.tasks
+                    .iter()
+                    .filter(|t| t.spec.kind == "experiment" && t.state == "running")
+                    .map(|t| (t.spec.id.clone(), t.run_ids.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (task_id, run_ids) in pending {
+            if run_ids.is_empty() {
+                continue;
+            }
+            let mut runs = Vec::new();
+            for run_id in &run_ids {
+                let Some(run) = self.get_run(run_id)? else {
+                    continue;
+                };
+                runs.push(run);
+            }
+            if runs.len() != run_ids.len() {
+                continue;
+            }
+            if runs.iter().any(|r| !crate::local::is_terminal(&r.status)) {
+                continue;
+            }
+            let all_done = runs.iter().all(|r| r.status == "done");
+            let failed_runs = runs
+                .iter()
+                .filter(|r| r.status != "done")
+                .map(|r| format!("{}({})", r.id, r.status))
+                .collect::<Vec<_>>()
+                .join("、");
+            self.research_update(study_id, |study| {
+                study.ensure_active()?;
+                let root = self.research_root(study)?;
+                let task = study.task_mut(&task_id)?;
+                if task.state != "running" || task.spec.kind != "experiment" {
+                    return Ok(());
+                }
+                // 状态收束后立刻在同一事务里推进分流与人工就绪：事务外的读改写
+                // 会覆盖并发写者的更新，必须留在 research_update 保护模式内。
+                if !all_done {
+                    task.state = "failed".into();
+                    task.summary = Some(format!(
+                        "实验运行失败或被取消：{failed_runs}。可 `orx research retry {}` 重跑。",
+                        task_id
+                    ));
+                } else {
+                    let mut missing = Vec::new();
+                    let mut artifacts = Vec::new();
+                    for path in &task.spec.outputs {
+                        match inspect_artifact(&root, path) {
+                            Ok(artifact) if artifact.bytes > 0 => artifacts.push(artifact),
+                            _ => missing.push(path.clone()),
+                        }
+                    }
+                    if missing.is_empty() {
+                        task.artifacts = artifacts;
+                        task.state = "completed".into();
+                        task.summary = Some(format!(
+                            "实验运行完成，产物已按 SHA-256 验收（{}）。",
+                            task.artifacts.len()
+                        ));
+                    } else {
+                        task.state = "failed".into();
+                        task.summary = Some(format!(
+                            "运行成功但声明产物缺失或为空：{}。请检查实验命令是否写出这些文件，然后 `orx research retry {}` 重跑。",
+                            missing.join("、"),
+                            task_id
+                        ));
+                    }
+                }
+                study.resolve_routes()?;
+                study.resolve_human_tasks();
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+    /// 人工任务提交：主理人的文本直接写入声明产物并完成验收，不经专家会话、
+    /// 不叠加第二套批准；提交后立即推进分流与下游就绪判定。
+    pub fn research_submit_human(&self, id: &str, task_id: &str, content: String) -> Result<()> {
+        self.research_update(id, |study| {
+            study.ensure_active()?;
+            let root = self.research_root(study)?;
+            let task = study.task(task_id)?;
+            if task.spec.kind != "human" {
+                return Err(anyhow!("只有人工任务可以由主理人提交产出"));
+            }
+            if task.state != TASK_AWAITING {
+                return Err(anyhow!(
+                    "人工任务尚未进入等待提交状态：前置任务完成后才能提交"
+                ));
+            }
+            if content.trim().is_empty() {
+                return Err(anyhow!("提交内容不能为空"));
+            }
+            if content.len() > 24000 {
+                return Err(anyhow!("提交内容不能超过 24000 字"));
+            }
+            let path = task.spec.outputs[0].clone();
+            let full = root.join(&path);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&full, content.as_bytes())?;
+            let artifact = inspect_artifact(&root, &path)?;
+            let task = study.task_mut(task_id)?;
+            task.artifacts = vec![artifact];
+            task.state = "completed".into();
+            let excerpt: String = content.chars().take(160).collect();
+            task.summary = Some(format!("主理人已提交产出。内容摘录：{excerpt}"));
+            study.resolve_routes()?;
+            study.resolve_human_tasks();
+            Ok(())
+        })?;
+        crate::commands::research_dispatch::auto_dispatch_sync(self, id)?;
+        Ok(())
     }
     pub fn research_session_has_active_runs(&self, session: &str) -> Result<bool> {
         let Some((study_id, task_id, version)) = self
@@ -2040,7 +2536,12 @@ impl Store {
         if task.run_contract.as_ref() != Some(contract) {
             return Err(anyhow!("代码、命令或资源已变化，请修订计划并重新批准"));
         }
-        if task.state != "running" || task.session_id.as_deref() != session {
+        if session.is_none() {
+            // 引擎自动提交发生在挂接之前：任务仍处于待提交状态，无专家会话。
+            if task.state != "pending" {
+                return Err(anyhow!("运行批准已消费或任务状态已变化，请检查研究状态"));
+            }
+        } else if task.state != "running" || task.session_id.as_deref() != session {
             return Err(anyhow!("请由获批任务的执行专家启动运行"));
         }
         if !task.run_ids.is_empty() {
@@ -2114,7 +2615,7 @@ impl Store {
                     return Err(anyhow!("实验任务尚无真实 Run"));
                 }
                 let accepted: Vec<Artifact> = match &foreach_step {
-                    Some((item, item_path)) => {
+                    Some((_item, item_path)) => {
                         let artifact = inspect_artifact(&root, item_path)?;
                         if artifact.bytes == 0 {
                             return Err(anyhow!("产物为空: {item_path}"));
@@ -2162,10 +2663,15 @@ impl Store {
             task.pending_nudge = None;
             task.pending_nudge_turn_id = None;
             task.rework_feedback = None;
-            if let Some(for_each) = task.spec.for_each.as_ref() {
+            if task.spec.kind == "foreach" {
                 // 逐项任务按迭代推进：失败按策略暂停或跳过，全部项到达终态后收束。
+                let for_each = task
+                    .spec
+                    .for_each
+                    .clone()
+                    .ok_or_else(|| anyhow!("逐项任务缺少逐项定义: {}", task.spec.id))?;
                 if !success {
-                    let (item, item_path) = foreach_step.clone().ok_or_else(|| anyhow!("逐项任务缺少当前迭代"))?;
+                    let (item, _item_path) = foreach_step.clone().ok_or_else(|| anyhow!("逐项任务缺少当前迭代"))?;
                     let session = task.session_id.clone().unwrap_or_default();
                     task.foreach_runs.push(ForeachRun {
                         item_id: item.id.clone(),
@@ -2185,6 +2691,7 @@ impl Store {
                             task.spec.id
                         ));
                         study.resolve_routes()?;
+                        study.resolve_human_tasks();
                         return Ok(());
                     }
                 }
@@ -2194,9 +2701,11 @@ impl Store {
                     // 还有剩余项：回到待派发，由后台推进下一项。
                     task.session_id = None;
                     task.output_baseline = None;
+                    task.artifacts = Vec::new();
                     task.state = "pending".into();
                     task.summary = Some(format!("逐项处理进行中（{done}/{total}）。"));
                     study.resolve_routes()?;
+                    study.resolve_human_tasks();
                     return Ok(());
                 }
                 let succeeded = task.foreach_runs.iter().filter(|run| run.ok).count();
@@ -2208,6 +2717,7 @@ impl Store {
                 task.state = "completed".into();
                 task.summary = Some(format!("逐项处理完成（成功 {succeeded}/{total}）。"));
                 study.resolve_routes()?;
+                study.resolve_human_tasks();
                 return Ok(());
             }
             task.state = if success { "completed" } else { "failed" }.into();
@@ -2223,6 +2733,7 @@ impl Store {
             if !success {
                 // 失败也是失败分流谓词的触发条件：验收落定后立即求值分流节点。
                 study.resolve_routes()?;
+                study.resolve_human_tasks();
                 return Ok(());
             }
             // 先汇总本轮验收结果，结束任务的可变借用后再执行编排动作。
@@ -2236,12 +2747,14 @@ impl Store {
             let blocked = verdict.as_ref().is_some_and(|v| v.status == "blocked");
             if !blocked {
                 study.resolve_routes()?;
+                study.resolve_human_tasks();
                 return Ok(());
             }
             if max > 0 && count < max {
                 let reasons = verdict.map(|v| v.reasons).unwrap_or_default();
                 rework_upstream_tasks(study, task_id, &reasons)?;
                 study.resolve_routes()?;
+                study.resolve_human_tasks();
                 return Ok(());
             }
             let note = if max > 0 {
@@ -2257,6 +2770,7 @@ impl Store {
                 }
             }
             study.resolve_routes()?;
+            study.resolve_human_tasks();
             Ok(())
         })
     }
@@ -2492,6 +3006,8 @@ mod tests {
             route: None,
             route_branch: String::new(),
             wait_for: String::new(),
+            for_each: None,
+            wait_step: None,
         }
     }
     fn plan() -> PlanInput {
@@ -3290,6 +3806,9 @@ mod tests {
                 rework_count: 0,
                 rework_feedback: None,
                 route_decision: None,
+                foreach_items: None,
+                foreach_runs: Vec::new(),
+                wait_started_at: None,
             }],
         });
         store.conn.execute("INSERT INTO runs(id,experiment_id,project_id,status,backend_json,created_at,updated_at) VALUES('run','exp','project','running','{}',2000,2500)",[]).unwrap();

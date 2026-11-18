@@ -1,17 +1,35 @@
 use super::*;
 use crate::workflow::{AgentDefinition, AgentInput, WorkflowDraftInput};
 
-fn agent_json(agent: &AgentDefinition, built_in: bool) -> Value {
+fn agent_json(
+    agent: &AgentDefinition,
+    built_in: bool,
+    mcp_ids: &[String],
+    skill_names: &[String],
+) -> Value {
     json!({
         "id": agent.id,
         "name": agent.name,
         "description": agent.description,
         "prompt": agent.prompt,
+        "mcpServers": mcp_ids,
+        "userSkills": skill_names,
         "version": agent.version,
         "builtIn": built_in,
         "createdAt": agent.created_at,
         "updatedAt": agent.updated_at,
     })
+}
+
+/// 挂载技能的存在性校验：与 MCP 一致，在 API/CLI 入口做，store 只负责持久化。
+fn validate_user_skill_refs(skill_names: &[String]) -> crate::error::Result<()> {
+    let uploaded = crate::local::user_skills::list_uploaded();
+    for name in skill_names {
+        if !uploaded.iter().any(|skill| &skill.name == name) {
+            return Err(crate::error::anyhow!("未知技能: {name}"));
+        }
+    }
+    Ok(())
 }
 
 fn built_in_agents() -> Vec<Value> {
@@ -40,6 +58,8 @@ fn built_in_agents() -> Vec<Value> {
                 "name": name,
                 "description": description,
                 "prompt": prompt,
+                "mcpServers": [],
+                "userSkills": [],
                 "toolPermissions": [
                     "实际工具权限由主会话和 Agent 引擎决定，不设置角色独立白名单",
                     "禁止自行派生其他专家",
@@ -70,6 +90,10 @@ mod tests {
             assert_eq!(agent["prompt"].as_str(), Some(*prompt));
             assert_ne!(agent["description"], agent["name"]);
             assert_eq!(agent["skills"].as_array().map(Vec::len), Some(skill_count));
+            // 内置角色不挂 MCP 服务：挂载是自定义专家的能力。
+            assert_eq!(agent["mcpServers"].as_array().map(Vec::len), Some(0));
+            // 内置角色同样不挂用户技能。
+            assert_eq!(agent["userSkills"].as_array().map(Vec::len), Some(0));
             assert!(agent["toolPermissions"]
                 .as_array()
                 .is_some_and(|permissions| !permissions.is_empty()));
@@ -81,12 +105,23 @@ pub(super) async fn agents() -> ApiResult {
     blocking_api(move || {
         let store = Store::open()?;
         let mut agents = built_in_agents();
-        agents.extend(
-            store
-                .list_workflow_agents()?
+        let attachments = store.list_workflow_agent_mcps()?;
+        let skill_attachments = store.list_skill_bindings()?;
+        for agent in store.list_workflow_agents()? {
+            let mcps: Vec<String> = attachments
                 .iter()
-                .map(|agent| agent_json(agent, false)),
-        );
+                .filter(|(id, _)| id == &agent.id)
+                .map(|(_, mcp_id)| mcp_id.clone())
+                .collect();
+            let skills: Vec<String> = skill_attachments
+                .iter()
+                .filter(|(kind, id, _)| {
+                    kind == crate::store::skills::SCOPE_AGENT && id == &agent.id
+                })
+                .map(|(_, _, name)| name.clone())
+                .collect();
+            agents.push(agent_json(&agent, false, &mcps, &skills));
+        }
         Ok(Json(json!({"agents":agents})))
     })
     .await
@@ -94,8 +129,16 @@ pub(super) async fn agents() -> ApiResult {
 
 pub(super) async fn create_agent(Json(input): Json<AgentInput>) -> ApiResult {
     blocking_api(move || {
-        let agent = Store::open()?.create_workflow_agent(input)?;
-        Ok(Json(json!({"agent":agent_json(&agent,false)})))
+        crate::local::mcp_registry::validate_mcp_refs(&input.mcp_servers).map_err(bad_request)?;
+        validate_user_skill_refs(&input.user_skills).map_err(bad_request)?;
+        let store = Store::open()?;
+        let agent = store.create_workflow_agent(input).map_err(bad_request)?;
+        let mcps = store.workflow_agent_mcp_ids(&agent.id)?;
+        let skills =
+            store.skill_bindings_for_scope(crate::store::skills::SCOPE_AGENT, &agent.id)?;
+        Ok(Json(
+            json!({"agent":agent_json(&agent,false,&mcps,&skills)}),
+        ))
     })
     .await
 }
@@ -105,10 +148,18 @@ pub(super) async fn update_agent(
     Json(input): Json<AgentInput>,
 ) -> ApiResult {
     blocking_api(move || {
-        let agent = Store::open()?
+        crate::local::mcp_registry::validate_mcp_refs(&input.mcp_servers).map_err(bad_request)?;
+        validate_user_skill_refs(&input.user_skills).map_err(bad_request)?;
+        let store = Store::open()?;
+        let agent = store
             .update_workflow_agent(&id, input)
             .map_err(bad_request)?;
-        Ok(Json(json!({"agent":agent_json(&agent,false)})))
+        let mcps = store.workflow_agent_mcp_ids(&agent.id)?;
+        let skills =
+            store.skill_bindings_for_scope(crate::store::skills::SCOPE_AGENT, &agent.id)?;
+        Ok(Json(
+            json!({"agent":agent_json(&agent,false,&mcps,&skills)}),
+        ))
     })
     .await
 }
@@ -119,6 +170,59 @@ pub(super) async fn delete_agent(Path(id): Path<String>) -> ApiResult {
             return Err(not_found("custom agent"));
         }
         Ok(Json(json!({"ok":true})))
+    })
+    .await
+}
+
+/// 能力中心的技能视图：内置 orx-* 模块与用户技能（上传 + 镜像）合并成一份只读列表，
+/// 用户技能附带生效范围（legacy 全局标记 + 项目/专家绑定摘要）。上传与删除继续走
+/// `/api/user-skills`，绑定走 `/api/skill-bindings`，这里只负责工作流场景的统一展示。
+pub(super) async fn skills() -> ApiResult {
+    blocking_api(move || {
+        let builtin =
+            crate::local::agent_skills::skills(crate::local::agent_skills::SkillSet::Local)
+                .into_iter()
+                .map(|skill| {
+                    json!({
+                        "name": skill.name,
+                        "description": skill.description,
+                        "source": "builtin",
+                        "origin": Value::Null,
+                        "bytes": Value::Null,
+                        "updatedAt": Value::Null,
+                    })
+                })
+                .collect::<Vec<_>>();
+        let store = Store::open()?;
+        let legacy: std::collections::HashSet<String> =
+            store.legacy_global_skills()?.into_iter().collect();
+        let bindings = store.list_skill_bindings()?;
+        let summarize = |name: &str, kind: &str| -> Vec<String> {
+            bindings
+                .iter()
+                .filter(|(scope_kind, _, skill)| scope_kind == kind && skill == name)
+                .map(|(_, scope_id, _)| scope_id.clone())
+                .collect()
+        };
+        let user = crate::local::user_skills::list_uploaded()
+            .into_iter()
+            .map(|skill| {
+                json!({
+                    "name": skill.name,
+                    "description": Value::Null,
+                    "source": "user",
+                    "origin": skill.origin,
+                    "bytes": skill.bytes,
+                    "updatedAt": skill.updated_at,
+                    "legacyGlobal": legacy.contains(&skill.name),
+                    "boundProjects": summarize(&skill.name, crate::store::skills::SCOPE_PROJECT),
+                    "boundAgents": summarize(&skill.name, crate::store::skills::SCOPE_AGENT),
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut skills = builtin;
+        skills.extend(user);
+        Ok(Json(json!({"skills": skills})))
     })
     .await
 }

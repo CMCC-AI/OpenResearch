@@ -31,7 +31,7 @@ export interface ResearchTask {
   previousSessions?: string[];
   attempts?: number;
   runContract?: { experimentId: string } | null;
-  agent?: { id: string; name: string; version: number; prompt: string } | null;
+  agent?: { id: string; name: string; version: number; prompt: string; mcpServers?: { id: string; name: string }[] | null } | null;
   artifacts: { path: string; sha256: string; bytes: number }[]; runIds: string[];
   inputs?: string[];
   requiresApproval?: boolean;
@@ -40,11 +40,18 @@ export interface ResearchTask {
   verdict?: ResearchTaskVerdict | null;
   reworkCount?: number;
   reworkFeedback?: string | null;
-  /** 节点类型：缺省为专家任务；"route" 为条件分流节点（引擎判定，不派发专家）。 */
-  kind?: "agent" | "route";
+  /** 节点类型：缺省为专家任务；"route" 分流；"foreach" 逐项处理；"human" 主理人亲自完成；"experiment" 实验执行；"wait" 事件等待。 */
+  kind?: "agent" | "route" | "foreach" | "human" | "experiment" | "wait";
   routeBranch?: "then" | "else";
   waitFor?: "all" | "any";
   routeDecision?: { outcome: "matched" | "unmatched"; basis: string; decidedAt: number } | null;
+  forEach?: { source: string; itemOutput: string; itemBrief: string; onFailure?: "pause" | "skip" } | null;
+  waitStep?: { source: string; timeoutMinutes?: number } | null;
+  /** 事件等待开始计时的时间戳。 */
+  waitStartedAt?: number | null;
+  /** 逐项任务：就绪时固化的清单与已结束的迭代记录。 */
+  foreachItems?: { id: string; title: string }[] | null;
+  foreachRuns?: { itemId: string; itemTitle: string; ok: boolean; artifact?: { path: string } | null; summary?: string | null }[];
 }
 export interface ResearchDecision {
   id: string; gate: string; version: number; scope: string; scopeHash: string;
@@ -77,26 +84,19 @@ export interface ResearchMetrics {
   measuredAt: number;
   running: boolean;
 }
-/** 研究成果页条目：已通过交付确认（默认 G4）的研究精简视图，由后端 /research/deliveries 返回。 */
-export interface ResearchDeliveryEntry {
-  studyId: string;
-  sessionId: string;
-  objective: string;
-  mode: string;
-  planVersion: number;
-  summary: string;
-  scopeHash: string;
-  decidedAt: number | null;
-  artifacts: { path: string; sha256: string; bytes: number }[];
-  packageUrl: string;
-}
-
-/** 成果页主报告：优先综述正文，缺失时回退到字节数最大的 Markdown 产物。 */
-export function deliverableReportPath(delivery: ResearchDeliveryEntry): string | null {
-  if (delivery.artifacts.some((artifact) => artifact.path === "writing/review.md")) return "writing/review.md";
-  const markdown = delivery.artifacts.filter((artifact) => artifact.path.endsWith(".md"));
-  if (!markdown.length) return null;
-  return markdown.reduce((best, artifact) => (artifact.bytes > best.bytes ? artifact : best)).path;
+/** 产物正文里的相对链接解析到验收登记的产物路径：先按研究根匹配，再按当前文件目录回退；
+ * `artifacts/` 前缀（聊天引用约定）先剥掉。未命中登记清单的链接返回 null，由调用方保持纯文本。 */
+export function resolveArtifactLinkPath(href: string, currentPath: string, paths: Set<string>): string | null {
+  let candidate = href.replace(/^artifacts\//, "");
+  try { candidate = decodeURIComponent(candidate); } catch { /* Keep literal registered paths. */ }
+  if (paths.has(candidate)) return candidate;
+  const base = currentPath.split("/").slice(0, -1);
+  for (const segment of candidate.split("/")) {
+    if (segment === "..") { if (!base.length) return null; base.pop(); }
+    else if (segment && segment !== ".") base.push(segment);
+  }
+  const resolved = base.join("/");
+  return paths.has(resolved) ? resolved : null;
 }
 
 export function researchDuration(metrics: ResearchMetrics | null | undefined, now = Date.now()): string {
@@ -210,6 +210,8 @@ export function researchAttention(study: ResearchStudy) {
   if (active.length) return `${active.length} 位专家执行中 / 待验收`;
   if (decisions.some((decision) => decision.gate === deliveryGate(researchWorkflowMode(study)) && decision.status === "approved")) return researchWorkflowMode(study) === "proposal" ? "实验方案已确认 · 未授权运行实验" : "成果已确认";
   if (!tasks.length) return "主理人正在梳理目标与材料";
+  const awaitingHuman = tasks.find((task) => task.state === "awaiting");
+  if (awaitingHuman) return `等你完成一项 · ${awaitingHuman.brief.slice(0, 40)}`;
   if (tasks.every((task) => task.state === "completed" || task.state === "skipped")) return study.deliveryError ? `交付确认受阻 · ${study.deliveryError}` : "任务已验收 · 交付确认尚未生成";
   return "计划已登记 · 等待推进就绪任务";
 }
@@ -217,6 +219,14 @@ export function researchAttention(study: ResearchStudy) {
 export function researchTaskStatus(study: ResearchStudy, task: ResearchTask): { state: WorkflowState; label: string } {
   if (study.staleReviewTaskIds?.includes(task.id) && task.state === "completed") return { state: "blocked", label: "证据已修订 · 等待重新审查" };
   if (task.state === "skipped") return { state: "optional", label: "已跳过 · 分流未走此分支" };
+  if (task.state === "awaiting") return { state: "blocked", label: `等你完成 · ${task.brief}` };
+  if (task.state === "running" && task.kind === "experiment") return { state: "running", label: "实验运行中 · 结束后按产物验收" };
+  if (task.state === "pending" && task.kind === "wait" && task.waitStep?.source) return { state: "waiting", label: `等待 ${task.waitStep.source} 出现` };
+  if (task.state === "running" && task.kind === "foreach") {
+    const done = task.foreachRuns?.length ?? 0;
+    const total = task.foreachItems?.length ?? 0;
+    return { state: "running", label: `逐项处理中 · 第 ${done + 1}/${total || "?"} 项` };
+  }
   if (task.state === "completed" && task.kind === "route") {
     const decision = task.routeDecision;
     return decision?.outcome === "matched"

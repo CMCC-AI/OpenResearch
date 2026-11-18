@@ -32,7 +32,7 @@ function fixedChainCatalog(): { id: string; data: SystemNodeData }[] {
   return [
     { id: systemNodeIds.scope, data: { kind: "approval", title: "G1 · 研究范围确认", description: "主理人批准当前计划后启动专家任务", gate: "G1", label: "运行时确认" } },
     { id: systemNodeIds.delivery, data: { kind: "approval", title: "G4 · 交付确认", description: "全部任务验收、结论与证据检查通过后，确认成果交付", gate: "G4", label: "运行时确认" } },
-    { id: systemNodeIds.output, data: { kind: "output", title: "研究交付", description: "确认后在“研究成果”页查看与下载成果", label: "运行时生成" } },
+    { id: systemNodeIds.output, data: { kind: "output", title: "研究交付", description: "交付确认后在当前对话查看研究成果", label: "运行时生成" } },
   ];
 }
 

@@ -3,11 +3,32 @@ export interface WorkflowAgentSkill {
   description: string;
 }
 
+/** 能力库技能条目：内置 orx-* 模块与用户技能合并后的只读视图。 */
+export interface WorkflowLibrarySkill {
+  name: string;
+  description?: string | null;
+  source: "builtin" | "user";
+  /** 镜像来源（某个 coding agent 或插件）；上传技能没有该字段。 */
+  origin?: string | null;
+  bytes?: number | null;
+  updatedAt?: number | null;
+  /** 历史上传：按需绑定上线前已存在，保留全局生效。 */
+  legacyGlobal?: boolean;
+  /** 绑定的项目 id 列表（生效范围）。 */
+  boundProjects?: string[];
+  /** 绑定的自定义专家 id 列表（生效范围）。 */
+  boundAgents?: string[];
+}
+
 export interface WorkflowAgent {
   id: string;
   name: string;
   description: string;
   prompt: string;
+  /** 挂载的 MCP 服务 id；内置专家为空数组。 */
+  mcpServers?: string[];
+  /** 挂载的上传技能名；内置专家为空数组。派发该专家的会话自动携带这些技能。 */
+  userSkills?: string[];
   toolPermissions?: string[];
   skills?: WorkflowAgentSkill[];
   version: number;
@@ -20,6 +41,48 @@ export interface WorkflowAgentInput {
   name: string;
   description: string;
   prompt: string;
+  mcpServers: string[];
+  userSkills: string[];
+}
+
+/** MCP 服务登记条目；命令与环境变量存本机 config_dir/mcp.json（0600），不入库不进工作树。 */
+export interface McpServer {
+  id: string;
+  name: string;
+  transport: "stdio" | "http";
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  url: string;
+  headers: Record<string, string>;
+  description: string;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface McpServerInput {
+  name: string;
+  transport: "stdio" | "http";
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  url: string;
+  headers: Record<string, string>;
+  description: string;
+  enabled: boolean;
+}
+
+/** 主理人提交的 MCP 提案：用户在聊天卡片确认后才写入登记表。 */
+export interface McpProposal {
+  id: string;
+  sessionId: string;
+  name: string;
+  payload: McpServerInput | null;
+  rationale: string;
+  status: "pending" | "approved" | "rejected";
+  createdAt: number;
+  decidedAt: number | null;
 }
 
 export interface WorkflowTask {
@@ -37,14 +100,27 @@ export interface WorkflowTask {
   gateDownstream?: boolean;
   /** 结论为阻塞时自动带意见返工上游的轮数上限（0–3）。 */
   maxRework?: number;
-  /** 节点类型：缺省为专家任务；"route" 为条件分流（引擎判定，不派发专家）。 */
-  kind?: "agent" | "route";
+  /** 节点类型：缺省为专家任务；"route" 条件分流；"foreach" 逐项处理；"human" 主理人亲自完成；"experiment" 实验执行；"wait" 事件等待。 */
+  kind?: "agent" | "route" | "foreach" | "human" | "experiment" | "wait";
   /** kind = "route" 时的条件定义。 */
   route?: { on: "verdict" | "failure"; source?: string; verdictIs?: "pass" | "blocked" };
   /** 分流节点直接下游的分支标记：then（成立）/ else（不成立）。 */
   routeBranch?: "then" | "else";
   /** 多前置汇合策略：缺省等全部完成；"any" 任一完成即继续。 */
   waitFor?: "all" | "any";
+  /** kind = "foreach" 时的逐项处理定义（首批为串行执行）。 */
+  forEach?: {
+    /** 读取的列表产物路径（直接前置任务的产物，其旁存在 .items.json 清单）。 */
+    source: string;
+    /** 逐项产物模板，必须含 {item} 占位，如 readings/{item}.md。 */
+    itemOutput: string;
+    /** 每项派发给专家的简报；{item} 会替换为该项标题。 */
+    itemBrief: string;
+    /** 部分失败策略：缺省暂停等待主理人；"skip" 跳过该项继续剩余项。 */
+    onFailure?: "pause" | "skip";
+  } | null;
+  /** kind = "wait" 时的等待定义：等研究目录下路径出现，超时转失败。 */
+  waitStep?: { source: string; timeoutMinutes?: number } | null;
 }
 
 /** 阶段分组框：纯展示，只存画布位置，不进入执行计划与批准范围。 */
@@ -208,6 +284,97 @@ export function addWorkflowFrame(draft: WorkflowDraftInput, frame: WorkflowFrame
   return { ...draft, frames: [...(draft.frames ?? []), frame] };
 }
 
+export function addForeachTask(draft: WorkflowDraftInput, position?: FlowPoint): WorkflowDraftInput {
+  let index = draft.tasks.length + 1;
+  while (draft.tasks.some((task) => task.id === `loop-${index}`)) index++;
+  const id = `loop-${index}`;
+  return {
+    ...draft,
+    tasks: [...draft.tasks, {
+      id,
+      role: "",
+      brief: "逐项处理",
+      dependsOn: [],
+      outputs: [],
+      kind: "foreach",
+      forEach: { source: "", itemOutput: "readings/{item}.md", itemBrief: "逐项处理：{item}", onFailure: "pause" },
+    }],
+    positions: {
+      ...draft.positions,
+      [id]: position ?? { x: 0, y: Math.max(-380, ...Object.values(draft.positions).map((point) => point.y)) + 380 },
+    },
+  };
+}
+
+export function addHumanTask(draft: WorkflowDraftInput, position?: FlowPoint): WorkflowDraftInput {
+  let index = draft.tasks.length + 1;
+  while (draft.tasks.some((task) => task.id === `mine-${index}`)) index++;
+  const id = `mine-${index}`;
+  return {
+    ...draft,
+    tasks: [...draft.tasks, {
+      id,
+      role: "",
+      brief: "等你完成的一项",
+      dependsOn: [],
+      outputs: [`${id}.md`],
+      kind: "human",
+    }],
+    positions: {
+      ...draft.positions,
+      [id]: position ?? { x: 0, y: Math.max(-380, ...Object.values(draft.positions).map((point) => point.y)) + 380 },
+    },
+  };
+}
+
+/** 人工任务的产物路径默认取任务 id，属性面板可改；这里先占位，保存前由校验提示补全。 */
+export function humanOutputDraftPath(task: WorkflowTask): string {
+  return task.outputs[0] ?? `${task.id}.md`;
+}
+
+export function addExperimentTask(draft: WorkflowDraftInput, position?: FlowPoint): WorkflowDraftInput {
+  let index = draft.tasks.length + 1;
+  while (draft.tasks.some((task) => task.id === `exp-${index}`)) index++;
+  const id = `exp-${index}`;
+  return {
+    ...draft,
+    tasks: [...draft.tasks, {
+      id,
+      role: "",
+      brief: "运行实验",
+      dependsOn: [],
+      outputs: [`${id}/metrics.md`],
+      kind: "experiment",
+    }],
+    positions: {
+      ...draft.positions,
+      [id]: position ?? { x: 0, y: Math.max(-380, ...Object.values(draft.positions).map((point) => point.y)) + 380 },
+    },
+  };
+}
+
+export function addWaitTask(draft: WorkflowDraftInput, position?: FlowPoint): WorkflowDraftInput {
+  let index = draft.tasks.length + 1;
+  while (draft.tasks.some((task) => task.id === `await-${index}`)) index++;
+  const id = `await-${index}`;
+  return {
+    ...draft,
+    tasks: [...draft.tasks, {
+      id,
+      role: "",
+      brief: "等待结果文件",
+      dependsOn: [],
+      outputs: [],
+      kind: "wait",
+      waitStep: { source: "", timeoutMinutes: 240 },
+    }],
+    positions: {
+      ...draft.positions,
+      [id]: position ?? { x: 0, y: Math.max(-380, ...Object.values(draft.positions).map((point) => point.y)) + 380 },
+    },
+  };
+}
+
 export function updateWorkflowFrame(draft: WorkflowDraftInput, id: string, update: Partial<WorkflowFrame>): WorkflowDraftInput {
   return { ...draft, frames: (draft.frames ?? []).map((frame) => frame.id === id ? { ...frame, ...update } : frame) };
 }
@@ -285,6 +452,10 @@ export function validateWorkflowDraft(draft: WorkflowDraftInput, agents: Workflo
   // 报错要能和画布对上：节点卡片展示「专家名 + 任务 ID」，这里用同样的写法指代节点。
   const taskLabel = (task: WorkflowTask) => {
     if (task.kind === "route") return `${task.brief || "条件分流"}（${task.id}）`;
+    if (task.kind === "foreach") return `${task.brief || "逐项处理"}（${task.id}）`;
+    if (task.kind === "human") return `${task.brief || "人工任务"}（${task.id}）`;
+    if (task.kind === "experiment") return `${task.brief || "实验节点"}（${task.id}）`;
+    if (task.kind === "wait") return `${task.brief || "事件等待"}（${task.id}）`;
     const name = agents.find((agent) => agent.id === task.role)?.name;
     return name && name !== task.role ? `${name}（${task.id}）` : task.id;
   };
@@ -321,11 +492,71 @@ export function validateWorkflowDraft(draft: WorkflowDraftInput, agents: Workflo
       } else {
         errors.push(`${label} 的条件类型无效`);
       }
+      if (task.forEach) errors.push(`${label} 是分流节点，不能配置逐项处理`);
+      if (task.waitStep) errors.push(`${label} 是分流节点，不能配置事件等待`);
+    } else if (task.kind === "foreach") {
+      // 逐项任务的规则：不选专家、不产出文件，列表来源来自直接前置，模板必须含 {item}。
+      if (task.role) errors.push(`${label} 是逐项任务，不选择专家`);
+      if (task.outputs.length) errors.push(`${label} 是逐项任务，不直接声明产物：逐项产物由模板按项展开`);
+      if (!task.brief.trim()) errors.push(`${label} 缺少名称说明`);
+      if (!task.dependsOn.length) errors.push(`${label} 还没有前置任务：先从上游连一条线进来`);
+      if (task.route) errors.push(`${label} 是逐项任务，不能配置分流条件`);
+      if (task.routeBranch) errors.push(`${label} 是逐项任务，不设置分支标记`);
+      if (task.waitStep) errors.push(`${label} 是逐项任务，不能配置事件等待`);
+      const forEach = task.forEach;
+      if (!forEach) {
+        errors.push(`${label} 缺少逐项处理定义`);
+      } else {
+        const owner = draft.tasks.find((candidate) => candidate.outputs.includes(forEach.source));
+        if (!forEach.source || !owner) errors.push(`${label} 的列表来源不是任何前置任务的产物：先连线，再选择要逐项处理的清单`);
+        else {
+          if (!task.dependsOn.includes(owner.id)) errors.push(`${label} 的列表来源必须来自直接前置任务的产物`);
+        }
+        if (!forEach.itemOutput.includes("{item}")) errors.push(`${label} 的产物模板必须包含 {item} 占位`);
+        else if (forEach.itemOutput.replace("{item}", "x").startsWith("/") || forEach.itemOutput.replace("{item}", "x").includes("..")) errors.push(`${label} 的产物模板路径越界`);
+        if (!forEach.itemBrief?.trim()) errors.push(`${label} 缺少逐项简报`);
+        if (forEach.onFailure && forEach.onFailure !== "pause" && forEach.onFailure !== "skip") errors.push(`${label} 的失败策略无效`);
+      }
+      if (task.requiresApproval || task.gateDownstream || (task.maxRework ?? 0) > 0) {
+        errors.push(`${label} 是逐项任务，不支持完成后确认、结论把关或返工`);
+      }
+      if (task.waitStep) errors.push(`${label} 是逐项任务，不能配置事件等待`);
+    } else if (task.kind === "human") {
+      // 人工任务的规则：主理人亲自完成，提交即验收，不叠加确认或把关。
+      if (task.role) errors.push(`${label} 是人工任务，不选择专家`);
+      if (task.outputs.length !== 1) errors.push(`${label} 需要恰好一个产物路径：主理人的提交会写入它`);
+      if (task.requiresApproval) errors.push(`${label} 是人工任务，不需要完成后确认：主理人提交本身就是产出`);
+      if (task.gateDownstream || (task.maxRework ?? 0) > 0) errors.push(`${label} 是人工任务，不支持结论把关或返工`);
+      if (task.route || task.forEach || task.waitStep || task.routeBranch) errors.push(`${label} 是人工任务，不支持分流、逐项、等待或分支配置`);
+    } else if (task.kind === "experiment") {
+      // 实验节点的规则：无专家、声明运行产物；契约绑定与 G2/G3 授权沿用运行流程。
+      if (task.role) errors.push(`${label} 是实验节点，不选择专家：运行由引擎按已批准的契约提交`);
+      if (!task.outputs.length || task.outputs.length > 30) errors.push(`${label} 需要 1–30 个产物路径：运行结束后按它们验收`);
+      if (task.requiresApproval) errors.push(`${label} 是实验节点，不需要完成后确认：G2/G3 批准即授权运行`);
+      if (task.gateDownstream || (task.maxRework ?? 0) > 0) errors.push(`${label} 是实验节点，不支持结论把关或返工`);
+      if (task.route || task.forEach || task.waitStep || task.routeBranch) errors.push(`${label} 是实验节点，不支持分流、逐项、等待或分支配置`);
+    } else if (task.kind === "wait") {
+      // 等待节点的规则：等研究目录下路径出现，超时转失败等待主理人。
+      if (task.role) errors.push(`${label} 是等待节点，不选择专家`);
+      if (task.outputs.length) errors.push(`${label} 是等待节点，不产出文件`);
+      if (task.requiresApproval || task.gateDownstream || (task.maxRework ?? 0) > 0) errors.push(`${label} 是等待节点，不支持完成后确认、结论把关或返工`);
+      if (task.route || task.forEach || task.routeBranch) errors.push(`${label} 是等待节点，不支持分流、逐项或分支配置`);
+      const waitStep = task.waitStep;
+      if (!waitStep) {
+        errors.push(`${label} 缺少等待定义`);
+      } else {
+        if (!waitStep.source) errors.push(`${label} 缺少等待路径：先填要等待出现的文件`);
+        if (waitStep.source && (waitStep.source.startsWith("/") || waitStep.source.includes(".."))) errors.push(`${label} 的等待路径越界`);
+        const timeout = waitStep.timeoutMinutes ?? 0;
+        if (!Number.isInteger(timeout) || timeout < 0 || timeout > 24 * 60) errors.push(`${label} 的超时需为 0–1440 分钟（0 表示不限时）`);
+      }
     } else {
       if (!knownAgents.has(task.role)) errors.push(`${label} 选择了不存在的专家：${task.role}`);
       if (!task.brief.trim()) errors.push(`${label} 缺少任务简报`);
       if (!task.outputs.length) errors.push(`${label} 至少需要一个产物路径`);
       if (task.route) errors.push(`${label} 不是分流节点，不能配置分流条件`);
+      if (task.forEach) errors.push(`${label} 不是逐项任务，不能配置逐项处理`);
+      if (task.waitStep) errors.push(`${label} 不是等待节点，不能配置事件等待`);
     }
     for (const output of task.outputs) {
       if (!output || output.startsWith("/") || output.includes("..") || output.includes("\\") || output.includes(":")) errors.push(`${label} 的产物路径无效：${output || "（空）"}`);

@@ -162,6 +162,46 @@ pub fn task_role(store: &Store, task: &crate::store::research::ResearchTask) -> 
     }
 }
 
+/// 专家会话实际要挂载的 MCP 服务配置：计划冻结的快照给出 id/名称，
+/// 命令与环境变量从活注册表解析；已删除或停用的服务跳过。
+/// 内置角色与逐项任务不挂载，返回空列表。
+pub fn session_mcp_servers(
+    store: &Store,
+    session_id: &str,
+) -> Result<Vec<crate::local::mcp_registry::McpServer>> {
+    let Some((task_id, version)) = store.research_session_task(session_id)? else {
+        return Ok(Vec::new());
+    };
+    let study = match store.research_for_session(session_id)? {
+        Some(study) => study,
+        None => return Ok(Vec::new()),
+    };
+    if study.plan()?.version != version {
+        return Ok(Vec::new());
+    }
+    let task = study.task(&task_id)?;
+    let Some(agent) = &task.agent else {
+        return Ok(Vec::new());
+    };
+    Ok(agent
+        .mcp_servers
+        .iter()
+        .filter_map(|snapshot| crate::local::mcp_registry::server(&snapshot.id))
+        .filter(|server| server.enabled)
+        .collect())
+}
+
+/// Harness 派发点的入口：解析失败只降级为不注入（记录日志），不阻塞会话启动。
+pub fn resolve_session_mcp(session_id: &str) -> Vec<crate::local::mcp_registry::McpServer> {
+    match Store::open().and_then(|store| session_mcp_servers(&store, session_id)) {
+        Ok(servers) => servers,
+        Err(error) => {
+            eprintln!("orx up: mcp servers not injected for {session_id}: {error}");
+            Vec::new()
+        }
+    }
+}
+
 pub fn turn_context(store: &Store, session: &str) -> Result<Option<String>> {
     let Some(study) = store.research_for_session(session)? else {
         let chat = store.get_chat_session(session)?;
@@ -186,14 +226,20 @@ pub fn turn_context(store: &Store, session: &str) -> Result<Option<String>> {
             return Err(anyhow!("该专家任务属于旧版计划，请返回主会话"));
         }
         let task = study.task(&task_id)?;
+        // 逐项任务按契约不选专家角色（逐项简报即契约），会话上下文不能再强制解析角色。
+        let role_note = if task.spec.kind == "foreach" {
+            String::new()
+        } else {
+            format!("角色规范：\n{}\n", task_role(store, task)?)
+        };
         format!(
-            "你是独立专家，任务 {}。角色规范：\n{}\n任务契约：{}",
+            "你是独立专家，任务 {}。{}任务契约：{}",
             task_id,
-            task_role(store, task)?,
+            role_note,
             serde_json::to_string(task)?
         )
     } else {
-        "你是科研主理人。先理解需求，再按任务复杂度决定执行路径。普通问答、范围澄清和简单追问可以直接答复，不要求创建空计划或派发专家，也不得声称已经完成专家工作。材料可选；没有上传材料时使用已有项目上下文或获准检索，仅在缺少必要输入时澄清。上传文件夹或文件数量不触发模式切换、全面审计或固定流程。需要实质研究时，盘点相关材料并制定按需裁剪的任务 DAG，遵守选定预设的必需角色、依赖和审批。通过 orx research dispatch 调用真实专家；不得自己模拟成员或代写专业产物。不要调用原生 task/subagent，也不要调用 orx agent spawn 绕开任务登记。已有授权应写入计划并由用户一次确认范围，避免反复询问。".into()
+        "你是科研主理人。先理解需求，再按任务复杂度决定执行路径。普通问答、范围澄清和简单追问可以直接答复，不要求创建空计划或派发专家，也不得声称已经完成专家工作。材料可选；没有上传材料时使用已有项目上下文或获准检索，仅在缺少必要输入时澄清。上传文件夹或文件数量不触发模式切换、全面审计或固定流程。需要实质研究时，盘点相关材料并制定按需裁剪的任务 DAG，遵守选定预设的必需角色、依赖和审批。通过 orx research dispatch 调用真实专家；不得自己模拟成员或代写专业产物。不要调用原生 task/subagent，也不要调用 orx agent spawn 绕开任务登记。已有授权应写入计划并由用户一次确认范围，避免反复询问。\n<capability-library>\n能力库可登记三种可复用能力，只在确有复用价值时登记，一次性步骤不登记；登记后在聊天中简要告知用户登记了什么；说明与环境变量中不得写入真实密钥值。\n1. MCP 服务（需用户确认）：当任务确实需要外部能力（检索、代码图谱、专用数据源等）且现有服务不覆盖时，用 `orx mcp propose --file <json>` 提交提案，字段 server: {name、transport(\"stdio\"|\"http\")、command、args、env、url、description} 与 rationale（为什么需要）。提案会在聊天中弹确认卡片，用户批准后才生效；用 `orx mcp list` 查看已启用服务。不得重复提议已启用的服务。\n2. 自定义专家：`orx research agent create --file <json>`，字段 name、description、prompt（可带 mcpServers：已启用的 MCP 服务 id 数组；可带 userSkills：已上传技能名数组）。内置 20 角色已覆盖常规分工，仅当确实缺位且后续会复用时新建。登记后在 orx research plan 的 role 字段引用其 id。`orx research agent list` 查看。\n3. 技能：`orx skills add <SKILL.md 或 zip>`，把可复用的操作指南做成技能包。登记后默认不进任何会话：挂到自定义专家的 userSkills，或绑定到项目后才随对应会话生效；聊天中 `/技能名` 始终可以直接唤起。\nMCP 服务与技能都通过自定义专家挂载（mcpServers / userSkills 字段）；派发该专家的会话由执行引擎原生加载这些能力。\n</capability-library>\n".into()
     };
     let workflow = if study.mode == "team" && study.plans.is_empty() {
         format!("你处于科研专家团自动判断模式。先识别主要/次要意图、当前研究阶段、已有材料和目标交付，再判断执行路径；不要求用户选择工作流。以下四个预设包含触发条件：\n{}\n用户明确指定优先；依据语义和材料判断，不能仅按关键词机械触发。匹配单一预设时在 orx research plan 的 JSON 中填写 workflow（literature/reproduction/analysis/proposal），并在 summary 中解释判断依据；匹配后按对应预设执行。综合任务可使用 workflow:null 按需组织任务 DAG；不要强行塞入四个预设或默认执行文献综述。用户提出单项问题时只选择必要专家。计划版本化，转向须重新登记并确认。", serde_json::to_string_pretty(workflows())?)

@@ -22,6 +22,11 @@ pub enum ResearchCommand {
         #[command(subcommand)]
         command: WorkflowCommand,
     },
+    /// Manage custom agents in the capability library (usable without a study).
+    Agent {
+        #[command(subcommand)]
+        command: CapabilityCommand,
+    },
     Plan {
         #[arg(long)]
         file: String,
@@ -68,6 +73,110 @@ pub enum WorkflowCommand {
         #[arg(long)]
         objective: String,
     },
+}
+/// 能力库（自定义 Agent）管理子命令；与工作流一样在会话门外处理。
+#[derive(Subcommand, Debug)]
+pub enum CapabilityCommand {
+    Create {
+        #[arg(long)]
+        file: String,
+    },
+    List,
+    Remove {
+        id: String,
+    },
+}
+#[derive(Clone, Copy, Debug)]
+enum CapabilityKind {
+    Agent,
+}
+
+impl CapabilityKind {
+    fn label(self) -> &'static str {
+        match self {
+            CapabilityKind::Agent => "Agent",
+        }
+    }
+}
+
+/// 能力库登记入口：主理人在对话里用它扩充自定义专家，无需已启用研究。
+/// 只触自定义表，内置 20 角色不受影响；已在跑的研究按冻结快照继续。
+/// MCP 服务引用必须在登记前已存在（走 `orx mcp propose` 并经用户批准）。
+fn capability_command(
+    store: &Store,
+    command: &CapabilityCommand,
+    kind: CapabilityKind,
+) -> Result<()> {
+    let value = match command {
+        CapabilityCommand::Create { file } => {
+            let input: crate::workflow::AgentInput = read(file)?;
+            crate::local::mcp_registry::validate_mcp_refs(&input.mcp_servers)?;
+            let uploaded = crate::local::user_skills::list_uploaded();
+            for name in &input.user_skills {
+                if !uploaded.iter().any(|skill| &skill.name == name) {
+                    return Err(anyhow!("未知技能: {name}"));
+                }
+            }
+            let agent = store.create_workflow_agent(input)?;
+            let mcps = store.workflow_agent_mcp_ids(&agent.id)?;
+            let skills =
+                store.skill_bindings_for_scope(crate::store::skills::SCOPE_AGENT, &agent.id)?;
+            serde_json::json!({
+                "agent": {
+                    "id": agent.id,
+                    "name": agent.name,
+                    "version": agent.version,
+                    "mcpServers": mcps,
+                    "userSkills": skills,
+                },
+                "next": "已登记到自定义 Agent 库。在 orx research plan 的 role 字段使用该 id；等待用户批准后再派发。",
+            })
+        }
+        CapabilityCommand::List => {
+            let attachments = store.list_workflow_agent_mcps()?;
+            let skill_attachments = store.list_skill_bindings()?;
+            serde_json::to_value(
+                store
+                    .list_workflow_agents()?
+                    .iter()
+                    .map(|agent| {
+                        let mcps: Vec<&String> = attachments
+                            .iter()
+                            .filter(|(id, _)| id == &agent.id)
+                            .map(|(_, mcp_id)| mcp_id)
+                            .collect();
+                        let skills: Vec<&String> = skill_attachments
+                            .iter()
+                            .filter(|(kind, id, _)| {
+                                kind == crate::store::skills::SCOPE_AGENT && id == &agent.id
+                            })
+                            .map(|(_, _, name)| name)
+                            .collect();
+                        serde_json::json!({
+                            "id": agent.id,
+                            "name": agent.name,
+                            "description": agent.description,
+                            "version": agent.version,
+                            "mcpServers": mcps,
+                            "userSkills": skills,
+                            "updatedAt": agent.updated_at,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )?
+        }
+        CapabilityCommand::Remove { id } => {
+            let deleted = match kind {
+                CapabilityKind::Agent => store.delete_workflow_agent(id)?,
+            };
+            if !deleted {
+                return Err(anyhow!("{} {id} 不存在", kind.label()));
+            }
+            serde_json::json!({"ok": true, "removed": id, "note": "已在跑的研究使用登记时的冻结快照，不受删除影响。"})
+        }
+    };
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -118,6 +227,9 @@ pub async fn run(args: ResearchArgs) -> Result<()> {
         }
         return Ok(());
     }
+    if let ResearchCommand::Agent { command } = &args.command {
+        return capability_command(&store, command, CapabilityKind::Agent);
+    }
     let session = crate::local::chat::launching_chat_session()
         .ok_or_else(|| anyhow!("请在本地研究会话内使用 orx research"))?;
     let study = store
@@ -133,6 +245,7 @@ pub async fn run(args: ResearchArgs) -> Result<()> {
         }
         ResearchCommand::Roles => unreachable!(),
         ResearchCommand::Workflow { .. } => unreachable!(),
+        ResearchCommand::Agent { .. } => unreachable!(),
         ResearchCommand::Plan { file } => {
             require_lead(lead)?;
             store.research_set_plan(&study.id, read::<PlanInput>(&file)?)?;

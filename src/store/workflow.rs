@@ -19,6 +19,11 @@ pub(super) fn migrate(conn: &rusqlite::Connection) -> Result<()> {
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS workflow_agent_mcps (
+            agent_id TEXT NOT NULL,
+            mcp_id TEXT NOT NULL,
+            PRIMARY KEY (agent_id, mcp_id)
+        );
         CREATE TABLE IF NOT EXISTS workflow_drafts (
             id TEXT PRIMARY KEY,
             project_id TEXT NOT NULL UNIQUE,
@@ -82,6 +87,27 @@ fn agent_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentDefinition> 
 
 const AGENT_COLUMNS: &str = "id,name,description,prompt,version,created_at,updated_at";
 
+/// 重写一个 agent 的 MCP 挂载（在写事务内调用，agent 行与关联表保持原子）。
+/// 注册表存在性校验在 API/CLI 入口做；这里只负责持久化，重复项静默去重，
+/// 注册表中已删除的引用由快照与注入阶段跳过。
+fn set_agent_mcps(
+    tx: &rusqlite::Transaction<'_>,
+    agent_id: &str,
+    mcp_ids: &[String],
+) -> Result<()> {
+    tx.execute(
+        "DELETE FROM workflow_agent_mcps WHERE agent_id=?1",
+        [agent_id],
+    )?;
+    for mcp_id in mcp_ids {
+        tx.execute(
+            "INSERT OR IGNORE INTO workflow_agent_mcps(agent_id,mcp_id) VALUES(?1,?2)",
+            params![agent_id, mcp_id],
+        )?;
+    }
+    Ok(())
+}
+
 impl Store {
     pub fn list_workflow_agents(&self) -> Result<Vec<AgentDefinition>> {
         let mut statement = self.conn.prepare(&format!(
@@ -102,6 +128,31 @@ impl Store {
             .optional()?)
     }
 
+    /// One agent's attached MCP server ids, in attachment order (rowid).
+    pub fn workflow_agent_mcp_ids(&self, agent_id: &str) -> Result<Vec<String>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT mcp_id FROM workflow_agent_mcps WHERE agent_id=?1 ORDER BY rowid")?;
+        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>, _>>()?)
+    }
+
+    /// Every agent→MCP attachment, for listing the whole library in one pass.
+    pub fn list_workflow_agent_mcps(&self) -> Result<Vec<(String, String)>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT agent_id,mcp_id FROM workflow_agent_mcps ORDER BY rowid")?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>, _>>()?)
+    }
+
+    /// Drop every agent reference to one MCP server (registry delete path).
+    pub fn delete_agent_mcp_refs(&self, mcp_id: &str) -> Result<usize> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM workflow_agent_mcps WHERE mcp_id=?1", [mcp_id])?)
+    }
+
     pub fn create_workflow_agent(&self, input: AgentInput) -> Result<AgentDefinition> {
         validate_agent(&input)?;
         let now = now_ms();
@@ -114,7 +165,11 @@ impl Store {
             created_at: now,
             updated_at: now,
         };
-        self.conn.execute(
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        tx.execute(
             "INSERT INTO workflow_agents VALUES(?1,?2,?3,?4,?5,?6,?7)",
             params![
                 agent.id,
@@ -126,6 +181,9 @@ impl Store {
                 agent.updated_at
             ],
         )?;
+        set_agent_mcps(&tx, &agent.id, &input.mcp_servers)?;
+        super::skills::set_agent_skills(&tx, &agent.id, &input.user_skills)?;
+        tx.commit()?;
         Ok(agent)
     }
 
@@ -143,7 +201,11 @@ impl Store {
             created_at: previous.created_at,
             updated_at: now_ms(),
         };
-        self.conn.execute(
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        tx.execute(
             "UPDATE workflow_agents SET name=?2,description=?3,prompt=?4,version=?5,updated_at=?6 WHERE id=?1",
             params![
                 agent.id,
@@ -154,14 +216,22 @@ impl Store {
                 agent.updated_at
             ],
         )?;
+        set_agent_mcps(&tx, &agent.id, &input.mcp_servers)?;
+        super::skills::set_agent_skills(&tx, &agent.id, &input.user_skills)?;
+        tx.commit()?;
         Ok(agent)
     }
 
     pub fn delete_workflow_agent(&self, id: &str) -> Result<bool> {
-        Ok(self
-            .conn
-            .execute("DELETE FROM workflow_agents WHERE id=?1", [id])?
-            > 0)
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        tx.execute("DELETE FROM workflow_agent_mcps WHERE agent_id=?1", [id])?;
+        super::skills::purge_scope_bindings_tx(&tx, super::skills::SCOPE_AGENT, id)?;
+        let deleted = tx.execute("DELETE FROM workflow_agents WHERE id=?1", [id])? > 0;
+        tx.commit()?;
+        Ok(deleted)
     }
 
     /// The shared workflow library: every project resolves every draft by id,
@@ -326,6 +396,8 @@ mod tests {
             name: name.into(),
             description: "custom role".into(),
             prompt: "Review evidence and cite sources.".into(),
+            mcp_servers: Vec::new(),
+            user_skills: Vec::new(),
         }
     }
 
@@ -342,6 +414,50 @@ mod tests {
         assert_eq!(store.list_workflow_agents().unwrap(), vec![updated.clone()]);
         assert!(store.delete_workflow_agent(&created.id).unwrap());
         assert!(store.workflow_agent(&created.id).unwrap().is_none());
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn agent_mcp_attachments_round_trip_and_cleanup() {
+        let (root, store) = fixture();
+        // 挂载去重 + 读取保序；注册表存在性校验在 API/CLI 入口。
+        let analyst = store
+            .create_workflow_agent(AgentInput {
+                mcp_servers: vec!["mcp-a".into(), "mcp-b".into(), "mcp-a".into()],
+                ..agent("Analyst")
+            })
+            .unwrap();
+        assert_eq!(
+            store.workflow_agent_mcp_ids(&analyst.id).unwrap(),
+            vec!["mcp-a".to_string(), "mcp-b".to_string()]
+        );
+        // 保存新版本会整体重写挂载关系。
+        let mut reattached = agent("Analyst v2");
+        reattached.mcp_servers = Vec::new();
+        let analyst_v2 = store
+            .update_workflow_agent(&analyst.id, reattached)
+            .unwrap();
+        assert_eq!(analyst_v2.version, 2);
+        assert!(store
+            .workflow_agent_mcp_ids(&analyst.id)
+            .unwrap()
+            .is_empty());
+
+        let mut with_mcps = agent("Auditor");
+        with_mcps.mcp_servers = vec!["mcp-a".into(), "mcp-c".into()];
+        let auditor = store.create_workflow_agent(with_mcps).unwrap();
+        assert_eq!(store.workflow_agent_mcp_ids(&auditor.id).unwrap().len(), 2);
+        assert_eq!(store.list_workflow_agent_mcps().unwrap().len(), 2);
+        // 注册表删除服务时清理全部引用。
+        assert_eq!(store.delete_agent_mcp_refs("mcp-a").unwrap(), 1);
+        assert_eq!(
+            store.workflow_agent_mcp_ids(&auditor.id).unwrap(),
+            vec!["mcp-c".to_string()]
+        );
+        // 删除 agent 同样清理关联表。
+        assert!(store.delete_workflow_agent(&auditor.id).unwrap());
+        assert!(store.list_workflow_agent_mcps().unwrap().is_empty());
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }

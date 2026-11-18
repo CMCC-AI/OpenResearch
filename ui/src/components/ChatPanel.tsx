@@ -19,6 +19,7 @@ import { researchModes, type ResearchMode } from "../research";
 import { researchConversationStatus } from "../researchConversationStatus";
 import { ResearchConversationStatus } from "./ResearchConversationStatus";
 import { ResearchConversation } from "./ResearchConversation";
+import { McpProposalCards } from "./McpProposalCards";
 import { ChatWorkflowChooser } from "../workflow/ChatWorkflowChooser";
 import { takeWorkflowConversation } from "../workflow/conversation";
 import { expertSessionContext, isSidebarSession, mainSessionId } from "../researchSessions";
@@ -4093,8 +4094,8 @@ export function ChatPanel({
   /** Run a harness setup command (`path` is its setup route) in the right panel's terminal tab. */
   onRunSetup?: (command: string, path: string) => void;
   /** Settings sections replace chat; Artifacts remains a right-panel tool. */
-  mainView: "chat" | "skills" | "workflows" | "deliverables" | SettingsTab;
-  onSelectMainView: (view: "chat" | "skills" | "workflows" | "deliverables" | SettingsTab) => void;
+  mainView: "chat" | "skills" | "workflows" | SettingsTab;
+  onSelectMainView: (view: "chat" | "skills" | "workflows" | SettingsTab) => void;
   /** Open a project file in the right pane (chat tool rows are clickable).
    * `sessionId` is the chat session the click came from, so relative paths
    * can resolve against that session's worktree. */
@@ -6557,7 +6558,7 @@ export function ChatPanel({
                   onRecover={readOnly ? undefined : recoverFailedTurn}
                   skills={transcriptSkills}
                 />
-                {conversationStudy && <ResearchConversation key={conversationStudy.id} projectId={projectId} study={conversationStudy} onInspect={() => { stickToBottom.current = false; setTranscriptAtBottom(false); }} renderMessage={(message, sessionId, running) => renderParts(message.parts, {
+                {conversationStudy && <ResearchConversation key={conversationStudy.id} projectId={projectId} study={conversationStudy} onInspect={() => { stickToBottom.current = false; setTranscriptAtBottom(false); }} onOpenArtifactFile={onOpenFile ? (path, intent) => onOpenFile(path, conversationStudy.sessionId, undefined, undefined, undefined, intent) : undefined} renderMessage={(message, sessionId, running) => renderParts(message.parts, {
                   activePermissionId: firstPendingPermission([message])?.id ?? null,
                   onOpenFile: onOpenFile ? (path, line, exp, ref, intent) => onOpenFile(path, sessionId, line, exp, ref, intent) : undefined,
                   onOpenRun,
@@ -6616,6 +6617,8 @@ export function ChatPanel({
               )}
             </IconButton>
           )}
+          {/* 主理人的 MCP 服务提案确认卡：批准才写入登记表。 */}
+          {activeId && <McpProposalCards sessionId={activeId} />}
           {/* Inside the composer so the composer's popovers (mode/model pickers,
             z 50 within this stacking context) layer above the strip — as a
             sibling, the composer's own z-index: 4 capped them below it. */}

@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Bot, Copy, Save, MessagesSquare, Trash2, Workflow } from "lucide-react";
-import { copyWorkflow, createWorkflow, deleteWorkflow, getWorkflow, listWorkflowAgents, listWorkflows, saveWorkflow } from "../api";
+import { ArrowLeft, Blocks, Bot, Copy, Plug, Save, MessagesSquare, Trash2, Workflow } from "lucide-react";
+import { copyWorkflow, createWorkflow, deleteWorkflow, getWorkflow, listMcpServers, listWorkflowAgents, listWorkflowSkills, listWorkflows, saveWorkflow } from "../api";
 import { queryClient, workspaceKey } from "../queries/client";
 import { listProjectsQuery } from "../queries/projects";
 import { Button, Input, showAlert, Spinner } from "../components/ui";
 import { NewProjectDialog } from "../components/ProjectsHome";
 import { AgentLibrary } from "./AgentLibrary";
+import { SkillsLibrary } from "./SkillsLibrary";
+import { McpLibrary } from "./McpLibrary";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { WorkflowPicker } from "./WorkflowPicker";
 import { createBlankDraft, migrateDraftLayout, validateWorkflowDraft, type WorkflowDraft, type WorkflowDraftInput } from "./model";
@@ -48,16 +50,19 @@ function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, 
   onSwitchDraft?: (draftId: string | null) => void;
   onDeleted?: () => void;
 }) {
-  const [tab, setTab] = useState<"workflow" | "agents">("workflow");
+  const [tab, setTab] = useState<"workflow" | "agents" | "skills" | "tools">("workflow");
   const [id, setId] = useState<string | null>(initialDraftId);
   const agentsQuery = useQuery({ queryKey: workspaceKey("workflowAgents"), queryFn: ({ signal }) => listWorkflowAgents(signal) });
+  const toolsQuery = useQuery({ queryKey: workspaceKey("mcpServers"), queryFn: ({ signal }) => listMcpServers(signal) });
+  const skillsQuery = useQuery({ queryKey: workspaceKey("workflowSkills"), queryFn: ({ signal }) => listWorkflowSkills(signal) });
   const draftQuery = useQuery({
     queryKey: workspaceKey("workflowDraft", id ?? "new"),
     queryFn: ({ signal }) => getWorkflow(id as string, signal),
     enabled: id !== null,
   });
   const libraryQuery = useQuery({ queryKey: workspaceKey("workflowList"), queryFn: ({ signal }) => listWorkflows(signal) });
-  const projectsQuery = useQuery({ ...listProjectsQuery(), enabled: !projectId });
+  // 项目列表常开：技能生效范围的绑定勾选在项目工作区内也要可用。
+  const projectsQuery = useQuery({ ...listProjectsQuery() });
   const [draft, setDraft] = useState<WorkflowDraftInput>(createBlankDraft);
   const [hydrated, setHydrated] = useState(id === null);
   const [dirty, setDirty] = useState(false);
@@ -67,6 +72,8 @@ function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, 
   const [targetProjectId, setTargetProjectId] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
   const agents = agentsQuery.data ?? [];
+  const tools = toolsQuery.data ?? [];
+  const skills = skillsQuery.data ?? [];
   const projects = projectsQuery.data ?? [];
 
   useEffect(() => {
@@ -192,6 +199,8 @@ function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, 
         <div className="flex items-center gap-1" role="group" aria-label="工作流资源">
           {onBack && <Button variant="ghost" disabled={busy} onClick={() => void back()}><ArrowLeft size={15} />{dirty ? "保存并选择工作流" : "选择工作流"}</Button>}
           <Button variant="ghost" active={tab === "agents"} aria-pressed={tab === "agents"} onClick={() => setTab("agents")}><Bot size={15} />Agents <span className="text-xs text-subtext">{agents.length}</span></Button>
+          <Button variant="ghost" active={tab === "skills"} aria-pressed={tab === "skills"} onClick={() => setTab("skills")}><Blocks size={15} />Skills <span className="text-xs text-subtext">{skills.length}</span></Button>
+          <Button variant="ghost" active={tab === "tools"} aria-pressed={tab === "tools"} onClick={() => setTab("tools")}><Plug size={15} />MCP <span className="text-xs text-subtext">{tools.length}</span></Button>
           <Button variant="ghost" active={tab === "workflow"} aria-pressed={tab === "workflow"} onClick={() => setTab("workflow")}><Workflow size={15} />工作流</Button>
         </div>
         {tab === "workflow" && <div className="flex flex-wrap items-center gap-2">
@@ -215,7 +224,7 @@ function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, 
           <Button variant="primary" disabled={busy || agentsQuery.isPending} onClick={() => void submit()}>{busy ? <Spinner /> : <MessagesSquare size={14} />}在对话中使用</Button>
         </div>}
       </header>
-      {agentsQuery.isPending || !hydrated ? <div role="status" className="flex flex-1 items-center justify-center gap-2 text-sm text-subtext"><Spinner />正在加载工作流资源…</div> : agentsQuery.error || draftQuery.error ? <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-sm text-accent-red"><p>{(agentsQuery.error ?? draftQuery.error) instanceof Error ? String((agentsQuery.error ?? draftQuery.error) as Error) : "资源读取失败"}</p><Button onClick={() => { void agentsQuery.refetch(); void draftQuery.refetch(); void libraryQuery.refetch(); }}>重试</Button></div> : tab === "agents" ? <AgentLibrary agents={agents} onChanged={() => agentsQuery.refetch()} /> : <div className="flex min-h-0 flex-1 flex-col">
+      {agentsQuery.isPending || toolsQuery.isPending || skillsQuery.isPending || !hydrated ? <div role="status" className="flex flex-1 items-center justify-center gap-2 text-sm text-subtext"><Spinner />正在加载工作流资源…</div> : agentsQuery.error || toolsQuery.error || skillsQuery.error || draftQuery.error ? <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-sm text-accent-red"><p>{(agentsQuery.error ?? toolsQuery.error ?? skillsQuery.error ?? draftQuery.error) instanceof Error ? String((agentsQuery.error ?? toolsQuery.error ?? skillsQuery.error ?? draftQuery.error) as Error) : "资源读取失败"}</p><Button onClick={() => { void agentsQuery.refetch(); void toolsQuery.refetch(); void skillsQuery.refetch(); void draftQuery.refetch(); void libraryQuery.refetch(); }}>重试</Button></div> : tab === "agents" ? <AgentLibrary agents={agents} mcpServers={tools} userSkills={skills.filter((skill) => skill.source === "user")} onChanged={() => agentsQuery.refetch()} /> : tab === "skills" ? <SkillsLibrary skills={skills} agents={agents} projects={projects} onChanged={() => skillsQuery.refetch()} /> : tab === "tools" ? <McpLibrary /> : <div className="flex min-h-0 flex-1 flex-col">
         <section className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border p-4" aria-label="工作流方法">
           <label className="flex flex-col gap-1.5 text-sm">工作流名称<Input value={draft.name} maxLength={200} placeholder="输入工作流名称" onChange={(event) => change({ ...draft, name: event.target.value })} /></label>
           <p className="m-0 text-sm text-subtext">自由组合专家与依赖；具体目标、材料与约束在聊天中提供。</p>

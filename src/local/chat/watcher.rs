@@ -605,6 +605,22 @@ async fn process_chat_spawns_guarded(
         })
         .await?;
     *checks = updated_checks;
+    // 重启恢复兜底：G2/G3 已批准但尚未运行的实验节点由每次对账循环异步补交，
+    // `compute::submit` 需要 async 执行，不能进上面的同步 stage。
+    let (store, study_ids) = spawn_store_stage(store, gate.clone(), |s| {
+        Ok(s.research_active_studies()?
+            .into_iter()
+            .map(|s| s.id.clone())
+            .collect::<Vec<_>>())
+    })
+    .await?;
+    for study_id in &study_ids {
+        if let Err(error) =
+            crate::commands::research_dispatch::submit_ready_experiment_tasks(study_id).await
+        {
+            eprintln!("orx up: experiment submit: {error}");
+        }
+    }
     let store =
         start_pending_chat_spawns(chat, store, data_dir_move_in_progress, gate.clone()).await?;
     let (mut store, running) = spawn_store_stage(store, gate.clone(), |s| {

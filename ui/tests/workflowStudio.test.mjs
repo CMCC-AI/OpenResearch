@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { addAgentTask, addRouteTask, addWorkflowFrame, connectWorkflowTasks, createBlankDraft, createLiteratureDraft, reconnectWorkflowTasks, removeWorkflowFrame, removeWorkflowTask, updateWorkflowFrame, validateWorkflowDraft } from "../src/workflow/model.ts";
+import { addAgentTask, addExperimentTask, addForeachTask, addHumanTask, addRouteTask, addWaitTask, addWorkflowFrame, connectWorkflowTasks, createBlankDraft, createLiteratureDraft, reconnectWorkflowTasks, removeWorkflowFrame, removeWorkflowTask, updateWorkflowFrame, validateWorkflowDraft } from "../src/workflow/model.ts";
 import { parseDestination } from "../src/workspaceState.ts";
 
 function agentsFor(draft) {
@@ -80,9 +80,9 @@ test("removing a node removes incoming and outgoing edges without changing other
 test("workflow routes work at root and under the MobileSci prefix without reopening hidden skills", () => {
   assert.deepEqual(parseDestination("/projects/project/workflows"), { kind: "workflows", projectId: "project" });
   assert.deepEqual(parseDestination("/mobilesci/projects/project/workflows"), { kind: "workflows", projectId: "project" });
-  assert.deepEqual(parseDestination("/projects/project/deliverables"), { kind: "deliverables", projectId: "project" });
-  assert.deepEqual(parseDestination("/mobilesci/projects/project/deliverables"), { kind: "deliverables", projectId: "project" });
   assert.equal(parseDestination("/projects/project/skills"), null);
+  // 成果页已下线：目的地解析不再认领该路径，旧地址由路由层重定向回项目会话。
+  assert.equal(parseDestination("/projects/project/deliverables"), null);
 });
 
 test("W1 template enables task approval and verdict gating by default", () => {
@@ -199,4 +199,80 @@ test("stage frames save, rename and enforce the cap", () => {
   assert.deepEqual(validateWorkflowDraft(draft, agentsFor(draft)), []);
   draft = removeWorkflowFrame(draft, "stage-12");
   assert.equal(draft.frames.length, 11);
+});
+
+// —— 逐项处理 foreach 与人工任务 human（批次二）——
+
+const loopAgent = { id: "agent-loop", name: "Lister", description: "", prompt: "", version: 1, builtIn: false, createdAt: 1, updatedAt: 1 };
+
+function foreachDraft(source) {
+  let draft = createBlankDraft();
+  draft = addAgentTask(draft, loopAgent);
+  draft.tasks[0].outputs = ["papers.md"];
+  draft = addForeachTask(draft);
+  const foreachId = draft.tasks.at(-1).id;
+  draft = connectWorkflowTasks(draft, "task-1", foreachId);
+  draft = { ...draft, tasks: draft.tasks.map((task) => task.kind === "foreach" ? { ...task, forEach: { ...task.forEach, source } } : task) };
+  return draft;
+}
+
+test("foreach nodes validate list source, item template and failure policy", () => {
+  const draft = foreachDraft("papers.md");
+  assert.deepEqual(validateWorkflowDraft(draft, agentsFor(draft)), []);
+  // 来源不是任何前置任务的产物。
+  const foreign = foreachDraft("other.md");
+  assert.ok(validateWorkflowDraft(foreign, agentsFor(foreign)).some((message) => message.includes("列表来源")));
+  // 模板缺 {item} 占位。
+  const noPlaceholder = foreachDraft("papers.md");
+  noPlaceholder.tasks.find((task) => task.kind === "foreach").forEach.itemOutput = "readings/all.md";
+  assert.ok(validateWorkflowDraft(noPlaceholder, agentsFor(noPlaceholder)).some((message) => message.includes("{item}")));
+  // 模板路径越界。
+  const escaping = foreachDraft("papers.md");
+  escaping.tasks.find((task) => task.kind === "foreach").forEach.itemOutput = "../readings/{item}.md";
+  assert.ok(validateWorkflowDraft(escaping, agentsFor(escaping)).some((message) => message.includes("越界")));
+  // 逐项任务不产出文件。
+  const withOutputs = foreachDraft("papers.md");
+  withOutputs.tasks.find((task) => task.kind === "foreach").outputs = ["all.md"];
+  assert.ok(validateWorkflowDraft(withOutputs, agentsFor(withOutputs)).some((message) => message.includes("不直接声明产物")));
+});
+
+test("human nodes require exactly one output and refuse approval overlays", () => {
+  let draft = createBlankDraft();
+  draft = addHumanTask(draft);
+  const human = draft.tasks.at(-1);
+  assert.equal(human.outputs.length, 1);
+  assert.deepEqual(validateWorkflowDraft(draft, agentsFor(draft)), []);
+  const twoOutputs = { ...draft, tasks: draft.tasks.map((task) => task.kind === "human" ? { ...task, outputs: ["a.md", "b.md"] } : task) };
+  assert.ok(validateWorkflowDraft(twoOutputs, agentsFor(twoOutputs)).some((message) => message.includes("恰好一个产物")));
+  const withApproval = { ...draft, tasks: draft.tasks.map((task) => task.kind === "human" ? { ...task, requiresApproval: true } : task) };
+  assert.ok(validateWorkflowDraft(withApproval, agentsFor(withApproval)).some((message) => message.includes("不需要完成后确认")));
+});
+
+// —— 实验节点 experiment 与事件等待 wait（批次三）——
+
+test("experiment nodes declare outputs and refuse approval overlays", () => {
+  let draft = createBlankDraft();
+  draft = addExperimentTask(draft);
+  const exp = draft.tasks.at(-1);
+  assert.equal(exp.outputs.length, 1);
+  assert.deepEqual(validateWorkflowDraft(draft, agentsFor(draft)), []);
+  const noOutputs = { ...draft, tasks: draft.tasks.map((task) => task.kind === "experiment" ? { ...task, outputs: [] } : task) };
+  assert.ok(validateWorkflowDraft(noOutputs, agentsFor(noOutputs)).some((message) => message.includes("1–30 个产物路径")));
+  const withApproval = { ...draft, tasks: draft.tasks.map((task) => task.kind === "experiment" ? { ...task, requiresApproval: true } : task) };
+  assert.ok(validateWorkflowDraft(withApproval, agentsFor(withApproval)).some((message) => message.includes("G2/G3 批准即授权")));
+});
+
+test("wait nodes need a safe source path and bounded timeout", () => {
+  let draft = createBlankDraft();
+  draft = addWaitTask(draft);
+  const wait = draft.tasks.at(-1);
+  // 新建节点还没有等待路径：保存前必须补上。
+  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((message) => message.includes("缺少等待路径")));
+  wait.waitStep.source = "../escape.md";
+  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((message) => message.includes("越界")));
+  wait.waitStep.source = "handoff/ready.md";
+  wait.waitStep.timeoutMinutes = 25 * 60;
+  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((message) => message.includes("0–1440 分钟")));
+  wait.waitStep.timeoutMinutes = 240;
+  assert.deepEqual(validateWorkflowDraft(draft, agentsFor(draft)), []);
 });

@@ -27,8 +27,9 @@ function load({ histories = {}, file = { content: "Report", binary: false, trunc
     "../queries/chatStore": { useChatState: (_, id) => [{ messagesBySession: { [id]: histories[id] ?? [] }, activeLeafBySession: { [id]: histories[id]?.at(-1)?.id }, busySessions: new Set([id]) }, () => {}, { isPending: false }] },
     "../transcriptTree": { activePath }, "../research": research, "../product/sha256": { sha256Hex },
     "./ReadOnlyWorkspace": { useReadOnlyWorkspace: () => null }, "./ResearchPanel": { ResearchPanel: ({ placement, sessionId }) => React.createElement("div", { "data-confirmation-placement": placement }, sessionId) },
+    "./ResearchWorkflow": { HumanSubmitForm: ({ task }) => React.createElement("textarea", { "data-human-submit": task.id }) },
     "./Md": { Md: ({ text }) => React.createElement("span", null, text) },
-    "./ui": { Button: ({ children, onClick, disabled }) => React.createElement("button", { onClick, disabled }, children), ButtonLink: ({ children, href }) => React.createElement("a", { href }, children), Spinner: () => null },
+    "./ui": { Button: ({ active, variant, size, children, ...props }) => React.createElement("button", props, children), ButtonLink: ({ children, href }) => React.createElement("a", { href }, children), Spinner: () => null },
   };
   new Function("require", "exports", code)(id => id in mocks ? mocks[id] : require(id), exported);
   const render = study => renderToStaticMarkup(React.createElement(exported.ResearchConversation, { projectId: "project", study, renderMessage: (message, sessionId) => React.createElement("span", { "data-session": sessionId }, message.parts.filter(part => part.type === "text").map(part => part.text).join("")) }));
@@ -47,6 +48,7 @@ test("parallel experts keep their persisted identity and branch; dispatch instru
   assert.match(html, /data-confirmation-placement="conversation"/);
   assert.doesNotMatch(html, /下载已确认研究包/);
 });
+
 
 test("the conversation never offers a confirmed package download", () => {
   const app = load(), study = fixture();
@@ -84,6 +86,17 @@ test("running experts expand by default while finished ones stay collapsed until
   assert.doesNotMatch(html, /Finished deliverable summary/);
 });
 
+test("awaiting human tasks open their submission form inline; pending ones stay closed", () => {
+  const app = load(), study = fixture();
+  study.plans[0].tasks.push({ id: "pick-final-figure", kind: "human", state: "awaiting", role: "", brief: "从三张候选图里挑最终用的那张，附一句挑选理由。", dependsOn: ["draft-figures"], outputs: ["choices/final-figure.md"], sessionId: null, summary: null, artifacts: [], runIds: [] });
+  const html = app.render(study);
+  assert.match(html, /data-human-submit="pick-final-figure"/);
+  assert.match(html, /人工任务/);
+  const idleApp = load(), idle = fixture();
+  idle.plans[0].tasks.push({ id: "later-step", kind: "human", state: "pending", role: "", brief: "还没轮到这一步。", dependsOn: ["pick-final-figure"], outputs: [], sessionId: null, summary: null, artifacts: [], runIds: [] });
+  assert.doesNotMatch(idleApp.render(idle), /data-human-submit/);
+});
+
 test("pending confirmations render above the expert checklist", () => {
   const app = load();
   const html = app.render(fixture());
@@ -92,4 +105,16 @@ test("pending confirmations render above the expert checklist", () => {
   assert.ok(confirmation >= 0);
   assert.ok(list >= 0);
   assert.ok(confirmation < list);
+});
+
+test("a delivered study no longer auto-picks a main report; artifacts stay inside their tasks", async () => {
+  const file = { content: "Accepted report\n", binary: false, truncated: false };
+  const app = load({ file }), study = fixture();
+  const artifact = { path: "writing/review.md", sha256: await sha256Hex(new TextEncoder().encode(file.content)), bytes: file.content.length };
+  study.plans[0].tasks[2] = { ...study.plans[0].tasks[2], state: "completed", artifacts: [artifact], runIds: [] };
+  study.deliverySnapshot = { scopeHash: "delivery" };
+  study.decisions.push({ id: "g4", gate: "G4", version: 1, status: "approved", scopeHash: "delivery" });
+  const html = app.render(study);
+  assert.doesNotMatch(html, /复制报告全文/);
+  assert.doesNotMatch(html, /Accepted report/);
 });

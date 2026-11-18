@@ -121,6 +121,9 @@ pub(crate) fn task_dispatch_prompt(
     study: &crate::store::research::Study,
     entry: &crate::store::research::ResearchTask,
 ) -> Result<String> {
+    if entry.spec.kind == "foreach" {
+        return foreach_dispatch_prompt(store, study, entry);
+    }
     let existing_runs_note = if entry.spec.role == "as-experiment-operator"
         && !entry.run_ids.is_empty()
     {
@@ -131,6 +134,7 @@ pub(crate) fn task_dispatch_prompt(
     } else {
         String::new()
     };
+    let downstream_items_note = downstream_items_note(study, entry)?;
     let mut inputs_note = String::new();
     if !entry.spec.inputs.is_empty() {
         let mut lines = Vec::new();
@@ -170,8 +174,9 @@ pub(crate) fn task_dispatch_prompt(
             format!("\n上一轮结论为阻塞，本轮为返工修订。返工意见（请针对性修改）：{feedback}")
         })
         .unwrap_or_default();
+    // 专家挂载的 MCP 服务由执行引擎在会话层原生加载（见 chat 注入链路），不进提示词。
     Ok(format!(
-        "执行研究任务 {}。独立完成角色职责，读取声明的依赖产物，全部输出写入 {}（必须生成以下相对路径文件：{}），完成后调用 `orx research finish --file <json-path>` 登记验收。{}{}{}{}\n{}\n{}",
+        "执行研究任务 {}。独立完成角色职责，读取声明的依赖产物，全部输出写入 {}（必须生成以下相对路径文件：{}），完成后调用 `orx research finish --file <json-path>` 登记验收。{}{}{}{}{}\n{}\n{}",
         entry.spec.id,
         store.research_root(study)?.display(),
         entry.spec.outputs.join("、"),
@@ -179,9 +184,307 @@ pub(crate) fn task_dispatch_prompt(
         inputs_note,
         verdict_note,
         rework_note,
+        downstream_items_note,
         entry.spec.brief,
         crate::local::research::task_role(store, entry)?
     ))
+}
+
+/// 下游逐项任务引用本任务产物时，提醒上游同时写出清单 sidecar（`<产物>.items.json`）。
+fn downstream_items_note(
+    study: &crate::store::research::Study,
+    entry: &crate::store::research::ResearchTask,
+) -> Result<String> {
+    let mut sources = Vec::new();
+    for task in study.plan()?.tasks.iter() {
+        let Some(spec) = task.spec.for_each.as_ref() else {
+            continue;
+        };
+        if !entry
+            .spec
+            .outputs
+            .iter()
+            .any(|output| output == &spec.source)
+        {
+            continue;
+        }
+        let sidecar = crate::store::research::items_path_for(&spec.source);
+        sources.push(format!(
+            "- {sidecar}：{{\"items\":[{{\"id\":\"小写字母数字横线下划线（进入产物路径）\",\"title\":\"项标题（≤120 字）\"}}…]}}，最多 {} 项，id 不得重复",
+            crate::store::research::MAX_FOREACH_ITEMS
+        ));
+    }
+    if sources.is_empty() {
+        return Ok(String::new());
+    }
+    Ok(format!(
+        "\n下游有逐项处理任务将按清单逐项执行：除声明产物外，必须同时生成清单文件（研究根目录相对路径，UTF-8 JSON）：\n{}",
+        sources.join("\n")
+    ))
+}
+
+/// 逐项任务的派发提示词：只交代当前项与该项产物路径，完成登记后由后台推进下一项。
+fn foreach_dispatch_prompt(
+    store: &Store,
+    study: &crate::store::research::Study,
+    entry: &crate::store::research::ResearchTask,
+) -> Result<String> {
+    let spec = entry
+        .spec
+        .for_each
+        .as_ref()
+        .ok_or_else(|| anyhow!("逐项任务缺少逐项定义: {}", entry.spec.id))?;
+    let items = entry
+        .foreach_items
+        .as_ref()
+        .ok_or_else(|| anyhow!("逐项清单尚未就绪: {}", entry.spec.id))?;
+    let index = entry.foreach_runs.len();
+    let item = items
+        .get(index)
+        .ok_or_else(|| anyhow!("逐项清单已越界: {}", entry.spec.id))?;
+    let item_path = crate::store::research::item_path_for(&spec.item_output, &item.id);
+    let item_brief = spec.item_brief.replace(
+        "{item}",
+        if item.title.is_empty() {
+            &item.id
+        } else {
+            &item.title
+        },
+    );
+    let remaining = items.len() - index;
+    Ok(format!(
+        "执行研究任务 {}（逐项处理，第 {}/{} 项，之后余 {} 项）。本轮只处理这一项：{item_brief}。读取声明的依赖产物与本项相关材料，把本项结果完整写入 {}（必须生成相对路径文件：{item_path}），完成后调用 `orx research finish --file <json-path>` 登记验收；登记后台会自动推进下一项，请勿提前处理其余项。\n{}",
+        entry.spec.id,
+        index + 1,
+        items.len(),
+        remaining,
+        store.research_root(study)?.display(),
+        entry.spec.brief,
+    ))
+}
+
+/// 事件等待求值：路径出现即完成；未出现记录等待开始时间并保持待推进；
+/// 超时转失败（阻塞转人工），不静默跳过。幂等，随派发与后台对账周期调用。
+fn resolve_wait_steps(
+    study: &mut crate::store::research::Study,
+    root: &std::path::Path,
+) -> Result<()> {
+    let now = crate::store::now_ms();
+    let candidates: Vec<(String, String, u32, Option<i64>)> = study
+        .plan()?
+        .tasks
+        .iter()
+        .filter(|t| t.spec.kind == "wait" && t.state == "pending")
+        .filter_map(|t| {
+            let wait = t.spec.wait_step.as_ref()?;
+            Some((
+                t.spec.id.clone(),
+                wait.source.clone(),
+                wait.timeout_minutes,
+                t.wait_started_at,
+            ))
+        })
+        .collect();
+    for (task_id, source, timeout_minutes, started_at) in candidates {
+        if study
+            .task(&task_id)
+            .map(|t| t.state == "pending")
+            .unwrap_or(false)
+        {
+            if study.ready(&task_id).is_err() {
+                continue; // 前置尚未完成：还不是等待时间。
+            }
+        } else {
+            continue;
+        }
+        if root.join(&source).exists() {
+            let task = study.task_mut(&task_id)?;
+            task.state = "completed".into();
+            task.wait_started_at = None;
+            task.summary = Some(format!("等待的路径已出现：{source}。"));
+            continue;
+        }
+        let started = started_at.unwrap_or(now);
+        let elapsed_minutes = (now - started) / 60_000;
+        if timeout_minutes > 0 && elapsed_minutes >= timeout_minutes as i64 {
+            let task = study.task_mut(&task_id)?;
+            task.state = "failed".into();
+            task.wait_started_at = None;
+            task.summary = Some(format!(
+                "等待超时：{source} 在 {timeout_minutes} 分钟内没有出现。请检查上游是否产出，然后修订计划或重试。"
+            ));
+            continue;
+        }
+        let task = study.task_mut(&task_id)?;
+        task.wait_started_at = Some(started);
+        let waited = if started_at.is_some() {
+            format!("（已等待 {elapsed_minutes} 分钟）")
+        } else {
+            String::new()
+        };
+        task.summary = Some(format!("等待 {source} 出现{waited}。"));
+    }
+    Ok(())
+}
+
+/// 提交就绪的实验节点：前置完成、契约已绑定且 G2/G3 已批准、尚无运行时，
+/// 从契约重建运行参数并提交；运行记录持久化后才算提交成功（重启恢复不重复提交）。
+/// Store 不跨 await 持有（rusqlite 连接非 Send）：同步前段（恢复扫描 + 恢复
+/// 挂接 + 待提交扫描）共用一次开库，异步提交后的挂接/登记各自短暂开库。
+pub(crate) async fn submit_ready_experiment_tasks(study_id: &str) -> Result<Vec<String>> {
+    let study_id = study_id.to_string();
+    let candidates: Vec<(String, crate::store::research::RunContract)> = {
+        let store = Store::open()?;
+        let study = store.research_study(&study_id)?;
+        if study.status != "active" {
+            return Ok(Vec::new());
+        }
+        let plan = study.plan()?;
+        // 挂接恢复兜底：reserve 阶段已登记 Run 但挂接尚未完成状态迁移的任务
+        // （重启或竞态遗留），若运行已到终态则重放挂接，交由对账周期验收产物。
+        for task in plan.tasks.iter().filter(|t| {
+            t.spec.kind == "experiment"
+                && t.state == "pending"
+                && !t.run_ids.is_empty()
+                && t.run_contract.is_some()
+        }) {
+            let Some(run_id) = task.run_ids.last() else {
+                continue;
+            };
+            if store
+                .get_run(run_id)?
+                .is_some_and(|run| crate::local::is_terminal(&run.status))
+            {
+                store
+                    .research_attach_experiment_run(&study_id, &task.spec.id, run_id)
+                    .ok();
+            }
+        }
+        // 同步段：扫描待提交节点（前置完成、G2/G3 已批准、契约已绑定、尚无运行）。
+        plan.tasks
+            .iter()
+            .filter(|t| {
+                t.spec.kind == "experiment"
+                    && t.state == "pending"
+                    && t.run_ids.is_empty()
+                    && t.run_contract.is_some()
+            })
+            .filter(|t| study.ready(&t.spec.id).is_ok())
+            .filter_map(|t| {
+                let contract = t.run_contract.clone()?;
+                Some((t.spec.id.clone(), contract))
+            })
+            .collect()
+    };
+    let mut submitted = Vec::new();
+    for (task_id, contract) in candidates {
+        // 异步段：不持有 Store，提交运行到执行后端。
+        let args = contract_run_args(&contract)?;
+        match crate::compute::submit(&args).await {
+            Ok(run) => {
+                let store = Store::open()?;
+                store.research_attach_experiment_run(&study_id, &task_id, &run.id)?;
+                submitted.push(run.id);
+            }
+            Err(error) => {
+                let reason = format!("实验运行提交失败：{error}");
+                let store = Store::open()?;
+                store.research_update(&study_id, |s| {
+                    if s.status != "active" {
+                        return Ok(());
+                    }
+                    let task = s.task_mut(&task_id)?;
+                    if task.state == "pending" && task.spec.kind == "experiment" {
+                        task.summary = Some(reason.clone());
+                    }
+                    Ok(())
+                })?;
+            }
+        }
+    }
+    Ok(submitted)
+}
+
+/// 从已批准的运行契约重建运行参数：契约在绑定时固化全部资源选项与执行设置哈希。
+fn contract_run_args(contract: &crate::store::research::RunContract) -> Result<crate::ExpRunArgs> {
+    let options = &contract.options;
+    let read_str = |key: &str| {
+        options
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    Ok(crate::ExpRunArgs {
+        exp_id: contract.experiment_id.clone(),
+        disk: options.get("disk").and_then(serde_json::Value::as_i64),
+        provider: read_str("provider"),
+        backend: read_str("backend"),
+        flavor: read_str("flavor"),
+        org: read_str("org"),
+        host: read_str("host"),
+        container: read_str("container"),
+        no_container: options
+            .get("noContainer")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        manifest: read_str("manifest"),
+        image: read_str("image"),
+        timeout: read_str("timeout"),
+        cpus: options
+            .get("cpus")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|v| u32::try_from(v).ok()),
+        mem: read_str("mem"),
+        force: false,
+        chat_session_id: None,
+        invocation_context: None,
+        agent_origin: Some("experiment-node".into()),
+        forwarded: false,
+        telemetry_suppressed: false,
+    })
+}
+
+/// 首次派发逐项任务前读取并固化清单；缺失或非法时任务转失败，等待主理人处理。
+fn materialize_foreach_items(
+    study: &mut crate::store::research::Study,
+    root: &std::path::Path,
+    task_id: &str,
+) -> Result<()> {
+    let (source, state) = {
+        let task = study.task(task_id)?;
+        if task.spec.kind != "foreach" || task.foreach_items.is_some() {
+            return Ok(());
+        }
+        let spec = task
+            .spec
+            .for_each
+            .as_ref()
+            .ok_or_else(|| anyhow!("逐项任务缺少逐项定义"))?;
+        (spec.source.clone(), task.state.clone())
+    };
+    if state != "pending" {
+        return Ok(());
+    }
+    let sidecar = crate::store::research::items_path_for(&source);
+    let task = study.task_mut(task_id)?;
+    match std::fs::read(root.join(&sidecar)) {
+        Ok(bytes) => match crate::store::research::parse_items(&sidecar, &bytes) {
+            Ok(items) => {
+                task.foreach_items = Some(items);
+            }
+            Err(error) => {
+                task.state = "failed".into();
+                task.summary = Some(format!("逐项清单不可用：{error}"));
+            }
+        },
+        Err(error) => {
+            task.state = "failed".into();
+            task.summary = Some(format!(
+                "逐项清单缺失：上游任务需要生成 {sidecar}（{source} 旁的清单 JSON），当前未找到（{error}）。可修订计划或重跑上游后重试。"
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn dispatch_study_task_sync(
@@ -190,8 +493,23 @@ pub(crate) fn dispatch_study_task_sync(
     task_id: &str,
     ignore_session: Option<&str>,
 ) -> Result<Option<String>> {
-    let study = store.research_study(study_id)?;
+    let mut study = store.research_study(study_id)?;
     study.ready(task_id)?;
+    // 逐项任务首次派发前物化清单：读取上游产物旁的 .items.json 并固化到任务上，
+    // 执行期间不再重读；清单缺失或非法时任务转失败等待主理人处理。
+    if study
+        .task(task_id)
+        .is_ok_and(|task| task.spec.kind == "foreach" && task.foreach_items.is_none())
+    {
+        let root = store.research_root(&study)?;
+        store.research_update(study_id, |s| materialize_foreach_items(s, &root, task_id))?;
+        study = store.research_study(study_id)?;
+        let entry = study.task(task_id)?;
+        if entry.state != "pending" {
+            // 物化失败：任务已带错误说明转入失败，交给主理人处理。
+            return Ok(None);
+        }
+    }
     let entry = study.task(task_id)?;
     if entry.state != "pending" || entry.session_id.is_some() {
         return Ok(None);
@@ -200,6 +518,11 @@ pub(crate) fn dispatch_study_task_sync(
         .get_chat_session(&study.session_id)?
         .ok_or_else(|| anyhow!("The current chat session no longer exists."))?;
     let prompt = task_dispatch_prompt(store, &study, entry)?;
+    let session_title = if entry.spec.kind == "foreach" {
+        format!("逐项处理 · {}", task_id)
+    } else {
+        format!("{} · {}", entry.spec.role, task_id)
+    };
     let harness = parent.harness.clone();
     let plan_permission =
         crate::local::harness::permission_id_for_mode(&harness, PermissionMode::Plan);
@@ -209,7 +532,7 @@ pub(crate) fn dispatch_study_task_sync(
         harness,
         native_session_id: None,
         title_source: Some("user".to_string()),
-        title: Some(format!("{} · {}", entry.spec.role, task_id)),
+        title: Some(session_title),
         model: parent.model.clone(),
         service_tier: parent.service_tier.clone(),
         permission_mode: parent
@@ -272,17 +595,23 @@ pub(crate) fn auto_dispatch_ignoring_session(
     let Ok(plan) = study.plan() else {
         return Ok(Vec::new());
     };
-    if plan
-        .tasks
-        .iter()
-        .any(|t| t.spec.kind == crate::store::research::ROUTE_KIND)
-    {
-        // 有分流节点时先求值并持久化：skipped 传播与分支放行要发生在就绪判定之前。
+    if plan.tasks.iter().any(|t| {
+        matches!(
+            t.spec.kind.as_str(),
+            crate::store::research::ROUTE_KIND | "human" | "wait"
+        )
+    }) {
+        // 有分流、人工或等待节点时先求值并持久化：skipped 传播、分支放行、
+        // 人工等待与事件等待的到达判定要发生在就绪判定之前。
         store.research_update(study_id, |s| {
             if s.status != "active" {
                 return Ok(());
             }
-            s.resolve_routes()
+            let root = store.research_root(s)?;
+            s.resolve_routes()?;
+            s.resolve_human_tasks();
+            resolve_wait_steps(s, &root)?;
+            Ok(())
         })?;
     }
     let study = store.research_study(study_id)?;
@@ -292,7 +621,12 @@ pub(crate) fn auto_dispatch_ignoring_session(
     let ready_ids: Vec<String> = plan
         .tasks
         .iter()
-        .filter(|t| t.state == "pending" && study.ready(&t.spec.id).is_ok())
+        // 人工/等待/实验节点不派发专家会话：分别等待主理人产出、事件到达与引擎提交运行。
+        .filter(|t| {
+            !matches!(t.spec.kind.as_str(), "human" | "wait" | "experiment")
+                && t.state == "pending"
+                && study.ready(&t.spec.id).is_ok()
+        })
         .map(|t| t.spec.id.clone())
         .collect();
     let mut dispatched = Vec::new();
@@ -370,6 +704,8 @@ pub(crate) fn reconcile_active_studies_with_checks(
     checks.retain(|id, _| studies.iter().any(|s| &s.id == id));
     for study in studies {
         auto_dispatch_sync(store, &study.id)?;
+        // 实验节点的运行终态验收：Run 结束后按声明产物收束（无专家会话可依赖）。
+        store.research_reconcile_experiment_tasks(&study.id)?;
         let updated = store.research_study(&study.id)?;
         if updated.plan().is_ok_and(|p| {
             !p.tasks.is_empty()
@@ -609,6 +945,21 @@ fn research_wakeup_text(
             failed.join("；"),
             completed.join(", "),
             skipped_note
+        ));
+    }
+    let awaiting_humans: Vec<String> = plan
+        .tasks
+        .iter()
+        .filter(|t| t.state == "awaiting")
+        .map(|t| {
+            let brief: String = t.spec.brief.chars().take(120).collect();
+            format!("{}（{}）", t.spec.id, brief)
+        })
+        .collect();
+    if !awaiting_humans.is_empty() {
+        return Ok(format!(
+            "[orx 研究编排] 人工任务 {} 等待主理人亲自完成：请向用户转述任务说明，并提示其到研究面板的任务详情里提交产出（提交后流程自动继续）；请勿代替用户提交或派发任务。",
+            awaiting_humans.join("、")
         ));
     }
     let awaiting: Vec<&str> = plan

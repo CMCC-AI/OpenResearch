@@ -227,6 +227,41 @@ pub(super) struct ResumeReq {
     version: u32,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct HumanSubmitReq {
+    content: String,
+}
+
+/// 人工任务提交：主理人的文本写入任务声明产物并完成验收，随后自动推进下游。
+pub(super) async fn submit_human(
+    State(state): State<AppState>,
+    Path((id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(req): Json<HumanSubmitReq>,
+) -> ApiResult {
+    browser_decision(&headers)?;
+    reject_if_stopping(&state)?;
+    reject_if_moving(&state)?;
+    tokio::spawn(async move {
+        let gate = state.data_dir_gate.clone().lock_owned().await;
+        reject_if_stopping(&state)?;
+        reject_if_moving(&state)?;
+        let result = blocking_task(move || {
+            let _gate = gate;
+            let store = Store::open()?;
+            store.research_submit_human(&id, &task_id, req.content)?;
+            Ok::<_, crate::error::Error>(json!({"ok": true}))
+        })
+        .await
+        .map_err(|error| ApiError::from(anyhow!("research human submit failed: {error}")))?
+        .map_err(bad_request)?;
+        Ok(Json(result))
+    })
+    .await
+    .map_err(|error| ApiError::from(anyhow!("research human submit task failed: {error}")))?
+}
+
 pub(super) async fn resume(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -341,7 +376,10 @@ async fn apply_decision(
     reject_if_moving(&state)?;
     let client_turn_id = format!("research-decision-{decision}");
     let (_gate, session, wakeup_prompt) =
-        prepare_decision(gate, id, decision, req, Store::open).await?;
+        prepare_decision(gate, id.clone(), decision, req, Store::open).await?;
+    // 决策已持久化：G2/G3 批准即授权，就绪的实验节点在此自动提交运行；
+    // 提交失败不回滚批准，任务详情里会带原因等待主理人处理。
+    let _ = crate::commands::research_dispatch::submit_ready_experiment_tasks(&id).await;
     let resume_error = if let Some(prompt) = wakeup_prompt {
         state
             .chat

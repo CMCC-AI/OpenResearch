@@ -1,11 +1,10 @@
-import { getReadOnlyApi } from "../readOnlyApi";
 import { fmtTokens } from "../api";
 import { appHref } from "../appBasePath";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, useNodesState, useReactFlow, type Edge, type Node, type NodeProps } from "@xyflow/react";
 import { CircleDot, X } from "lucide-react";
-import { currentDecisions, expertRoles, researchAttention, researchProgress, researchTeamGraph, researchDuration, researchPackageUrl, type ResearchMetrics, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
+import { currentDecisions, expertRoles, researchAttention, researchProgress, researchTeamGraph, researchDuration, type ResearchMetrics, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
 import { ResearchEvidence } from "./ResearchEvidence";
 import { TaskDetails, workflowTone } from "./ResearchWorkflow";
 import { Button, IconButton } from "./ui";
@@ -42,7 +41,7 @@ function ExpertGraph({ nodes: incoming, edges, currentIds, onSelect }: { nodes: 
   return <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.08, minZoom: 0.25, maxZoom: 1 }} minZoom={0.25} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} deleteKeyCode={null} onNodeClick={(_, node) => onSelect(node.id)} proOptions={{ hideAttribution: true }}><Background /><Controls showInteractive={false} /><div className="absolute right-3 top-3 z-10"><LocateCurrent ids={currentIds} /></div></ReactFlow>;
 }
 
-export function ResearchTeamDagDialog({ study, runs, metrics, onClose, confirmationContent, onOpenSession, onOpenDeliverables, embedded = false }: {
+export function ResearchTeamDagDialog({ study, runs, metrics, onClose, confirmationContent, onOpenSession, embedded = false }: {
   embedded?: boolean;
   metrics?: ResearchMetrics | null;
   study: ResearchStudy | null;
@@ -50,7 +49,6 @@ export function ResearchTeamDagDialog({ study, runs, metrics, onClose, confirmat
   onClose: () => void;
   confirmationContent: ReactNode;
   onOpenSession?: (id: string) => void;
-  onOpenDeliverables?: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
@@ -89,7 +87,6 @@ export function ResearchTeamDagDialog({ study, runs, metrics, onClose, confirmat
   const systemSelection = systemNodes.find((node) => node.id === selected);
   const pending = study ? currentDecisions(study).filter((decision) => decision.status === "pending") : [];
   const artifacts = new Set(tasks.flatMap((task) => task.artifacts.map((artifact) => artifact.path))).size;
-  const delivered = !!(study && runs.every(run => ["done", "failed", "cancelled"].includes(run.status)) && !getReadOnlyApi() && researchPackageUrl(study));
   const content = <div ref={embedded ? undefined : ref} role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-labelledby={titleId} tabIndex={-1} className={`research-team flex h-full min-h-0 w-full flex-col overflow-x-hidden overflow-y-auto bg-background text-text ${embedded ? "" : "max-h-full max-w-6xl rounded-xl border border-border shadow-elevated"}`} onClick={(event) => event.stopPropagation()}>
       <header className="research-team-header flex shrink-0 flex-wrap items-center gap-x-6 gap-y-3 border-b border-border">
         <div className="min-w-0"><h2 id={titleId} className="flex items-center gap-2 text-base font-normal"><span className="research-team-icon flex shrink-0 items-center justify-center"><img src={appHref("/research-team/team.svg")} alt="" width={22} height={22} /></span>科研专家团 · {({ overview: "全景", tasks: "本次任务依赖", evidence: "证据与来源", confirmation: "人工确认" })[view]}</h2><p role="status" className="research-team-attention text-xs">{study ? researchAttention(study) : "尚未开始研究"}</p></div>
@@ -102,7 +99,6 @@ export function ResearchTeamDagDialog({ study, runs, metrics, onClose, confirmat
         {!embedded && <IconButton data-initial-focus className="self-start" aria-label="关闭专家团面板" onClick={onClose}><X size={18} /></IconButton>}
       </header>
       <div className="research-team-toolbar flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border">
-        {delivered && onOpenDeliverables && <Button size="small" variant="primary" onClick={() => { onClose(); onOpenDeliverables(); }}>查看研究成果</Button>}
         <div className="flex flex-wrap gap-1" role="group" aria-label="专家团页面">{[
           { label: "专家团全景", active: view === "overview", select: () => setView("overview") },
           { label: "本次任务依赖", active: actual, select: () => setView("tasks") },

@@ -3,6 +3,8 @@ import { createPortal } from "react-dom";
 import { ArrowRight, CheckCircle2, Circle, CircleDot, GitBranch, ShieldCheck, Users, X } from "lucide-react";
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { consultationCoverage, researchWorkflowMode, expertRoles, researchAttention, currentDecisions, researchDagLayout, researchModes, researchProgress, researchTaskStatus, researchWorkflow, workflowStateNames, workflowTone, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
+import { invalidateFamilies } from "../queries/invalidation";
+import * as api from "../api";
 import { ResearchEvidence } from "./ResearchEvidence";
 import { ResearchModulePreview } from "./ResearchModulePreview";
 import { ResearchJourneyIntro } from "./ResearchJourneyIntro";
@@ -124,15 +126,71 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
 export function TaskDetails({ study, task, runs, onOpenSession }: { study: ResearchStudy; task: ResearchTask; runs: { id: string; status: string; cancelRequested?: boolean }[]; onOpenSession?: (sessionId: string) => void }) {
   const status = researchTaskStatus(study, task);
   const planTasks = study.plans.at(-1)?.tasks ?? [];
-  const dependencyNames = task.dependsOn.map((id) => { const parent = planTasks.find((entry) => entry.id === id); return parent ? parent.agent?.name ?? expertRoles[parent.role] ?? parent.role : id; });
+  const dependencyNames = task.dependsOn.map((id) => {
+    const parent = planTasks.find((entry) => entry.id === id);
+    if (!parent) return id;
+    // 分流/逐项/人工/实验/等待节点没有 role，按类型兜底显示，避免空名。
+    const kindLabels: Record<string, string> = { route: "条件分流", foreach: "逐项处理", human: "人工任务", experiment: "实验节点", wait: "事件等待" };
+    return parent.agent?.name ?? (expertRoles[parent.role] || kindLabels[parent.kind ?? ""] || parent.role || id);
+  });
   return <section className="mt-3 rounded-lg border border-primary bg-primary-subtle p-4 text-sm" aria-label={`任务详情 ${task.id}`}>
-    <div className="flex flex-wrap justify-between gap-2"><strong>{task.agent?.name ?? expertRoles[task.role] ?? task.role} · {task.id}</strong><span className="flex items-center gap-1 text-primary"><StateIcon state={status.state} />{status.label}</span></div>
+    <div className="flex flex-wrap justify-between gap-2"><strong>{task.agent?.name ?? expertRoles[task.role] ?? ((task.kind === "human" ? "人工任务" : task.kind === "foreach" ? "逐项处理" : task.role) || task.id)} · {task.id}</strong><span className="flex items-center gap-1 text-primary"><StateIcon state={status.state} />{status.label}</span></div>
     <p className="mt-2 whitespace-pre-wrap">{task.brief}</p>
     {dependencyNames.length > 0 && <p className="mt-2 flex items-center gap-1 text-xs text-subtext"><ArrowRight size={12} />前置：{dependencyNames.join("、")}</p>}
-    <p className="mt-1 text-xs text-subtext">要求产物：{task.outputs.join("、")}</p>
+    {task.kind !== "foreach" && <p className="mt-1 text-xs text-subtext">要求产物：{task.outputs.join("、")}</p>}
+    {task.kind === "foreach" && <ForEachProgress task={task} />}
+    {task.state === "awaiting" && <HumanSubmitForm study={study} task={task} />}
     {task.sessionId && onOpenSession && <Button size="small" className="mt-3" title={task.sessionId} onClick={() => onOpenSession(task.sessionId!)}>查看专家对话</Button>}
     {task.artifacts.length > 0 && <ul className="mt-3 flex flex-col gap-1 text-xs text-accent-green" aria-label="已交付产物">{task.artifacts.map((artifact) => <li key={artifact.path} className="break-all">{artifact.path} · {artifact.bytes} 字节</li>)}</ul>}
     {task.summary && <p className="mt-2 whitespace-pre-wrap">{task.summary}</p>}
     {task.runIds.map((id) => { const run = runs.find((entry) => entry.id === id); return <p key={id} className="mt-2 break-all font-mono text-xs">Run {id} · {run?.status ?? "状态未知"}{run?.cancelRequested ? " · 已请求取消" : ""}</p>; })}
   </section>;
+}
+
+/** 逐项处理的迭代清单：每项显示完成状态与产物路径。 */
+function ForEachProgress({ task }: { task: ResearchTask }) {
+  const items = task.foreachItems ?? [];
+  const runsByItem = new Map((task.foreachRuns ?? []).map((run) => [run.itemId, run]));
+  if (!items.length) return null;
+  return <ul className="mt-2 flex flex-col gap-1 text-xs text-subtext" aria-label="逐项进度">
+    {items.map((item, index) => {
+      const run = runsByItem.get(item.id);
+      const label = item.title || item.id;
+      return <li key={item.id} className="flex items-center gap-1.5">
+        <span className={run?.ok ? "text-accent-green" : run && !run.ok ? "text-accent-red" : ""}>{run ? (run.ok ? "✓" : "✕") : "·"}</span>
+        <span className="min-w-0 truncate">{index + 1}. {label}</span>
+        {run?.artifact && <span className="min-w-0 truncate font-mono">{run.artifact.path}</span>}
+        {run && !run.ok && <span className="min-w-0 truncate text-accent-red">{run.summary ?? "执行失败"}</span>}
+      </li>;
+    })}
+  </ul>;
+}
+
+/** 人工任务的提交框：主理人的文字直接写入任务产物并推进流程。 */
+export function HumanSubmitForm({ study, task }: { study: ResearchStudy; task: ResearchTask }) {
+  const [content, setContent] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.submitHumanTaskOutput(study.id, task.id, content);
+      setContent("");
+      invalidateFamilies(["researchStudy"]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <div className="mt-3 flex flex-col gap-2 rounded-md border border-border bg-background p-3">
+    <label className="flex flex-col gap-1 text-xs text-subtext">
+      你的产出会写入 {task.outputs[0]}
+      <textarea className="min-h-24 resize-y rounded-md border border-border bg-background p-2.5 text-sm text-text outline-none focus:border-text" value={content} maxLength={24000} aria-label="人工任务产出" onChange={(event) => setContent(event.target.value)} />
+    </label>
+    {error && <p className="m-0 text-xs text-accent-red" role="alert">{error}</p>}
+    <Button size="small" disabled={!content.trim() || busy} onClick={() => void submit()}>{busy ? "提交中…" : "提交并继续"}</Button>
+  </div>;
 }

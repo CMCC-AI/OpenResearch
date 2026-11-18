@@ -21,23 +21,28 @@ fn plan_inheritance_hashing_allows_an_independent_writer() {
     other.set_busy_timeout(std::time::Duration::ZERO).unwrap();
     let mut inspected = 0;
     let prepared = store
-        .research_prepare_plan_with_inspector(&study.id, plan(), |root, path| {
-            assert!(store.conn.is_autocommit());
-            // The independent writer holds its transaction during actual file
-            // hashing. No sleeps or wall-clock threshold can hide a writer lock.
-            let tx = other.begin_immediate().unwrap();
-            other
-                .conn
-                .execute(
-                    "UPDATE chat_sessions SET title='parallel writer' WHERE id='lead'",
-                    [],
-                )
-                .unwrap();
-            let artifact = files::PreparedArtifact::inspect(root, path)?;
-            tx.commit().unwrap();
-            inspected += 1;
-            Ok(artifact)
-        }, false)
+        .research_prepare_plan_with_inspector(
+            &study.id,
+            plan(),
+            |root, path| {
+                assert!(store.conn.is_autocommit());
+                // The independent writer holds its transaction during actual file
+                // hashing. No sleeps or wall-clock threshold can hide a writer lock.
+                let tx = other.begin_immediate().unwrap();
+                other
+                    .conn
+                    .execute(
+                        "UPDATE chat_sessions SET title='parallel writer' WHERE id='lead'",
+                        [],
+                    )
+                    .unwrap();
+                let artifact = files::PreparedArtifact::inspect(root, path)?;
+                tx.commit().unwrap();
+                inspected += 1;
+                Ok(artifact)
+            },
+            false,
+        )
         .unwrap();
     assert_eq!(inspected, 3);
     store.research_commit_plan(prepared).unwrap();
@@ -206,7 +211,9 @@ fn plan_inheritance_rejects_post_hash_file_changes_and_preserves_the_old_plan() 
             "replace" => {
                 let replacement = root.join("replacement.md");
                 std::fs::write(&replacement, std::fs::read(&file).unwrap()).unwrap();
-                std::fs::File::options().write(true).open(&replacement)
+                std::fs::File::options()
+                    .write(true)
+                    .open(&replacement)
                     .unwrap()
                     .set_modified(metadata.modified().unwrap())
                     .unwrap();
@@ -383,6 +390,8 @@ fn custom_agents_are_snapshotted_and_duplicate_submissions_share_a_version() {
             name: "Evidence statistician".into(),
             description: "Check quantitative claims".into(),
             prompt: "Use only traceable quantitative evidence.".into(),
+            mcp_servers: Vec::new(),
+            user_skills: Vec::new(),
         })
         .unwrap();
     let mut input = plan();
@@ -392,7 +401,14 @@ fn custom_agents_are_snapshotted_and_duplicate_submissions_share_a_version() {
         .unwrap();
     assert_eq!((version, duplicate), (1, false));
     let saved = store.research_study(&study.id).unwrap();
-    assert_eq!(saved.plan().unwrap().tasks[0].agent.as_ref().unwrap().version, 1);
+    assert_eq!(
+        saved.plan().unwrap().tasks[0]
+            .agent
+            .as_ref()
+            .unwrap()
+            .version,
+        1
+    );
     assert!(saved.plan_scope().unwrap().contains("agentDefinitions"));
     let (same_version, duplicate) = store
         .research_set_plan_idempotent(&study.id, input.clone())
@@ -407,6 +423,8 @@ fn custom_agents_are_snapshotted_and_duplicate_submissions_share_a_version() {
                 name: "Evidence statistician".into(),
                 description: "Check quantitative claims".into(),
                 prompt: "Use only traceable quantitative evidence and report uncertainty.".into(),
+                mcp_servers: Vec::new(),
+                user_skills: Vec::new(),
             },
         )
         .unwrap();
@@ -415,7 +433,12 @@ fn custom_agents_are_snapshotted_and_duplicate_submissions_share_a_version() {
         .unwrap();
     assert_eq!((next_version, duplicate), (2, false));
     assert_eq!(
-        store.research_study(&study.id).unwrap().plan().unwrap().tasks[0]
+        store
+            .research_study(&study.id)
+            .unwrap()
+            .plan()
+            .unwrap()
+            .tasks[0]
             .agent
             .as_ref()
             .unwrap()
@@ -431,3 +454,51 @@ fn custom_agents_are_snapshotted_and_duplicate_submissions_share_a_version() {
     );
 }
 
+#[test]
+fn plan_commit_seeds_the_objective_as_the_opening_user_message() {
+    // API 建的会话没有任何聊天消息：计划登记时目标必须变成开场提问，
+    // 且置为 active leaf，让后续唤醒与回复接在它下面。
+    let (dir, store, study) = setup();
+    store.research_set_plan(&study.id, plan()).unwrap();
+    let messages = store.list_chat_messages("lead").unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].id, format!("research-objective-{}", study.id));
+    assert_eq!(messages[0].role, "user");
+    assert_eq!(messages[0].parent_id, None);
+    let parts: Vec<crate::local::chat::WirePart> =
+        serde_json::from_str(&messages[0].parts_json).unwrap();
+    assert_eq!(parts[0].text.as_deref(), Some("test study"));
+    let session = store.get_chat_session("lead").unwrap().unwrap();
+    assert_eq!(session.active_leaf_id.as_deref(), Some(messages[0].id.as_str()));
+    drop(store);
+    drop(dir);
+}
+
+#[test]
+fn plan_commit_never_seeds_an_objective_over_real_user_turns() {
+    // 聊天里的正常发送流先有用户消息（首条输入既是目标也是消息），
+    // 计划登记时不得再播种，否则同一个问题出现两条气泡。
+    let (dir, store, study) = setup();
+    store
+        .upsert_chat_message(&StoredChatMessage {
+            id: "m-user".into(),
+            session_id: "lead".into(),
+            role: "user".into(),
+            parts_json: serde_json::to_string(
+                &vec![crate::local::chat::WirePart::text("m-user-part", "帮我对比 CPU 方案")],
+            )
+            .unwrap(),
+            created_at: 1,
+            completed_at: None,
+            parent_id: None,
+            base_native_session_id: None,
+            result_native_session_id: None,
+        })
+        .unwrap();
+    store.research_set_plan(&study.id, plan()).unwrap();
+    let messages = store.list_chat_messages("lead").unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].id, "m-user");
+    drop(store);
+    drop(dir);
+}

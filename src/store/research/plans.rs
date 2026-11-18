@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use super::files::PreparedArtifact;
 use super::*;
-use crate::workflow::AgentSnapshot;
+use crate::workflow::{AgentSnapshot, McpServerSnapshot};
 
 pub(super) struct PreparedPlan {
     study: Study,
@@ -123,7 +123,23 @@ impl Store {
         let mut agents = HashMap::new();
         for task in &input.tasks {
             if let Some(agent) = self.workflow_agent(&task.role)? {
-                agents.insert(task.role.clone(), AgentSnapshot::from(&agent));
+                let mut snapshot = AgentSnapshot::from(&agent);
+                // MCP 挂载随 agent 一起冻结（仅 id，名称 best-effort，不含命令与密钥）。
+                // 注册表里的配置与存在性在派发注入时从活注册表解析，删掉的服务跳过。
+                snapshot.mcp_servers = self
+                    .workflow_agent_mcp_ids(&agent.id)?
+                    .into_iter()
+                    .map(|mcp_id| McpServerSnapshot {
+                        name: crate::local::mcp_registry::server(&mcp_id)
+                            .map(|server| server.name)
+                            .unwrap_or_else(|| mcp_id.clone()),
+                        id: mcp_id,
+                    })
+                    .collect();
+                // 技能挂载只冻结名字；派发的会话注入时已删除的技能自然跳过。
+                snapshot.user_skills =
+                    self.skill_bindings_for_scope(crate::store::skills::SCOPE_AGENT, &agent.id)?;
+                agents.insert(task.role.clone(), snapshot);
             }
         }
         Ok(agents)
@@ -208,6 +224,8 @@ impl Store {
                         || prev.spec.route != spec.route
                         || prev.spec.route_branch != spec.route_branch
                         || prev.spec.wait_for != spec.wait_for
+                        || prev.spec.for_each != spec.for_each
+                        || prev.spec.wait_step != spec.wait_step
                         || !same_agent(prev, &spec.role, &agents)
                     {
                         continue;
@@ -317,6 +335,8 @@ impl Store {
                         || prev.spec.route != spec.route
                         || prev.spec.route_branch != spec.route_branch
                         || prev.spec.wait_for != spec.wait_for
+                        || prev.spec.for_each != spec.for_each
+                        || prev.spec.wait_step != spec.wait_step
                         || !same_agent(prev, &spec.role, &agents)
                         || !spec.depends_on.iter().all(|d| inherited_ids.contains(d))
                     {
@@ -386,6 +406,7 @@ impl Store {
                             route_decision: prev.route_decision.clone(),
                             foreach_items: prev.foreach_items.clone(),
                             foreach_runs: prev.foreach_runs.clone(),
+                            wait_started_at: None,
                         });
                         continue;
                     }
@@ -414,6 +435,7 @@ impl Store {
                     route_decision: None,
                     foreach_items: None,
                     foreach_runs: vec![],
+                    wait_started_at: None,
                 });
             }
             study.delivery_error = None;
@@ -446,6 +468,8 @@ impl Store {
             submission = Some((version, false));
             Ok(())
         })?;
+        let study = self.research_study(&prepared.study.id)?;
+        self.research_ensure_objective_message(&study)?;
         Ok(submission.expect("research plan update must return a submission"))
     }
 }

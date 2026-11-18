@@ -76,7 +76,6 @@ test("real file routes distinguish task/new, task IDs, project index, and settin
     ["/literature", "/literature"],
     ["/workflows", "/workflows"],
     ["/projects/p/workflows", "/projects/$projectId/workflows"],
-    ["/projects/p/deliverables", "/projects/$projectId/deliverables"],
     ["/projects", "/projects/"],
     ["/projects/p", "/projects/$projectId/"],
     ["/projects/p/tasks/old", "/projects/$projectId/tasks/$sessionId"],
@@ -103,6 +102,19 @@ test("retired new-task bookmarks redirect to the unified home with their project
       assert.equal(routing.isRedirect(error), true);
       assert.equal(error.options.to, "/projects");
       assert.deepEqual(error.options.search, { project: projectId });
+      assert.equal(error.options.replace, true);
+      return true;
+    });
+  }
+});
+
+test("retired deliverables bookmarks redirect to the project conversation", () => {
+  const { Route } = loadModule("routes/projects.$projectId.deliverables.tsx");
+  for (const projectId of ["p", "研究 空间"]) {
+    assert.throws(() => Route.options.beforeLoad({ params: { projectId } }), (error) => {
+      assert.equal(routing.isRedirect(error), true);
+      assert.equal(error.options.to, "/projects/$projectId");
+      assert.deepEqual(error.options.params, { projectId });
       assert.equal(error.options.replace, true);
       return true;
     });

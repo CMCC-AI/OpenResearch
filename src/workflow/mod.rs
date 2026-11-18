@@ -24,6 +24,14 @@ pub struct AgentSnapshot {
     pub name: String,
     pub version: u32,
     pub prompt: String,
+    /// 计划批准时冻结的 MCP 服务（仅 id/名称，不含命令与环境变量密钥）；
+    /// 内置角色为空。旧计划没有该字段，读取按空处理。
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerSnapshot>,
+    /// 计划批准时冻结的上传技能名；会话注入时已删除的技能自然跳过。
+    /// 旧计划没有该字段，读取按空处理。
+    #[serde(default)]
+    pub user_skills: Vec<String>,
 }
 
 impl From<&AgentDefinition> for AgentSnapshot {
@@ -33,8 +41,18 @@ impl From<&AgentDefinition> for AgentSnapshot {
             name: agent.name.clone(),
             version: agent.version,
             prompt: agent.prompt.clone(),
+            mcp_servers: Vec::new(),
+            user_skills: Vec::new(),
         }
     }
+}
+
+/// 冻结进计划的 MCP 服务引用；命令与环境变量在派发时从活注册表解析。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerSnapshot {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -44,6 +62,13 @@ pub struct AgentInput {
     #[serde(default)]
     pub description: String,
     pub prompt: String,
+    /// 挂载的 MCP 服务 id 列表；内置专家不可挂载。
+    #[serde(default)]
+    pub mcp_servers: Vec<String>,
+    /// 挂载的上传技能名列表；内置专家不可挂载。派发该专家的会话自动携带
+    /// 这些技能；未绑定技能的会话不受影响。
+    #[serde(default)]
+    pub user_skills: Vec<String>,
 }
 
 pub fn validate_agent(input: &AgentInput) -> Result<()> {
@@ -150,6 +175,10 @@ pub fn plan_summary(workflow: &str, objective: &str, tasks: &[TaskSpec]) -> Stri
     let rework: u32 = tasks.iter().map(|t| t.max_rework).sum();
     let routes = tasks.iter().filter(|t| t.kind == ROUTE_KIND).count();
     let joins = tasks.iter().filter(|t| t.wait_for == "any").count();
+    let foreach = tasks.iter().filter(|t| t.kind == "foreach").count();
+    let humans = tasks.iter().filter(|t| t.kind == "human").count();
+    let experiments = tasks.iter().filter(|t| t.kind == "experiment").count();
+    let waits = tasks.iter().filter(|t| t.kind == "wait").count();
     let mut controls = Vec::new();
     if approvals > 0 {
         controls.push(format!("{approvals} 项完成后需主理人确认"));
@@ -165,6 +194,18 @@ pub fn plan_summary(workflow: &str, objective: &str, tasks: &[TaskSpec]) -> Stri
     }
     if joins > 0 {
         controls.push(format!("{joins} 项按任一完成汇合"));
+    }
+    if foreach > 0 {
+        controls.push(format!("包含 {foreach} 个逐项处理"));
+    }
+    if humans > 0 {
+        controls.push(format!("{humans} 项由主理人亲自完成"));
+    }
+    if experiments > 0 {
+        controls.push(format!("{experiments} 个实验节点（G2/G3 批准后自动运行）"));
+    }
+    if waits > 0 {
+        controls.push(format!("{waits} 个事件等待"));
     }
     let controls = if controls.is_empty() {
         String::new()
@@ -273,6 +314,8 @@ mod tests {
             route: None,
             route_branch: String::new(),
             wait_for: String::new(),
+            for_each: None,
+            wait_step: None,
         }
     }
 
@@ -387,6 +430,10 @@ mod tests {
         assert_eq!(first, second);
         assert!(first.contains("包含 1 个条件分流"));
         assert!(first.contains("1 项按任一完成汇合"));
+        // 逐项与人工任务同样计入摘要，配置变化会生成新版本重新确认 G1。
+        let mut with_steps = tasks.clone();
+        with_steps[2].kind = "human".into();
+        assert!(plan_summary("custom", "综述目标", &with_steps).contains("1 项由主理人亲自完成"));
         // 分流条件属于 spec 字段：计划等价比对按 spec 逐字段比较（TaskSpec PartialEq），
         // verdict 变化会判定为不同计划并生成新版本重新确认 G1；摘要只承担可读性与计数。
         let mut flipped = tasks.clone();

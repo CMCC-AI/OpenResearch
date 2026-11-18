@@ -76,22 +76,6 @@ test("the active DAG page labels the tasks view header accurately", () => {
   assert.match(html, /aria-pressed="true"[^>]*>本次任务依赖/);
 });
 
-test("the active DAG links deliverables only for confirmed studies without active runs", () => {
-  const current = { ...study, plans: [{ version: 1, tasks: [] }], deliverySnapshot: { scopeHash: "scope" }, decisions: [{ id: "gate", gate: "G4", version: 1, status: "approved", scopeHash: "scope" }] };
-  function render(currentStudy, runs = [], readonly = false) {
-    const view = {};
-    const isolated = { ...mocks, "../readOnlyApi": { getReadOnlyApi: () => readonly ? {} : null, projectAssetUrl: url => url } };
-    new Function("require", "exports", code)(id => id in isolated ? isolated[id] : require(id), view);
-    return renderToStaticMarkup(React.createElement(view.ResearchTeamDagDialog, { embedded: true, study: currentStudy, metrics: measured, runs, onClose() {}, onOpenDeliverables() {} }));
-  }
-  assert.match(render(current), /查看研究成果/);
-  assert.doesNotMatch(render(current), /下载已确认研究包/);
-  assert.match(render({ ...current, status: "stopped" }), /查看研究成果/);
-  assert.doesNotMatch(render(current, [{ id: "old", status: "running" }]), /查看研究成果/);
-  assert.doesNotMatch(render(current, [], true), /查看研究成果/);
-  assert.doesNotMatch(render({ ...current, decisions: [{ ...current.decisions[0], status: "pending" }] }), /查看研究成果/);
-});
-
 test("the W1 task view renders existing plan and task approvals as read-only graph nodes", () => {
   let rendered;
   const tasks = createLiteratureDraft().tasks.map(task => ({ ...task, state: "pending", summary: null, artifacts: [], runIds: [], sessionId: null }));

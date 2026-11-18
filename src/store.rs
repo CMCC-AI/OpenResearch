@@ -10,10 +10,12 @@
 
 pub(crate) mod input_sets;
 pub(crate) mod material_reads;
+pub(crate) mod mcp;
 pub(crate) mod metric_evidence;
 pub(crate) mod research;
 mod research_metrics;
 mod schema;
+pub(crate) mod skills;
 pub(crate) mod steering;
 pub(crate) mod storage_usage;
 mod telemetry;
@@ -1176,6 +1178,8 @@ impl Store {
         metric_evidence::migrate(&conn)?;
         input_sets::migrate(&conn)?;
         workflow::migrate(&conn)?;
+        mcp::migrate(&conn)?;
+        skills::migrate(&conn)?;
         migrate_chat_spawns(&conn)?;
         phase("research-and-spawns");
         Ok(Self {
@@ -2186,6 +2190,7 @@ impl Store {
             "DELETE FROM local_experiments WHERE project_id = ?1",
             params![id],
         )?;
+        skills::purge_scope_bindings_tx(&tx, skills::SCOPE_PROJECT, id)?;
         self.conn
             .execute("DELETE FROM local_projects WHERE id = ?1", params![id])?;
         tx.commit()?;

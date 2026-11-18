@@ -249,3 +249,32 @@ test("skipped tasks and route decisions read as plain-language statuses", () => 
   assert.equal(researchTaskStatus(value, downstream).state, "waiting");
   assert.deepEqual(researchProgress({ plans: [{ version: 1, tasks: [{ state: "completed" }, { state: "skipped" }, { state: "pending" }] }] }), { completed: 2, total: 3 });
 });
+
+test("awaiting human tasks and foreach progress read as plain-language statuses", () => {
+  const human = { ...task("confirm", "", [], "awaiting"), kind: "human", brief: "给出评价标准" };
+  const status = researchTaskStatus(study([human]), human);
+  assert.equal(status.state, "blocked");
+  assert.match(status.label, /等你完成/);
+  assert.match(status.label, /评价标准/);
+  const foreach = { ...task("readings", "", [], "running"), kind: "foreach", foreachItems: [{ id: "a" }, { id: "b" }], foreachRuns: [{ itemId: "a", ok: true }] };
+  const foreachStatus = researchTaskStatus(study([foreach]), foreach);
+  assert.equal(foreachStatus.state, "running");
+  assert.match(foreachStatus.label, /第 2\/2 项/);
+  // 总览提示等主理人完成的人工任务。
+  const value = study([human, { ...task("next", "as-research-synthesizer", ["confirm"]) }], [gate("G1", "approved")]);
+  assert.match(researchAttention(value), /等你完成/);
+});
+
+test("artifact body links resolve to registered study artifacts, not dead anchors", async () => {
+  const { resolveArtifactLinkPath } = await import("../src/research.ts");
+  const paths = new Set(["audit/citations.md", "review/independent.md", "writing/review.md", "package/manifest.md"]);
+  // manifest 内的研究根相对链接按字面命中；带 URL 编码或 artifacts/ 前缀的也归一。
+  assert.equal(resolveArtifactLinkPath("audit/citations.md", "package/manifest.md", paths), "audit/citations.md");
+  assert.equal(resolveArtifactLinkPath("%E5%86%99%E4%BD%9C.md", "package/manifest.md", new Set(["写作.md"])), "写作.md");
+  assert.equal(resolveArtifactLinkPath("artifacts/review/independent.md", "package/manifest.md", paths), "review/independent.md");
+  // 目录相对链接从当前产物所在目录回退解析。
+  assert.equal(resolveArtifactLinkPath("../writing/review.md", "package/manifest.md", paths), "writing/review.md");
+  // 未登记或越出研究根的链接返回 null，由调用方保持纯文本。
+  assert.equal(resolveArtifactLinkPath("external/notes.md", "package/manifest.md", paths), null);
+  assert.equal(resolveArtifactLinkPath("../../outside.md", "package/manifest.md", paths), null);
+});
