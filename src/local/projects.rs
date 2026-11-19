@@ -14,13 +14,18 @@ use crate::store::{now_ms, Store};
 use super::model::LocalProject;
 use super::{git, slugify};
 
+pub const QUICK_CHAT_PROJECT_ID: &str = "quick-chat";
+pub const QUICK_CHAT_PROJECT_SLUG: &str = "__quick_chat__";
+pub const QUICK_CHAT_PROJECT_NAME: &str = "快速对话";
+
 fn unique_project_slug(store: &Store, base: &str) -> Result<String> {
     let taken: HashSet<String> = store
         .list_local_projects()?
         .into_iter()
         .map(|p| p.slug)
         .collect();
-    if base != super::demo::PROJECT_SLUG && !taken.contains(base) {
+    if base != super::demo::PROJECT_SLUG && base != QUICK_CHAT_PROJECT_SLUG && !taken.contains(base)
+    {
         return Ok(base.to_string());
     }
     let mut n = 2;
@@ -31,6 +36,66 @@ fn unique_project_slug(store: &Store, base: &str) -> Result<String> {
         }
         n += 1;
     }
+}
+
+/// Ensure the built-in quick-chat workspace exists and points to a valid
+/// isolated Git repository under the application data directory. Each quick-chat
+/// session gets its own per-session worktree under `worktrees/quick-chat/<session_id>`.
+pub fn ensure_quick_chat_project(store: &Store) -> Result<LocalProject> {
+    ensure_quick_chat_project_in(store, &crate::store::data_dir())
+}
+
+fn ensure_quick_chat_project_in(store: &Store, data_dir: &Path) -> Result<LocalProject> {
+    if let Some(existing) = store.get_local_project(QUICK_CHAT_PROJECT_ID)? {
+        let path = Path::new(&existing.repo_path);
+        if git::is_repository(path) && git::require_current_branch(path).is_ok() {
+            return Ok(existing);
+        }
+        let (repo_path, baseline_branch) = ensure_quick_chat_repo_in(data_dir)?;
+        let repo_str = repo_path.to_string_lossy().to_string();
+        store.update_local_project_repo(&existing.id, &repo_str, &baseline_branch)?;
+        return Ok(store
+            .get_local_project(QUICK_CHAT_PROJECT_ID)?
+            .unwrap_or(LocalProject {
+                repo_path: repo_str,
+                baseline_branch,
+                ..existing
+            }));
+    }
+
+    let (repo_path, baseline_branch) = ensure_quick_chat_repo_in(data_dir)?;
+    let now = now_ms();
+    let project = LocalProject {
+        id: QUICK_CHAT_PROJECT_ID.to_string(),
+        name: QUICK_CHAT_PROJECT_NAME.to_string(),
+        slug: QUICK_CHAT_PROJECT_SLUG.to_string(),
+        github_owner: String::new(),
+        github_repo: String::new(),
+        github_sync_enabled: false,
+        baseline_branch,
+        repo_path: repo_path.to_string_lossy().to_string(),
+        run_command: None,
+        paper_id: None,
+        created_at: now,
+        updated_at: now,
+    };
+    store.create_local_project(&project)?;
+    Ok(project)
+}
+
+fn ensure_quick_chat_repo_in(data_dir: &Path) -> Result<(PathBuf, String)> {
+    let dir = data_dir.join("quick-chats").join("repo");
+    std::fs::create_dir_all(&dir)?;
+    let state = git::own_repository_state(&dir);
+    if matches!(
+        state,
+        git::RepositoryState::NotRepository | git::RepositoryState::Unborn
+    ) {
+        git::initialize_own_repository(&dir)?;
+    }
+    let root = git::repository_root(&dir)?;
+    let branch = git::require_current_branch(&root)?;
+    Ok((root, branch))
 }
 
 pub fn project_slug_preview(store: &Store, name: &str) -> Result<String> {
@@ -1357,6 +1422,50 @@ mod tests {
             git_output(&project_path, &["ls-tree", "-r", "--name-only", "HEAD"]),
             ".gitignore\nREADME.md"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quick_chat_workspace_initializes_idempotently_and_isolates_session_workdirs() {
+        let root = root();
+        let data_dir = root.join("data");
+        let store = Store::open_at(data_dir.clone()).unwrap();
+
+        let first = ensure_quick_chat_project_in(&store, &data_dir).unwrap();
+        assert!(first.is_quick_chat());
+        assert_eq!(first.id, QUICK_CHAT_PROJECT_ID);
+        assert_eq!(first.slug, QUICK_CHAT_PROJECT_SLUG);
+        assert!(git::is_repository(Path::new(&first.repo_path)));
+
+        let second = ensure_quick_chat_project_in(&store, &data_dir).unwrap();
+        assert_eq!(first.id, second.id);
+        assert_eq!(first.repo_path, second.repo_path);
+
+        let dir_a = data_dir.join("worktrees/quick-chat/chat_a");
+        let dir_b = data_dir.join("worktrees/quick-chat/chat_b");
+        git::ensure_session_worktree_in(
+            Path::new(&first.repo_path),
+            &dir_a,
+            &first.github_owner,
+            &first.github_repo,
+            &first.baseline_branch,
+            "chat_a",
+        )
+        .unwrap();
+        git::ensure_session_worktree_in(
+            Path::new(&first.repo_path),
+            &dir_b,
+            &first.github_owner,
+            &first.github_repo,
+            &first.baseline_branch,
+            "chat_b",
+        )
+        .unwrap();
+
+        std::fs::write(dir_a.join("script.py"), "print('a')\n").unwrap();
+        assert!(dir_a.join("script.py").exists());
+        assert!(!dir_b.join("script.py").exists());
+
         let _ = std::fs::remove_dir_all(root);
     }
 }

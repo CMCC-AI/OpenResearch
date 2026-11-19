@@ -8,9 +8,9 @@ import { listChatSessionsQuery } from "../queries/chat";
 import { useLocale } from "../locale";
 import { taskLocation } from "../workspaceState";
 import { useSessionNavigation } from "../useSessionNavigation";
-import { deleteChatSession, renameChatSession, setChatSessionArchived, type ChatSession } from "../api";
+import { QUICK_CHAT_PROJECT_ID, QUICK_CHAT_PROJECT_NAME, isQuickChatProject, deleteChatSession, renameChatSession, setChatSessionArchived, type ChatSession } from "../api";
 import { ProjectInfoCard } from "./ProjectInfoCard";
-import { SessionFilterMenu, SessionRow, type SessionFilter } from "./NativeSidebarRows";
+import { QuickChatGroupControls, SessionFilterMenu, SessionRow, useCollapsedSidebarGroups, type SessionFilter } from "./NativeSidebarRows";
 import { m } from "../paraglide/messages.js";
 import { isSidebarSession } from "../researchSessions";
 import { useOptionalAuthSession } from "../product/AuthSession";
@@ -40,9 +40,11 @@ export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
   const [filter, setFilter] = useState<SessionFilter>("active");
   const [grouping, setGrouping] = useState<"projects" | "list">(() => { try { return localStorage.getItem("sidebar-grouping") === "list" ? "list" : "projects"; } catch { return "projects"; } });
   const [pinned, setPinned] = useState(() => storedIds("sidebar-pinned-projects"));
-  const [collapsed, setCollapsed] = useState(() => storedIds("sidebar-collapsed-projects"));
+  const [collapsed, toggleCollapsed] = useCollapsedSidebarGroups();
   const [limits, setLimits] = useState<Record<string, number>>({});
-  const sorted = [...(projects.data ?? [])].sort((a, b) => Number(pinned.includes(b.id)) - Number(pinned.includes(a.id)) || (activity.data?.find((row) => row.projectId === b.id)?.lastActivityAt ?? b.updatedAt) - (activity.data?.find((row) => row.projectId === a.id)?.lastActivityAt ?? a.updatedAt));
+  const sorted = [...(projects.data ?? [])]
+    .filter((project) => !isQuickChatProject(project))
+    .sort((a, b) => Number(pinned.includes(b.id)) - Number(pinned.includes(a.id)) || (activity.data?.find((row) => row.projectId === b.id)?.lastActivityAt ?? b.updatedAt) - (activity.data?.find((row) => row.projectId === a.id)?.lastActivityAt ?? a.updatedAt));
   const sessions = useQueries({
     queries: sorted.map((project) => {
       const cachedSessions = readSidebarSessionsSnapshot(userId, project.id);
@@ -54,6 +56,13 @@ export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
       };
     }),
   });
+  const cachedQuickChatSessions = useMemo(() => readSidebarSessionsSnapshot(userId, QUICK_CHAT_PROJECT_ID), [userId]);
+  const quickChatSessions = useQuery({
+    ...listChatSessionsQuery(QUICK_CHAT_PROJECT_ID, true),
+    enabled: enabled && !projects.isPlaceholderData && (grouping === "list" || !collapsed.includes(QUICK_CHAT_PROJECT_ID)),
+    refetchInterval: 5000,
+    ...(cachedQuickChatSessions ? { placeholderData: cachedQuickChatSessions } : {}),
+  });
   useEffect(() => {
     if (userId && projects.data && !projects.isPlaceholderData) writeSidebarProjectsSnapshot(userId, projects.data);
   }, [userId, projects.data, projects.isPlaceholderData]);
@@ -63,13 +72,20 @@ export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
       const query = sessions[index];
       if (query?.data && !query.isPlaceholderData) writeSidebarSessionsSnapshot(userId, project.id, query.data);
     });
-  }, [userId, projects.isPlaceholderData, sorted, sessions]);
+    if (quickChatSessions.data && !quickChatSessions.isPlaceholderData) {
+      writeSidebarSessionsSnapshot(userId, QUICK_CHAT_PROJECT_ID, quickChatSessions.data);
+    }
+  }, [userId, projects.isPlaceholderData, sorted, sessions, quickChatSessions.data, quickChatSessions.isPlaceholderData]);
   const toggleId = (id: string, values: string[], update: (next: string[]) => void, key: string) => {
     const next = values.includes(id) ? values.filter((value) => value !== id) : [...values, id];
     update(next); try { localStorage.setItem(key, JSON.stringify(next)); } catch { /* Preferences are optional. */ }
   };
   async function act(action: () => Promise<unknown>, session: ChatSession) {
-    try { await action(); await sessions[sorted.findIndex((project) => project.id === session.projectId)]?.refetch(); }
+    try {
+      await action();
+      if (session.projectId === QUICK_CHAT_PROJECT_ID) await quickChatSessions.refetch();
+      else await sessions[sorted.findIndex((project) => project.id === session.projectId)]?.refetch();
+    }
     catch (error) { showAlert(error instanceof Error ? error.message : String(error), "error"); }
   }
   const matching = (rows: ChatSession[]) => rows.filter((session) => isSidebarSession(session) && (filter === "all" || (filter === "archived" ? session.archived : !session.archived))).sort((a, b) => b.updatedAt - a.updatedAt);
@@ -93,15 +109,48 @@ export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
       <div className={sidebarClasses.heading}><h2 className={sidebarClasses.label}>{grouping === "projects" ? m.projects_home_projects() : m.chat_all_sessions()}</h2><div className={sidebarClasses.actions}><IconButton size="small" aria-label={m.projects_home_new_project()} onClick={() => void navigate({ to: "/projects", search: { new: true } })}><FolderPlus size={15} /></IconButton><SessionFilterMenu value={filter} onChange={setFilter} grouping={grouping} onGroupingChange={(next) => { setGrouping(next); try { localStorage.setItem("sidebar-grouping", next); } catch { /* optional */ } }} /></div></div>
       <div className="rail-body min-h-0 flex-1 overflow-y-auto">
         {projects.isPlaceholderData && <p role="status" className="m-0 px-2 pb-1 text-xs text-subtext">正在唤醒工作环境，同步最新项目…</p>}
-        {!enabled && !projects.data ? <p className="px-2 text-xs text-subtext">返回工作区后加载研究项目</p> : projects.error ? <div className="px-2 text-xs text-accent-red">项目读取失败<Button size="small" onClick={() => void projects.refetch()}>重试</Button></div> : projects.isPending ? skeleton : !sorted.length ? <p className="px-2 text-xs text-subtext">尚无项目，点击上方按钮新建</p> : grouping === "list" ? <>{matching(sessions.flatMap((query) => query.data ?? [])).map(renderSession)}{sessions.some((query) => query.isPending) && <p className={`m-0 ${sidebarClasses.status}`}>正在读取会话…</p>}{sessions.some((query) => query.error) && <Button size="small" onClick={() => sessions.forEach((query) => { if (query.error) void query.refetch(); })}>重试会话列表</Button>}</> : sorted.map((project, index) => {
-          const query = sessions[index];
-          const rows = matching(query.data ?? []);
-          const limit = limits[project.id] ?? 6;
-          return <section key={project.id} aria-label={`项目 ${project.name}`}>
-            <div className={sidebarClasses.project}><ProjectInfoCard personal onNewChat={() => void navigate({ to: "/projects", search: { project: project.id } })} onOpen={() => void navigate({ to: "/projects/$projectId", params: { projectId: project.id } })} onFeature={canPublish ? () => void navigate({ to: "/admin/cases", search: { project: project.id } }) : undefined} project={project} chatCount={query.data?.filter(isSidebarSession).length} collapsed={collapsed.includes(project.id)} busy={rows.some((session) => session.busy)} onToggleCollapsed={() => toggleId(project.id, collapsed, setCollapsed, "sidebar-collapsed-projects")} pinned={pinned.includes(project.id)} onPin={() => toggleId(project.id, pinned, setPinned, "sidebar-pinned-projects")} onRemoved={() => void projects.refetch()} /></div>
-            {!collapsed.includes(project.id) && <div className={sidebarClasses.indent}>{!enabled && !query.data ? <p className={`m-0 ${sidebarClasses.status}`}>返回工作区后加载会话</p> : query.isPending ? <p className={`m-0 ${sidebarClasses.status}`}>正在读取会话…</p> : query.error ? <Button size="small" onClick={() => void query.refetch()}>重试会话列表</Button> : !rows.length ? <p className={`m-0 ${sidebarClasses.status}`}>{filter === "archived" ? m.chat_no_archived_sessions() : m.chat_no_sessions_yet()}</p> : rows.slice(0, limit).map(renderSession)}{rows.length > limit && <ResearchNavigationMore indented={false} onClick={() => setLimits((current) => ({ ...current, [project.id]: limit + 6 }))} />}</div>}
-          </section>;
-        })}
+        {!enabled && !projects.data ? <p className="px-2 text-xs text-subtext">返回工作区后加载研究项目</p> : projects.error ? <div className="px-2 text-xs text-accent-red">项目读取失败<Button size="small" onClick={() => void projects.refetch()}>重试</Button></div> : projects.isPending ? skeleton : grouping === "list" ? <>{matching([...sessions.flatMap((query) => query.data ?? []), ...(quickChatSessions.data ?? [])]).map(renderSession)}{(sessions.some((query) => query.isPending) || quickChatSessions.isPending) && <p className={`m-0 ${sidebarClasses.status}`}>正在读取会话…</p>}{(sessions.some((query) => query.error) || quickChatSessions.error) && <Button size="small" onClick={() => { sessions.forEach((query) => { if (query.error) void query.refetch(); }); if (quickChatSessions.error) void quickChatSessions.refetch(); }}>重试会话列表</Button>}</> : <>
+          {!sorted.length && <p className="px-2 text-xs text-subtext">尚无项目，点击上方按钮新建</p>}
+          {[...sorted.map((project, index) => ({ project, query: sessions[index] })), { project: null, query: quickChatSessions }].map(({ project, query }) => {
+            const id = project?.id ?? QUICK_CHAT_PROJECT_ID;
+            const rows = matching(query.data ?? []);
+            const limit = limits[id] ?? 6;
+            const isCollapsed = collapsed.includes(id);
+            const busy = rows.some((session) => session.busy);
+            const onToggle = () => toggleCollapsed(id);
+            return <section key={id} aria-label={project ? `项目 ${project.name}` : QUICK_CHAT_PROJECT_NAME}>
+              <div className={sidebarClasses.project}>
+                {project ? <ProjectInfoCard
+                  personal
+                  project={project}
+                  chatCount={query.data?.filter(isSidebarSession).length}
+                  collapsed={isCollapsed}
+                  busy={busy}
+                  onToggleCollapsed={onToggle}
+                  onNewChat={() => void navigate({ to: "/projects", search: { project: id } })}
+                  onOpen={() => void navigate({ to: "/projects/$projectId", params: { projectId: id } })}
+                  onFeature={canPublish ? () => void navigate({ to: "/admin/cases", search: { project: id } }) : undefined}
+                  pinned={pinned.includes(id)}
+                  onPin={() => toggleId(id, pinned, setPinned, "sidebar-pinned-projects")}
+                  onRemoved={() => void projects.refetch()}
+                /> : <QuickChatGroupControls
+                  collapsed={isCollapsed}
+                  busy={busy}
+                  onToggle={onToggle}
+                  onNewChat={() => void navigate({ to: "/projects", search: {} })}
+                />}
+              </div>
+              {!isCollapsed && <div className={sidebarClasses.indent}>
+                {!enabled && !query.data ? <p className={`m-0 ${sidebarClasses.status}`}>返回工作区后加载会话</p>
+                  : query.isPending ? <p className={`m-0 ${sidebarClasses.status}`}>正在读取会话…</p>
+                  : query.error ? <Button size="small" onClick={() => void query.refetch()}>重试会话列表</Button>
+                  : !rows.length ? <p className={`m-0 ${sidebarClasses.status}`}>{filter === "archived" ? m.chat_no_archived_sessions() : m.chat_no_sessions_yet()}</p>
+                  : rows.slice(0, limit).map(renderSession)}
+                {rows.length > limit && <ResearchNavigationMore indented={false} onClick={() => setLimits((current) => ({ ...current, [id]: limit + 6 }))} />}
+              </div>}
+            </section>;
+          })}
+        </>}
       </div>
     </div>
   </>;

@@ -1,9 +1,66 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, MoreHorizontal, SlidersHorizontal, Users } from "lucide-react";
-import type { ChatSession } from "../api";
+import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, MessageCircle, MoreHorizontal, Plus, SlidersHorizontal, Users } from "lucide-react";
+import { QUICK_CHAT_PROJECT_NAME, type ChatSession } from "../api";
 import { m } from "../paraglide/messages.js";
 import { usePopover } from "./ModelPicker";
-import { IconButton, MenuItem } from "./ui";
+import { IconButton, MenuItem, Tooltip } from "./ui";
+
+const COLLAPSED_GROUPS_KEY = "sidebar-collapsed-projects";
+
+export function useCollapsedSidebarGroups() {
+  const [collapsed, setCollapsed] = useState<string[]>(() => {
+    try {
+      const stored: unknown = JSON.parse(localStorage.getItem(COLLAPSED_GROUPS_KEY) ?? "[]");
+      return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : [];
+    } catch { return []; }
+  });
+  function toggleCollapsed(id: string) {
+    const next = collapsed.includes(id) ? collapsed.filter((value) => value !== id) : [...collapsed, id];
+    setCollapsed(next);
+    try { localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(next)); } catch { /* Preferences are optional. */ }
+  }
+  return [collapsed, toggleCollapsed] as const;
+}
+
+export function SidebarGroupToggle({ name, collapsed, busy, onToggle, quickChat = false }: {
+  name: string;
+  collapsed: boolean;
+  busy: boolean;
+  onToggle: () => void;
+  quickChat?: boolean;
+}) {
+  const Icon = quickChat ? MessageCircle : collapsed ? Folder : FolderOpen;
+  const Chevron = collapsed ? ChevronRight : ChevronDown;
+  return (
+    <button type="button" aria-expanded={!collapsed} onClick={onToggle}
+      className="flex h-7 min-w-0 flex-1 cursor-pointer items-center gap-[7px] rounded-sm py-1 text-start text-sm font-normal text-text focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-text focus-visible:outline-offset-2">
+      <Icon size={15} className="shrink-0" aria-hidden />
+      <span className="truncate">{name}</span>
+      <Chevron size={13} className={`shrink-0 text-subtext ${collapsed ? "rtl:-scale-x-100" : ""}`} aria-hidden />
+      {busy && <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-primary animate-[or-pulse_1.2s_infinite]" />}
+    </button>
+  );
+}
+
+export function SidebarGroupNewChat({ name, onClick }: { name: string; onClick: () => void }) {
+  return <Tooltip interactive content={m.chat_panel_new_chat()} className="rounded-sm">
+    <IconButton size="small" aria-label={`${m.chat_panel_new_chat()} · ${name}`} onClick={onClick}>
+      <Plus size={15} />
+    </IconButton>
+  </Tooltip>;
+}
+
+export function QuickChatGroupControls({ collapsed, busy, onToggle, onNewChat }: {
+  collapsed: boolean;
+  busy: boolean;
+  onToggle: () => void;
+  onNewChat: () => void;
+}) {
+  return <>
+    <SidebarGroupToggle name={QUICK_CHAT_PROJECT_NAME} collapsed={collapsed} busy={busy} onToggle={onToggle} quickChat />
+    <SidebarGroupNewChat name={QUICK_CHAT_PROJECT_NAME} onClick={onNewChat} />
+  </>;
+}
 
 export type SessionFilter = "active" | "archived" | "all";
 
@@ -204,9 +261,9 @@ export function SessionRow({
         }
       }}
     >
-      {session.parentSessionId && !editing && (
+      {session.parentSessionId && !editing ? (
         <Users className="text-muted shrink-0" size={12} aria-hidden />
-      )}
+      ) : null}
       {editing ? (
         <input
           ref={inputRef}

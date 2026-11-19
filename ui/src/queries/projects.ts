@@ -9,6 +9,12 @@ export const listProjectsQuery = (personal = false) => queryOptions({
   staleTime: 30_000,
 });
 
+export const getProjectQuery = (projectId: string, personal = false) => queryOptions({
+  queryKey: workspaceKeyFor(personal, "getProject", projectId),
+  queryFn: ({ signal }) => api.getProject(projectId, signal, personal),
+  staleTime: 30_000,
+});
+
 export const listProjectActivityQuery = (personal = false) => queryOptions({
   queryKey: workspaceKeyFor(personal, "listProjectActivity"),
   queryFn: ({ signal }) => api.listProjectActivity(signal, personal),

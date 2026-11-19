@@ -1,5 +1,5 @@
 import type { InfiniteData } from "@tanstack/react-query";
-import type { ChatSession, SidebarChatPage } from "../api";
+import { isQuickChatProject, type ChatSession, type SidebarChatPage } from "../api";
 import { markLiveUpdate } from "./live";
 import {
   refreshHarness,
@@ -20,7 +20,7 @@ import {
   useOrxEventStream,
 } from "../events";
 import { queryClient, workspaceScope, isCurrentScope, deletedSessionIds } from "./client";
-import { listProjectsQuery, listRunsQuery, listExperimentsQuery } from "./projects";
+import { getProjectQuery, listProjectsQuery, listRunsQuery, listExperimentsQuery } from "./projects";
 import { listChatSessionsQuery } from "./chat";
 import { refreshScheduler } from "./refreshScheduler";
 
@@ -57,6 +57,10 @@ export function QueryEvents() {
     },
     onProject(project) {
       if (!isCurrentScope(scope)) return;
+      if (isQuickChatProject(project)) {
+        queryClient.setQueryData(getProjectQuery(project.id).queryKey, project);
+        return;
+      }
       markLiveUpdate(queryClient, listProjectsQuery().queryKey, project.id);
       queryClient.setQueryData(listProjectsQuery().queryKey, (rows) => upsert(rows, project));
     },

@@ -17,6 +17,7 @@ function load(path, stubs) {
   return exports;
 }
 const messages = new Proxy({}, { get: (_, key) => () => key });
+const unusedGroupControls = { QuickChatGroupControls: () => null, useCollapsedSidebarGroups: () => [[], () => {}] };
 function fixture() {
   const client = load("../src/queries/client.ts", { "../readOnlyApi": readOnlyApi });
   client.activateWorkspace("personal");
@@ -107,10 +108,15 @@ test("the original sidebar renders project menus and new-chat controls while a c
   const f = fixture();
   const button = ({ children, danger: _danger, ...props }) => React.createElement("button", props, children);
   const ui = { Button: button, IconButton: button, MenuItem: button, Tooltip: ({ children }) => children, showAlert: () => {} };
+  const rows = load("../src/components/NativeSidebarRows.tsx", {
+    "../api": f.api, "../paraglide/messages.js": { m: messages }, "./ModelPicker": {}, "./ui": ui,
+  });
   const card = load("../src/components/ProjectInfoCard.tsx", {
     "../api": f.api, "../paraglide/messages.js": { m: messages }, "./ui": ui,
     "./DeleteProjectDialog": { DeleteProjectDialog: () => null }, "./useDialogFocus": { useDialogFocus: () => {} },
+    "./NativeSidebarRows": rows,
   });
+  const quickChat = { id: "quick-session", projectId: f.api.QUICK_CHAT_PROJECT_ID, title: "我的快速会话", updatedAt: 1 };
   const project = { id: "mine", name: "我的项目", updatedAt: 1, repoPath: "/mine" };
   const { ResearchProjectNavigation } = load("../src/components/ResearchNavigation.tsx", {
     "../sidebarLayout": { sidebarClasses: {} },
@@ -118,7 +124,7 @@ test("the original sidebar renders project menus and new-chat controls while a c
     "@tanstack/react-query": {
       useQuery: ({ queryKey }) => {
         assert.equal(queryKey[1], f.client.getWorkspaceGeneration());
-        return { data: queryKey[2] === "listProjects" ? [project] : queryKey[2] === "getUiState" ? {} : [], isPending: false };
+        return { data: queryKey[2] === "listProjects" ? [project] : queryKey.includes(f.api.QUICK_CHAT_PROJECT_ID) ? [quickChat] : [], isPending: false };
       },
       useQueries: ({ queries }) => queries.map(({ queryKey }) => {
         assert.equal(queryKey[1], f.client.getWorkspaceGeneration());
@@ -127,13 +133,14 @@ test("the original sidebar renders project menus and new-chat controls while a c
     },
     "../queries/projects": f.projects, "../queries/chat": f.chats, "../locale": { useLocale: () => "zh-CN" },
     "../workspaceState": {}, "../useSessionNavigation": { useSessionNavigation: () => ({ open: () => {} }) }, "../api": f.api, "./ProjectInfoCard": card,
-    "./NativeSidebarRows": { SessionFilterMenu: () => null, SessionRow: (props) => {
+    "./NativeSidebarRows": { ...rows, SessionFilterMenu: () => null, SessionRow: (props) => {
       assert.ok(!props.readOnly, "personal chats must retain their action menu");
       return React.createElement("span", {}, props.session.title);
     } },
     "../paraglide/messages.js": { m: messages }, "../researchSessions": { isSidebarSession: () => true },
     "../product/AuthSession": { useOptionalAuthSession: () => ({ user: {} }) }, "../sidebarSnapshot": sidebarSnapshot, "./ui": ui,
   });
+  const storage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   try {
     const html = renderToStaticMarkup(React.createElement(ResearchProjectNavigation, { enabled: true }));
     assert.ok(html.includes("我的项目"));
@@ -144,7 +151,21 @@ test("the original sidebar renders project menus and new-chat controls while a c
     assert.ok(html.includes("activity_edit"));
     assert.ok(html.includes("projects_home_delete_project_action"));
     assert.equal(html.includes("Case"), false);
-  } finally { f.cleanup(); }
+    assert.match(html, /aria-expanded="true"[^>]*>.*?快速对话<\/span>/);
+    assert.match(html, /我的快速会话/);
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+      getItem: (key) => key === "sidebar-collapsed-projects" ? JSON.stringify([f.api.QUICK_CHAT_PROJECT_ID]) : null,
+    } });
+    const collapsedHtml = renderToStaticMarkup(React.createElement(ResearchProjectNavigation, { enabled: true }));
+    assert.match(collapsedHtml, /aria-expanded="false"[^>]*>.*?快速对话<\/span>/);
+    assert.match(collapsedHtml, /chat_panel_new_chat · 快速对话/);
+    assert.match(collapsedHtml, /我的对话/);
+    assert.doesNotMatch(collapsedHtml, /我的快速会话/);
+  } finally {
+    if (storage) Object.defineProperty(globalThis, "localStorage", storage);
+    else delete globalThis.localStorage;
+    f.cleanup();
+  }
 });
 
 function navigationFixture(f, cached) {
@@ -230,7 +251,7 @@ test("the real home SessionRow opens the personal session with its saved pane",a
     "@tanstack/react-query":{useQuery:({queryKey})=>({data:queryKey[2]==="listProjects"?[project]:[],isPending:false}),useQueries:()=>[{data:[{id:"s",projectId:"source",title:"Personal session",updatedAt:1}]}]},
     "../queries/projects":f.projects,"../queries/chat":f.chats,"../locale":{useLocale:()=>"en"},
     "../workspaceState":workspace,"../useSessionNavigation":{useSessionNavigation:personal=>{assert.equal(personal,true);return n.nav;}},
-    "../api":f.api,"./ProjectInfoCard":{ProjectInfoCard:()=>null},"./NativeSidebarRows":{SessionFilterMenu:()=>null,SessionRow:props=>{open=props.onOpen;return React.createElement("span",{},props.session.title);}},
+    "../api":f.api,"./ProjectInfoCard":{ProjectInfoCard:()=>null},"./NativeSidebarRows":{...unusedGroupControls,SessionFilterMenu:()=>null,SessionRow:props=>{open=props.onOpen;return React.createElement("span",{},props.session.title);}},
     "../paraglide/messages.js":{m:messages},"../researchSessions":{isSidebarSession:()=>true},"../product/AuthSession":{useOptionalAuthSession:()=>({user:{}})},
     "../sidebarSnapshot":sidebarSnapshot,
     "./ui":{Button:({children})=>children,IconButton:({children})=>children,showAlert:()=>{}},
@@ -271,7 +292,7 @@ test("navigation renders a skeleton before cached projects arrive and shows wake
     "../queries/projects": f.projects, "../queries/chat": f.chats, "../locale": { useLocale: () => "zh-CN" },
     "../workspaceState": {}, "../useSessionNavigation": { useSessionNavigation: () => ({ open: () => {} }) }, "../api": f.api,
     "./ProjectInfoCard": { ProjectInfoCard: ({ project: p }) => React.createElement("span", {}, p.name) },
-    "./NativeSidebarRows": { SessionFilterMenu: () => null, SessionRow: ({ session }) => React.createElement("span", {}, session.title) },
+    "./NativeSidebarRows": { ...unusedGroupControls, SessionFilterMenu: () => null, SessionRow: ({ session }) => React.createElement("span", {}, session.title) },
     "../paraglide/messages.js": { m: messages }, "../researchSessions": { isSidebarSession: () => true },
     "../product/AuthSession": { useOptionalAuthSession: () => ({ user: { id: "u1" } }) }, "../sidebarSnapshot": sidebarSnapshot,
     "./ui": { Button: ({ children }) => children, IconButton: ({ children }) => children, showAlert: () => {} },

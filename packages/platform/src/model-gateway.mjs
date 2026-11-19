@@ -292,6 +292,13 @@ export function publicModelConfig(models, base, secret) {
     provider: Object.fromEntries(groups),
   };
 }
+function allowsEofWithoutDone(model) {
+  // Temporary model-specific compatibility for Jiutian jt236b (vLLM):
+  // its SSE stream ends after the usage chunk without emitting "data: [DONE]".
+  // Remove this helper and its call site together when jt236b is retired.
+  return model?.id === "jt236b" || model?.model === "jt236b";
+}
+
 function connectionNotEstablished(error) {
   const safe = new Set([
     "ENOTFOUND",
@@ -575,6 +582,15 @@ export function modelGateway({
             if (!res.write(frame + "\n\n"))
               await once(res, "drain", { signal: abort.signal });
           }
+        }
+        if (
+          !done &&
+          allowsEofWithoutDone(model) &&
+          !invalid &&
+          used !== null &&
+          buffer.trim() === ""
+        ) {
+          done = true;
         }
         if (done && !invalid && used !== null) {
           await quota.settle(request, used);

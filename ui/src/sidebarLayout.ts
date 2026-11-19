@@ -12,11 +12,12 @@ export const sidebarClasses = {
 
 export type SidebarRow =
   | { kind: "project"; project: Project; collapsed: boolean; busy: boolean }
-  | { kind: "chat"; project: Project; session: ChatSession }
-  | { kind: "more"; project: Project }
-  | { kind: "status"; project: Project; pending: boolean; error: boolean; retry: () => void };
+  | { kind: "chat"; project: Project; session: ChatSession; indented?: boolean }
+  | { kind: "more"; project: Project; indented?: boolean }
+  | { kind: "status"; project: Project; pending: boolean; error: boolean; retry: () => void; indented?: boolean };
 
-export const sidebarRowHeight = (row: SidebarRow) => row.kind === "project" ? 36 : 34;
+export const sidebarRowHeight = (row: SidebarRow) =>
+  row.kind === "project" ? 36 : 34;
 
 export function fitSidebarRows(rows: SidebarRow[], height: number, activeId: string | null): SidebarRow[] {
   const selected = rows.find((row) => row.kind === "chat" && row.session.id === activeId);
@@ -36,9 +37,10 @@ export function fitSidebarRows(rows: SidebarRow[], height: number, activeId: str
   const visible = fit(rows, height);
   if (!selected || visible.includes(selected)) return visible;
   if (!header) return height < 34 ? visible : [...fit(rows.filter((row) => row !== selected), height - 34), selected];
-  if (height < 70) return visible;
+  const reserved = sidebarRowHeight(header) + 34;
+  if (height < reserved) return visible;
   return [
-    ...fit(rows.filter((row) => row.project.id !== selected.project.id), height - 70),
+    ...fit(rows.filter((row) => row.project.id !== selected.project.id), height - reserved),
     header,
     selected,
   ];

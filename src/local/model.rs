@@ -27,6 +27,11 @@ pub struct LocalProject {
 }
 
 impl LocalProject {
+    pub fn is_quick_chat(&self) -> bool {
+        self.id == super::projects::QUICK_CHAT_PROJECT_ID
+            || self.slug == super::projects::QUICK_CHAT_PROJECT_SLUG
+    }
+
     pub fn github_enabled(&self) -> bool {
         self.github_sync_enabled && self.has_github_repository()
     }

@@ -77,3 +77,23 @@ test("sidebar snapshot caches projects and sessions per user and clears busy/log
   assert.equal(readSidebarProjectsSnapshot("user-a"), undefined);
   assert.equal(readSidebarSessionsSnapshot("user-a", "p1"), undefined);
 });
+
+test("sidebar snapshot retains quick-chat sessions even when projects list is empty", (t) => {
+  t.after(installMemoryStorage());
+  const quickSession = {
+    id: "qc1",
+    projectId: "quick-chat",
+    title: "Quick Question",
+    busy: true,
+    archived: false,
+    createdAt: 1,
+    updatedAt: 2,
+  };
+
+  writeSidebarSessionsSnapshot("user-a", "quick-chat", [quickSession]);
+  writeSidebarProjectsSnapshot("user-a", []);
+
+  const cached = readSidebarSessionsSnapshot("user-a", "quick-chat")?.[0];
+  assert.equal(cached?.id, "qc1");
+  assert.equal(cached?.busy, false);
+});
