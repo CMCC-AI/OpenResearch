@@ -132,7 +132,7 @@ services:
   opencode-admin:
     image: {prefix}-workbench
     network_mode: host
-    command: [sh, -ec, 'mkdir -p "$$XDG_DATA_HOME/opencode"; cp /run/orx-auth/auth.json "$$XDG_DATA_HOME/opencode/auth.json"; exec opencode serve --pure --hostname 127.0.0.1 --port 4970']
+    command: [sh, -ec, 'mkdir -p "$$XDG_DATA_HOME/opencode"; cp /run/orx-auth/auth.json "$$XDG_DATA_HOME/opencode/auth.json"; exec opencode serve --hostname 127.0.0.1 --port 4970']
     environment:
       HOME: /tmp/opencode-admin
       XDG_CONFIG_HOME: /run/orx-config
@@ -222,9 +222,13 @@ def prepare(args):
         if not (deep / file).exists():
             raise ValueError('DeepXiv 源码不完整：' + str(deep / file))
     run(['docker', 'info'], stdout=subprocess.DEVNULL)
-    version = subprocess.check_output(['opencode', '--version'], text=True).strip()
-    if not re.fullmatch(r'\d+\.\d+\.\d+', version):
-        raise ValueError('无法识别 OpenCode 精确版本：' + version)
+    raw_version = subprocess.check_output(['opencode', '--version'], text=True).strip()
+    match = re.fullmatch(r'(?:opencode\s+v?)?(\d+\.\d+\.\d+)', raw_version)
+    if not match:
+        raise ValueError('无法识别 OpenCode 精确版本：' + raw_version)
+    version = match.group(1)
+    if not version.startswith('2.'):
+        raise ValueError('需要 OpenCode 2.x 版本，当前为：' + version)
     release = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-' + os.urandom(3).hex()
     bundle = ROOT / '.mobilesci-run' / 'deploy' / release
     bundle.mkdir(parents=True, mode=0o700)
