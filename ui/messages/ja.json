@@ -1310,5 +1310,10 @@
   "remote_repair_terminal": "Repair terminal",
   "chat_skip_question": "この質問をスキップ",
   "chat_skip_questions": "この質問グループをスキップ",
-  "chat_question_skipped": "スキップ済み"
+  "chat_question_skipped": "スキップ済み",
+  "settings_auto_reviewer": "Auto のレビュー担当",
+  "settings_auto_reviewer_description": "Auto で OpenCode のコマンドを確認するモデルです。小さいモデルを選ぶと、確認が安く速くなります。ローカルモデルのチャットは常に自分のモデルで確認します。",
+  "settings_auto_reviewer_same": "チャットと同じモデル",
+  "opencode_auto_same_model": "同じモデルで各コマンドを確認し、判断できないときは確認を求めます",
+  "opencode_auto_model": "{model} で各コマンドを確認し、判断できないときは確認を求めます"
 }

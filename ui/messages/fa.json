@@ -1310,5 +1310,10 @@
   "remote_repair_terminal": "Repair terminal",
   "chat_skip_question": "رد کردن پرسش",
   "chat_skip_questions": "رد کردن این گروه از پرسش‌ها",
-  "chat_question_skipped": "رد شد"
+  "chat_question_skipped": "رد شد",
+  "settings_auto_reviewer": "بازبین حالت Auto",
+  "settings_auto_reviewer_description": "مدلی که دستورهای OpenCode را در حالت Auto بازبینی می‌کند. مدل کوچک‌تر بازبینی را ارزان و سریع نگه می‌دارد. گفتگویی که از مدل محلی استفاده می‌کند همیشه با مدل خودش بازبینی می‌کند.",
+  "settings_auto_reviewer_same": "همان مدل گفتگو",
+  "opencode_auto_same_model": "برای بازبینی هر دستور از همان مدل استفاده می‌کند و اگر مطمئن نباشد از شما می‌پرسد",
+  "opencode_auto_model": "برای بازبینی هر دستور از {model} استفاده می‌کند و اگر مطمئن نباشد از شما می‌پرسد"
 }

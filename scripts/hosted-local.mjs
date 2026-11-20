@@ -257,7 +257,7 @@ async function start(options) {
     run('pnpm', ['--dir', 'ui', 'build'])
   }
   if (options.rebuild || !imageExists) {
-    const opencodeVersion = process.env.OPENCODE_VERSION || '1.18.33'
+    const opencodeVersion = process.env.OPENCODE_VERSION || '2.3.2'
     const aptMirror = options.aptMirror
     const npmRegistry = options.npmRegistry
     const buildArgs = [

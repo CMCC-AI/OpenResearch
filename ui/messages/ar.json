@@ -1310,5 +1310,10 @@
   "remote_repair_terminal": "Repair terminal",
   "chat_skip_question": "تخطي السؤال",
   "chat_skip_questions": "تخطي مجموعة الأسئلة هذه",
-  "chat_question_skipped": "تم التخطي"
+  "chat_question_skipped": "تم التخطي",
+  "settings_auto_reviewer": "مراجع وضع Auto",
+  "settings_auto_reviewer_description": "النموذج الذي يراجع أوامر OpenCode في وضع Auto. النموذج الأصغر يجعل المراجعة أرخص وأسرع. المحادثة التي تعمل بنموذج محلي تراجع دائمًا بنموذجها.",
+  "settings_auto_reviewer_same": "النموذج نفسه المستخدم في المحادثة",
+  "opencode_auto_same_model": "يستخدم النموذج نفسه لمراجعة كل أمر ويسألك عند عدم التأكد",
+  "opencode_auto_model": "يستخدم {model} لمراجعة كل أمر ويسألك عند عدم التأكد"
 }

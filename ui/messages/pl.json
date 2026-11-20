@@ -1310,5 +1310,10 @@
   "projects_delete_recovery_path": "Projekt usunięty. Ścieżka odzyskiwania folderu: {path}",
   "chat_skip_question": "Pomiń pytanie",
   "chat_skip_questions": "Pomiń tę grupę pytań",
-  "chat_question_skipped": "Pominięto"
+  "chat_question_skipped": "Pominięto",
+  "settings_auto_reviewer": "Recenzent trybu Auto",
+  "settings_auto_reviewer_description": "Model, który sprawdza polecenia OpenCode w trybie Auto. Mniejszy model utrzymuje sprawdzanie tanie i szybkie. Czat na modelu lokalnym zawsze sprawdza własnym modelem.",
+  "settings_auto_reviewer_same": "Ten sam model co w czacie",
+  "opencode_auto_same_model": "Używa tego samego modelu do sprawdzania każdego polecenia i pyta, gdy ma wątpliwości",
+  "opencode_auto_model": "Używa modelu {model} do sprawdzania każdego polecenia i pyta, gdy ma wątpliwości"
 }

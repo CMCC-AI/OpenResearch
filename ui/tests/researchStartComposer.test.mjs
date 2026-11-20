@@ -35,7 +35,7 @@ function setup(initialDraft = "") {
     } },
     "@tanstack/react-router": { useNavigate: () => () => {} },
     "@tanstack/react-query": { useQuery: (options) => ({ data: options.data }), useMutation: (options) => ({ isPending: false, mutate: async (value) => { const response = await options.mutationFn(value); options.onSuccess(response); } }) },
-    "../api": { reasoningFor: () => ({ choices: [], defaultId: null }), updateUiState: async (value) => { saved.push(value); return value; } },
+    "../api": { reasoningFor: () => ({ choices: [], defaultId: null }), withAutoReviewer: (choices) => choices, updateUiState: async (value) => { saved.push(value); return value; } },
     "../queries/settings": { getHarnessesQuery: () => ({ data: [{ id: "codex", options: { planActivation: "command" } }] }), getSkillsQuery: () => ({ data: [{ name: "literature-review@u", source: "user", description: "Review papers" }] }) },
     "../queries/projects": { getUiStateQuery: () => ({ queryKey: ["ui"], data: {} }) },
     "../queries/client": { setScopedQueryData: (key, value) => cached.push(value) },

@@ -1310,5 +1310,10 @@
   "remote_repair_terminal": "Repair terminal",
   "chat_skip_question": "Omitir pregunta",
   "chat_skip_questions": "Omitir este grupo de preguntas",
-  "chat_question_skipped": "Omitida"
+  "chat_question_skipped": "Omitida",
+  "settings_auto_reviewer": "Revisor de Auto",
+  "settings_auto_reviewer_description": "El modelo que revisa los comandos de OpenCode en Auto. Uno más pequeño mantiene las revisiones baratas y rápidas. Un chat con un modelo local siempre revisa con el suyo.",
+  "settings_auto_reviewer_same": "El mismo modelo que el chat",
+  "opencode_auto_same_model": "Usa el mismo modelo para revisar cada comando y te pregunta cuando no está seguro",
+  "opencode_auto_model": "Usa {model} para revisar cada comando y te pregunta cuando no está seguro"
 }
