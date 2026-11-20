@@ -1321,7 +1321,7 @@ async fn read_shell_stream<R: tokio::io::AsyncRead + Unpin>(pipe: Option<R>, kep
 /// Kill the command's whole process group: a pipeline or a backgrounded
 /// grandchild would otherwise outlive the timeout and hold the pipes open.
 #[cfg(unix)]
-fn kill_shell_group(pid: Option<u32>) {
+pub(crate) fn kill_shell_group(pid: Option<u32>) {
     if let Some(pid) = pid.and_then(|pid| libc::pid_t::try_from(pid).ok()) {
         // SAFETY: killpg is a plain syscall on a group this process spawned.
         unsafe {
@@ -1333,7 +1333,7 @@ fn kill_shell_group(pid: Option<u32>) {
 /// Windows has no group to signal, and the caller's second wait is untimed, so
 /// without this a timed-out command hangs the turn until the child exits.
 #[cfg(not(unix))]
-fn kill_shell_group(pid: Option<u32>) {
+pub(crate) fn kill_shell_group(pid: Option<u32>) {
     let Some(pid) = pid else {
         return;
     };
@@ -1342,6 +1342,58 @@ fn kill_shell_group(pid: Option<u32>) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
+}
+
+/// Kill an agent and every command it started.
+pub(crate) async fn kill_agent_tree(pid: Option<u32>) {
+    let Some(pid) = pid else {
+        return;
+    };
+    stop_process_tree(pid);
+    #[cfg(unix)]
+    kill_shell_group(Some(pid));
+}
+
+#[cfg(unix)]
+fn stop_process_tree(pid: u32) {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return;
+    };
+    // Freeze each parent before discovering children so none escapes by forking.
+    // SAFETY: the owned child or a descendant observed while its parent was stopped.
+    if unsafe { libc::kill(pid, libc::SIGSTOP) } != 0 {
+        return;
+    }
+    let snapshot = std::process::Command::new("ps")
+        .args(["-axo", "pid=,ppid="])
+        .output();
+    match snapshot {
+        Ok(output) if output.status.success() => {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if let Some(child) = tree_child(line, pid) {
+                    stop_process_tree(child);
+                }
+            }
+        }
+        _ => eprintln!("orx up: could not inspect agent descendants of {pid} while stopping it"),
+    }
+    // SAFETY: as above.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
+}
+
+/// The child of `parent` on one `ps -o pid=,ppid=` line.
+#[cfg(unix)]
+fn tree_child(line: &str, parent: libc::pid_t) -> Option<u32> {
+    let mut fields = line.split_whitespace();
+    let pid = fields.next()?.parse().ok()?;
+    (fields.next()?.parse::<libc::pid_t>().ok()? == parent).then_some(pid)
+}
+
+#[cfg(not(unix))]
+fn stop_process_tree(pid: u32) {
+    kill_shell_group(Some(pid));
 }
 
 /// Drain one stream on its own task from the moment the child starts, so a
@@ -1919,6 +1971,8 @@ pub struct ChatHost {
     /// no real contention) makes each RMW atomic. Sync because `flush` is sync;
     /// never held across an `.await`.
     msg_write: std::sync::Mutex<()>,
+    /// The session id of each prompt card answered, for a running turn waiting on a local answer.
+    pub(crate) prompt_answered: tokio::sync::broadcast::Sender<String>,
     /// Outstanding permission-bridge requests, keyed by the prompt part id the
     /// card was surfaced under. Sync mutex, never held across an await.
     pending_permissions: std::sync::Mutex<HashMap<String, PendingPermission>>,
@@ -3110,6 +3164,7 @@ impl ChatHost {
             deleting_sessions: Arc::new(std::sync::Mutex::new(HashSet::new())),
             respond_locks: Mutex::new(HashMap::new()),
             msg_write: std::sync::Mutex::new(()),
+            prompt_answered: tokio::sync::broadcast::channel(16).0,
             pending_permissions: std::sync::Mutex::new(HashMap::new()),
             permission_review_locks: Mutex::new(HashMap::new()),
             recovery_locks: Mutex::new(HashMap::new()),
@@ -3458,9 +3513,9 @@ impl ChatHost {
     }
 
     pub async fn interrupt_all(self: &Arc<Self>) {
-        for session_id in self.busy_sessions().await {
-            let _ = self.interrupt(&session_id).await;
-        }
+        let sessions = self.busy_sessions().await;
+        futures::future::join_all(sessions.iter().map(|session_id| self.interrupt(session_id)))
+            .await;
     }
 
     pub async fn is_busy(&self, session_id: &str) -> bool {
@@ -7063,6 +7118,7 @@ impl ChatHost {
             Ok(msg) => self.emit("chat.message", message_json(&msg, &req.session_id)),
             Err(e) => eprintln!("orx up: answered prompt not marked resolved: {e}"),
         }
+        let _ = self.prompt_answered.send(req.session_id.clone());
     }
 
     /// Broadcast a freshly re-read session row, resolving `busy` live from the

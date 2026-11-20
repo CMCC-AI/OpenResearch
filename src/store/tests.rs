@@ -299,6 +299,7 @@ fn ui_state_roundtrips_functional_preferences() {
             preferred_agent: None,
             workspace: None,
             preferred_autonomy: None,
+            opencode_review_model: None,
         }
     );
 
@@ -313,6 +314,9 @@ fn ui_state_roundtrips_functional_preferences() {
     store.set_tour_completed(true).unwrap();
     store.set_preferred_agent(&selection).unwrap();
     store.set_preferred_autonomy(Autonomy::Copilot).unwrap();
+    store
+        .set_opencode_review_model(Some("openai/gpt-6-mini"))
+        .unwrap();
 
     assert_eq!(
         store.ui_state().unwrap(),
@@ -322,6 +326,7 @@ fn ui_state_roundtrips_functional_preferences() {
             preferred_agent: Some(selection),
             workspace: None,
             preferred_autonomy: Some(Autonomy::Copilot),
+            opencode_review_model: Some("openai/gpt-6-mini".into()),
         }
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -405,7 +410,7 @@ fn clean_permission_normalization_does_not_require_writer_lock() {
     let store = Store::open_at(dir.clone()).unwrap();
     let mut session = chat_session_fixture("clean");
     session.harness = "opencode".into();
-    session.permission_mode = Some("default".into());
+    session.permission_mode = Some("auto-approve".into());
     store.create_chat_session(&session).unwrap();
     store.set_busy_timeout(Duration::ZERO).unwrap();
     let writer = Connection::open(dir.join("orx.db")).unwrap();
@@ -418,7 +423,7 @@ fn clean_permission_normalization_does_not_require_writer_lock() {
             .unwrap()
             .permission_mode
             .as_deref(),
-        Some("default")
+        Some("auto-approve")
     );
     writer.execute_batch("ROLLBACK").unwrap();
     drop(writer);
@@ -523,7 +528,7 @@ fn warm_open_rechecks_new_legacy_permissions_and_preserves_null_preferences() {
     drop(store);
     let store = Store::open_at(dir.clone()).unwrap();
     let imported = store.get_chat_session("imported").unwrap().unwrap();
-    assert_eq!(imported.permission_mode.as_deref(), Some("default"));
+    assert_eq!(imported.permission_mode.as_deref(), Some("auto-approve"));
     assert!(imported.plan_mode);
     assert_eq!(imported.reasoning_level.as_deref(), Some("high"));
     assert_eq!(
@@ -554,8 +559,12 @@ fn permission_and_plan_migration_preserves_each_harness_native_contract() {
             ("codex_bypass", "codex", "bypass"),
             ("codex_invalid", "codex", "retired-mode"),
             ("open_plan", "opencode", "plan"),
+            ("open_default", "opencode", "default"),
+            ("open_ask", "opencode", "ask"),
+            ("open_manual", "opencode", "manual"),
             ("open_auto", "opencode", "auto"),
             ("open_bypass", "opencode", "bypass"),
+            ("open_invalid", "opencode", "retired-mode"),
         ] {
             let mut session = chat_session_fixture(id);
             session.harness = harness.into();
@@ -575,9 +584,13 @@ fn permission_and_plan_migration_preserves_each_harness_native_contract() {
     assert_eq!(state("codex_auto"), ("approve-for-me".into(), false));
     assert_eq!(state("codex_bypass"), ("full-access".into(), false));
     assert_eq!(state("codex_invalid"), ("approve-for-me".into(), false));
-    assert_eq!(state("open_plan"), ("default".into(), true));
-    assert_eq!(state("open_auto"), ("default".into(), false));
+    assert_eq!(state("open_plan"), ("auto-approve".into(), true));
+    assert_eq!(state("open_default"), ("auto-approve".into(), false));
+    assert_eq!(state("open_ask"), ("auto-approve".into(), false));
+    assert_eq!(state("open_manual"), ("manual".into(), false));
+    assert_eq!(state("open_auto"), ("auto".into(), false));
     assert_eq!(state("open_bypass"), ("auto-approve".into(), false));
+    assert_eq!(state("open_invalid"), ("auto-approve".into(), false));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

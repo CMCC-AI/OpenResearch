@@ -992,19 +992,20 @@ mod tests {
         assert_eq!(
             permission_contract(&opencode),
             [
+                ("manual", "Manual", "Always ask before making changes"),
                 (
-                    "default",
-                    "Default",
-                    "Ask before actions that need your approval"
+                    "auto",
+                    "Auto",
+                    "Uses the same model to review each command, and asks you when unsure"
                 ),
                 (
                     "auto-approve",
-                    "Auto-approve",
-                    "Approve requests automatically, except actions you have denied"
+                    "Full access",
+                    "Approve every request without asking, except actions you have denied"
                 ),
             ]
         );
-        assert_eq!(opencode.default_permission_mode, Some("default"));
+        assert_eq!(opencode.default_permission_mode, Some("auto-approve"));
         assert_eq!(opencode.plan_activation, Some(PlanActivation::Command));
         assert!(opencode.reasoning_levels.is_empty());
 

@@ -536,11 +536,11 @@ fn normalize_permission_modes(conn: &Connection) -> Result<()> {
          OR EXISTS(SELECT 1 FROM chat_sessions WHERE
            (harness = 'claude-code' AND (permission_mode IS NULL OR permission_mode NOT IN ('manual','acceptEdits','plan','auto','bypassPermissions')))
            OR (harness = 'codex' AND (permission_mode IS NULL OR permission_mode NOT IN ('ask','approve-for-me','full-access')))
-           OR (harness = 'opencode' AND (permission_mode IS NULL OR permission_mode NOT IN ('default','auto-approve'))))
+           OR (harness = 'opencode' AND (permission_mode IS NULL OR permission_mode NOT IN ('manual','auto','auto-approve'))))
          OR EXISTS(SELECT 1 FROM ui_state WHERE
            (preferred_harness = 'claude-code' AND preferred_permission_mode NOT IN ('manual','acceptEdits','auto','bypassPermissions'))
            OR (preferred_harness = 'codex' AND preferred_permission_mode NOT IN ('ask','approve-for-me','full-access'))
-           OR (preferred_harness = 'opencode' AND preferred_permission_mode NOT IN ('default','auto-approve')))",
+           OR (preferred_harness = 'opencode' AND preferred_permission_mode NOT IN ('manual','auto','auto-approve')))",
         [], |row| row.get(0),
     )?;
     if !needed {
@@ -558,7 +558,7 @@ fn normalize_permission_modes(conn: &Connection) -> Result<()> {
     )?;
     tx.execute(
         "UPDATE chat_sessions
-         SET plan_mode = 1, permission_mode = 'default'
+         SET plan_mode = 1, permission_mode = 'auto-approve'
          WHERE harness = 'opencode' AND permission_mode = 'plan'",
         [],
     )?;
@@ -571,11 +571,11 @@ fn normalize_permission_modes(conn: &Connection) -> Result<()> {
         ("codex", "bypass", "full-access"),
         ("codex", "accept-edits", "ask"),
         ("codex", "acceptEdits", "ask"),
-        ("opencode", "auto", "default"),
+        ("opencode", "default", "auto-approve"),
         ("opencode", "bypass", "auto-approve"),
-        ("opencode", "ask", "default"),
-        ("opencode", "accept-edits", "default"),
-        ("opencode", "acceptEdits", "default"),
+        ("opencode", "ask", "auto-approve"),
+        ("opencode", "accept-edits", "auto-approve"),
+        ("opencode", "acceptEdits", "auto-approve"),
     ] {
         tx.execute(
             "UPDATE chat_sessions SET permission_mode = ?3
@@ -598,10 +598,10 @@ fn normalize_permission_modes(conn: &Connection) -> Result<()> {
         [],
     )?;
     tx.execute(
-        "UPDATE chat_sessions SET permission_mode = 'default'
+        "UPDATE chat_sessions SET permission_mode = 'auto-approve'
          WHERE harness = 'opencode'
            AND (permission_mode IS NULL OR permission_mode NOT IN
-                ('default', 'auto-approve'))",
+                ('manual', 'auto', 'auto-approve'))",
         [],
     )?;
     // Seed before normalizing preferences: on the first open of an older
@@ -630,7 +630,7 @@ fn normalize_permission_modes(conn: &Connection) -> Result<()> {
         [],
     )?;
     tx.execute(
-        "UPDATE ui_state SET preferred_permission_mode = 'default'
+        "UPDATE ui_state SET preferred_permission_mode = 'auto-approve'
          WHERE preferred_harness = 'opencode' AND preferred_permission_mode = 'plan'",
         [],
     )?;
@@ -646,7 +646,7 @@ fn normalize_permission_modes(conn: &Connection) -> Result<()> {
         ("claude-code", "bypass", "bypassPermissions"),
         ("codex", "auto", "approve-for-me"),
         ("codex", "bypass", "full-access"),
-        ("opencode", "auto", "default"),
+        ("opencode", "default", "auto-approve"),
         ("opencode", "bypass", "auto-approve"),
     ] {
         tx.execute(
@@ -669,9 +669,9 @@ fn normalize_permission_modes(conn: &Connection) -> Result<()> {
         [],
     )?;
     tx.execute(
-        "UPDATE ui_state SET preferred_permission_mode = 'default'
+        "UPDATE ui_state SET preferred_permission_mode = 'auto-approve'
          WHERE preferred_harness = 'opencode'
-           AND preferred_permission_mode NOT IN ('default', 'auto-approve')",
+           AND preferred_permission_mode NOT IN ('manual', 'auto', 'auto-approve')",
         [],
     )?;
     tx.commit()?;
@@ -1101,6 +1101,11 @@ impl Store {
             "monitoring-delivery-v1",
             &["ALTER TABLE chat_run_wakeups ADD COLUMN monitoring_delivery_id TEXT"],
         )?;
+        schema::migrate_columns(
+            &conn,
+            "opencode-review-model-v1",
+            &["ALTER TABLE ui_state ADD COLUMN opencode_review_model TEXT"],
+        )?;
         phase("columns");
         conn.execute_batch("CREATE TRIGGER IF NOT EXISTS delete_chat_invocation_identities AFTER DELETE ON chat_sessions BEGIN DELETE FROM native_invocation_identities WHERE session_id = OLD.id; END;")?;
         conn.execute(
@@ -1213,7 +1218,7 @@ impl Store {
             "SELECT onboarding_completed, tour_completed, preferred_harness,
                     preferred_model, preferred_service_tier,
                     preferred_permission_mode, preferred_reasoning_level, workspace_state_json,
-                    preferred_autonomy
+                    preferred_autonomy, opencode_review_model
              FROM ui_state WHERE id = 1",
             [],
             |row| {
@@ -1240,9 +1245,18 @@ impl Store {
                         .get::<_, Option<String>>(8)?
                         .as_deref()
                         .and_then(Autonomy::from_id),
+                    opencode_review_model: row.get(9)?,
                 })
             },
         )?)
+    }
+
+    pub fn set_opencode_review_model(&self, model: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE ui_state SET opencode_review_model = ?1 WHERE id = 1",
+            params![model],
+        )?;
+        Ok(())
     }
 
     pub fn set_onboarding_completed(&self, completed: bool) -> Result<()> {
@@ -3708,6 +3722,8 @@ pub struct StoredUiState {
     pub preferred_agent: Option<StoredAgentSelection>,
     pub workspace: Option<GlobalWorkspaceState>,
     pub preferred_autonomy: Option<Autonomy>,
+    /// The `provider/model` that reviews OpenCode's Auto requests; none means the chat's own.
+    pub opencode_review_model: Option<String>,
 }
 
 /// Normalized transcript entry; `parts_json` is the wire-format parts array
