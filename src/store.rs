@@ -2114,6 +2114,19 @@ impl Store {
         Ok(())
     }
 
+    pub fn update_local_project_repo(
+        &self,
+        id: &str,
+        repo_path: &str,
+        baseline_branch: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE local_projects SET repo_path = ?1, baseline_branch = ?2, updated_at = ?3 WHERE id = ?4",
+            params![repo_path, baseline_branch, now_ms(), id],
+        )?;
+        Ok(())
+    }
+
     pub fn get_local_project(&self, id: &str) -> Result<Option<LocalProject>> {
         let p = self
             .conn

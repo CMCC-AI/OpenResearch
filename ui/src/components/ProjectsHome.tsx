@@ -5,6 +5,7 @@ import { m } from "../paraglide/messages.js";
 import { ArrowRight, ChevronRight, Folder, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
+  isQuickChatProject,
   timeAgo,
   type Project,
   type AgentSelection,
@@ -15,7 +16,6 @@ import { NewProjectForm } from "./NewProjectForm";
 import { Button, showAlert } from "./ui";
 import { getComposerStashStore, type ComposerStash } from "../composerStash";
 import { getWorkspaceGeneration } from "../queries/client";
-import { takePendingWorkflowUse } from "../workflow/pendingUse";
 import { useNavigate } from "@tanstack/react-router";
 import { ResearchStartPanel, ResearchCases } from "../product/ResearchStartPanel";
 
@@ -125,6 +125,7 @@ export function ProjectsHome({
   initialDialogOpen = false,
   initialProjectId,
   onResume,
+  onStartQuickChat,
 }: {
   projects: Project[];
   starting?: boolean;
@@ -136,25 +137,18 @@ export function ProjectsHome({
   initialDialogOpen?: boolean;
   initialProjectId?: string;
   onResume: (project: Project, draft: ComposerStash) => void;
+  onStartQuickChat: (draft: ComposerStash) => void;
 }) {
   const navigate = useNavigate();
-  const existingProject = projects.find((project) => project.id === initialProjectId);
+  const visibleProjects = projects.filter((project) => !isQuickChatProject(project));
+  const existingProject = visibleProjects.find((project) => project.id === initialProjectId);
   const [modalOpen, setModalOpen] = useState(initialDialogOpen);
   const homeStashes = getComposerStashStore(getWorkspaceGeneration());
   const stashKey = initialProjectId ? `${initialProjectId}:new` : "research-home";
   const [draft, setDraft] = useState(() => homeStashes.get(stashKey)?.draft ?? "");
   const [workMode, setWorkMode] = useState<NonNullable<ComposerStash["workMode"]>>(() => homeStashes.get(stashKey)?.workMode ?? "normal");
-  const [workflowDraftId, setWorkflowDraftId] = useState<string | null>(() => homeStashes.get(stashKey)?.workflowDraftId ?? null);
   const [attachments, setAttachments] = useState<ComposerStash["attachments"]>(() => homeStashes.get(stashKey)?.attachments ?? []);
-  useEffect(() => { homeStashes.set(stashKey, { draft, attachments, annotations: [], workMode, workflowDraftId }); }, [homeStashes, stashKey, draft, attachments, workMode, workflowDraftId]);
-  // 编辑器「在对话中使用」留下的待用标记：新对话页读到后直接预选工作流模式。
-  // 新对话壳里的兜底消费在 ChatPanel，两边谁先读到谁消费。
-  useEffect(() => {
-    const pending = takePendingWorkflowUse();
-    if (!pending) return;
-    setWorkMode("workflow");
-    setWorkflowDraftId(pending.draftId);
-  }, []);
+  useEffect(() => { homeStashes.set(stashKey, { draft, attachments, annotations: [], workMode }); }, [homeStashes, stashKey, draft, attachments, workMode]);
   useEffect(() => { if (initialDialogOpen) setModalOpen(true); }, [initialDialogOpen]);
   const [projectPendingDelete, setProjectPendingDelete] = useState<Project | null>(null);
   const activity = useQuery(listProjectActivityQuery());
@@ -163,13 +157,13 @@ export function ProjectsHome({
   return (
     <div className="home research-home flex-1 min-h-0 overflow-y-auto [scrollbar-gutter:stable_both-edges] bg-canvas">
       <div className="home-inner research-home-inner max-w-294 my-0 mx-auto pt-10 px-7 pb-16 [@media((max-width:_960px))]:px-5 max-sm:px-4">
-        {existingProject && <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-background p-3 text-sm"><span>继续研究：{existingProject.name}</span><Button size="small" onClick={() => void navigate({ to: "/projects", search: {} })}>切换为新建项目</Button></div>}
-        <ResearchStartPanel starting={starting} preferredAgent={preferredAgent} projects={projects} activity={activity.data ?? []} project={existingProject} onSelectProject={(id) => void navigate({ to: "/projects", search: id ? { project: id } : {} })} workMode={workMode} onWorkModeChange={setWorkMode} workflowDraftId={workflowDraftId} onWorkflowDraftChange={setWorkflowDraftId} draft={draft} onDraftChange={setDraft} attachments={attachments} onAttachmentsChange={setAttachments} onStart={() => existingProject ? onResume(existingProject, { draft, attachments, annotations: [], workMode, workflowDraftId }) : setModalOpen(true)} onError={(message) => showAlert(message, "error")} />
+        {existingProject && <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-background p-3 text-sm"><span>继续研究：{existingProject.name}</span><Button size="small" onClick={() => void navigate({ to: "/projects", search: {} })}>切换为快速对话</Button></div>}
+        <ResearchStartPanel starting={starting} preferredAgent={preferredAgent} projects={visibleProjects} activity={activity.data ?? []} project={existingProject} onSelectProject={(id) => void navigate({ to: "/projects", search: id ? { project: id } : {} })} onNewProject={() => setModalOpen(true)} workMode={workMode} onWorkModeChange={setWorkMode} draft={draft} onDraftChange={setDraft} attachments={attachments} onAttachmentsChange={setAttachments} onStart={() => existingProject ? onResume(existingProject, { draft, attachments, annotations: [], workMode }) : onStartQuickChat({ draft, attachments, annotations: [], workMode })} onError={(message) => showAlert(message, "error")} />
         <div className="research-home-sections grid grid-cols-[minmax(0,1.05fr)_minmax(0,1.8fr)] gap-8 [@media((max-width:_1200px))]:grid-cols-1">
           <section aria-labelledby="continue-research-title" className="min-w-0">
             <h2 id="continue-research-title" className="product-page-section-title mt-0 mb-5 flex items-center gap-2">继续研究<ChevronRight size={20} className="text-muted" /></h2>
             <div className="research-recent-list flex flex-col gap-1">
-              {projectsLoading ? <div aria-hidden="true" className="flex flex-col gap-2">{[0, 1, 2].map((index) => <div key={index} className="h-16 rounded-xl bg-background animate-pulse" />)}</div> : projects.length === 0 ? <p className="p-4 text-base text-muted">尚无研究项目，从上方创建第一个项目。</p> : [...projects].sort((a, b) => (activityByProject[b.id]?.lastMessageAt ?? b.updatedAt) - (activityByProject[a.id]?.lastMessageAt ?? a.updatedAt)).map((p) => <div key={p.id} className="research-recent-item group flex items-center gap-2 rounded-xl border border-transparent p-2.5">
+              {projectsLoading ? <div aria-hidden="true" className="flex flex-col gap-2">{[0, 1, 2].map((index) => <div key={index} className="h-16 rounded-xl bg-background animate-pulse" />)}</div> : visibleProjects.length === 0 ? <p className="p-4 text-base text-muted">尚无研究项目，从上方创建第一个项目。</p> : [...visibleProjects].sort((a, b) => (activityByProject[b.id]?.lastMessageAt ?? b.updatedAt) - (activityByProject[a.id]?.lastMessageAt ?? a.updatedAt)).map((p) => <div key={p.id} className="research-recent-item group flex items-center gap-2 rounded-xl border border-transparent p-2.5">
                 <span className="research-project-icon grid size-10 shrink-0 place-items-center rounded-lg"><Folder size={20} className="text-primary" /></span>
                 <button onClick={() => onOpen(p.id)} className="flex min-w-0 flex-1 flex-col gap-1 text-start"><span className="w-full truncate text-base font-normal">{p.name}</span><span className="text-sm text-muted">更新于 {timeAgo(activityByProject[p.id]?.lastMessageAt ?? p.updatedAt)} · {activityByProject[p.id]?.totalAgents ?? 0} 个研究会话</span></button>
                 {activityByProject[p.id]?.activeAgents > 0 && <LiveDot />}
@@ -190,7 +184,7 @@ export function ProjectsHome({
           onCreated={(project, githubPublicationError) => {
             setModalOpen(false);
             homeStashes.delete(stashKey);
-            onCreated(project, githubPublicationError, { draft, attachments, annotations: [], workMode, workflowDraftId });
+            onCreated(project, githubPublicationError, { draft, attachments, annotations: [], workMode });
           }}
         />
       )}

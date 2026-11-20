@@ -1,10 +1,11 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowRight, Folder, FolderOpen, MessageCircle, MoreHorizontal, Pin, Plus, Settings, Star, Trash2, X } from "lucide-react";
+import { ArrowRight, FolderOpen, MessageCircle, MoreHorizontal, Pin, Settings, Star, Trash2, X } from "lucide-react";
 import { revealFileInManager, updateProject, type Project } from "../api";
 import { m } from "../paraglide/messages.js";
-import { Button, IconButton, Input, MenuItem, Tooltip, showAlert } from "./ui";
+import { Button, IconButton, Input, MenuItem, showAlert } from "./ui";
 import { DeleteProjectDialog } from "./DeleteProjectDialog";
+import { SidebarGroupNewChat, SidebarGroupToggle } from "./NativeSidebarRows";
 import { useDialogFocus } from "./useDialogFocus";
 
 export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleCollapsed, onRemoved, onNewChat, onOpen, onFeature, pinned, onPin, readOnly = false, personal = false }: {
@@ -61,11 +62,7 @@ export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleC
   }
 
   return <>
-    <button type="button" aria-expanded={!collapsed} onClick={onToggleCollapsed}
-      className="flex h-7 min-w-0 flex-1 cursor-pointer items-center gap-[7px] rounded-sm py-1 text-start text-sm font-normal text-text focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-text focus-visible:outline-offset-2">
-      {collapsed ? <Folder size={15} className="shrink-0" /> : <FolderOpen size={15} className="shrink-0" />}<span className="truncate">{project.name}</span>
-      {busy && <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-primary animate-[or-pulse_1.2s_infinite]" />}
-    </button>
+    <SidebarGroupToggle name={project.name} collapsed={collapsed} busy={busy} onToggle={onToggleCollapsed} />
     {onOpen && <IconButton size="small" aria-label={`${readOnly ? "查看项目" : "继续研究"} ${project.name}`} onClick={onOpen}><ArrowRight size={15} /></IconButton>}
     {!readOnly && <>
     <IconButton ref={triggerRef} size="small" className={`text-text group-hover:opacity-100 group-focus-within:opacity-100 ${menuOpen ? "bg-surface opacity-100" : "opacity-0"}`}
@@ -73,11 +70,7 @@ export function ProjectInfoCard({ project, chatCount, collapsed, busy, onToggleC
           if (menuRef.current?.matches(":popover-open")) menuRef.current.hidePopover();
         else { show(menuRef.current, triggerRef.current); menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus(); }
       }}><MoreHorizontal size={15} /></IconButton>
-    {onNewChat && <Tooltip interactive content={m.chat_panel_new_chat()} className="rounded-sm">
-      <IconButton size="small" className="text-text opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-        aria-label={`${m.chat_panel_new_chat()} · ${project.name}`}
-        onClick={onNewChat}><Plus size={15} /></IconButton>
-    </Tooltip>}
+    {onNewChat && <SidebarGroupNewChat name={project.name} onClick={onNewChat} />}
     <div ref={menuRef} id={menuId} popover="auto" role="menu" aria-label={project.name}
       onToggle={(event) => setMenuOpen(event.newState === "open")}
       onKeyDown={(event) => {

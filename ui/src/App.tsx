@@ -26,8 +26,8 @@ import {
 } from "react";
 
 import { listChatSessionsQuery, getChatMessagesQuery } from "./queries/chat";
-import { listProjectsQuery, getUiStateQuery, listRunsQuery, listExperimentsQuery } from "./queries/projects";
-import { openSideChat, sendChatMessage, setExperimentArchived } from "./api";
+import { listProjectsQuery, getProjectQuery, getUiStateQuery, listRunsQuery, listExperimentsQuery } from "./queries/projects";
+import { QUICK_CHAT_PROJECT_ID, openSideChat, sendChatMessage, setExperimentArchived } from "./api";
 import { getArtifactsQuery } from "./queries/files";
 import { Link, useBlocker, useRouter, useRouterState } from "@tanstack/react-router";
 import {
@@ -339,6 +339,8 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   const { status: updateStatus } = useUpdateStatus(runtime.kind === "local" && !readOnly);
   const projectsOptions = useMemo(() => listProjectsQuery(), [projectId]);
   const projectsQuery = useQuery(projectsOptions);
+  const isQuickChat = projectId === QUICK_CHAT_PROJECT_ID;
+  const quickChatProjectQuery = useQuery({ ...getProjectQuery(projectId), enabled: isQuickChat });
   const projects = projectsQuery.data ?? null;
   const setProjects = useCallback((value: SetStateAction<Project[] | null>) => {
     setScopedQueryData(projectsOptions.queryKey, (current) => {
@@ -783,7 +785,9 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     openDemoWelcome();
   }, [projectId, onboarded, openDemoWelcome, uiState?.tourCompleted]);
 
-  const activeProject = projects?.find((p) => p.id === projectId) ?? null;
+  const activeProject = isQuickChat
+    ? (quickChatProjectQuery.data ?? null)
+    : (projects?.find((p) => p.id === projectId) ?? null);
 
   // The home, error, and loading screens leave projects populated but show no project.
   useEffect(() => {
@@ -1145,7 +1149,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
       exp?: string,
       displayBranch?: string,
     ) => {
-      const project = projects?.find((p) => p.id === projectId);
+      const project = isQuickChat ? quickChatProjectQuery.data : projects?.find((p) => p.id === projectId);
       const tab = parseFilePath(
         rawPath,
         project?.repoPath,
@@ -1748,11 +1752,11 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     );
   }
 
-  if (projects && !activeProject) {
+  if (projects && !activeProject && (!isQuickChat || (!quickChatProjectQuery.isPending && quickChatProjectQuery.isError))) {
     return <div className={EMPTY_STATE_CLASS_NAME}>{m.model_picker_unavailable()}<Button onClick={() => setProjectId(null)}>{m.app_projects()}</Button></div>;
   }
 
-  if (projects === null || uiState === null) {
+  if (projects === null || uiState === null || (isQuickChat && quickChatProjectQuery.isPending)) {
     return (
       <div className="app flex flex-col h-full">
         <div className={EMPTY_STATE_CLASS_NAME}>
@@ -1850,6 +1854,10 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
                 tab={mainView}
                 project={activeProject}
                 onProjectUpdate={(project) => {
+                  if (project.id === QUICK_CHAT_PROJECT_ID || project.isQuickChat) {
+                    setScopedQueryData(getProjectQuery(project.id).queryKey, project);
+                    return;
+                  }
                   setProjects((current) => (current ? upsert(current, project) : [project]));
                 }}
                 onSelectTab={selectMainView}

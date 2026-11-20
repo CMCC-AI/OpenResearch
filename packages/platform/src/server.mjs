@@ -629,15 +629,17 @@ export async function createPlatform(
         "/api/auth/sso/session",
         "/api/auth/sso/logout",
       ].includes(path);
-      const localDockerSsoBridge =
-        ssoServicePath &&
-        req.method === "POST" &&
+      const localDockerHost =
         config.origin.hostname === "localhost" &&
-        req.headers.host ===
-          `host.docker.internal:${config.origin.port || "80"}`;
-      const requestedWorkspace = localDockerSsoBridge
-        ? null
-        : hostWorkspace(config, req.headers.host);
+        (req.headers.host ===
+          `host.docker.internal:${config.origin.port || "80"}` ||
+          req.headers.host === `host.docker.internal:${config.port}`);
+      const localDockerSsoBridge =
+        ssoServicePath && req.method === "POST" && localDockerHost;
+      const requestedWorkspace =
+        localDockerSsoBridge || (localDockerHost && path === "/healthz")
+          ? null
+          : hostWorkspace(config, req.headers.host);
       if (await featuredCases(req, res, path, requestedWorkspace)) return;
       if (requestedWorkspace) {
         const workspace = requestedWorkspace;
@@ -1518,7 +1520,13 @@ export async function createPlatform(
   });
   server.on("upgrade", async (req, socket, head) => {
     try {
-      let workspace = hostWorkspace(config, req.headers.host);
+      const localDockerRunner =
+        config.origin.hostname === "localhost" &&
+        req.url === "/_platform/runner" &&
+        req.headers.host === `host.docker.internal:${config.port}`;
+      let workspace = localDockerRunner
+        ? null
+        : hostWorkspace(config, req.headers.host);
       if (!workspace && req.url === "/_platform/runner") {
         check(!req.headers.origin, 403);
         const secret = req.headers.authorization?.replace(/^Bearer /, "") || "";

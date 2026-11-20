@@ -268,7 +268,9 @@ fn collect_events_into(cursor: &mut EventCursor, first: bool) -> Result<Vec<Even
     let mut log_budget: u64 = 2_000_000;
     for project in &snapshot.projects {
         let entity = &project.entity;
-        if cursor.projects.get(&entity.id) != Some(&entity.updated_at) {
+        if entity.id != crate::local::projects::QUICK_CHAT_PROJECT_ID
+            && cursor.projects.get(&entity.id) != Some(&entity.updated_at)
+        {
             cursor.projects.insert(entity.id.clone(), entity.updated_at);
             out.push(json_event(
                 "project.updated",

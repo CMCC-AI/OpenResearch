@@ -9,7 +9,7 @@ import { pendingMaterials, droppedMaterials, prepareMaterialAttachments, validat
 import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { ResearchPauseControl } from "./ResearchPauseControl";
 import { createClientTurnId } from "../clientTurnId";
-import { SessionFilterMenu, SessionRow, TitleReveal, TITLE_REVEAL_CLEAR_MS, type SessionFilter } from "./NativeSidebarRows";
+import { QuickChatGroupControls, SessionFilterMenu, SessionRow, TitleReveal, TITLE_REVEAL_CLEAR_MS, useCollapsedSidebarGroups, type SessionFilter } from "./NativeSidebarRows";
 import { ResearchNavigationMore } from "./ResearchNavigation";
 import { ProductSidebar } from "../product/ProductNav";
 import { isDemoProjectId } from "../api";
@@ -126,6 +126,9 @@ import {
   DEMO_PROJECT_ID,
   DEMO_RUN_EXPERIMENT_PROMPT,
   DEMO_SEEDED_LEAF_IDS,
+  QUICK_CHAT_PROJECT_ID,
+  QUICK_CHAT_PROJECT_NAME,
+  isQuickChatProject,
   forkChatTurn,
   fmtNumber,
   harnessModelLabel,
@@ -4168,7 +4171,8 @@ export function ChatPanel({
   const deleteChatSessionMutation = useMutation({ mutationFn: (id: string) => deleteChatSession(id) });
 
   const navigate = useNavigate();
-  const { data: sidebarProjects = [] } = useQuery({ ...listProjectsQuery(), enabled: !embedded });
+  const { data: rawSidebarProjects = [] } = useQuery({ ...listProjectsQuery(), enabled: !embedded });
+  const sidebarProjects = useMemo(() => rawSidebarProjects.filter((project) => !isQuickChatProject(project)), [rawSidebarProjects]);
   const { data: projectActivity = [] } = useQuery({ ...listProjectActivityQuery(), enabled: !embedded });
   const [sidebarGrouping, setSidebarGrouping] = useState<"projects" | "list">(() => {
     try { return localStorage.getItem("sidebar-grouping") === "list" ? "list" : "projects"; }
@@ -4180,12 +4184,7 @@ export function ChatPanel({
       return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : [];
     } catch { return []; }
   });
-  const [collapsedProjects, setCollapsedProjects] = useState<string[]>(() => {
-    try {
-      const stored: unknown = JSON.parse(localStorage.getItem("sidebar-collapsed-projects") ?? "[]");
-      return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : [];
-    } catch { return []; }
-  });
+  const [collapsedGroups, toggleCollapsedGroup] = useCollapsedSidebarGroups();
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>("active");
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
   const railBodyRef = useRef<HTMLDivElement>(null);
@@ -4214,6 +4213,25 @@ export function ChatPanel({
       ...listChatSessionsQuery(project.id),
       enabled: !embedded,
     })),
+  });
+  const quickChatProject = useMemo<Project>(() => ({
+    id: QUICK_CHAT_PROJECT_ID,
+    name: QUICK_CHAT_PROJECT_NAME,
+    slug: "__quick_chat__",
+    githubOwner: "",
+    githubRepo: "",
+    baselineBranch: "main",
+    repoPath: "",
+    path: "",
+    isQuickChat: true,
+    githubEnabled: false,
+    artifactsDir: "",
+    createdAt: 0,
+    updatedAt: 0,
+  }), []);
+  const quickChatSessionsQuery = useQuery({
+    ...listChatSessionsQuery(QUICK_CHAT_PROJECT_ID),
+    enabled: !embedded && sidebarGrouping === "projects" && projectId !== QUICK_CHAT_PROJECT_ID,
   });
   const flatSessions = useInfiniteQuery({
     queryKey: workspaceKey("listSidebarChatSessions", sessionFilter),
@@ -6230,35 +6248,45 @@ export function ChatPanel({
 
   const sessionBusy = (project: Project, session: ChatSession) => project.id === projectId ? state.busySessions.has(session.id) : session.busy;
   const sidebarRows: SidebarRow[] = [];
-  if (sidebarGrouping === "projects") shownProjects.forEach((project, index) => {
-    const query = projectSessionsQueries[index];
-    const projectSessions = project.id === projectId ? sessions : query.data ?? EMPTY_SESSIONS;
-    const matching = projectSessions
-      .filter((session) => isSidebarSession(session) && (matchesFilter(sessionFilter, session.archived) || session.id === sidebarActiveId))
-      .sort((a, b) => b.updatedAt - a.updatedAt);
-    const chatLimit = chatLimits[project.id] ?? 6;
-    let visible = matching.slice(0, chatLimit);
-    const selected = matching.find((session) => session.id === sidebarActiveId);
-    if (selected && !visible.some((session) => session.id === sidebarActiveId)) visible = [...visible.slice(0, chatLimit - 1), selected];
-    const collapsed = collapsedProjects.includes(project.id);
-    sidebarRows.push({ kind: "project", project, collapsed, busy: collapsed && projectSessions.some((session) => sessionBusy(project, session) && !waitingSessions.has(session.id)) });
-    if (collapsed) return;
-    visible.forEach((session) => sidebarRows.push({ kind: "chat", project, session }));
-    if (matching.length > chatLimit) sidebarRows.push({ kind: "more", project });
-    if (!visible.length && (sidebarGrouping === "projects" || query.isPending || query.error)) sidebarRows.push({ kind: "status", project, pending: query.isPending, error: Boolean(query.error), retry: () => { void query.refetch(); } });
-  });
+  if (sidebarGrouping === "projects") {
+    const groups = [...shownProjects.map((project, index) => ({ project, query: projectSessionsQueries[index] })),
+      { project: quickChatProject, query: quickChatSessionsQuery }];
+    for (const { project, query } of groups) {
+      const projectSessions = project.id === projectId ? sessions : query.data ?? EMPTY_SESSIONS;
+      const collapsed = collapsedGroups.includes(project.id);
+      const busy = collapsed && projectSessions.some((session) => isSidebarSession(session) && sessionBusy(project, session) && !waitingSessions.has(session.id));
+      sidebarRows.push({ kind: "project", project, collapsed, busy });
+      if (collapsed) continue;
+
+      const matching = projectSessions
+        .filter((session) => isSidebarSession(session) && (matchesFilter(sessionFilter, session.archived) || session.id === sidebarActiveId))
+        .sort((a, b) => b.updatedAt - a.updatedAt);
+      const chatLimit = chatLimits[project.id] ?? 6;
+      let visible = matching.slice(0, chatLimit);
+      const selected = matching.find((session) => session.id === sidebarActiveId);
+      if (selected && !visible.some((session) => session.id === sidebarActiveId)) visible = [...visible.slice(0, chatLimit - 1), selected];
+      visible.forEach((session) => sidebarRows.push({ kind: "chat", project, session, indented: true }));
+      if (matching.length > chatLimit) sidebarRows.push({ kind: "more", project, indented: true });
+      if (!visible.length) {
+        const useQueryStatus = project.id !== QUICK_CHAT_PROJECT_ID || project.id !== projectId;
+        sidebarRows.push({ kind: "status", project, pending: useQueryStatus && query.isPending, error: useQueryStatus && Boolean(query.error), retry: () => { void query.refetch(); }, indented: true });
+      }
+    }
+  }
   if (sidebarGrouping === "list") {
     const flat = flatSessions.data?.pages.flatMap((page) => page.sessions) ?? [];
     const selected = sessions.find((session) => session.id === sidebarActiveId);
     if (selected && !flat.some((session) => session.id === selected.id)) flat.push(selected);
     flat.filter((session) => isSidebarSession(session) && !deletedSessionIds.has(session.id)).sort((a, b) => b.updatedAt - a.updatedAt).forEach((session) => {
-      const project = sidebarProjects.find((project) => project.id === session.projectId);
-      if (project) sidebarRows.push({ kind: "chat", project, session });
+      const project = session.projectId === QUICK_CHAT_PROJECT_ID
+        ? quickChatProject
+        : sidebarProjects.find((project) => project.id === session.projectId);
+      if (project) sidebarRows.push({ kind: "chat", project, session, indented: false });
     });
-    const project = currentProject ?? sidebarProjects[0];
+    const project = currentProject ?? (projectId === QUICK_CHAT_PROJECT_ID ? quickChatProject : sidebarProjects[0]);
     if (project && (!sidebarRows.length || flatSessions.isFetchingNextPage || flatSessions.isError)) {
       sidebarRows.push({ kind: "status", project, pending: flatSessions.isPending || flatSessions.isFetchingNextPage, error: flatSessions.isError,
-        retry: () => { void (flatSessions.isFetchNextPageError ? flatSessions.fetchNextPage() : flatSessions.refetch()); } });
+        retry: () => { void (flatSessions.isFetchNextPageError ? flatSessions.fetchNextPage() : flatSessions.refetch()); }, indented: false });
     }
   }
   const sidebarScrollable = sidebarGrouping === "list" || sidebarExpanded;
@@ -6335,7 +6363,12 @@ export function ChatPanel({
               >
                 {row.kind === "project" ? (
                   <div className={sidebarClasses.project}>
-                    <ProjectInfoCard
+                    {project.id === QUICK_CHAT_PROJECT_ID ? <QuickChatGroupControls
+                      collapsed={row.collapsed}
+                      busy={row.busy}
+                      onToggle={() => toggleCollapsedGroup(project.id)}
+                      onNewChat={() => void navigate({ to: "/projects", search: {} })}
+                    /> : <ProjectInfoCard
                       readOnly={Boolean(readOnly)}
                       onNewChat={readOnly ? undefined : () => void navigate({ to: "/projects", search: { project: project.id } })}
                       onOpen={() => readOnly ? onActiveSessionChange(activeId || null) : void navigate({ to: "/projects/$projectId", params: { projectId: project.id } })}
@@ -6343,11 +6376,7 @@ export function ChatPanel({
                       chatCount={project.id === projectId ? sessions.filter(isSidebarSession).length : projectSessionsQueries[shownProjects.findIndex((item) => item.id === project.id)]?.data?.filter(isSidebarSession).length}
                       collapsed={row.collapsed}
                       busy={row.busy}
-                      onToggleCollapsed={() => {
-                        const next = collapsedProjects.includes(project.id) ? collapsedProjects.filter((id) => id !== project.id) : [...collapsedProjects, project.id];
-                        setCollapsedProjects(next);
-                        try { localStorage.setItem("sidebar-collapsed-projects", JSON.stringify(next)); } catch {}
-                      }}
+                      onToggleCollapsed={() => toggleCollapsedGroup(project.id)}
                       pinned={pinnedProjects.includes(project.id)}
                       onPin={() => {
                         const next = pinnedProjects.includes(project.id) ? pinnedProjects.filter((id) => id !== project.id) : [...pinnedProjects, project.id];
@@ -6355,10 +6384,10 @@ export function ChatPanel({
                         try { localStorage.setItem("sidebar-pinned-projects", JSON.stringify(next)); } catch {}
                       }}
                       onRemoved={() => { if (project.id === projectId) void navigate({ to: "/projects" }); }}
-                    />
+                    />}
                   </div>
                 ) : s ? (
-                  <div className={sidebarGrouping === "projects" ? sidebarClasses.indent : undefined}>
+                  <div className={row.indented !== false && sidebarGrouping === "projects" ? sidebarClasses.indent : undefined}>
                     <SessionRow
                       readOnly={Boolean(readOnly)}
                       key={s.id}
@@ -6393,12 +6422,12 @@ export function ChatPanel({
                     />
                   </div>
                 ) : row.kind === "more" ? (
-                  <ResearchNavigationMore onClick={() => {
+                  <ResearchNavigationMore indented={row.indented !== false} onClick={() => {
                     setSidebarExpanded(true);
                     setChatLimits((current) => ({ ...current, [project.id]: (current[project.id] ?? 6) + 6 }));
                   }} />
                 ) : row.kind === "status" && (
-                  <div className={`${sidebarClasses.status} ${sidebarGrouping === "projects" ? sidebarClasses.indent : ""}`}>
+                  <div className={`${sidebarClasses.status} ${row.indented !== false && sidebarGrouping === "projects" ? sidebarClasses.indent : ""}`}>
                     {row.error ? <Button size="small" onClick={row.retry}>{m.app_retry()}</Button>
                       : row.pending ? <Spinner />
                         : sessionFilter === "archived" ? m.chat_no_archived_sessions() : m.chat_no_sessions_yet()}

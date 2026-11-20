@@ -1,7 +1,7 @@
 import { queryClient } from "./queries/client";
 import { getUiStateQuery, listProjectsQuery, getProjectUiStateQuery } from "./queries/projects";
 import { listChatSessionsQuery } from "./queries/chat";
-import { isDemoProjectId, type ChatSession } from "./api";
+import { QUICK_CHAT_PROJECT_ID, isDemoProjectId, type ChatSession } from "./api";
 import { defaultTaskWorkspace } from "./workspaceTabs";
 import { getTaskWorkspace, parseDestination, safeLocation, taskLocation } from "./workspaceState";
 import { getRememberedGlobalWorkspace } from "./workspacePersistence";
@@ -20,7 +20,7 @@ export async function globalResumeLocation(client = queryClient): Promise<string
   if (!location) return fallback();
   const destination = parseDestination(location.split("?")[0]);
   if (!destination?.projectId) return fallback();
-  if (!projects.some((project) => project.id === destination.projectId)) return fallback();
+  if (destination.projectId !== QUICK_CHAT_PROJECT_ID && !projects.some((project) => project.id === destination.projectId)) return fallback();
   if (destination.sessionId && !validSessionLocation(location, await client.fetchQuery(listChatSessionsQuery(destination.projectId))))
     return fallback();
   return destination.kind === "task" && !destination.sessionId ? taskLocation(destination.projectId!, null) : location;

@@ -1,6 +1,7 @@
 import type { ChatSession, Project } from "./api";
 
 const SNAPSHOT_PREFIX = "orx:sidebar-snapshot:v1:";
+const QUICK_CHAT_PROJECT_ID = "quick-chat";
 const MAX_PROJECTS = 50;
 const MAX_SESSIONS_PER_PROJECT = 20;
 
@@ -26,7 +27,8 @@ function readSnapshot(userId?: string): SidebarSnapshotPayload | null {
     if (!Array.isArray(record.projects)) return null;
     const projects = record.projects.filter(
       (item): item is Project =>
-        Boolean(item) && typeof item === "object" && typeof (item as Project).id === "string" && typeof (item as Project).name === "string",
+        Boolean(item) && typeof item === "object" && typeof (item as Project).id === "string" && typeof (item as Project).name === "string"
+        && (item as Project).id !== QUICK_CHAT_PROJECT_ID && !(item as Project).isQuickChat,
     );
     const sessions: Record<string, ChatSession[]> = {};
     if (record.sessions && typeof record.sessions === "object" && !Array.isArray(record.sessions)) {
@@ -71,12 +73,14 @@ export function readSidebarSessionsSnapshot(userId: string | undefined, projectI
 export function writeSidebarProjectsSnapshot(userId: string | undefined, projects: readonly Project[]): void {
   if (!userId || typeof localStorage === "undefined") return;
   const current = readSnapshot(userId);
-  const trimmed = projects.slice(0, MAX_PROJECTS);
+  const trimmed = projects
+    .filter((project) => project.id !== QUICK_CHAT_PROJECT_ID && !project.isQuickChat)
+    .slice(0, MAX_PROJECTS);
   const activeIds = new Set(trimmed.map((project) => project.id));
   const sessions: Record<string, ChatSession[]> = {};
   if (current) {
     for (const [projectId, rows] of Object.entries(current.sessions)) {
-      if (activeIds.has(projectId)) sessions[projectId] = rows;
+      if (activeIds.has(projectId) || projectId === QUICK_CHAT_PROJECT_ID) sessions[projectId] = rows;
     }
   }
   writeSnapshot(userId, { projects: trimmed, sessions });
@@ -88,8 +92,7 @@ export function writeSidebarSessionsSnapshot(
   sessions: readonly ChatSession[],
 ): void {
   if (!userId || typeof localStorage === "undefined") return;
-  const current = readSnapshot(userId);
-  if (!current) return;
+  const current = readSnapshot(userId) ?? { projects: [], sessions: {} };
   const nextSessions = {
     ...current.sessions,
     [projectId]: sessions.slice(0, MAX_SESSIONS_PER_PROJECT).map((session) => ({ ...session, busy: false })),

@@ -33,6 +33,9 @@ export class FileChangedError extends Error {
   }
 }
 
+export const QUICK_CHAT_PROJECT_ID = "quick-chat";
+export const QUICK_CHAT_PROJECT_NAME = "快速对话";
+
 export interface Project {
   id: string;
   name: string;
@@ -42,6 +45,7 @@ export interface Project {
   baselineBranch: string;
   repoPath: string;
   path: string;
+  isQuickChat?: boolean;
   githubEnabled: boolean;
   githubUrl?: string | null;
   /** Absolute path of the project's artifacts directory, non-canonical to
@@ -54,6 +58,10 @@ export interface Project {
   paperId?: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+export function isQuickChatProject(project?: Pick<Project, "id" | "isQuickChat"> | null): boolean {
+  return Boolean(project && (project.isQuickChat || project.id === QUICK_CHAT_PROJECT_ID));
 }
 
 export interface Experiment {
@@ -188,6 +196,9 @@ const put = <T>(url: string, body: unknown) =>
 
 export const listProjects = (signal?: AbortSignal, personal = false) =>
   get<{ projects: Project[] }>("/api/projects", signal, personal).then((r) => r.projects);
+
+export const getProject = (projectId: string, signal?: AbortSignal, personal = false) =>
+  get<{ project: Project }>(`/api/projects/${encodeURIComponent(projectId)}`, signal, personal).then((r) => r.project);
 
 export interface ProjectActivity {
   projectId: string;

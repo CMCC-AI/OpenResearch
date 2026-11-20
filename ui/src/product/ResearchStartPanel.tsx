@@ -1,7 +1,7 @@
 import { droppedMaterials, pendingMaterials, validateMaterialFiles } from "../materialUploads";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { reasoningFor, updateUiState, type AgentSelection, type Project, type ProjectActivity, type SkillInfo } from "../api";
+import { QUICK_CHAT_PROJECT_NAME, reasoningFor, updateUiState, type AgentSelection, type Project, type ProjectActivity, type SkillInfo } from "../api";
 import { getHarnessesQuery, getSkillsQuery } from "../queries/settings";
 import { getUiStateQuery } from "../queries/projects";
 import { setScopedQueryData } from "../queries/client";
@@ -16,13 +16,12 @@ import { ProductWordmark } from "./ProductNav";
 import { Spinner } from "../components/ui";
 import { IconButton } from "../components/ui/IconButton";
 
-export function ResearchStartPanel({ starting = false, draft, onDraftChange, attachments, onAttachmentsChange, onStart, onError, workMode, onWorkModeChange, workflowDraftId, onWorkflowDraftChange, preferredAgent, projects, activity, project, onSelectProject }: {
+export function ResearchStartPanel({ starting = false, draft, onDraftChange, attachments, onAttachmentsChange, onStart, onError, workMode, onWorkModeChange, preferredAgent, projects, activity, project, onSelectProject, onNewProject }: {
   starting?: boolean;
-  preferredAgent: AgentSelection | null; projects: Project[]; activity: ProjectActivity[]; project?: Project; onSelectProject: (id: string) => void;
+  preferredAgent: AgentSelection | null; projects: Project[]; activity: ProjectActivity[]; project?: Project; onSelectProject: (id: string) => void; onNewProject?: () => void;
   draft: string; onDraftChange: (value: string) => void;
   attachments: ComposerAttachment[]; onAttachmentsChange: (value: ComposerAttachment[]) => void;
   workMode: WorkMode; onWorkModeChange: (mode: WorkMode) => void;
-  workflowDraftId?: string | null; onWorkflowDraftChange?: (draftId: string | null) => void;
   onStart: () => void; onError: (message: string) => void;
 }) {
   const { data: harnesses = [] } = useQuery(getHarnessesQuery());
@@ -102,12 +101,12 @@ export function ResearchStartPanel({ starting = false, draft, onDraftChange, att
         <IconButton type="button" title="上传整个文件夹" aria-label="上传整个文件夹" onClick={() => folderPicker.current?.click()}><FolderUp size={16} /></IconButton>
         <div className="min-w-0 flex-1" />
         <ModelPicker value={selection} onSelect={(preferredAgent) => saveSelection.mutate({ preferredAgent })} permissionChoices={harness?.options.permissionModes} defaultPermissionId={harness?.options.defaultPermissionMode} onSelectPermission={(permissionMode) => { if (selection) saveSelection.mutate({ preferredAgent: { ...selection, permissionMode } }); }} reasoningChoices={reasoning.choices} defaultReasoningId={reasoning.defaultId} onSelectReasoning={(reasoningLevel) => { if (selection) saveSelection.mutate({ preferredAgent: { ...selection, reasoningLevel } }); }} openRequest={modelRequest} autonomy={uiState?.preferredAutonomy ?? undefined} onSelectAutonomy={(preferredAutonomy) => saveSelection.mutate({ preferredAutonomy })} />
-        <WorkModeSwitch value={workMode} onChange={onWorkModeChange} compact workflowDraftId={workflowDraftId} onWorkflowDraftChange={onWorkflowDraftChange} />
-        <IconButton type="submit" variant="primary" className="send-btn ms-auto" title={draft.trim() || attachments.length ? "发送消息" : "创建空白项目"} aria-label={draft.trim() || attachments.length ? "发送消息" : "创建空白项目"} disabled={starting || saveSelection.isPending}>{starting ? <Spinner /> : <CornerDownLeft size={16} />}</IconButton>
+        <WorkModeSwitch value={workMode} onChange={onWorkModeChange} compact />
+        <IconButton type="submit" variant="primary" className="send-btn ms-auto" title="发送消息" aria-label="发送消息" disabled={starting || saveSelection.isPending || (!draft.trim() && attachments.length === 0)}>{starting ? <Spinner /> : <CornerDownLeft size={16} />}</IconButton>
       </div>
       </div>
     </form>
-    <div className="mt-2 flex justify-start"><div className="research-home-project-picker"><ComposerProjectPicker projects={projects} activity={activity} projectId={project?.id ?? ""} projectName={project?.name ?? "新项目"} onSelect={onSelectProject} onNewProject={() => onSelectProject("")} /></div></div>
+    <div className="mt-2 flex justify-start"><div className="research-home-project-picker"><ComposerProjectPicker projects={projects} activity={activity} projectId={project?.id ?? ""} projectName={project?.name ?? QUICK_CHAT_PROJECT_NAME} onSelect={onSelectProject} onNewProject={() => (onNewProject ? onNewProject() : onSelectProject(""))} /></div></div>
   </section>;
 }
 

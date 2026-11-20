@@ -71,6 +71,14 @@ export default defineConfig({
       "/api": { target: backend, ws: true },
       "/_orx": { target: backend, ws: true },
       "/opencode": backend,
+      ...(process.env.ORX_PLATFORM_PROXY === "1" ? {
+        "/_account": { target: backend, ws: true, changeOrigin: false },
+        "/platform.js": { target: backend, changeOrigin: false },
+        "/platform.css": { target: backend, changeOrigin: false },
+        "/brand.svg": { target: backend, changeOrigin: false },
+        "/workspace-enter.html": { target: backend, changeOrigin: false },
+        "/workspace-enter.js": { target: backend, changeOrigin: false },
+      } : {}),
     },
   },
 });

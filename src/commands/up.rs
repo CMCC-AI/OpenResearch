@@ -1485,6 +1485,7 @@ fn project_json_with_artifacts_dir(p: &local::model::LocalProject, artifacts_dir
         map.insert("artifactsDir".into(), dir.clone());
         map.insert("filesDir".into(), dir);
         map.insert("path".into(), Value::String(p.repo_path.clone()));
+        map.insert("isQuickChat".into(), Value::Bool(p.is_quick_chat()));
         map.insert("githubEnabled".into(), Value::Bool(p.github_enabled()));
         map.insert(
             "githubUrl".into(),
@@ -1497,7 +1498,11 @@ fn project_json_with_artifacts_dir(p: &local::model::LocalProject, artifacts_dir
 async fn list_projects() -> ApiResult {
     blocking_api(move || {
         let projects = Store::open()?.list_local_projects()?;
-        let projects: Vec<Value> = projects.iter().map(project_json).collect();
+        let projects: Vec<Value> = projects
+            .iter()
+            .filter(|project| !project.is_quick_chat())
+            .map(project_json)
+            .collect();
         Ok(Json(json!({ "projects": projects })))
     })
     .await
@@ -1521,6 +1526,7 @@ async fn list_project_activity(State(state): State<AppState>) -> ApiResult {
         let activity = store
             .list_project_activity_summaries()?
             .into_iter()
+            .filter(|summary| summary.project_id != local::projects::QUICK_CHAT_PROJECT_ID)
             .map(|summary| {
                 let active_agents = active_agents.get(&summary.project_id).copied().unwrap_or(0);
                 json!({
@@ -2142,7 +2148,16 @@ async fn create_project(
     })))
 }
 
-async fn get_project(Path(id): Path<String>) -> ApiResult {
+async fn get_project(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
+    if id == local::projects::QUICK_CHAT_PROJECT_ID {
+        let _creation_guard = state.project_creation_lock.lock().await;
+        return blocking_api(move || {
+            let store = Store::open()?;
+            let project = local::projects::ensure_quick_chat_project(&store)?;
+            Ok(Json(json!({ "project": project_json(&project) })))
+        })
+        .await;
+    }
     blocking_api(move || {
         let project = Store::open()?
             .get_local_project(&id)?
@@ -2618,6 +2633,9 @@ async fn delete_project(
     Query(options): Query<DeleteProjectQuery>,
 ) -> ApiResult {
     reject_if_moving(&state)?;
+    if id == local::projects::QUICK_CHAT_PROJECT_ID {
+        return Err(bad_request("cannot delete built-in quick chat workspace"));
+    }
     let _deleting_project = state
         .project_lifecycle
         .begin_delete(&id)
@@ -8293,6 +8311,16 @@ async fn create_chat_session(
     Json(mut req): Json<CreateChatSessionReq>,
 ) -> ApiResult {
     reject_if_moving(&state)?;
+    if req.project_id == local::projects::QUICK_CHAT_PROJECT_ID {
+        let _creation_guard = state.project_creation_lock.lock().await;
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let store = Store::open()?;
+            local::projects::ensure_quick_chat_project(&store)?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| anyhow!("quick chat initialization failed: {e}"))??;
+    }
     let _admission = state
         .project_lifecycle
         .admit(&req.project_id)

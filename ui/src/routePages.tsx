@@ -10,7 +10,7 @@ import { useRuntime } from "./RemoteRuntime";
 
 import { globalResumeLocation, projectResumeLocation } from "./routeResume";
 import { m } from "./paraglide/messages.js";
-import { createChatSession, sendChatMessage, getChatSubmission, type Project } from "./api";
+import { QUICK_CHAT_PROJECT_ID, createChatSession, sendChatMessage, getChatSubmission, type Project } from "./api";
 import { createClientTurnId } from "./clientTurnId";
 import { canStartQuestionDirectly, submitHomeQuestion, type HomeQuestionAttempt } from "./homeConversationStart";
 import { getHarnessesQuery } from "./queries/settings";
@@ -93,16 +93,18 @@ export function ProjectsPage() {
   const [starting, setStarting] = useState(false);
   const questionAttempts = useRef(new Map<string, HomeQuestionAttempt & { generation: number }>());
 
-  async function beginResearch(project: Project, draft: ComposerStash) {
+  async function beginConversation(projectId: string, draft: ComposerStash) {
     if (startingRef.current) return;
     const generation = getWorkspaceGeneration();
     if (!draft.draft.trim() && !draft.attachments.length && !draft.annotations.length) return;
+    const isQuickChat = projectId === QUICK_CHAT_PROJECT_ID;
+    const stashKey = isQuickChat ? "research-home" : `${projectId}:new`;
     startingRef.current = true;
     setStarting(true);
     try {
       const [harnesses] = await Promise.all([
         client.fetchQuery(getHarnessesQuery()),
-        client.fetchQuery(listChatSessionsQuery(project.id)),
+        client.fetchQuery(listChatSessionsQuery(projectId)),
       ]);
       const selection = defaultSelection(harnesses, state?.preferredAgent ?? null);
       if (!selection || !harnesses.find((harness) => harness.id === selection.harness)?.agentReady) {
@@ -118,22 +120,22 @@ export function ProjectsPage() {
         ...(mode !== "normal" ? { research: { mode: mode === "workflow" ? "team" : mode, objective: draft.draft.trim() || (mode === "workflow" ? "工作流研究" : researchModes[mode]), ...(draft.workflowDraftId ? { workflowDraftId: draft.workflowDraftId } : {}) } } : {}),
       };
       const direct = canStartQuestionDirectly(draft);
-      const signature = JSON.stringify([project.id, draft.draft.trim(), mode]);
-      const savedAttempt = questionAttempts.current.get(project.id);
+      const signature = JSON.stringify([projectId, draft.draft.trim(), mode]);
+      const savedAttempt = questionAttempts.current.get(projectId);
       const previous = savedAttempt?.generation === generation ? savedAttempt : null;
       if (previous && (!direct || previous.signature !== signature)) {
         throw new Error("上次问题的发送结果尚未确认，请先重试原问题，再继续其他研究。");
       }
-      const session = previous?.session ?? await createChatSession(project.id, selection.harness, options);
+      const session = previous?.session ?? await createChatSession(projectId, selection.harness, options);
       if (generation !== getWorkspaceGeneration()) return;
       // Register before sending so busy/title SSE updates can find the session.
       // Keep that live row when navigating rather than overwriting it with the
       // empty snapshot returned at session creation.
-      const rememberSession = () => setScopedQueryData(listChatSessionsQuery(project.id).queryKey, (rows) => [rows?.find((row) => row.id === session.id) ?? session, ...(rows ?? []).filter((row) => row.id !== session.id)]);
+      const rememberSession = () => setScopedQueryData(listChatSessionsQuery(projectId).queryKey, (rows) => [rows?.find((row) => row.id === session.id) ?? session, ...(rows ?? []).filter((row) => row.id !== session.id)]);
       rememberSession();
       if (direct) {
         const attempt = previous ?? { signature, session, clientTurnId: createClientTurnId(), options, generation };
-        questionAttempts.current.set(project.id, attempt);
+        questionAttempts.current.set(projectId, attempt);
         await submitHomeQuestion(attempt, draft.draft, {
           send: (id, text, opts, turnId) => sendChatMessage(id, text, opts, undefined, undefined, turnId),
           receipt: (id, turnId) => getChatSubmission(id, turnId, AbortSignal.timeout(3000)),
@@ -144,20 +146,23 @@ export function ProjectsPage() {
         getResearchSubmissionStore(generation).set(session.id, draft);
       }
       rememberSession();
-      getComposerStashStore(generation).delete(`${project.id}:new`);
-      await navigate({ to: "/projects/$projectId/tasks/$sessionId", params: { projectId: project.id, sessionId: session.id } });
-      questionAttempts.current.delete(project.id);
+      getComposerStashStore(generation).delete(stashKey);
+      await navigate({ to: "/projects/$projectId/tasks/$sessionId", params: { projectId, sessionId: session.id } });
+      questionAttempts.current.delete(projectId);
     } catch (error) {
       if (generation === getWorkspaceGeneration()) {
-        getComposerStashStore(generation).set(`${project.id}:new`, draft);
+        getComposerStashStore(generation).set(stashKey, draft);
         showAlert(error instanceof Error ? error.message : String(error), "error");
-        if (start.project !== project.id) await navigate({ to: "/projects", search: { project: project.id }, replace: true });
+        if (!isQuickChat && start.project !== projectId) await navigate({ to: "/projects", search: { project: projectId }, replace: true });
       }
     } finally {
       startingRef.current = false;
       setStarting(false);
     }
   }
+
+  const beginResearch = (project: Project, draft: ComposerStash) => beginConversation(project.id, draft);
+  const beginQuickChat = (draft: ComposerStash) => beginConversation(QUICK_CHAT_PROJECT_ID, draft);
 
   return (
     <PlatformFrame title="新对话 · AI 原生科研工作台" projectId={projects?.some((project) => project.id === start.project) ? start.project : undefined}>
@@ -174,6 +179,7 @@ export function ProjectsPage() {
               initialDialogOpen={Boolean(start.new)}
               initialProjectId={start.project}
               onResume={beginResearch}
+              onStartQuickChat={beginQuickChat}
               onOpen={openProject}
               onCreated={async (project, publicationError, draft) => {
                 if (publicationError) {
