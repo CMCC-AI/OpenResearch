@@ -6,6 +6,7 @@ import React from "react";
 import ts from "typescript";
 import * as model from "../src/workflow/model.ts";
 import * as graph from "../src/workflow/graph.ts";
+import * as research from "../src/research.ts";
 const require = createRequire(import.meta.url);
 const code = ts.transpileModule(readFileSync(new URL("../src/workflow/WorkflowCanvas.tsx", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 function elements(tree) { return React.isValidElement(tree) ? [tree, ...React.Children.toArray(tree.props.children).flatMap(elements)] : []; }
@@ -16,7 +17,7 @@ function harness(startDraft = model.createLiteratureDraft(), agents = []) {
   const mocks = {
     react: { ...React, useState: state, useEffect() {}, useMemo: fn => fn(), useRef: value => state(() => ({ current: value }))[0] },
     "@xyflow/react": { ReactFlow: "Flow", Handle: "Handle", Controls: "Controls", Background: "Background", MarkerType: { ArrowClosed: "arrow" }, Position: { Top: "top", Bottom: "bottom" } },
-    "./model": model, "./graph": graph, "./SystemNode": { SystemNodeCard: "SystemNode" },
+    "./model": model, "./graph": graph, "./SystemNode": { SystemNodeCard: "SystemNode" }, "../research": research,
     "../components/ui": { Button: "Button", Tooltip: "Tooltip" }, "../components/ui/Switch": { Switch: "Switch" },
   };
   new Function("require", "exports", code)(id => id in mocks ? mocks[id] : require(id), exported);

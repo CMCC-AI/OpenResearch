@@ -33,6 +33,7 @@ export function rememberWorkspace(state: RightPaneSessionState, scroll: TaskWork
   const home: RightTab[] = [];
   if (state.materialsTabOpen) home.push("materials");
   if (state.researchTabOpen) home.push("research");
+  if (state.workflowTabOpen) home.push("workflow");
   if (state.filesTabOpen) home.push("files");
   if (state.terminalTabOpen) home.push("terminal");
   if (state.artifactsTabOpen) home.push("artifacts");
@@ -74,6 +75,7 @@ export function restoreWorkspace(saved: TaskWorkspace | undefined, pane: Pane | 
       if (tab === "terminal") state.terminalTabOpen = true;
       if (tab === "research") state.researchTabOpen = true;
       if (tab === "materials") state.materialsTabOpen = true;
+      if (tab === "workflow") state.workflowTabOpen = true;
       continue;
     }
     if ("code" in tab) { tab.toggled = new Set(saved?.expanded[rightTabKey(tab)] ?? []); state.codeTabs.push(tab); }
@@ -204,6 +206,7 @@ export type RightTab =
   | "terminal"
   | "research"
   | "materials"
+  | "workflow"
   | ExpViewDef
   | FileViewDef
   | PlanViewDef
@@ -244,6 +247,7 @@ export interface RightPaneSessionState {
   terminalTabOpen: boolean;
   researchTabOpen?: boolean;
   materialsTabOpen?: boolean;
+  workflowTabOpen?: boolean;
   expTabs: ExpViewDef[];
   fileTabs: FileViewDef[];
   planTabs: PlanViewDef[];
@@ -276,6 +280,7 @@ export function initialRightPaneSessionState(
     terminalTabOpen: false,
     researchTabOpen: false,
     materialsTabOpen: false,
+    workflowTabOpen: false,
     expTabs: [],
     fileTabs: [],
     planTabs: [],
@@ -330,6 +335,7 @@ export function applyPane(state: RightPaneSessionState, pane: Pane | undefined):
     else if (tab === "terminal") next.terminalTabOpen = true;
     else if (tab === "research") next.researchTabOpen = true;
     else if (tab === "materials") next.materialsTabOpen = true;
+    else if (tab === "workflow") next.workflowTabOpen = true;
     else next.experimentsTabOpen = true;
   } else {
     if ("path" in tab) next.fileTabs = update(state.fileTabs, tab);

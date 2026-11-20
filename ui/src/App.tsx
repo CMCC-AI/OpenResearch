@@ -88,6 +88,7 @@ import {
   ScrollText,
   Terminal,
   Users,
+  Workflow,
   X,
 } from "lucide-react";
 
@@ -111,6 +112,7 @@ import {
 import { ResearchPanel } from "./components/ResearchPanel";
 const MaterialWorkspace = lazy(() => import("./components/MaterialWorkspace"));
 const WorkflowStudio = lazy(() => import("./workflow/WorkflowStudio").then(module => ({ default: module.WorkflowStudio })));
+const WorkflowPane = lazy(() => import("./workflow/WorkflowPane").then(module => ({ default: module.WorkflowPane })));
 
 import { WorkspaceTools } from "./components/WorkspaceTools";
 const ProjectTerminal = lazy(() => import("./components/ProjectTerminal").then(module => ({ default: module.ProjectTerminal })));
@@ -438,6 +440,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   const [filesTabOpen, setFilesTabOpen] = useState(false);
   const [artifactsTabOpen, setArtifactsTabOpen] = useState(false);
   const [researchTabOpen, setResearchTabOpen] = useState(false);
+  const [workflowTabOpen, setWorkflowTabOpen] = useState(false);
   const [materialsTabOpen, setMaterialsTabOpen] = useState(false);
   const [materialTarget, setMaterialTarget] = useState<{ session: string | null; id?: string; nonce: number } | null>(null);
   const [terminalTabOpen, setTerminalTabOpen] = useState(false);
@@ -681,6 +684,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     setTerminalTabOpen(state.terminalTabOpen);
     setResearchTabOpen(state.researchTabOpen ?? false);
     setMaterialsTabOpen(state.materialsTabOpen ?? false);
+    setWorkflowTabOpen(state.workflowTabOpen ?? false);
     setExpTabs(state.expTabs);
     setFileTabs(state.fileTabs);
     setPlanTabs((current) => current === state.planTabs ? current : state.planTabs.map((tab) => ({ ...tab, plan: current.find((item) => item.sessionId === tab.sessionId && item.promptId === tab.promptId)?.plan ?? "" })));
@@ -980,6 +984,11 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   const openResearchTab = useCallback(() => {
     setResearchTabOpen(true);
     selectRightTab("research");
+  }, [selectRightTab]);
+
+  const openWorkflowTab = useCallback(() => {
+    setWorkflowTabOpen(true);
+    selectRightTab("workflow");
   }, [selectRightTab]);
 
   const openArtifactsTab = useCallback(() => {
@@ -1496,9 +1505,10 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   }, [selectRightTab]);
 
   const closeHomeTab = useCallback(
-    (tab: "experiments" | "files" | "artifacts" | "terminal" | "research" | "materials") => {
+    (tab: "experiments" | "files" | "artifacts" | "terminal" | "research" | "materials" | "workflow") => {
       if (tab === "materials") setMaterialsTabOpen(false);
       else if (tab === "research") setResearchTabOpen(false);
+      else if (tab === "workflow") setWorkflowTabOpen(false);
       else if (tab === "experiments") setExperimentsTabOpen(false);
       else if (tab === "files") setFilesTabOpen(false);
       else if (tab === "terminal") {
@@ -1784,10 +1794,10 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
     runs={runs}
     onOpenExperiment={(id, runId) => openExperimentTab(id, "overview", "preview", runId)}
     rightOffset={panelOpen ? panelWidth + 28 : undefined}
-    activeView={panelOpen && (rightTab === "files" || rightTab === "artifacts" || rightTab === "experiments" || rightTab === "terminal" || rightTab === "research" || rightTab === "materials") ? rightTab : null}
+    activeView={panelOpen && (rightTab === "files" || rightTab === "artifacts" || rightTab === "experiments" || rightTab === "terminal" || rightTab === "research" || rightTab === "materials" || rightTab === "workflow") ? rightTab : null}
     onMaterials={() => openMaterialsTab()}
     onResearch={openResearchTab}
-    onWorkflow={() => selectMainView("workflows")}
+    onWorkflow={openWorkflowTab}
     onOpenSession={(id) => onActiveSessionChange(id)}
     sessionId={activeSessionId}
     busy={sessionsQuery.data?.some((session) => session.id === activeSessionId && session.busy) ?? false}
@@ -1881,6 +1891,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
               <TabStrip activeKey={rightTabKey(rightTab)}>
                 {materialsTabOpen && <ClosableTab active={rightTab === "materials"} label="研究材料" icon={<FolderOpen size={12} />} onSelect={() => selectRightTab("materials")} onClose={() => closeHomeTab("materials")} />}
                 {researchTabOpen && <ClosableTab active={rightTab === "research"} label="科研专家团" onSelect={() => selectRightTab("research")} onClose={() => closeHomeTab("research")} />}
+                {workflowTabOpen && <ClosableTab active={rightTab === "workflow"} label="工作流" icon={<Workflow size={12} className="shrink-0" />} onSelect={() => selectRightTab("workflow")} onClose={() => closeHomeTab("workflow")} />}
                 {leadingFileTabs.map(renderFileTab)}
                 {filesTabOpen && (
                   <ClosableTab
@@ -1951,6 +1962,8 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
               <TabBody><Suspense fallback={<p role="status" className="p-4 text-sm text-subtext">正在打开材料…</p>}><MaterialWorkspace key={`${activeProject.id}:${activeSessionId}:${materialTarget?.nonce ?? 0}`} sessionId={activeSessionId} requestedId={materialTarget?.session === activeSessionId ? materialTarget.id : undefined} /></Suspense></TabBody>
             ) : rightTab === "research" ? (
               <TabBody><ResearchPanel key={researchSessionId ?? "preview"} placement="pane" sessionId={researchSessionId} disabled={false} onOpenSession={(id) => onActiveSessionChange(id, { preservePane: true })} /></TabBody>
+            ) : rightTab === "workflow" ? (
+              <TabBody><Suspense fallback={<p role="status" className="p-4 text-sm text-subtext">正在打开工作流…</p>}><WorkflowPane key={researchSessionId ?? "preview"} sessionId={researchSessionId} onOpenSession={(id) => onActiveSessionChange(id, { preservePane: true })} onOpenStudio={() => selectMainView("workflows")} /></Suspense></TabBody>
             ) : rightTab === "artifacts" ? (
               <TabBody>
                 {activeProject && (

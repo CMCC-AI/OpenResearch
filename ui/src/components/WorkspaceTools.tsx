@@ -20,7 +20,7 @@ export function WorkspaceTools({ placement = "floating", expanded, experiments, 
   runs: Run[];
   onOpenExperiment: (id: string, runId: string) => void;
   rightOffset?: number;
-  activeView: "files" | "artifacts" | "experiments" | "terminal" | "research" | "materials" | null;
+  activeView: "files" | "artifacts" | "experiments" | "terminal" | "research" | "materials" | "workflow" | null;
   onResearch: () => void;
   onMaterials: () => void;
   onWorkflow: () => void;

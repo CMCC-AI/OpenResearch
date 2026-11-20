@@ -28,7 +28,7 @@ function ExpertPill({ id, data, selected }: NodeProps<ExpertNode>) {
 }
 type TeamNode = ExpertNode | SystemNode;
 const nodeTypes = { expert: ExpertPill, system: SystemNodeCard };
-function LocateCurrent({ ids }: { ids: string[] }) {
+export function LocateCurrent({ ids }: { ids: string[] }) {
   const flow = useReactFlow();
   return <Button size="small" className="research-team-locate" disabled={!ids.length} onClick={() => void flow.fitView({ nodes: ids.map((id) => ({ id })), padding: 0.6, maxZoom: 1, duration: 300 })}><img src={appHref("/research-team/locate.svg")} alt="" width={16} height={16} />定位当前</Button>;
 }

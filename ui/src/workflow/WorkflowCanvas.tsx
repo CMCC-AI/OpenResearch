@@ -6,6 +6,7 @@ import { Switch } from "../components/ui/Switch";
 import { addAgentTask, addExperimentTask, addForeachTask, addHumanTask, addRouteTask, addWaitTask, addWorkflowFrame, connectWorkflowTasks, reconnectWorkflowTasks, removeWorkflowFrame, removeWorkflowTask, updateWorkflowFrame, MAX_REWORK, ROUTE_ELSE, ROUTE_THEN, type FlowPoint, type WorkflowAgent, type WorkflowDraftInput, type WorkflowFrame, type WorkflowTask } from "./model";
 import { approvalNodeId, buildWorkflowGraph, fixedSystemData, systemNodeIds } from "./graph";
 import { SystemNodeCard, type SystemNode } from "./SystemNode";
+import { workflowTone, type WorkflowState } from "../research";
 
 // 拖拽添加专家任务时，dataTransfer 里携带 agent id 的数据类型。
 const AGENT_MIME = "application/x-orx-agent";
@@ -21,7 +22,9 @@ export const WAIT_MIME = "application/x-orx-wait-node";
 // 画布上阶段分组框节点的 id 前缀，与任务 ID、系统节点 ID 区分。
 const FRAME_PREFIX = "frame:";
 
-type AgentNodeData = {
+// 节点 data 的回调均可选：编辑画布传入删除/改派回调；运行视图（工作流侧栏）只读，不带回调也不渲染删除按钮。
+// state 由运行视图传入，卡片按执行状态着色；编辑画布不传，保持草稿外观。
+export type AgentNodeData = {
   taskId: string;
   roleName: string;
   brief: string;
@@ -30,23 +33,26 @@ type AgentNodeData = {
   requiresApproval: boolean;
   gateDownstream: boolean;
   maxRework: number;
-  onDelete: () => void;
+  state?: WorkflowState;
+  onDelete?: () => void;
 };
-type AgentNode = Node<AgentNodeData, "agent">;
+export type AgentNode = Node<AgentNodeData, "agent">;
 
 // 任务节点统一外壳：六类卡片共用同一套边框、宽度、选中态与头部/页脚解剖，
 // 节点身份由图标与配色区分，正文与页脚内容由各类节点填入。
-function TaskNodeCard({ selected, icon, accent, title, taskId, onDelete, children, footer }: {
+function TaskNodeCard({ selected, icon, accent, title, taskId, onDelete, state, children, footer }: {
   selected: boolean;
   icon: ReactNode;
   accent: string;
   title: string;
   taskId: string;
-  onDelete: () => void;
+  onDelete?: () => void;
+  state?: WorkflowState;
   children?: ReactNode;
   footer?: ReactNode;
 }) {
-  return <div className={`group relative w-64 rounded-lg border bg-background shadow-sm transition-shadow ${selected ? "border-primary ring-2 ring-primary/20" : "border-border hover:shadow-control-subtle"}`}>
+  const tone = state ? workflowTone[state] : "";
+  return <div className={`group relative w-64 rounded-lg border shadow-sm transition-shadow ${tone || "bg-background"} ${selected ? "border-primary ring-2 ring-primary/20" : tone ? "" : "border-border hover:shadow-control-subtle"} ${state === "running" && !selected ? "ring-2 ring-primary" : ""}`}>
     <Handle type="target" position={Position.Top} />
     <div className="flex items-start gap-2.5 px-3 pb-1.5 pt-2.5">
       <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${accent}`} aria-hidden="true">{icon}</span>
@@ -54,9 +60,9 @@ function TaskNodeCard({ selected, icon, accent, title, taskId, onDelete, childre
         <strong className="block truncate text-sm text-text">{title}</strong>
         <span className="block truncate font-mono text-xs text-subtext">{taskId}</span>
       </div>
-      <button type="button" className="nodrag absolute end-2 top-2 hidden h-6 w-6 items-center justify-center rounded-md border border-border bg-background text-subtext hover:border-accent-red hover:text-accent-red group-hover:flex" aria-label={`删除节点 ${taskId}`} title="删除节点" onClick={onDelete}>
+      {onDelete && <button type="button" className="nodrag absolute end-2 top-2 hidden h-6 w-6 items-center justify-center rounded-md border border-border bg-background text-subtext hover:border-accent-red hover:text-accent-red group-hover:flex" aria-label={`删除节点 ${taskId}`} title="删除节点" onClick={onDelete}>
         <Trash2 size={12} />
-      </button>
+      </button>}
     </div>
     {children}
     {footer && <div className="border-t border-border px-3 py-1.5 text-xs text-subtext">{footer}</div>}
@@ -80,6 +86,7 @@ function AgentNodeCard({ data, selected }: NodeProps<AgentNode>) {
     title={data.roleName}
     taskId={data.taskId}
     onDelete={data.onDelete}
+    state={data.state}
     footer={<TaskNodeMeta output={<><FileText size={12} aria-hidden="true" />{data.outputCount} 个产物</>} dependencyCount={data.dependencyCount} />}
   >
     {data.brief && <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">{data.brief}</p>}
@@ -91,15 +98,16 @@ function AgentNodeCard({ data, selected }: NodeProps<AgentNode>) {
 }
 
 // 条件分流节点：引擎在运行时判定条件并放行其中一条分支，画布上先行声明条件与两条出口。
-type RouteNodeData = {
+export type RouteNodeData = {
   taskId: string;
   brief: string;
   condition: string;
   thenTargets: string;
   elseTargets: string;
-  onDelete: () => void;
+  state?: WorkflowState;
+  onDelete?: () => void;
 };
-type RouteNode = Node<RouteNodeData, "route">;
+export type RouteNode = Node<RouteNodeData, "route">;
 
 function RouteNodeCard({ data, selected }: NodeProps<RouteNode>) {
   return <TaskNodeCard
@@ -109,6 +117,7 @@ function RouteNodeCard({ data, selected }: NodeProps<RouteNode>) {
     title={data.brief || "条件分流"}
     taskId={data.taskId}
     onDelete={data.onDelete}
+    state={data.state}
     footer={<div className="flex flex-col gap-0.5">
       <span className="truncate">成立 → {data.thenTargets || "未连接"}</span>
       <span className="truncate">不成立 → {data.elseTargets || "未连接"}</span>
@@ -119,31 +128,33 @@ function RouteNodeCard({ data, selected }: NodeProps<RouteNode>) {
 }
 
 // 阶段分组框：纯展示容器，放在其他节点下层，可拖动、可调整大小。
-type FrameNodeData = {
+export type FrameNodeData = {
   frameId: string;
   title: string;
-  onChange: (update: { title?: string; width?: number; height?: number }) => void;
-  onDelete: () => void;
+  /** 编辑画布传入改名/缩放回调；运行视图只读，不提供。 */
+  onChange?: (update: { title?: string; width?: number; height?: number }) => void;
+  onDelete?: () => void;
 };
-type FrameNode = Node<FrameNodeData, "frame">;
+export type FrameNode = Node<FrameNodeData, "frame">;
 
 function FrameNodeCard({ data, selected }: NodeProps<FrameNode>) {
   return <div className={`relative h-full w-full rounded-xl border-2 border-dashed ${selected ? "border-subtext bg-surface/60" : "border-border bg-surface/40"}`}>
-    {selected && <NodeResizeControl minWidth={160} minHeight={120} className="!border-none" />}
+    {data.onChange && selected && <NodeResizeControl minWidth={160} minHeight={120} className="!border-none" />}
     <span className="pointer-events-none absolute -top-3 start-3 max-w-[calc(100%-1.5rem)] truncate rounded bg-background px-1.5 text-xs text-subtext">{data.title}</span>
   </div>;
 }
 
 // 逐项处理节点：引擎按上游清单串行逐项派发，全部完成后放行下游。
-type ForeachNodeData = {
+export type ForeachNodeData = {
   taskId: string;
   brief: string;
   condition: string;
   itemOutput: string;
   dependencyCount: number;
-  onDelete: () => void;
+  state?: WorkflowState;
+  onDelete?: () => void;
 };
-type ForeachNode = Node<ForeachNodeData, "foreach">;
+export type ForeachNode = Node<ForeachNodeData, "foreach">;
 
 function ForeachNodeCard({ data, selected }: NodeProps<ForeachNode>) {
   return <TaskNodeCard
@@ -153,6 +164,7 @@ function ForeachNodeCard({ data, selected }: NodeProps<ForeachNode>) {
     title={data.brief || "逐项处理"}
     taskId={data.taskId}
     onDelete={data.onDelete}
+    state={data.state}
     footer={<TaskNodeMeta output={<><FileText size={12} aria-hidden="true" /><span className="truncate font-mono">{data.itemOutput || "逐项产物"}</span></>} dependencyCount={data.dependencyCount} />}
   >
     <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">{data.condition}</p>
@@ -160,14 +172,15 @@ function ForeachNodeCard({ data, selected }: NodeProps<ForeachNode>) {
 }
 
 // 人工任务节点：主理人在研究面板亲自提交产出后流程继续。
-type HumanNodeData = {
+export type HumanNodeData = {
   taskId: string;
   brief: string;
   output: string;
   dependencyCount: number;
-  onDelete: () => void;
+  state?: WorkflowState;
+  onDelete?: () => void;
 };
-type HumanNode = Node<HumanNodeData, "human">;
+export type HumanNode = Node<HumanNodeData, "human">;
 
 function HumanNodeCard({ data, selected }: NodeProps<HumanNode>) {
   return <TaskNodeCard
@@ -177,6 +190,7 @@ function HumanNodeCard({ data, selected }: NodeProps<HumanNode>) {
     title={data.brief || "人工任务"}
     taskId={data.taskId}
     onDelete={data.onDelete}
+    state={data.state}
     footer={<TaskNodeMeta output={<><FileText size={12} aria-hidden="true" /><span className="truncate font-mono">{data.output}</span></>} dependencyCount={data.dependencyCount} />}
   >
     <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">主理人亲自完成：提交后流程继续</p>
@@ -184,14 +198,15 @@ function HumanNodeCard({ data, selected }: NodeProps<HumanNode>) {
 }
 
 // 实验节点：G2/G3 批准后引擎按已批准契约自动提交运行，按声明产物验收。
-type ExperimentNodeData = {
+export type ExperimentNodeData = {
   taskId: string;
   brief: string;
   outputCount: number;
   dependencyCount: number;
-  onDelete: () => void;
+  state?: WorkflowState;
+  onDelete?: () => void;
 };
-type ExperimentNode = Node<ExperimentNodeData, "experiment">;
+export type ExperimentNode = Node<ExperimentNodeData, "experiment">;
 
 function ExperimentNodeCard({ data, selected }: NodeProps<ExperimentNode>) {
   return <TaskNodeCard
@@ -201,6 +216,7 @@ function ExperimentNodeCard({ data, selected }: NodeProps<ExperimentNode>) {
     title={data.brief || "实验节点"}
     taskId={data.taskId}
     onDelete={data.onDelete}
+    state={data.state}
     footer={<TaskNodeMeta output={<><FileText size={12} aria-hidden="true" />{data.outputCount} 个产物</>} dependencyCount={data.dependencyCount} />}
   >
     <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">绑定契约并获 G2/G3 批准后自动运行，按声明产物验收</p>
@@ -208,14 +224,15 @@ function ExperimentNodeCard({ data, selected }: NodeProps<ExperimentNode>) {
 }
 
 // 事件等待节点：等研究目录下路径出现，超时转失败等待主理人。
-type WaitNodeData = {
+export type WaitNodeData = {
   taskId: string;
   brief: string;
   condition: string;
   dependencyCount: number;
-  onDelete: () => void;
+  state?: WorkflowState;
+  onDelete?: () => void;
 };
-type WaitNode = Node<WaitNodeData, "wait">;
+export type WaitNode = Node<WaitNodeData, "wait">;
 
 function WaitNodeCard({ data, selected }: NodeProps<WaitNode>) {
   return <TaskNodeCard
@@ -225,29 +242,32 @@ function WaitNodeCard({ data, selected }: NodeProps<WaitNode>) {
     title={data.brief || "事件等待"}
     taskId={data.taskId}
     onDelete={data.onDelete}
+    state={data.state}
     footer={<TaskNodeMeta dependencyCount={data.dependencyCount} />}
   >
     <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">{data.condition}</p>
   </TaskNodeCard>;
 }
 
-type CanvasNode = AgentNode | SystemNode | RouteNode | FrameNode | ForeachNode | HumanNode | ExperimentNode | WaitNode;
-const nodeTypes = { agent: AgentNodeCard, system: SystemNodeCard, route: RouteNodeCard, frame: FrameNodeCard, foreach: ForeachNodeCard, human: HumanNodeCard, experiment: ExperimentNodeCard, wait: WaitNodeCard };
+// 编辑画布与运行视图（工作流侧栏）共用同一套节点类型：同一卡片既画草稿也画执行状态。
+export type WorkflowCanvasNode = AgentNode | SystemNode | RouteNode | FrameNode | ForeachNode | HumanNode | ExperimentNode | WaitNode;
+export const workflowNodeTypes = { agent: AgentNodeCard, system: SystemNodeCard, route: RouteNodeCard, frame: FrameNodeCard, foreach: ForeachNodeCard, human: HumanNodeCard, experiment: ExperimentNodeCard, wait: WaitNodeCard };
+const nodeTypes = workflowNodeTypes;
 
-function routeConditionText(task: WorkflowTask): string {
+export function routeConditionText(task: WorkflowTask): string {
   if (!task.route) return "尚未设置分流条件";
   if (task.route.on === "failure") return "任一直接前置执行失败即走「成立」分支";
   return `前置结论为「${task.route.verdictIs === "blocked" ? "有问题" : "通过"}」时走「成立」分支`;
 }
 
-function waitConditionText(task: WorkflowTask): string {
+export function waitConditionText(task: WorkflowTask): string {
   const waitStep = task.waitStep;
   if (!waitStep?.source) return "尚未设置等待路径";
   const timeout = waitStep.timeoutMinutes ? `超时 ${waitStep.timeoutMinutes} 分钟转失败` : "不限时等待";
   return `等待「${waitStep.source}」出现 · ${timeout}`;
 }
 
-function foreachConditionText(task: WorkflowTask): string {
+export function foreachConditionText(task: WorkflowTask): string {
   const forEach = task.forEach;
   if (!forEach?.source) return "尚未选择列表来源：先连线，再选要逐项处理的清单";
   const policy = forEach.onFailure === "skip" ? "某项失败时跳过继续" : "某项失败时暂停等待主理人";
@@ -310,11 +330,11 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
     };
   }, [edgeMenu]);
   const viewportDirty = useRef(false);
-  const flowRef = useRef<ReactFlowInstance<CanvasNode> | null>(null);
+  const flowRef = useRef<ReactFlowInstance<WorkflowCanvasNode> | null>(null);
   // 编辑画布只呈现主理人显式添加的内容：固定链路（G1/G4/交付）留在节点库说明与运行视图，不自动铺上画布。
   const graph = useMemo(() => buildWorkflowGraph(draft.tasks, draft.positions, { fixedChain: "never" }), [draft.tasks, draft.positions]);
   const agentNames = useMemo(() => new Map(agents.map((agent) => [agent.id, agent.name])), [agents]);
-  const nodes = useMemo<CanvasNode[]>(() => [
+  const nodes = useMemo<WorkflowCanvasNode[]>(() => [
     // 分组框最先入列：相同层级下先入列的节点画在下层，框垫在任务节点下面。
     ...(draft.frames ?? []).map((frame): FrameNode => ({
       id: `${FRAME_PREFIX}${frame.id}`,
@@ -512,7 +532,7 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
     onChange({ ...draft, tasks: draft.tasks.map((task) => task.id === id ? { ...task, ...update } : task) });
   }
 
-  function onNodesChange(changes: NodeChange<CanvasNode>[]) {
+  function onNodesChange(changes: NodeChange<WorkflowCanvasNode>[]) {
     let next = draft;
     for (const change of changes) {
       if (change.type === "position" && change.position) {

@@ -111,6 +111,7 @@ pub enum HomeView {
     Terminal,
     Research,
     Materials,
+    Workflow,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -338,6 +339,17 @@ mod tests {
         let value = json!({"kind":"home","view":"materials"});
         let pane: Pane = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(pane).unwrap(), value);
+    }
+
+    #[test]
+    fn workflow_home_pane_round_trips() {
+        let value = json!({"kind":"home","view":"workflow"});
+        let pane: Pane = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(pane).unwrap(), value);
+        assert!(valid_location(&format!(
+            "/projects/demo/tasks/parent?pane={}",
+            urlencoding::encode(&value.to_string())
+        )));
     }
 
     #[test]
