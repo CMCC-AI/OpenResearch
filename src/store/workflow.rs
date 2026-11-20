@@ -324,37 +324,6 @@ impl Store {
         Ok(draft)
     }
 
-    /// Duplicate a workflow as a new library entry. Provenance carries over
-    /// verbatim: the source row already exists, so its project may be deleted.
-    pub fn copy_workflow_draft(&self, id: &str) -> Result<WorkflowDraft> {
-        let previous = self
-            .workflow_draft_by_id(id)?
-            .ok_or_else(|| crate::error::anyhow!("工作流不存在"))?;
-        let source_name = previous.input.name.clone();
-        let mut input = previous.input;
-        input.name = format!("{} 副本", source_name);
-        let now = now_ms();
-        let draft = WorkflowDraft {
-            id: format!("workflow-{}", uuid::Uuid::new_v4().simple()),
-            project_id: previous.project_id,
-            input,
-            created_at: now,
-            updated_at: now,
-        };
-        validate_draft(&draft.input)?;
-        self.conn.execute(
-            "INSERT INTO workflow_drafts(id,project_id,document,created_at,updated_at) VALUES(?1,?2,?3,?4,?5)",
-            params![
-                draft.id,
-                draft.project_id,
-                serde_json::to_string(&draft)?,
-                draft.created_at,
-                draft.updated_at
-            ],
-        )?;
-        Ok(draft)
-    }
-
     pub fn delete_workflow_draft(&self, id: &str) -> Result<bool> {
         Ok(self
             .conn
@@ -610,16 +579,10 @@ mod tests {
             .unwrap();
         assert_eq!(saved.project_id, "project");
         assert_eq!(saved.created_at, second.created_at);
-        // Copies get a fresh id and a "副本" suffix.
-        let copied = store.copy_workflow_draft(&global.id).unwrap();
-        assert_ne!(copied.id, global.id);
-        assert_eq!(copied.input.name, "Reusable literature review 副本");
-        assert_eq!(copied.project_id, GLOBAL_WORKFLOW_DRAFT_PROJECT);
-        assert_eq!(store.list_workflow_drafts().unwrap().len(), 4);
         // Deleting removes exactly one entry.
-        assert!(store.delete_workflow_draft(&copied.id).unwrap());
-        assert!(!store.delete_workflow_draft(&copied.id).unwrap());
-        assert_eq!(store.list_workflow_drafts().unwrap().len(), 3);
+        assert!(store.delete_workflow_draft(&first.id).unwrap());
+        assert!(!store.delete_workflow_draft(&first.id).unwrap());
+        assert_eq!(store.list_workflow_drafts().unwrap().len(), 2);
         // Creation still validates that the owning project exists.
         assert!(store
             .create_workflow_draft("missing-project", second.input)

@@ -545,7 +545,6 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
                 .put(workflow::save_workflow)
                 .delete(workflow::delete_workflow),
         )
-        .route("/api/workflows/{id}/copy", post(workflow::copy_workflow))
         .route(
             "/api/projects/{project}/research/deliveries",
             get(research::deliveries),
@@ -8374,6 +8373,12 @@ async fn create_chat_session(
         store
             .research_create(&session.id, &research.mode, &research.objective)
             .map_err(bad_request)?;
+        // 带着保存的工作流开新会话：首条消息发送时即绑定，绑定后该会话不能换绑。
+        if let Some(draft_id) = research.workflow_draft_id.as_deref() {
+            store
+                .research_use_workflow(&session.id, draft_id, &research.objective)
+                .map_err(bad_request)?;
+        }
     }
     tx.commit().map_err(bad_request)?;
     state.chat.emit_session(Some(session.clone())).await;

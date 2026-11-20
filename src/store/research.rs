@@ -179,12 +179,17 @@ pub struct RouteSpec {
     /// verdict 谓词的成立值："pass" 或 "blocked"。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub verdict_is: String,
+    /// 结论永远出不来时（verdict 来源任务失败或被跳过）的兜底分支：
+    /// "then" 或 "else"；空串表示不兜底，分流节点保持等待。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub default_branch: String,
 }
 /// 分流节点最近一次求值结果，持久化在任务上供界面与排查追溯。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RouteDecision {
-    /// "matched"（条件成立，走 then）或 "unmatched"（不成立，走 else）。
+    /// "matched"（条件成立，走 then）、"unmatched"（不成立，走 else）
+    /// 或 "fallback"（结论无法产生，按兜底分支放行）。
     pub outcome: String,
     /// 求值依据：上游结论状态或前置失败情况，人类可读。
     pub basis: String,
@@ -722,6 +727,7 @@ impl Study {
                         on: String::new(),
                         source: String::new(),
                         verdict_is: String::new(),
+                        default_branch: String::new(),
                     });
                     let deps: Vec<ResearchTask> = task
                         .spec
@@ -735,8 +741,18 @@ impl Study {
                 if deps.len() != self.task(&route_id)?.spec.depends_on.len() {
                     continue;
                 }
-                let Some((matched, basis)) = route_outcome(&route, &deps) else {
-                    continue; // 触发条件尚未就绪，等下一轮。
+                // 正常求值优先；结论出不来且已无法再出（verdict 来源失败或被跳过）时，
+                // 按配置的兜底分支放行，分流节点不再无限等待。
+                let resolution = route_outcome(&route, &deps)
+                    .map(|(matched, basis)| (matched, basis, false))
+                    .or_else(|| {
+                        let basis = route_fallback(&route, &deps)?;
+                        let matched = route.default_branch == ROUTE_THEN;
+                        (matched || route.default_branch == ROUTE_ELSE)
+                            .then_some((matched, basis, true))
+                    });
+                let Some((matched, basis, fallback)) = resolution else {
+                    continue; // 触发条件尚未就绪或未配置兜底，等下一轮。
                 };
                 let drop = if matched { ROUTE_ELSE } else { ROUTE_THEN };
                 let children: Vec<String> = self
@@ -750,13 +766,21 @@ impl Study {
                     .collect();
                 {
                     let task = self.task_mut(&route_id)?;
+                    let branch_name = if matched { "成立" } else { "不成立" };
                     task.state = "completed".into();
-                    task.summary = Some(format!(
-                        "分流判定：{basis}，走「{}」分支。",
-                        if matched { "成立" } else { "不成立" }
-                    ));
+                    task.summary = Some(if fallback {
+                        format!("分流判定：{basis}，按兜底走「{branch_name}」分支。")
+                    } else {
+                        format!("分流判定：{basis}，走「{branch_name}」分支。")
+                    });
                     task.route_decision = Some(RouteDecision {
-                        outcome: if matched { "matched" } else { "unmatched" }.into(),
+                        outcome: if fallback {
+                            "fallback".into()
+                        } else if matched {
+                            "matched".into()
+                        } else {
+                            "unmatched".into()
+                        },
                         basis: basis.clone(),
                         decided_at: now_ms(),
                     });
@@ -890,6 +914,32 @@ fn route_outcome(route: &RouteSpec, deps: &[ResearchTask]) -> Option<(bool, Stri
         }
         _ => None,
     }
+}
+/// 分流兜底判定：结论永远出不来时返回依据文案，否则 None。
+/// verdict 来源任务失败或被跳过后不再有结论；failure 谓词在前置到终态后必然可判定。
+fn route_fallback(route: &RouteSpec, deps: &[ResearchTask]) -> Option<String> {
+    if route.on != "verdict" {
+        return None;
+    }
+    let source_task = deps.iter().find(|task| {
+        task.spec
+            .outputs
+            .iter()
+            .any(|output| output == &route.source)
+    })?;
+    if source_task.state == "failed" {
+        return Some(format!(
+            "条件来源任务 {} 失败，结论无法产生",
+            source_task.spec.id
+        ));
+    }
+    if source_task.state == TASK_SKIPPED {
+        return Some(format!(
+            "条件来源任务 {} 被跳过，结论无法产生",
+            source_task.spec.id
+        ));
+    }
+    None
 }
 /// 逐项任务的当前迭代：按已结束迭代数取下一项并展开产物路径；非逐项任务返回 None。
 pub fn foreach_current_step(task: &ResearchTask) -> Result<Option<(ForEachItem, String)>> {
@@ -1292,6 +1342,13 @@ pub fn validate_route_rules(tasks: &[TaskSpec]) -> Result<()> {
                 let Some(route) = task.route.as_ref() else {
                     return Err(anyhow!("分流节点 {} 缺少分流条件", task.id));
                 };
+                if !matches!(route.default_branch.as_str(), "" | ROUTE_THEN | ROUTE_ELSE) {
+                    return Err(anyhow!(
+                        "分流节点 {} 的兜底分支无效: {}",
+                        task.id,
+                        route.default_branch
+                    ));
+                }
                 match route.on.as_str() {
                     "verdict" => {
                         if route.verdict_is != "pass" && route.verdict_is != "blocked" {
@@ -3110,6 +3167,30 @@ mod tests {
                 .unwrap()
                 .name,
             "Saved evidence review"
+        );
+    }
+
+    #[test]
+    fn workflow_binding_locks_session_against_other_workflows() {
+        let (_dir, store, _) = setup();
+        store.conn.execute("INSERT INTO chat_sessions(id,project_id,harness,created_at,updated_at) VALUES('normal','project','codex',1,1)", []).unwrap();
+        let bound = saved_literature_workflow(&store);
+        store
+            .research_use_workflow("normal", &bound.id, "Compare evidence")
+            .unwrap();
+        // 换绑另一条工作流被拒：会话一旦绑定就不再更换编排。
+        let other = saved_literature_workflow(&store);
+        let error = store
+            .research_use_workflow("normal", &other.id, "Another goal")
+            .unwrap_err();
+        assert!(error.to_string().contains("已绑定工作流"));
+        // 同一工作流的目标迭代依旧放行（G1 确认后调整目标重发走这条路径）。
+        assert_eq!(
+            store
+                .research_use_workflow("normal", &bound.id, "A different goal")
+                .unwrap()
+                .1,
+            2
         );
     }
 

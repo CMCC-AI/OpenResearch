@@ -52,6 +52,7 @@ impl Store {
             .workflow_draft_by_id(draft_id)?
             .ok_or_else(|| anyhow!("工作流不存在"))?;
         crate::workflow::validate_draft(&draft.input)?;
+        let draft_id = draft.id.clone();
         let source = crate::workflow::WorkflowSource {
             id: draft.id,
             name: draft.input.name.clone(),
@@ -67,6 +68,17 @@ impl Store {
         )?;
         if let Some(study) = &existing {
             study.ensure_active()?;
+            // 绑定锁定：会话已经用过别的工作流就不再换绑；同一工作流的迭代提交
+            // （G1 范围确认后调整目标重发）保持放行，否则确认流程会被卡死。
+            if let Some(bound) = study
+                .plans
+                .last()
+                .and_then(|plan| plan.workflow_source.as_ref())
+            {
+                if bound.id != draft_id {
+                    return Err(anyhow!("该对话已绑定工作流「{}」，不能更换", bound.name));
+                }
+            }
         }
         let study = match existing {
             Some(study) => study,

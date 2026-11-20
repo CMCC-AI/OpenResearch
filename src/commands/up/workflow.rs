@@ -53,11 +53,11 @@ fn built_in_agents() -> Vec<Value> {
                 .skip(1)
                 .find(|line| !line.is_empty())
                 .unwrap_or(name);
+            // 内置角色的提示词由核心调优维护，不在 API 结果中下发；派发侧经 role_for_store 内部解析。
             json!({
                 "id": id,
                 "name": name,
                 "description": description,
-                "prompt": prompt,
                 "mcpServers": [],
                 "userSkills": [],
                 "toolPermissions": [
@@ -86,8 +86,12 @@ mod tests {
         let skill_count =
             crate::local::agent_skills::skills(crate::local::agent_skills::SkillSet::Local).len();
         assert_eq!(agents.len(), crate::local::research::ROLES.len());
-        for (agent, (_, prompt)) in agents.iter().zip(crate::local::research::ROLES) {
-            assert_eq!(agent["prompt"].as_str(), Some(*prompt));
+        for (agent, (id, _)) in agents.iter().zip(crate::local::research::ROLES) {
+            // 内置角色的提示词是核心调优内容，API 结果不得携带。
+            assert!(
+                agent.get("prompt").is_none(),
+                "内置角色 {id} 不应下发 prompt"
+            );
             assert_ne!(agent["description"], agent["name"]);
             assert_eq!(agent["skills"].as_array().map(Vec::len), Some(skill_count));
             // 内置角色不挂 MCP 服务：挂载是自定义专家的能力。
@@ -273,16 +277,6 @@ pub(super) async fn save_workflow(
     blocking_api(move || {
         let draft = Store::open()?
             .save_workflow_draft_by_id(&id, input)
-            .map_err(bad_request)?;
-        Ok(Json(json!({"draft":draft})))
-    })
-    .await
-}
-
-pub(super) async fn copy_workflow(Path(id): Path<String>) -> ApiResult {
-    blocking_api(move || {
-        let draft = Store::open()?
-            .copy_workflow_draft(&id)
             .map_err(bad_request)?;
         Ok(Json(json!({"draft":draft})))
     })

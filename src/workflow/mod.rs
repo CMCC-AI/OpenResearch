@@ -421,6 +421,7 @@ mod tests {
             on: "verdict".into(),
             source: "design/result.md".into(),
             verdict_is: "blocked".into(),
+            default_branch: String::new(),
         });
         tasks[1].depends_on = vec!["design".into()];
         tasks[2].wait_for = "any".into();
@@ -497,6 +498,7 @@ mod tests {
             on: "verdict".into(),
             source: "design/result.md".into(),
             verdict_is: "blocked".into(),
+            default_branch: String::new(),
         });
         let mut fix = summary_task("fix");
         fix.route_branch = "then".into();

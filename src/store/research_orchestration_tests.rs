@@ -301,6 +301,7 @@ fn route_plan() -> PlanInput {
             on: "verdict".into(),
             source: "design.md".into(),
             verdict_is: "blocked".into(),
+            default_branch: String::new(),
         },
     );
     let mut fixpath = branch_spec("fixpath", "as-research-synthesizer", &["brancher"], "then");
@@ -400,6 +401,7 @@ fn route_plans_fail_validation_without_two_branches_or_valid_source() {
         on: "failure".into(),
         source: String::new(),
         verdict_is: String::new(),
+        default_branch: String::new(),
     });
     assert!(validate_plan(&failure_route, "team").is_ok());
     let mut failure_with_source = failure_route.clone();
@@ -477,6 +479,7 @@ fn failed_task_routes_to_failure_fallback_branch() {
         on: "failure".into(),
         source: String::new(),
         verdict_is: String::new(),
+        default_branch: String::new(),
     });
     input.tasks[1].gate_downstream = false;
     store.research_set_plan(&study.id, input).unwrap();
@@ -501,6 +504,123 @@ fn failed_task_routes_to_failure_fallback_branch() {
     assert_eq!(saved.task("retrypath").unwrap().state, "skipped");
     assert_eq!(saved.task("fixpath").unwrap().state, "pending");
     assert!(saved.ready("fixpath").is_ok());
+}
+
+#[test]
+fn route_falls_back_to_default_branch_when_verdict_source_fails() {
+    let (_dir, store, study) = setup();
+    let mut input = route_plan();
+    input.tasks[2].route.as_mut().unwrap().default_branch = "else".into();
+    store.research_set_plan(&study.id, input).unwrap();
+    approve(&store, &study, "G1");
+    bind(&store, &study, "strategy", "s0");
+    finish(&store, &study, "strategy");
+    bind(&store, &study, "design", "s1");
+    store
+        .research_finish(&study.id, "design", false, "专家会话崩溃".into())
+        .unwrap();
+    let saved = store.research_study(&study.id).unwrap();
+    let brancher = saved.task("brancher").unwrap();
+    assert_eq!(brancher.state, "completed");
+    let decision = brancher.route_decision.as_ref().unwrap();
+    assert_eq!(decision.outcome, "fallback");
+    assert!(decision.basis.contains("design 失败"));
+    // 兜底走「不成立」：成立分支跳过，不成立分支放行。
+    assert_eq!(saved.task("fixpath").unwrap().state, "skipped");
+    assert_eq!(saved.task("retrypath").unwrap().state, "pending");
+    assert!(saved.ready("retrypath").is_ok());
+}
+
+#[test]
+fn route_fallback_can_pick_the_then_branch() {
+    let (_dir, store, study) = setup();
+    let mut input = route_plan();
+    input.tasks[2].route.as_mut().unwrap().default_branch = "then".into();
+    store.research_set_plan(&study.id, input).unwrap();
+    approve(&store, &study, "G1");
+    bind(&store, &study, "strategy", "s0");
+    finish(&store, &study, "strategy");
+    bind(&store, &study, "design", "s1");
+    store
+        .research_finish(&study.id, "design", false, "专家会话崩溃".into())
+        .unwrap();
+    let saved = store.research_study(&study.id).unwrap();
+    let decision = saved
+        .task("brancher")
+        .unwrap()
+        .route_decision
+        .as_ref()
+        .unwrap();
+    assert_eq!(decision.outcome, "fallback");
+    assert_eq!(saved.task("retrypath").unwrap().state, "skipped");
+    assert!(saved.ready("fixpath").is_ok());
+}
+
+#[test]
+fn route_falls_back_when_verdict_source_is_skipped() {
+    let (_dir, store, study) = setup();
+    let mut input = route_plan();
+    input.tasks[2].route.as_mut().unwrap().default_branch = "else".into();
+    store.research_set_plan(&study.id, input).unwrap();
+    approve(&store, &study, "G1");
+    // 来源任务被上游分流裁剪成 skipped 后，结论同样无法产生。
+    store
+        .research_update(&study.id, |s| {
+            let task = s.task_mut("design")?;
+            task.state = TASK_SKIPPED.into();
+            task.summary = Some("上游分流未走此分支，任务已跳过。".into());
+            s.resolve_routes()?;
+            Ok(())
+        })
+        .unwrap();
+    let saved = store.research_study(&study.id).unwrap();
+    let decision = saved
+        .task("brancher")
+        .unwrap()
+        .route_decision
+        .as_ref()
+        .unwrap();
+    assert_eq!(decision.outcome, "fallback");
+    assert!(decision.basis.contains("design 被跳过"));
+    assert_eq!(saved.task("fixpath").unwrap().state, "skipped");
+}
+
+#[test]
+fn route_without_fallback_keeps_waiting_when_verdict_source_fails() {
+    let (_dir, store, study) = setup();
+    // 未配置兜底分支：保持原有等待行为，不自动选边。
+    let input = route_plan();
+    store.research_set_plan(&study.id, input).unwrap();
+    approve(&store, &study, "G1");
+    bind(&store, &study, "strategy", "s0");
+    finish(&store, &study, "strategy");
+    bind(&store, &study, "design", "s1");
+    store
+        .research_finish(&study.id, "design", false, "专家会话崩溃".into())
+        .unwrap();
+    let saved = store.research_study(&study.id).unwrap();
+    assert_eq!(saved.task("brancher").unwrap().state, "pending");
+    assert_eq!(saved.task("brancher").unwrap().route_decision, None);
+    assert_eq!(saved.task("fixpath").unwrap().state, "pending");
+}
+
+#[test]
+fn route_default_branch_validates_and_serializes_stably() {
+    let mut configured = route_plan();
+    configured.tasks[2].route.as_mut().unwrap().default_branch = "then".into();
+    assert!(validate_plan(&configured, "team").is_ok());
+    let mut invalid = configured.clone();
+    invalid.tasks[2].route.as_mut().unwrap().default_branch = "both".into();
+    assert!(validate_plan(&invalid, "team").is_err());
+    // 空兜底不进入序列化：已批准计划的哈希保持不变；配置后才出现。
+    let empty = route_plan();
+    let json = serde_json::to_value(&empty.tasks[2]).unwrap();
+    assert!(json.get("route").unwrap().get("defaultBranch").is_none());
+    let json = serde_json::to_value(&configured.tasks[2]).unwrap();
+    assert_eq!(
+        json.get("route").unwrap().get("defaultBranch").unwrap(),
+        "then"
+    );
 }
 
 #[test]

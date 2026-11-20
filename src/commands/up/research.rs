@@ -90,6 +90,9 @@ pub(super) async fn deliveries(Path(project): Path<String>) -> ApiResult {
 pub(super) struct NewResearch {
     pub mode: String,
     pub objective: String,
+    /// 新会话首条消息直接绑定保存的工作流；与 study 同事务落计划并登记 G1 确认。
+    #[serde(default)]
+    pub workflow_draft_id: Option<String>,
 }
 
 pub(super) async fn session(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
