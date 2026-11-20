@@ -44,7 +44,7 @@ export interface ResearchTask {
   kind?: "agent" | "route" | "foreach" | "human" | "experiment" | "wait";
   routeBranch?: "then" | "else";
   waitFor?: "all" | "any";
-  routeDecision?: { outcome: "matched" | "unmatched"; basis: string; decidedAt: number } | null;
+  routeDecision?: { outcome: "matched" | "unmatched" | "fallback"; basis: string; decidedAt: number } | null;
   forEach?: { source: string; itemOutput: string; itemBrief: string; onFailure?: "pause" | "skip" } | null;
   waitStep?: { source: string; timeoutMinutes?: number } | null;
   /** 事件等待开始计时的时间戳。 */

@@ -365,6 +365,13 @@
 .research-case-card:hover strong { color: var(--workbench-blue); }
 .research-cases-full .research-case-grid { gap: 1.5rem; }
 .research-cases-empty { border-color: var(--workbench-border); }
+/* 能力库卡片（工作流区域）：悬浮轻抬升，与 research-case-card 同一套动效约定。 */
+.capability-card { transition: transform 150ms ease, border-color 150ms ease, box-shadow 150ms ease; }
+.capability-card:hover,
+.capability-card:focus-visible { transform: translateY(-2px); border-color: var(--border-strong); box-shadow: var(--workbench-shadow); }
+@media (prefers-reduced-motion: reduce) {
+  .capability-card, .capability-card:hover, .capability-card:focus-visible { transition: none; transform: none; }
+}
 @keyframes case-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes progress-indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
 .case-content-enter { animation: case-fade-in 180ms ease-out; }

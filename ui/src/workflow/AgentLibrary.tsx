@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import { createWorkflowAgent, deleteWorkflowAgent, updateWorkflowAgent } from "../api";
 import { Badge, Button, Input, showAlert } from "../components/ui";
+import { CapabilityTile } from "./CapabilityTile";
 import type { WorkflowAgent, WorkflowAgentInput, WorkflowAgentSkill, WorkflowLibrarySkill, McpServer } from "./model";
 
 const emptyAgent: WorkflowAgentInput = { name: "", description: "", prompt: "", mcpServers: [], userSkills: [] };
@@ -76,7 +77,7 @@ export function AgentLibrary({ agents, mcpServers = [], userSkills = [], onChang
   const [form, setForm] = useState<WorkflowAgentInput>(emptyAgent);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    setForm(selected ? { name: selected.name, description: selected.description, prompt: selected.prompt, mcpServers: selected.mcpServers ?? [], userSkills: selected.userSkills ?? [] } : emptyAgent);
+    setForm(selected ? { name: selected.name, description: selected.description, prompt: selected.prompt ?? "", mcpServers: selected.mcpServers ?? [], userSkills: selected.userSkills ?? [] } : emptyAgent);
   }, [selectedId]);
 
   async function save() {
@@ -114,7 +115,7 @@ export function AgentLibrary({ agents, mcpServers = [], userSkills = [], onChang
       <Button className="mb-3 w-full" variant="primary" onClick={() => setSelectedId(null)}><Plus size={15} />新建 Agent</Button>
       <div className="flex flex-col gap-1" aria-label="Agent 资源列表">
         {agents.map((agent) => <button key={agent.id} type="button" aria-pressed={selectedId === agent.id} onClick={() => setSelectedId(agent.id)} className={`flex min-w-0 items-center gap-2 rounded-md border px-2.5 py-2 text-start ${selectedId === agent.id ? "border-primary bg-surface" : "border-transparent hover:bg-surface"}`}>
-          <Bot size={16} className="shrink-0 text-subtext" />
+          <CapabilityTile kind="agent" name={`${agent.name} ${agent.id}`} />
           <span className="min-w-0 flex-1"><strong className="block truncate text-sm font-normal text-text">{agent.name}</strong><span className="block truncate text-xs text-subtext">{agent.id}</span></span>
           {agent.builtIn ? <Badge size="small">内置</Badge> : <Badge size="small">v{agent.version}</Badge>}
         </button>)}
@@ -122,8 +123,11 @@ export function AgentLibrary({ agents, mcpServers = [], userSkills = [], onChang
     </aside>
     <section className="min-h-0 overflow-y-auto p-5" aria-label="Agent 定义">
       {selected?.builtIn ? <div className="mx-auto flex max-w-3xl flex-col gap-4">
-        <div><h2 className="m-0 text-lg font-normal">{selected.name}</h2><p className="mb-0 mt-1 text-sm text-subtext">{selected.id}</p></div>
-        <p className="m-0 rounded-md border border-border bg-surface p-4 text-sm text-subtext">这是现有专家团的内置角色，可直接加入工作流。角色定义保持只读，确保旧专家团和历史计划继续按原规范执行。</p>
+        <div className="flex items-start gap-3">
+          <CapabilityTile kind="agent" name={`${selected.name} ${selected.id}`} size="md" />
+          <div className="min-w-0"><h2 className="m-0 text-lg font-normal">{selected.name}</h2><p className="mb-0 mt-1 text-sm text-subtext">{selected.id}</p></div>
+        </div>
+        <p className="m-0 rounded-md border border-border bg-surface p-4 text-sm text-subtext">这是现有专家团的内置角色，可直接加入工作流。角色配置保持只读；提示词由团队统一调优维护，不对外展示，确保历史计划按原规范执行。</p>
         <section className="flex flex-col gap-1.5 text-sm" aria-label="能力说明">
           <h3 className="m-0 text-sm font-normal">能力说明</h3>
           <p className="m-0 whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 leading-relaxed text-text">{selected.description || "暂无能力说明"}</p>
@@ -136,10 +140,6 @@ export function AgentLibrary({ agents, mcpServers = [], userSkills = [], onChang
           <h3 className="m-0 text-sm font-normal">内置 Skills（{selected.skills.length}）<span className="ms-2 text-xs text-subtext">悬浮查看用途说明</span></h3>
           <div className="flex flex-wrap gap-2 rounded-md border border-border bg-background p-3">{selected.skills.map((skill) => <SkillBadge key={skill.name} skill={skill} />)}</div>
         </section>}
-        <section className="flex flex-col gap-1.5 text-sm" aria-label="角色提示词">
-          <h3 className="m-0 text-sm font-normal">角色提示词</h3>
-          <pre className="m-0 whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-sans leading-relaxed text-text">{selected.prompt}</pre>
-        </section>
       </div> : <div className="mx-auto flex max-w-3xl flex-col gap-4">
         <div><h2 className="m-0 text-lg font-normal">{selected ? `编辑 ${selected.name}` : "创建自定义 Agent"}</h2><p className="mb-0 mt-1 text-sm text-subtext">自定义 Agent 可与内置专家混合编排。保存修改会递增版本，不会改写已批准任务。</p></div>
         <label className="flex flex-col gap-1.5 text-sm">名称<Input value={form.name} maxLength={120} placeholder="例如：论文统计审查员" onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>

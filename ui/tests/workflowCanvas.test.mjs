@@ -12,12 +12,12 @@ function elements(tree) { return React.isValidElement(tree) ? [tree, ...React.Ch
 function harness(startDraft = model.createLiteratureDraft(), agents = []) {
   let draft = startDraft, cursor = 0;
   const slots = [], exported = {}, writes = [];
-  const state = initial => { const index = cursor++; if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial; return [slots[index], next => { slots[index] = next; }]; };
+  const state = initial => { const index = cursor++; if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial; return [slots[index], next => { slots[index] = typeof next === "function" ? next(slots[index]) : next; }]; };
   const mocks = {
     react: { ...React, useState: state, useEffect() {}, useMemo: fn => fn(), useRef: value => state(() => ({ current: value }))[0] },
     "@xyflow/react": { ReactFlow: "Flow", Handle: "Handle", Controls: "Controls", Background: "Background", MarkerType: { ArrowClosed: "arrow" }, Position: { Top: "top", Bottom: "bottom" } },
     "./model": model, "./graph": graph, "./SystemNode": { SystemNodeCard: "SystemNode" },
-    "../components/ui": { Button: "Button" }, "../components/ui/Switch": { Switch: "Switch" },
+    "../components/ui": { Button: "Button", Tooltip: "Tooltip" }, "../components/ui/Switch": { Switch: "Switch" },
   };
   new Function("require", "exports", code)(id => id in mocks ? mocks[id] : require(id), exported);
   function render() { cursor = 0; return elements(exported.WorkflowCanvas({ draft, agents, onChange: next => { writes.push(next); draft = next; } })); }
@@ -33,6 +33,52 @@ test("system nodes and edges cannot be deleted; checkpoint edges still edit thei
   flow.onEdgesChange([{ type: "remove", id: "search-strategy->literature-discovery" }]);
   assert.deepEqual(h.draft().tasks[1].dependsOn, []);
   assert.deepEqual(h.draft().tasks[0], original[0]);
+});
+
+test("clicking a dependency edge selects it for keyboard deletion; system edges only highlight", () => {
+  const h = harness(), flow = h.flow();
+  const dependencyId = "search-strategy->literature-discovery";
+  const systemId = flow.edges.find(edge => !edge.dependency).id;
+  // 受控组件必须如实保存选中态：Delete 键靠它才知道要删哪条线。
+  flow.onEdgesChange([{ type: "select", id: dependencyId, selected: true }]);
+  assert.equal(h.flow().edges.find(edge => edge.id === dependencyId).selected, true);
+  flow.onEdgesChange([{ type: "select", id: systemId, selected: true }]);
+  assert.equal(h.flow().edges.find(edge => edge.id === systemId).selected, true);
+  // 点击别处取消选中：两条线都要回到未选中。
+  flow.onEdgesChange([{ type: "select", id: dependencyId, selected: false }, { type: "select", id: systemId, selected: false }]);
+  assert.ok(h.flow().edges.every(edge => !edge.selected));
+  // 选中依赖线后按 Delete：remove 事件删掉依赖，同时不残留幽灵选中。
+  flow.onEdgesChange([{ type: "select", id: dependencyId, selected: true }]);
+  flow.onEdgesChange([{ type: "remove", id: dependencyId }]);
+  assert.deepEqual(h.draft().tasks[1].dependsOn, []);
+  flow.onEdgesChange([{ type: "select", id: systemId, selected: true }]);
+  assert.ok(h.flow().edges.filter(edge => edge.selected).every(edge => edge.id === systemId));
+});
+
+test("right-click opens an in-canvas menu: dependency edge offers deletion, system edge explains", () => {
+  const h = harness();
+  const dependencyEdge = h.flow().edges.find(edge => edge.dependency);
+  const systemEdge = h.flow().edges.find(edge => !edge.dependency);
+  const prevented = [];
+  const fire = (edge) => h.flow().onEdgeContextMenu({ preventDefault: () => prevented.push(edge.id), clientX: 120, clientY: 90 }, edge);
+  // 右键实线：拦截浏览器默认菜单，画布内出现「删除连线」。
+  fire(dependencyEdge);
+  assert.deepEqual(prevented, [dependencyEdge.id]);
+  let menu = h.render().find(node => node.props["data-edge-menu"]);
+  assert.ok(menu, "菜单应挂在画布容器里");
+  assert.equal(menu.props.style.left, 120);
+  const item = elements(menu).find(node => node.type === "button");
+  assert.equal(item.props.children.at(-1), "删除连线");
+  item.props.onClick();
+  assert.deepEqual(h.draft().tasks[1].dependsOn, []);
+  // 删除后菜单随手收起。
+  assert.ok(!h.render().some(node => node.props["data-edge-menu"]));
+  // 右键虚线：只解释不可删，不给删除按钮。
+  fire(systemEdge);
+  menu = h.render().find(node => node.props["data-edge-menu"]);
+  assert.ok(menu && !elements(menu).some(node => node.type === "button"), "系统线不给删除按钮");
+  const hint = elements(menu).find(node => node.type === "p");
+  assert.equal(hint.props.children, "系统约束线，不可删除");
 });
 
 test("adding and cancelling a checkpoint only changes requiresApproval, while dragging persists presentation coordinates", () => {
@@ -77,6 +123,9 @@ test("a blank draft keeps the pipeline library visible while the canvas stays em
   assert.ok(text.includes("研究交付") && text.includes("G1 · 研究范围确认") && text.includes("G4 · 交付确认"));
   assert.ok(text.includes("从左侧把专家拖到画布上，加入第一个专家"));
   assert.ok(text.includes("专家任务"));
+  // 已下线的画布连线提示不再出现。
+  assert.ok(!text.includes("点选实线按 Delete 删除"));
+  assert.ok(!text.includes("约束线自动生成"));
   // 空画布上从节点库选中固定系统节点：画布无节点可高亮，属性面板仍给出静态说明。
   h.render().find(node => node.type === "button" && JSON.stringify(node.props.children).includes("研究交付")).props.onClick();
   text = labels();
@@ -141,4 +190,32 @@ test("dropping a system entry from the library places it; deleting the node remo
   h.flow().onNodesChange([{ type: "remove", id: graph.systemNodeIds.scope }]);
   assert.equal(h.writes.length, writesBefore);
   assert.equal(h.draft().tasks.length, 0);
+});
+
+test("route inspector offers a fallback branch for verdicts that can never arrive", () => {
+  const agent = { id: "agent-check", name: "Checker", description: "", prompt: "", version: 1, builtIn: false, createdAt: 1, updatedAt: 1 };
+  let draft = model.addAgentTask(model.createBlankDraft(), agent);
+  draft = { ...draft, tasks: draft.tasks.map((task) => task.id === "task-1" ? { ...task, gateDownstream: true, outputs: ["design.md"] } : task) };
+  draft = model.addRouteTask(draft);
+  const routeId = draft.tasks.at(-1).id;
+  draft = model.connectWorkflowTasks(draft, "task-1", routeId);
+  draft = { ...draft, tasks: draft.tasks.map((task) => task.id === routeId ? { ...task, route: { on: "verdict", source: "design.md", verdictIs: "pass" } } : task) };
+  const h = harness(draft, [agent]);
+  h.flow().onNodesChange([{ type: "select", id: routeId, selected: true }]);
+  const fallbackSelect = () => {
+    const label = h.render().find((node) => node.type === "label" && Array.isArray(node.props.children) && node.props.children[0] === "上游拿不到结论时走哪条");
+    assert.ok(label, "应渲染兜底分支选择");
+    return label.props.children[1];
+  };
+  // 未配置兜底：默认「停在分流节点」，序列化不落盘。
+  let select = fallbackSelect();
+  assert.equal(select.props.value, "");
+  assert.deepEqual(select.props.children.map((option) => option.props.value), ["", "then", "else"]);
+  select.props.onChange({ target: { value: "else" } });
+  assert.equal(h.draft().tasks.find((task) => task.id === routeId).route.defaultBranch, "else");
+  select = fallbackSelect();
+  assert.equal(select.props.value, "else");
+  // 改回「停在分流节点」：字段清空，不写入配置。
+  select.props.onChange({ target: { value: "" } });
+  assert.equal(h.draft().tasks.find((task) => task.id === routeId).route.defaultBranch, undefined);
 });

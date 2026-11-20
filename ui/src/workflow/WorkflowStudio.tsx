@@ -1,17 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Blocks, Bot, Copy, Plug, Save, MessagesSquare, Trash2, Workflow } from "lucide-react";
-import { copyWorkflow, createWorkflow, deleteWorkflow, getWorkflow, listMcpServers, listWorkflowAgents, listWorkflowSkills, listWorkflows, saveWorkflow } from "../api";
+import { ArrowLeft, Blocks, Bot, Plug, MessagesSquare, Trash2, Workflow } from "lucide-react";
+import { createWorkflow, deleteWorkflow, getWorkflow, listMcpServers, listWorkflowAgents, listWorkflowSkills, listWorkflows, saveWorkflow } from "../api";
 import { queryClient, workspaceKey } from "../queries/client";
 import { listProjectsQuery } from "../queries/projects";
-import { Button, Input, showAlert, Spinner } from "../components/ui";
-import { NewProjectDialog } from "../components/ProjectsHome";
+import { Button, showAlert, Spinner } from "../components/ui";
 import { AgentLibrary } from "./AgentLibrary";
 import { SkillsLibrary } from "./SkillsLibrary";
 import { McpLibrary } from "./McpLibrary";
 import { WorkflowCanvas } from "./WorkflowCanvas";
-import { WorkflowPicker } from "./WorkflowPicker";
-import { createBlankDraft, migrateDraftLayout, validateWorkflowDraft, type WorkflowDraft, type WorkflowDraftInput } from "./model";
+import { WorkflowLibrary } from "./WorkflowLibrary";
+import { createAutosave } from "./autosave";
+import { stagePendingWorkflowUse } from "./pendingUse";
+import { createBlankDraft, DEFAULT_WORKFLOW_NAME, migrateDraftLayout, validateWorkflowDraft, type WorkflowDraft, type WorkflowDraftInput } from "./model";
 import { stageWorkflowConversation } from "./conversation";
 
 function draftInput(draft: WorkflowDraft): WorkflowDraftInput {
@@ -29,26 +30,22 @@ function draftInput(draft: WorkflowDraft): WorkflowDraftInput {
   };
 }
 
-export function WorkflowStudio({ projectId, sessionId = null, onOpenSession }: { projectId?: string; sessionId?: string | null; onOpenSession: (sessionId: string, projectId: string) => void }) {
-  // 项目作用域：undefined=选择工作流，null=新建，字符串=编辑库里这条。
-  const [editingDraftId, setEditingDraftId] = useState<string | null | undefined>(undefined);
-  // 全局作用域没有选择页，编辑器内用下拉切换库里的工作流。
-  const [globalDraftId, setGlobalDraftId] = useState<string | null>(null);
-  if (projectId) {
-    if (editingDraftId === undefined) return <WorkflowPicker key={projectId} projectId={projectId} sessionId={sessionId} onEdit={(draftId) => setEditingDraftId(draftId)} onOpenSession={onOpenSession} />;
-    return <WorkflowEditor key={editingDraftId ?? "new"} projectId={projectId} sessionId={sessionId} draftId={editingDraftId} onOpenSession={onOpenSession} onBack={() => setEditingDraftId(undefined)} />;
-  }
-  return <WorkflowEditor key={globalDraftId ?? "new"} draftId={globalDraftId} onOpenSession={onOpenSession} onSwitchDraft={(draftId) => setGlobalDraftId(draftId)} onDeleted={() => setGlobalDraftId(null)} />;
+type SaveState = "idle" | "saving" | "saved" | "error";
+
+export function WorkflowStudio({ projectId, sessionId = null, onOpenSession, onOpenChats }: { projectId?: string; sessionId?: string | null; onOpenSession: (sessionId: string, projectId: string) => void; onOpenChats?: () => void }) {
+  // undefined=工作流库总览，null=新建，字符串=编辑库里这条；项目与全局共用同一个库。
+  const [draftId, setDraftId] = useState<string | null | undefined>(undefined);
+  if (draftId === undefined) return <WorkflowLibrary onEdit={(draftId) => setDraftId(draftId)} />;
+  return <WorkflowEditor key={draftId ?? "new"} projectId={projectId} sessionId={sessionId} draftId={draftId} onOpenSession={onOpenSession} onOpenChats={onOpenChats} onBack={() => setDraftId(undefined)} />;
 }
 
-function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, onOpenSession, onBack, onSwitchDraft, onDeleted }: {
+function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, onOpenSession, onOpenChats, onBack }: {
   projectId?: string;
   sessionId?: string | null;
   draftId: string | null;
   onOpenSession: (sessionId: string, projectId: string) => void;
+  onOpenChats?: () => void;
   onBack?: () => void;
-  onSwitchDraft?: (draftId: string | null) => void;
-  onDeleted?: () => void;
 }) {
   const [tab, setTab] = useState<"workflow" | "agents" | "skills" | "tools">("workflow");
   const [id, setId] = useState<string | null>(initialDraftId);
@@ -68,13 +65,19 @@ function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, 
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
-  const [switchNonce, setSwitchNonce] = useState(0);
-  const [targetProjectId, setTargetProjectId] = useState("");
-  const [creatingProject, setCreatingProject] = useState(false);
+  const [saveState, setSaveState] = useState<SaveState>("idle");
   const agents = agentsQuery.data ?? [];
   const tools = toolsQuery.data ?? [];
   const skills = skillsQuery.data ?? [];
   const projects = projectsQuery.data ?? [];
+
+  // 自动保存按最新渲染状态取值：定时器闭包里只留 ref，避免拿到旧草稿。
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+  const saveStateRef = useRef(saveState);
+  saveStateRef.current = saveState;
+  const saverRef = useRef<ReturnType<typeof createAutosave> | null>(null);
+  const persistRef = useRef<(() => Promise<WorkflowDraft>) | undefined>(undefined);
 
   useEffect(() => {
     if (hydrated || draftQuery.isPending) return;
@@ -94,52 +97,60 @@ function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, 
     setDraft(next);
     setDirty(true);
     setErrors([]);
+    ensureSaver().schedule();
   }
 
   async function persist(): Promise<WorkflowDraft> {
-    // 空白草稿不再预填模板名称，保存前先在这里拦截，避免退回库列表时把无名草稿落库。
-    if (!draft.name.trim()) throw new Error("请先填写工作流名称");
-    const saved = id ? await saveWorkflow(id, draft) : await createWorkflow(draft, projectId ?? "");
+    // 自动保存不卡命名：空名兜底为默认名；内容校验仍由「在对话中使用」提交时把关。
+    const input = draft.name.trim() ? draft : { ...draft, name: DEFAULT_WORKFLOW_NAME };
+    const saved = id ? await saveWorkflow(id, input) : await createWorkflow(input, projectId ?? "");
     setId(saved.id);
     setDraft(draftInput(saved));
     setDirty(false);
     invalidateLibrary();
     return saved;
   }
+  persistRef.current = persist;
 
-  async function save() {
-    setBusy(true);
-    try {
-      await persist();
-      showAlert("工作流已保存入库", "success");
-    } catch (error) {
-      showAlert(error instanceof Error ? error.message : String(error), "error");
-    } finally {
-      setBusy(false);
+  // 卸载会清空 saverRef（StrictMode 也会走一遍），所以按需重建而不是只在渲染期初始化。
+  function ensureSaver() {
+    if (!saverRef.current) {
+      saverRef.current = createAutosave(async () => {
+        if (!dirtyRef.current) return;
+        setSaveState("saving");
+        try {
+          await persistRef.current?.();
+          setSaveState("saved");
+        } catch {
+          setSaveState("error");
+        }
+      });
     }
+    return saverRef.current;
   }
 
-  async function copy() {
-    setBusy(true);
-    try {
-      const copied = await copyWorkflow(id as string);
-      invalidateLibrary();
-      showAlert(`已创建副本「${copied.name}」，可在工作流列表中打开`, "success");
-    } catch (error) {
-      showAlert(error instanceof Error ? error.message : String(error), "error");
-    } finally {
-      setBusy(false);
-    }
-  }
+  // 卸载或关闭页面前，把还没落盘的改动补发一次；fetch 不随组件卸载中断。
+  useEffect(() => {
+    const current = ensureSaver();
+    const onHide = () => { void current.dispose().catch(() => {}); };
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      window.removeEventListener("pagehide", onHide);
+      void current.dispose().catch(() => {});
+      saverRef.current = null;
+    };
+  }, []);
 
   async function remove() {
     if (!window.confirm(`删除工作流「${draft.name}」？已登记的研究计划不受影响。`)) return;
+    // 先停掉防抖定时器：否则删除落库后自动保存会把这条草稿重新写回来。
+    saverRef.current?.cancel();
     setBusy(true);
     try {
       await deleteWorkflow(id as string);
       invalidateLibrary();
       showAlert("工作流已删除", "success");
-      (onDeleted ?? onBack)?.();
+      onBack?.();
     } catch (error) {
       showAlert(error instanceof Error ? error.message : String(error), "error");
     } finally {
@@ -150,22 +161,15 @@ function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, 
   async function back() {
     setBusy(true);
     try {
-      if (dirty) await persist();
+      await saverRef.current?.flush();
+      if (saveStateRef.current === "error") {
+        showAlert("自动保存失败，请检查网络后重试", "error");
+        return;
+      }
       onBack?.();
-    } catch (error) {
-      showAlert(error instanceof Error ? error.message : String(error), "error");
     } finally {
       setBusy(false);
     }
-  }
-
-  function switchDraft(next: string | null) {
-    if (next === id) return;
-    if (dirty && !window.confirm("当前有未保存的修改，切换工作流将丢弃这些修改。")) {
-      setSwitchNonce((nonce) => nonce + 1);
-      return;
-    }
-    onSwitchDraft?.(next);
   }
 
   async function submit() {
@@ -174,18 +178,24 @@ function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, 
       setErrors(validation);
       return;
     }
-    const target = projectId ?? targetProjectId;
-    if (!target) {
-      showAlert("请选择使用此方法的项目，或先新建项目", "error");
-      return;
-    }
     setBusy(true);
     setErrors([]);
     try {
+      saverRef.current?.cancel();
       const saved = await persist();
-      const targetSession = projectId ? sessionId : null;
-      stageWorkflowConversation(target, targetSession, saved);
-      onOpenSession(targetSession ?? "new", target);
+      if (projectId && sessionId) {
+        // 已有会话沿用文本预填；换绑由服务端的绑定锁定规则约束。
+        stageWorkflowConversation(projectId, sessionId, saved);
+        onOpenSession(sessionId, projectId);
+      } else if (projectId) {
+        // 新会话在对话页以工作流模式开始：记待用标记，首条消息发送时绑定并锁定。
+        stagePendingWorkflowUse(saved);
+        onOpenSession("new", projectId);
+      } else {
+        // 全局工作流：还不知道用哪个项目，先记待用标记，回主对话页选择。
+        stagePendingWorkflowUse(saved);
+        onOpenChats?.();
+      }
     } catch (error) {
       showAlert(error instanceof Error ? error.message : String(error), "error");
     } finally {
@@ -195,50 +205,28 @@ function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, 
 
   return <>
     <div className="flex h-full min-h-0 flex-col bg-background">
-      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+      <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-4 py-2">
         <div className="flex items-center gap-1" role="group" aria-label="工作流资源">
-          {onBack && <Button variant="ghost" disabled={busy} onClick={() => void back()}><ArrowLeft size={15} />{dirty ? "保存并选择工作流" : "选择工作流"}</Button>}
+          {onBack && <Button variant="ghost" disabled={busy} onClick={() => void back()}><ArrowLeft size={15} />返回工作流库</Button>}
           <Button variant="ghost" active={tab === "agents"} aria-pressed={tab === "agents"} onClick={() => setTab("agents")}><Bot size={15} />Agents <span className="text-xs text-subtext">{agents.length}</span></Button>
           <Button variant="ghost" active={tab === "skills"} aria-pressed={tab === "skills"} onClick={() => setTab("skills")}><Blocks size={15} />Skills <span className="text-xs text-subtext">{skills.length}</span></Button>
           <Button variant="ghost" active={tab === "tools"} aria-pressed={tab === "tools"} onClick={() => setTab("tools")}><Plug size={15} />MCP <span className="text-xs text-subtext">{tools.length}</span></Button>
           <Button variant="ghost" active={tab === "workflow"} aria-pressed={tab === "workflow"} onClick={() => setTab("workflow")}><Workflow size={15} />工作流</Button>
         </div>
-        {tab === "workflow" && <div className="flex flex-wrap items-center gap-2">
-          {!projectId && <select key={switchNonce} aria-label="切换工作流" value={id ?? ""} disabled={busy || libraryQuery.isPending} onChange={(event) => switchDraft(event.target.value || null)} className="h-8 max-w-56 rounded-md border border-border bg-background px-2 text-sm text-text">
-            <option value="">{libraryQuery.isPending ? "正在读取工作流库…" : "＋ 新建工作流"}</option>
-            {(libraryQuery.data ?? []).map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
-          </select>}
-          {!projectId && <>
-            <select aria-label="使用工作流的项目" value={targetProjectId} disabled={busy || projectsQuery.isPending} onChange={(event) => setTargetProjectId(event.target.value)} className="h-8 max-w-56 rounded-md border border-border bg-background px-2 text-sm text-text">
-              <option value="">{projectsQuery.isPending ? "正在读取项目…" : projectsQuery.error ? "项目读取失败，可新建项目" : projects.length ? "选择使用项目" : "暂无项目，请新建"}</option>
-              {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-            </select>
-            <Button disabled={busy} onClick={() => setCreatingProject(true)}>新建项目</Button>
-          </>}
-          {id && <>
-            <Button disabled={busy} title="以已保存的版本创建一条副本" onClick={() => void copy()}><Copy size={14} />另存为副本</Button>
-            <Button disabled={busy} onClick={() => void remove()}><Trash2 size={14} />删除</Button>
-          </>}
-          <span role="status" className="text-xs text-subtext">{dirty ? "有未保存修改" : id ? "已保存入库" : "尚未保存"}</span>
-          <Button disabled={busy} onClick={() => void save()}><Save size={14} />保存草稿</Button>
-          <Button variant="primary" disabled={busy || agentsQuery.isPending} onClick={() => void submit()}>{busy ? <Spinner /> : <MessagesSquare size={14} />}在对话中使用</Button>
-        </div>}
+        {tab === "workflow" && <>
+          <input aria-label="工作流名称" value={draft.name} maxLength={200} placeholder={DEFAULT_WORKFLOW_NAME} onChange={(event) => change({ ...draft, name: event.target.value })} className="h-8 min-w-0 w-44 rounded-md border border-transparent bg-transparent px-2 text-sm font-medium text-text transition-colors hover:border-border focus:border-border focus:bg-background focus:outline-none" />
+          <div className="ms-auto flex flex-wrap items-center gap-2">
+            {id && <Button disabled={busy} onClick={() => void remove()}><Trash2 size={14} />删除</Button>}
+            <span role="status" className="text-xs text-subtext">{saveState === "saving" ? "保存中…" : saveState === "error" ? "保存失败" : saveState === "saved" ? "已自动保存" : ""}</span>
+            {saveState === "error" && <Button variant="ghost" onClick={() => void saverRef.current?.flush()}>重试</Button>}
+            <Button variant="primary" disabled={busy || agentsQuery.isPending} onClick={() => void submit()}>{busy ? <Spinner /> : <MessagesSquare size={14} />}在对话中使用</Button>
+          </div>
+        </>}
       </header>
-      {agentsQuery.isPending || toolsQuery.isPending || skillsQuery.isPending || !hydrated ? <div role="status" className="flex flex-1 items-center justify-center gap-2 text-sm text-subtext"><Spinner />正在加载工作流资源…</div> : agentsQuery.error || toolsQuery.error || skillsQuery.error || draftQuery.error ? <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-sm text-accent-red"><p>{(agentsQuery.error ?? toolsQuery.error ?? skillsQuery.error ?? draftQuery.error) instanceof Error ? String((agentsQuery.error ?? toolsQuery.error ?? skillsQuery.error ?? draftQuery.error) as Error) : "资源读取失败"}</p><Button onClick={() => { void agentsQuery.refetch(); void toolsQuery.refetch(); void skillsQuery.refetch(); void draftQuery.refetch(); void libraryQuery.refetch(); }}>重试</Button></div> : tab === "agents" ? <AgentLibrary agents={agents} mcpServers={tools} userSkills={skills.filter((skill) => skill.source === "user")} onChanged={() => agentsQuery.refetch()} /> : tab === "skills" ? <SkillsLibrary skills={skills} agents={agents} projects={projects} onChanged={() => skillsQuery.refetch()} /> : tab === "tools" ? <McpLibrary /> : <div className="flex min-h-0 flex-1 flex-col">
-        <section className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border p-4" aria-label="工作流方法">
-          <label className="flex flex-col gap-1.5 text-sm">工作流名称<Input value={draft.name} maxLength={200} placeholder="输入工作流名称" onChange={(event) => change({ ...draft, name: event.target.value })} /></label>
-          <p className="m-0 text-sm text-subtext">自由组合专家与依赖；具体目标、材料与约束在聊天中提供。</p>
-        </section>
+      {agentsQuery.isPending || toolsQuery.isPending || skillsQuery.isPending || !hydrated ? <div role="status" className="flex flex-1 items-center justify-center gap-2 text-sm text-subtext"><Spinner />正在加载工作流资源…</div> : agentsQuery.error || toolsQuery.error || skillsQuery.error || draftQuery.error ? <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-sm text-accent-red"><p>{(agentsQuery.error ?? toolsQuery.error ?? skillsQuery.error ?? draftQuery.error) instanceof Error ? String((agentsQuery.error ?? toolsQuery.error ?? skillsQuery.error ?? draftQuery.error) as Error) : "资源读取失败"}</p><Button onClick={() => { void agentsQuery.refetch(); void toolsQuery.refetch(); void skillsQuery.refetch(); void draftQuery.refetch(); void libraryQuery.refetch(); }}>重试</Button></div> : tab === "agents" ? <AgentLibrary agents={agents} mcpServers={tools} userSkills={skills.filter((skill) => skill.source === "user")} onChanged={() => agentsQuery.refetch()} /> : tab === "skills" ? <SkillsLibrary skills={skills} agents={agents} projects={projects} projectId={projectId} sessionId={sessionId} onOpenSession={onOpenSession} onOpenChats={onOpenChats} onChanged={() => skillsQuery.refetch()} /> : tab === "tools" ? <McpLibrary /> : <div className="flex min-h-0 flex-1 flex-col">
         {errors.length > 0 && <div role="alert" className="shrink-0 border-b border-accent-red bg-background px-4 py-2 text-sm text-accent-red"><strong>使用前需要处理：</strong><ul className="mb-0 mt-1 ps-5">{errors.slice(0, 8).map((error) => <li key={error}>{error}</li>)}</ul>{errors.length > 8 && <p className="mb-0 mt-1">另有 {errors.length - 8} 项问题。</p>}</div>}
         <WorkflowCanvas draft={draft} agents={agents} onChange={change} />
-        <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-2 text-xs text-subtext"><span>专家与依赖自由组合，提交后按专家团模式执行。保存方法不会调用模型。</span><span>在聊天中提出需求，AI 按流程执行；进展、确认和产物在当前对话展示。</span></footer>
       </div>}
     </div>
-    {creatingProject && <NewProjectDialog preferredAgent={null} onClose={() => setCreatingProject(false)} onCreated={(project, publicationError) => {
-      setTargetProjectId(project.id);
-      setCreatingProject(false);
-      void projectsQuery.refetch();
-      if (publicationError) showAlert(publicationError, "error");
-    }} />}
   </>;
 }

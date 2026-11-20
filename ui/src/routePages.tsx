@@ -110,10 +110,12 @@ export function ProjectsPage() {
       }
       if (generation !== getWorkspaceGeneration()) return;
       const mode = draft.workMode ?? "normal";
+      // 工作流模式在底层仍编译为专家团模式 + 绑定的工作流；没挑工作流就不开始。
+      if (mode === "workflow" && !draft.workflowDraftId) throw new Error("请先选择一条工作流，再开始研究。");
       const options = {
         ...selection,
         autonomy: state?.preferredAutonomy ?? undefined,
-        ...(mode !== "normal" ? { research: { mode, objective: draft.draft.trim() || researchModes[mode] } } : {}),
+        ...(mode !== "normal" ? { research: { mode: mode === "workflow" ? "team" : mode, objective: draft.draft.trim() || (mode === "workflow" ? "工作流研究" : researchModes[mode]), ...(draft.workflowDraftId ? { workflowDraftId: draft.workflowDraftId } : {}) } } : {}),
       };
       const direct = canStartQuestionDirectly(draft);
       const signature = JSON.stringify([project.id, draft.draft.trim(), mode]);

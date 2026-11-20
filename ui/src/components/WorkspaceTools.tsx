@@ -43,7 +43,7 @@ export function WorkspaceTools({ placement = "floating", expanded, experiments, 
   const more = usePopover(moreTrigger);
   const items = [
     ...(readOnly ? [] : [
-      { id: "workflow", label: "使用工作流", Icon: WorkflowIcon, onClick: onWorkflow },
+      { id: "workflow", label: "工作流", Icon: WorkflowIcon, onClick: onWorkflow },
     ]),
     { id: "materials", label: "研究材料", Icon: FolderOpen, onClick: onMaterials },
     { id: "files", label: m.app_files(), Icon: FolderOpen, onClick: onFiles },

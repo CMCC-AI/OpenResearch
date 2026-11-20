@@ -36,6 +36,16 @@ test("remount and refresh recover the original identity, mode, settings and regi
   assert.equal(recoveredSettings(signature).planMode, false);
 });
 
+test("the offline journal accepts the standalone workflow work mode and rejects unknown modes", async () => {
+  const { journal, row } = fixture();
+  await journal.save({ ...row, composer: { ...row.composer, workMode: "workflow" } });
+  const reloaded = await journal.read(row.scope, row.sessionId);
+  assert.equal(reloaded.composer.workMode, "workflow");
+  await journal.remove(row.scope, row.sessionId, row.id);
+  await journal.save({ ...row, composer: { ...row.composer, workMode: "bogus" } });
+  await assert.rejects(journal.read(row.scope, row.sessionId), /无效/);
+});
+
 test("account, account service, app base, runtime, project and session isolate pending records", async () => {
   const { journal, row } = fixture(); await journal.save(row);
   for (const scope of [

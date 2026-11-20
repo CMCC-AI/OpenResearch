@@ -15,13 +15,14 @@ import { ProductSidebar } from "../product/ProductNav";
 import { isDemoProjectId } from "../api";
 import { WorkModeSwitch, type WorkMode } from "./WorkModeSwitch";
 import { getResearchStudy } from "../api";
-import { researchModes, type ResearchMode } from "../research";
+import { researchModes } from "../research";
 import { researchConversationStatus } from "../researchConversationStatus";
 import { ResearchConversationStatus } from "./ResearchConversationStatus";
 import { ResearchConversation } from "./ResearchConversation";
 import { McpProposalCards } from "./McpProposalCards";
 import { ChatWorkflowChooser } from "../workflow/ChatWorkflowChooser";
-import { takeWorkflowConversation } from "../workflow/conversation";
+import { takeComposerHandoff } from "../workflow/conversation";
+import { takePendingWorkflowUse } from "../workflow/pendingUse";
 import { expertSessionContext, isSidebarSession, mainSessionId } from "../researchSessions";
 import { ExpertConversationHeader } from "./ExpertConversationHeader";
 import { readTranscriptScroll, rememberTranscriptScroll } from "../transcriptScrollMemory";
@@ -4244,6 +4245,8 @@ export function ChatPanel({
   const [unreadSessionIds, setUnreadSessionIds] = useState<ReadonlySet<string>>(new Set());
   const [draft, setDraft] = useState("");
   const [researchMode, setResearchMode] = useState<WorkMode>("normal");
+  // 新会话预选绑定的保存工作流；发送时随会话创建一起落库并锁定。
+  const [workflowDraftId, setWorkflowDraftId] = useState<string | null>(null);
   const [demoHintDismissed, setDemoHintDismissed] = useState(false);
   const [annotations, setAnnotations] = useState<ComposerAnnotation[]>([]);
   const annotationId = useRef(0);
@@ -4267,7 +4270,7 @@ export function ChatPanel({
   const homeSubmission = researchSubmissions.get(stashKey);
   const [startingHomeSubmission, setStartingHomeSubmission] = useState<string | null>(null);
   const composerLiveRef = useRef(EMPTY_COMPOSER_STASH);
-  composerLiveRef.current = { draft, attachments, annotations, workMode: researchMode };
+  composerLiveRef.current = { draft, attachments, annotations, workMode: researchMode, workflowDraftId };
   // On offer until the user has sent anything in the demo: a send either adds
   // a session or moves a recorded session's leaf off its seeded message. The
   // nudge anchors to the first scope that had it — seeding it in every scope
@@ -4292,6 +4295,7 @@ export function ChatPanel({
     composerLiveRef.current = restored;
     setDraft(restored.draft);
     setResearchMode(restored.workMode ?? "normal");
+    setWorkflowDraftId(restored.workflowDraftId ?? null);
     setAttachments(restored.attachments);
     setAnnotations(restored.annotations);
     setImageRefusedFor(null);
@@ -4303,7 +4307,7 @@ export function ChatPanel({
   }, [stashKey, composerPrefill]);
   useEffect(() => {
     if (embedded || readOnly || mainView !== "chat") return;
-    const request = takeWorkflowConversation(projectId, activeId);
+    const request = takeComposerHandoff(projectId, activeId);
     if (!request) return;
     const current = composerLiveRef.current;
     const next = current.draft.startsWith(request) ? current.draft : request + current.draft;
@@ -4313,11 +4317,23 @@ export function ChatPanel({
     setSkillMenuDismissed(false);
     window.requestAnimationFrame(() => composerRef.current?.focus());
   }, [projectId, activeId, mainView, embedded, readOnly]);
+  // 编辑器「在对话中使用」留下的待用工作流：只在新会话里预选工作流模式，
+  // 首条消息发送时随会话创建绑定并锁定；打开旧会话不会消费标记。
+  useEffect(() => {
+    if (embedded || readOnly || mainView !== "chat" || activeId !== null) return;
+    const pending = takePendingWorkflowUse();
+    if (!pending) return;
+    setResearchMode("workflow");
+    setWorkflowDraftId(pending.draftId);
+  }, [projectId, activeId, mainView, embedded, readOnly]);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const researchState = useQuery({ queryKey: workspaceKey("researchStudy", activeId), queryFn: ({ signal }) => getResearchStudy(activeId!, signal), enabled: Boolean(activeId) && !embedded, refetchInterval: (query) => ["active", "paused"].includes(query.state.data?.study?.status ?? "") ? 2500 : false });
   const expertContext = expertSessionContext(sessions.find((session) => session.id === activeId), researchState.data?.study);
   const sidebarActiveId = mainSessionId(activeId, sessions);
-  const currentWorkMode: WorkMode = activeId ? researchState.data?.study?.mode ?? "normal" : researchMode;
+  // 会话已绑定保存的工作流（最新计划的 workflow_source）：绑定后不能再换，
+  // 界面按独立的「工作流模式」展示，不再归入专家团模式。
+  const workflowBound = Boolean(researchState.data?.study?.plans.at(-1)?.workflowSource);
+  const currentWorkMode: WorkMode = activeId ? (workflowBound ? "workflow" : researchState.data?.study?.mode ?? "normal") : researchMode;
   const settingsMutationTail = useRef<Promise<void>>(Promise.resolve());
   const settingsMutationSeq = useRef(0);
   const planMutationSeq = useRef(0);
@@ -5389,6 +5405,11 @@ export function ChatPanel({
   async function send({ queue = false }: { queue?: boolean } = {}) {
     if (pendingLoading || (activeId && pendingStorageScope && hasPendingFlight(pendingKey(pendingStorageScope, activeId)))) return;
     if (activeId && stopRequests.current.has(activeId)) return;
+    // 工作流模式必须先挑一条保存的工作流：没有目标就不创建会话，输入原样保留。
+    if (!activeId && researchMode === "workflow" && !workflowDraftId) {
+      setAttachError("请先在上方选择一条工作流，再发送。");
+      return;
+    }
     // Slash tokens stay in the wire form: the server resolves every selected
     // skill and supplies this exact message as their shared request context.
     const originalText = draft.trim();
@@ -5805,9 +5826,15 @@ export function ChatPanel({
   });
 
   /** Create the session a first message (or `!` command) lands in and open it. */
-  async function openNewSession(selection: ModelSelection, planMode: boolean | undefined, objective = draft, mode: ResearchMode | "normal" = researchMode) {
+  async function openNewSession(selection: ModelSelection, planMode: boolean | undefined, objective = draft, mode: WorkMode = researchMode) {
+    // 工作流模式必须先挑一条保存的工作流；兜底拦住 /goal 等旁路入口。
+    if (mode === "workflow" && !workflowDraftId) throw new Error("请先选择一条工作流，再开始。");
     const scope = composerScopeRef.current;
     const visit = projectVisitRef.current;
+    // 工作流模式在底层仍编译为专家团模式 + 绑定的工作流，这里做身份翻译。
+    const researchOption = mode === "workflow" ? { mode: "team" as const, objective: objective.trim() || "工作流研究", workflowDraftId }
+      : mode === "normal" ? null
+        : { mode, objective: objective.trim() || researchModes[mode], workflowDraftId };
     let session = sideParentSessionId
       ? await openSideChatMutation.mutateAsync(sideParentSessionId)
       : await createChatSessionMutation.mutateAsync([projectId, selection.harness, {
@@ -5817,7 +5844,7 @@ export function ChatPanel({
       planMode,
       reasoningLevel: selection.reasoningLevel,
       autonomy: preferredAutonomy,
-      ...(mode !== "normal" ? { research: { mode, objective: objective.trim() || researchModes[mode] } } : {}),
+      ...(researchOption ? { research: researchOption } : {}),
     }]);
     if (sideParentSessionId && sideDraftAutonomy !== null && session.autonomy !== sideDraftAutonomy) {
       session = await setChatSessionAutonomyMutation.mutateAsync([session.id, sideDraftAutonomy]);
@@ -5850,6 +5877,11 @@ export function ChatPanel({
     if (activeId && stopRequests.current.has(activeId)) return;
     const command = shellCommand;
     if (!command) return;
+    // 新会话的工作流模式同样要先挑一条工作流。
+    if (!activeId && researchMode === "workflow" && !workflowDraftId) {
+      setSettingsError("请先选择一条工作流，再运行命令。");
+      return;
+    }
     setSettingsError(null);
     if (busy) {
       setSettingsError(m.chat_bash_busy());
@@ -6846,7 +6878,7 @@ export function ChatPanel({
                 {settingsError}
               </div>
             )}
-            {!embedded && !isDemoProjectId(projectId) && (!activeId || researchState.data) && <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 pt-3 pb-1"><WorkModeSwitch value={currentWorkMode} onChange={setResearchMode} readOnly={Boolean(activeId)} activeWorkflow={researchState.data?.study?.plans.at(-1)?.workflow} />
+            {!embedded && !isDemoProjectId(projectId) && (!activeId || researchState.data) && <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 pt-3 pb-1"><WorkModeSwitch value={currentWorkMode} onChange={setResearchMode} readOnly={Boolean(activeId)} activeWorkflow={researchState.data?.study?.plans.at(-1)?.workflow} workflowDraftId={workflowDraftId} onWorkflowDraftChange={setWorkflowDraftId} boundWorkflowName={researchState.data?.study?.plans.at(-1)?.workflowSource?.name ?? null} />
               {conversationStatus ? <ResearchConversationStatus status={conversationStatus} onOpen={onOpenResearch} /> : stopping && <span role="status" className="text-xs text-subtext">{m.common_stopping()}</span>}
             </div>}
             <div className={`composer-input relative flex overflow-hidden [&_textarea]:flex-1 ${bashActive ? "[&_textarea]:font-mono [&_textarea]:text-sm" : ""}`}>
@@ -6999,7 +7031,7 @@ export function ChatPanel({
             </div>
 
             <div className="composer-actions flex min-w-0 justify-end items-center gap-2 pt-1.5 px-2 pb-2">
-              {!embedded && !readOnly && !expertContext && <ChatWorkflowChooser disabled={busy} onChoose={request => { setDraft(current => request + current); setSkillMenuDismissed(false); composerRef.current?.focus(); }} />}
+              {!embedded && !readOnly && !expertContext && !workflowBound && !workflowDraftId && <ChatWorkflowChooser disabled={busy} onChoose={request => { setDraft(current => request + current); setSkillMenuDismissed(false); composerRef.current?.focus(); }} />}
               <div className="option-picker relative inline-flex shrink-0" ref={dataSources.ref}>
                 <IconButton
                   type="button"

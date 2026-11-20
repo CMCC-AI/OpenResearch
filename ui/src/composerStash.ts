@@ -18,6 +18,8 @@ export interface ComposerAnnotation extends ChatTextAnnotation {
 export interface ComposerStash {
   draft: string;
   workMode?: import("./components/WorkModeSwitch").WorkMode;
+  /** 新会话预选绑定的保存工作流；首条消息发送时随会话创建一起落库。 */
+  workflowDraftId?: string | null;
   attachments: ComposerAttachment[];
   annotations: ComposerAnnotation[];
 }
@@ -36,13 +38,22 @@ export function composerStashContent(
   prefillDraft: string | null,
 ): ComposerStash | null {
   const emptyDraft = live.draft === "" || live.draft === prefillDraft;
-  if (emptyDraft && live.attachments.length === 0 && live.annotations.length === 0) {
+  if (emptyDraft && live.attachments.length === 0 && live.annotations.length === 0 && !live.workflowDraftId) {
     return null;
   }
   return {
     ...live,
     annotations: live.annotations.map(({ range: _range, ...annotation }) => annotation),
   };
+}
+
+/** Cross-page draft seeding (e.g. an entry jumping into a conversation):
+ * prepend without duplicating an identical opening; sending stays manual. */
+export function stageComposerDraft(generation: number, key: string, text: string) {
+  const stashes = getComposerStashStore(generation);
+  const existing = stashes.get(key);
+  const draft = existing?.draft.startsWith(text) ? existing.draft : text + (existing?.draft ?? "");
+  stashes.set(key, { ...EMPTY_COMPOSER_STASH, ...existing, draft });
 }
 
 // Route navigation unmounts the chat; keep drafts in memory until the runtime identity changes.

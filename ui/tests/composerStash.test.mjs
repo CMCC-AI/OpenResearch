@@ -8,6 +8,14 @@ test("an empty composer leaves nothing behind", () => {
   assert.equal(composerStashContent(live, null), null);
 });
 
+test("workflow mode drafts keep the picked workflow, but a bare mode choice stashes nothing", () => {
+  const live = { draft: "", attachments: [], annotations: [], workMode: "workflow", workflowDraftId: "wf-1" };
+  const stashed = composerStashContent(live, null);
+  assert.equal(stashed?.workMode, "workflow");
+  assert.equal(stashed?.workflowDraftId, "wf-1");
+  assert.equal(composerStashContent({ draft: "", attachments: [], annotations: [], workMode: "workflow" }, null), null);
+});
+
 test("an untouched demo prefill leaves nothing behind", () => {
   const live = { draft: "Run the Muon matrix LR 2× probe experiment", attachments: [], annotations: [] };
   assert.equal(composerStashContent(live, live.draft), null);

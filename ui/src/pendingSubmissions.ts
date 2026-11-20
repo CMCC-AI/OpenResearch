@@ -74,7 +74,7 @@ function valid(value: unknown, scope: string, session: string): value is Pending
     || !row.wire.annotations.every(a => !!a && typeof a.text === "string")) return false;
   const composer = row.composer;
   return !!composer && typeof composer.draft === "string" && Array.isArray(composer.attachments) && Array.isArray(composer.annotations)
-    && [undefined, "normal", "literature", "reproduction", "analysis", "proposal", "team", "design", "diagnosis", "review"].includes(composer.workMode)
+    && [undefined, "normal", "workflow", "literature", "reproduction", "analysis", "proposal", "team", "design", "diagnosis", "review"].includes(composer.workMode)
     && composer.attachments.every(a => !!a && typeof a.dataUrl === "string" && typeof a.mediaType === "string" && typeof a.size === "number"
       && Number.isFinite(a.size) && a.size >= 0 && (a.file === undefined || a.file instanceof Blob))
     && composer.annotations.every(a => !!a && typeof a.id === "string" && typeof a.text === "string");

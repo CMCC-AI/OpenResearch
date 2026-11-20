@@ -37,9 +37,12 @@ const mocks = {
     showAlert: () => {},
   },
   "../components/SkillsTab": { fileToBase64: async () => "ZmFrZQ==" },
+  "./conversation": { skillConversationRequest: () => "draft", stageComposerHandoff: () => {} },
+  "../composerStash": { EMPTY_COMPOSER_STASH: { draft: "", attachments: [], annotations: [] }, stageComposerDraft: () => {} },
   "@tanstack/react-query": { useQuery: () => ({ data: servers, isPending: false, refetch() {} }) },
-  "../queries/client": { workspaceKey: (...parts) => parts, queryClient: { invalidateQueries() {} } },
+  "../queries/client": { workspaceKey: (...parts) => parts, queryClient: { invalidateQueries() {} }, getWorkspaceGeneration: () => 1 },
   "lucide-react": new Proxy({}, { get: (_, name) => (props) => React.createElement("i", { "data-icon": String(name), ...props }) }),
+  "./CapabilityTile": { CapabilityTile: (props) => React.createElement("i", { "data-tile": `${props.kind}:${props.size ?? "sm"}` }), skillCardSummary: (skill) => skill.description || (skill.source === "builtin" ? "内置技能模块" : skill.origin ? `来自 ${skill.origin} 的镜像技能` : "本地上传的技能包") },
 };
 function loadComponent(file) {
   const code = ts.transpileModule(readFileSync(new URL(file, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
@@ -80,12 +83,34 @@ test("SkillsLibrary groups builtin modules and user skills; uploads and deletes 
   // 镜像技能在列表里标注来源，上传技能标注“本地上传”。
   assert.match(html, /mirrored-skill/);
   assert.match(html, /本地上传/);
-  assert.match(html, /orx skills add/);
   // 库说明讲清生效模型：默认不生效、按处绑定、/名字 唤起。
   assert.match(html, /默认不生效/);
   assert.match(html, /\/技能名/);
+  // 全局技能库没有项目落点：不渲染对话入口，只保留文字提示。
+  assert.doesNotMatch(html, /在对话中创建/);
+  assert.match(html, /在对话里让 AI 登记技能/);
   // 未选中详情时展示库说明，不渲染删除按钮。
   assert.doesNotMatch(html, /删除/);
+});
+
+test("SkillsLibrary offers the in-conversation entry inside a project and hides it without one", () => {
+  const { SkillsLibrary } = loadComponent("../src/workflow/SkillsLibrary.tsx");
+  const skills = [{ name: "my-lab-protocol", description: null, source: "user", origin: null, bytes: 256, updatedAt: 1 }];
+  const props = { skills, agents: [], projects: [], onChanged: async () => {} };
+  // 项目工作区：入口按钮出现，说明文字指向它。
+  const inProject = renderToStaticMarkup(React.createElement(SkillsLibrary, { ...props, projectId: "proj-1", sessionId: "sess-1", onOpenSession: () => {} }));
+  assert.match(inProject, /在对话中创建/);
+  assert.match(inProject, /点「在对话中创建」/);
+  // 项目还没有会话（sessionId 为 null）时入口仍在：点击会落到科研首页的起始输入框。
+  const freshProject = renderToStaticMarkup(React.createElement(SkillsLibrary, { ...props, projectId: "proj-1", sessionId: null, onOpenSession: () => {} }));
+  assert.match(freshProject, /在对话中创建/);
+  // 全局技能库（无项目上下文）：给 onOpenChats 就有入口，去科研首页选项目再发。
+  const globalLibrary = renderToStaticMarkup(React.createElement(SkillsLibrary, { ...props, onOpenChats: () => {} }));
+  assert.match(globalLibrary, /在对话中创建/);
+  assert.match(globalLibrary, /点「在对话中创建」/);
+  // 两个跳转出口都没给时才隐藏入口。
+  const nowhere = renderToStaticMarkup(React.createElement(SkillsLibrary, props));
+  assert.doesNotMatch(nowhere, /在对话中创建/);
 });
 
 test("SkillsLibrary shows the effective scope with legacy badge, project checkboxes and bound experts", () => {

@@ -24,7 +24,8 @@ export interface WorkflowAgent {
   id: string;
   name: string;
   description: string;
-  prompt: string;
+  /** 角色提示词；内置专家的提示词由核心调优维护，后端不下发。 */
+  prompt?: string;
   /** 挂载的 MCP 服务 id；内置专家为空数组。 */
   mcpServers?: string[];
   /** 挂载的上传技能名；内置专家为空数组。派发该专家的会话自动携带这些技能。 */
@@ -102,8 +103,8 @@ export interface WorkflowTask {
   maxRework?: number;
   /** 节点类型：缺省为专家任务；"route" 条件分流；"foreach" 逐项处理；"human" 主理人亲自完成；"experiment" 实验执行；"wait" 事件等待。 */
   kind?: "agent" | "route" | "foreach" | "human" | "experiment" | "wait";
-  /** kind = "route" 时的条件定义。 */
-  route?: { on: "verdict" | "failure"; source?: string; verdictIs?: "pass" | "blocked" };
+  /** kind = "route" 时的条件定义。defaultBranch：结论拿不到时（上游失败或被跳过）的兜底分支，缺省为一直等。 */
+  route?: { on: "verdict" | "failure"; source?: string; verdictIs?: "pass" | "blocked"; defaultBranch?: "then" | "else" };
   /** 分流节点直接下游的分支标记：then（成立）/ else（不成立）。 */
   routeBranch?: "then" | "else";
   /** 多前置汇合策略：缺省等全部完成；"any" 任一完成即继续。 */
@@ -167,6 +168,13 @@ export interface WorkflowDraft extends WorkflowDraftInput {
   updatedAt: number;
 }
 
+/** 工作流挑选界面的统一搜索：名称与任务说明都参与匹配，大小写不敏感；空关键词原样返回。 */
+export function searchWorkflows(drafts: WorkflowDraft[], keyword: string): WorkflowDraft[] {
+  const query = keyword.trim().toLowerCase();
+  if (!query) return drafts;
+  return drafts.filter((draft) => draft.name.toLowerCase().includes(query) || draft.tasks.some((task) => task.brief.toLowerCase().includes(query)));
+}
+
 const literatureTasks = [
   ["as-literature-strategist", "search-strategy", "制定可复现的检索问题、数据库、关键词、时间范围、纳入排除标准与去重规则。", "strategy/search.md"],
   ["as-literature-researcher", "literature-discovery", "按检索策略执行文献发现，记录检索式、命中量、筛选过程与排除原因。", "discovery/papers.md"],
@@ -179,11 +187,14 @@ const literatureTasks = [
   ["as-research-package-curator", "research-package", "整理最终综述、证据、审查记录、失败与限制，形成成果归档清单。", "package/manifest.md"],
 ] as const;
 
+/** 自动保存下编辑器不再强制先命名：新草稿先用默认名落库，主理人随时可以改名。 */
+export const DEFAULT_WORKFLOW_NAME = "未命名工作流";
+
 export function createBlankDraft(): WorkflowDraftInput {
-  // 新建工作流从空白画布开始：名称与任务都为空，由主理人自行组合专家。
-  // 空草稿不能保存入库（名称非空由后端校验、任务非空由提交校验），只作为编辑器初始状态。
+  // 新建工作流从空白画布开始：任务为空，由主理人自行组合专家；名称先用默认名，
+  // 编辑器里的改动由自动保存落库，改名直接覆盖。
   return {
-    name: "",
+    name: DEFAULT_WORKFLOW_NAME,
     objective: "",
     summary: "",
     workflow: "custom",
@@ -492,6 +503,7 @@ export function validateWorkflowDraft(draft: WorkflowDraftInput, agents: Workflo
       } else {
         errors.push(`${label} 的条件类型无效`);
       }
+      if (route && route.defaultBranch && route.defaultBranch !== ROUTE_THEN && route.defaultBranch !== ROUTE_ELSE) errors.push(`${label} 的兜底分支无效`);
       if (task.forEach) errors.push(`${label} 是分流节点，不能配置逐项处理`);
       if (task.waitStep) errors.push(`${label} 是分流节点，不能配置事件等待`);
     } else if (task.kind === "foreach") {

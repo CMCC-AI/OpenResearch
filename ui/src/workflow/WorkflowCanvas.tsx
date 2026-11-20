@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { Background, Controls, Handle, MarkerType, NodeResizeControl, Position, ReactFlow, type Connection, type Edge, type EdgeChange, type Node, type NodeChange, type NodeProps, type ReactFlowInstance } from "@xyflow/react";
 import { Bot, CircleHelp, FileText, FlaskConical, Frame, GripVertical, Hourglass, ListOrdered, PackageCheck, Plus, RefreshCw, ShieldCheck, Split, Trash2, UserRound, X } from "lucide-react";
-import { Button } from "../components/ui";
+import { Button, Tooltip } from "../components/ui";
 import { Switch } from "../components/ui/Switch";
 import { addAgentTask, addExperimentTask, addForeachTask, addHumanTask, addRouteTask, addWaitTask, addWorkflowFrame, connectWorkflowTasks, reconnectWorkflowTasks, removeWorkflowFrame, removeWorkflowTask, updateWorkflowFrame, MAX_REWORK, ROUTE_ELSE, ROUTE_THEN, type FlowPoint, type WorkflowAgent, type WorkflowDraftInput, type WorkflowFrame, type WorkflowTask } from "./model";
 import { approvalNodeId, buildWorkflowGraph, fixedSystemData, systemNodeIds } from "./graph";
@@ -34,30 +34,60 @@ type AgentNodeData = {
 };
 type AgentNode = Node<AgentNodeData, "agent">;
 
-function AgentNodeCard({ data, selected }: NodeProps<AgentNode>) {
+// 任务节点统一外壳：六类卡片共用同一套边框、宽度、选中态与头部/页脚解剖，
+// 节点身份由图标与配色区分，正文与页脚内容由各类节点填入。
+function TaskNodeCard({ selected, icon, accent, title, taskId, onDelete, children, footer }: {
+  selected: boolean;
+  icon: ReactNode;
+  accent: string;
+  title: string;
+  taskId: string;
+  onDelete: () => void;
+  children?: ReactNode;
+  footer?: ReactNode;
+}) {
   return <div className={`group relative w-64 rounded-lg border bg-background shadow-sm transition-shadow ${selected ? "border-primary ring-2 ring-primary/20" : "border-border hover:shadow-control-subtle"}`}>
     <Handle type="target" position={Position.Top} />
     <div className="flex items-start gap-2.5 px-3 pb-1.5 pt-2.5">
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary" aria-hidden="true"><Bot size={15} /></span>
+      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${accent}`} aria-hidden="true">{icon}</span>
       <div className="min-w-0 flex-1">
-        <strong className="block truncate text-sm text-text">{data.roleName}</strong>
-        <span className="block truncate font-mono text-xs text-subtext">{data.taskId}</span>
+        <strong className="block truncate text-sm text-text">{title}</strong>
+        <span className="block truncate font-mono text-xs text-subtext">{taskId}</span>
       </div>
-      <button type="button" className="nodrag absolute end-2 top-2 hidden h-6 w-6 items-center justify-center rounded-md border border-border bg-background text-subtext hover:border-accent-red hover:text-accent-red group-hover:flex" aria-label={`删除节点 ${data.taskId}`} title="删除节点" onClick={data.onDelete}>
+      <button type="button" className="nodrag absolute end-2 top-2 hidden h-6 w-6 items-center justify-center rounded-md border border-border bg-background text-subtext hover:border-accent-red hover:text-accent-red group-hover:flex" aria-label={`删除节点 ${taskId}`} title="删除节点" onClick={onDelete}>
         <Trash2 size={12} />
       </button>
     </div>
+    {children}
+    {footer && <div className="border-t border-border px-3 py-1.5 text-xs text-subtext">{footer}</div>}
+    <Handle type="source" position={Position.Bottom} />
+  </div>;
+}
+
+// 页脚元信息行：与专家卡片同一套「产物 + 前置」解剖。
+function TaskNodeMeta({ output, dependencyCount }: { output?: ReactNode; dependencyCount: number }) {
+  return <div className="flex items-center gap-3">
+    {output && <span className="flex min-w-0 items-center gap-1">{output}</span>}
+    <span className="shrink-0">{dependencyCount ? `前置 ${dependencyCount} 项` : "无前置"}</span>
+  </div>;
+}
+
+function AgentNodeCard({ data, selected }: NodeProps<AgentNode>) {
+  return <TaskNodeCard
+    selected={selected}
+    icon={<Bot size={15} />}
+    accent="bg-primary/10 text-primary"
+    title={data.roleName}
+    taskId={data.taskId}
+    onDelete={data.onDelete}
+    footer={<TaskNodeMeta output={<><FileText size={12} aria-hidden="true" />{data.outputCount} 个产物</>} dependencyCount={data.dependencyCount} />}
+  >
     {data.brief && <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">{data.brief}</p>}
     {(data.requiresApproval || data.gateDownstream) && <div className="flex flex-wrap gap-1 px-3 pb-1.5">
       {data.requiresApproval && <span className="flex items-center gap-1 rounded bg-accent-amber-subtle px-1.5 py-0.5 text-xs text-accent-amber" title="完成后需主理人确认才放行下游"><ShieldCheck size={11} aria-hidden="true" />需主理人确认</span>}
       {data.gateDownstream && <span className="flex items-center gap-1 rounded bg-primary-subtle px-1.5 py-0.5 text-xs text-primary" title={data.maxRework > 0 ? `结论没通过时暂停下游任务，自动返工最多 ${data.maxRework} 轮` : "结论没通过时暂停下游任务"}><Split size={11} aria-hidden="true" />结论把关{data.maxRework > 0 && <span className="flex items-center gap-0.5"><RefreshCw size={10} aria-hidden="true" />≤{data.maxRework}轮</span>}</span>}
     </div>}
-    <div className="flex items-center gap-3 border-t border-border px-3 py-1.5 text-xs text-subtext">
-      <span className="flex items-center gap-1"><FileText size={12} aria-hidden="true" />{data.outputCount} 个产物</span>
-      <span>{data.dependencyCount ? `前置 ${data.dependencyCount} 项` : "无前置"}</span>
-    </div>
-    <Handle type="source" position={Position.Bottom} />
-  </div>;
+  </TaskNodeCard>;
 }
 
 // 条件分流节点：引擎在运行时判定条件并放行其中一条分支，画布上先行声明条件与两条出口。
@@ -72,25 +102,20 @@ type RouteNodeData = {
 type RouteNode = Node<RouteNodeData, "route">;
 
 function RouteNodeCard({ data, selected }: NodeProps<RouteNode>) {
-  return <div className={`group relative w-56 rounded-lg border-2 border-dashed bg-background shadow-sm transition-shadow ${selected ? "border-primary ring-2 ring-primary/20" : "border-primary/50 hover:shadow-control-subtle"}`}>
-    <Handle type="target" position={Position.Top} />
-    <div className="flex items-start gap-2.5 px-3 pb-1.5 pt-2.5">
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary" aria-hidden="true"><Split size={15} /></span>
-      <div className="min-w-0 flex-1">
-        <strong className="block truncate text-sm text-text">{data.brief || "条件分流"}</strong>
-        <span className="block truncate font-mono text-xs text-subtext">{data.taskId}</span>
-      </div>
-      <button type="button" className="nodrag absolute end-2 top-2 hidden h-6 w-6 items-center justify-center rounded-md border border-border bg-background text-subtext hover:border-accent-red hover:text-accent-red group-hover:flex" aria-label={`删除分流节点 ${data.taskId}`} title="删除分流节点" onClick={data.onDelete}>
-        <Trash2 size={12} />
-      </button>
-    </div>
-    <p className="mb-1.5 line-clamp-2 px-3 text-xs leading-4 text-subtext">{data.condition}</p>
-    <div className="flex flex-col gap-0.5 border-t border-border px-3 py-1.5 text-xs text-subtext">
+  return <TaskNodeCard
+    selected={selected}
+    icon={<Split size={15} />}
+    accent="bg-primary/10 text-primary"
+    title={data.brief || "条件分流"}
+    taskId={data.taskId}
+    onDelete={data.onDelete}
+    footer={<div className="flex flex-col gap-0.5">
       <span className="truncate">成立 → {data.thenTargets || "未连接"}</span>
       <span className="truncate">不成立 → {data.elseTargets || "未连接"}</span>
-    </div>
-    <Handle type="source" position={Position.Bottom} />
-  </div>;
+    </div>}
+  >
+    <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">{data.condition}</p>
+  </TaskNodeCard>;
 }
 
 // 阶段分组框：纯展示容器，放在其他节点下层，可拖动、可调整大小。
@@ -114,26 +139,24 @@ type ForeachNodeData = {
   taskId: string;
   brief: string;
   condition: string;
+  itemOutput: string;
+  dependencyCount: number;
   onDelete: () => void;
 };
 type ForeachNode = Node<ForeachNodeData, "foreach">;
 
 function ForeachNodeCard({ data, selected }: NodeProps<ForeachNode>) {
-  return <div className={`group relative w-56 rounded-lg border-2 border-dashed bg-background shadow-sm transition-shadow ${selected ? "border-primary ring-2 ring-primary/20" : "border-border hover:shadow-control-subtle"}`}>
-    <Handle type="target" position={Position.Top} />
-    <div className="flex items-start gap-2.5 px-3 pb-1.5 pt-2.5">
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary" aria-hidden="true"><ListOrdered size={15} /></span>
-      <div className="min-w-0 flex-1">
-        <strong className="block truncate text-sm text-text">{data.brief || "逐项处理"}</strong>
-        <span className="block truncate font-mono text-xs text-subtext">{data.taskId}</span>
-      </div>
-      <button type="button" className="nodrag absolute end-2 top-2 hidden h-6 w-6 items-center justify-center rounded-md border border-border bg-background text-subtext hover:border-accent-red hover:text-accent-red group-hover:flex" aria-label={`删除逐项任务 ${data.taskId}`} title="删除逐项任务" onClick={data.onDelete}>
-        <Trash2 size={12} />
-      </button>
-    </div>
-    <p className="mb-1.5 line-clamp-2 px-3 text-xs leading-4 text-subtext">{data.condition}</p>
-    <Handle type="source" position={Position.Bottom} />
-  </div>;
+  return <TaskNodeCard
+    selected={selected}
+    icon={<ListOrdered size={15} />}
+    accent="bg-primary/10 text-primary"
+    title={data.brief || "逐项处理"}
+    taskId={data.taskId}
+    onDelete={data.onDelete}
+    footer={<TaskNodeMeta output={<><FileText size={12} aria-hidden="true" /><span className="truncate font-mono">{data.itemOutput || "逐项产物"}</span></>} dependencyCount={data.dependencyCount} />}
+  >
+    <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">{data.condition}</p>
+  </TaskNodeCard>;
 }
 
 // 人工任务节点：主理人在研究面板亲自提交产出后流程继续。
@@ -141,53 +164,47 @@ type HumanNodeData = {
   taskId: string;
   brief: string;
   output: string;
+  dependencyCount: number;
   onDelete: () => void;
 };
 type HumanNode = Node<HumanNodeData, "human">;
 
 function HumanNodeCard({ data, selected }: NodeProps<HumanNode>) {
-  return <div className={`group relative w-56 rounded-lg border-2 border-dashed bg-background shadow-sm transition-shadow ${selected ? "border-primary ring-2 ring-primary/20" : "border-border hover:shadow-control-subtle"}`}>
-    <Handle type="target" position={Position.Top} />
-    <div className="flex items-start gap-2.5 px-3 pb-1.5 pt-2.5">
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-accent-amber-subtle text-accent-amber" aria-hidden="true"><UserRound size={15} /></span>
-      <div className="min-w-0 flex-1">
-        <strong className="block truncate text-sm text-text">{data.brief || "人工任务"}</strong>
-        <span className="block truncate font-mono text-xs text-subtext">{data.taskId}</span>
-      </div>
-      <button type="button" className="nodrag absolute end-2 top-2 hidden h-6 w-6 items-center justify-center rounded-md border border-border bg-background text-subtext hover:border-accent-red hover:text-accent-red group-hover:flex" aria-label={`删除人工任务 ${data.taskId}`} title="删除人工任务" onClick={data.onDelete}>
-        <Trash2 size={12} />
-      </button>
-    </div>
-    <p className="mb-1.5 line-clamp-2 px-3 text-xs leading-4 text-subtext">主理人亲自完成：提交「{data.output}」后流程继续</p>
-    <Handle type="source" position={Position.Bottom} />
-  </div>;
+  return <TaskNodeCard
+    selected={selected}
+    icon={<UserRound size={15} />}
+    accent="bg-accent-amber-subtle text-accent-amber"
+    title={data.brief || "人工任务"}
+    taskId={data.taskId}
+    onDelete={data.onDelete}
+    footer={<TaskNodeMeta output={<><FileText size={12} aria-hidden="true" /><span className="truncate font-mono">{data.output}</span></>} dependencyCount={data.dependencyCount} />}
+  >
+    <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">主理人亲自完成：提交后流程继续</p>
+  </TaskNodeCard>;
 }
 
 // 实验节点：G2/G3 批准后引擎按已批准契约自动提交运行，按声明产物验收。
 type ExperimentNodeData = {
   taskId: string;
   brief: string;
-  outputs: string;
+  outputCount: number;
+  dependencyCount: number;
   onDelete: () => void;
 };
 type ExperimentNode = Node<ExperimentNodeData, "experiment">;
 
 function ExperimentNodeCard({ data, selected }: NodeProps<ExperimentNode>) {
-  return <div className={`group relative w-56 rounded-lg border-2 border-dashed bg-background shadow-sm transition-shadow ${selected ? "border-primary ring-2 ring-primary/20" : "border-border hover:shadow-control-subtle"}`}>
-    <Handle type="target" position={Position.Top} />
-    <div className="flex items-start gap-2.5 px-3 pb-1.5 pt-2.5">
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-accent-green-subtle text-accent-green" aria-hidden="true"><FlaskConical size={15} /></span>
-      <div className="min-w-0 flex-1">
-        <strong className="block truncate text-sm text-text">{data.brief || "实验节点"}</strong>
-        <span className="block truncate font-mono text-xs text-subtext">{data.taskId}</span>
-      </div>
-      <button type="button" className="nodrag absolute end-2 top-2 hidden h-6 w-6 items-center justify-center rounded-md border border-border bg-background text-subtext hover:border-accent-red hover:text-accent-red group-hover:flex" aria-label={`删除实验节点 ${data.taskId}`} title="删除实验节点" onClick={data.onDelete}>
-        <Trash2 size={12} />
-      </button>
-    </div>
-    <p className="mb-1.5 line-clamp-2 px-3 text-xs leading-4 text-subtext">绑定契约并获 G2/G3 批准后自动运行，按「{data.outputs}」验收</p>
-    <Handle type="source" position={Position.Bottom} />
-  </div>;
+  return <TaskNodeCard
+    selected={selected}
+    icon={<FlaskConical size={15} />}
+    accent="bg-accent-green-subtle text-accent-green"
+    title={data.brief || "实验节点"}
+    taskId={data.taskId}
+    onDelete={data.onDelete}
+    footer={<TaskNodeMeta output={<><FileText size={12} aria-hidden="true" />{data.outputCount} 个产物</>} dependencyCount={data.dependencyCount} />}
+  >
+    <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">绑定契约并获 G2/G3 批准后自动运行，按声明产物验收</p>
+  </TaskNodeCard>;
 }
 
 // 事件等待节点：等研究目录下路径出现，超时转失败等待主理人。
@@ -195,26 +212,23 @@ type WaitNodeData = {
   taskId: string;
   brief: string;
   condition: string;
+  dependencyCount: number;
   onDelete: () => void;
 };
 type WaitNode = Node<WaitNodeData, "wait">;
 
 function WaitNodeCard({ data, selected }: NodeProps<WaitNode>) {
-  return <div className={`group relative w-56 rounded-lg border-2 border-dashed bg-background shadow-sm transition-shadow ${selected ? "border-primary ring-2 ring-primary/20" : "border-border hover:shadow-control-subtle"}`}>
-    <Handle type="target" position={Position.Top} />
-    <div className="flex items-start gap-2.5 px-3 pb-1.5 pt-2.5">
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary" aria-hidden="true"><Hourglass size={15} /></span>
-      <div className="min-w-0 flex-1">
-        <strong className="block truncate text-sm text-text">{data.brief || "事件等待"}</strong>
-        <span className="block truncate font-mono text-xs text-subtext">{data.taskId}</span>
-      </div>
-      <button type="button" className="nodrag absolute end-2 top-2 hidden h-6 w-6 items-center justify-center rounded-md border border-border bg-background text-subtext hover:border-accent-red hover:text-accent-red group-hover:flex" aria-label={`删除等待节点 ${data.taskId}`} title="删除等待节点" onClick={data.onDelete}>
-        <Trash2 size={12} />
-      </button>
-    </div>
-    <p className="mb-1.5 line-clamp-2 px-3 text-xs leading-4 text-subtext">{data.condition}</p>
-    <Handle type="source" position={Position.Bottom} />
-  </div>;
+  return <TaskNodeCard
+    selected={selected}
+    icon={<Hourglass size={15} />}
+    accent="bg-primary/10 text-primary"
+    title={data.brief || "事件等待"}
+    taskId={data.taskId}
+    onDelete={data.onDelete}
+    footer={<TaskNodeMeta dependencyCount={data.dependencyCount} />}
+  >
+    <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">{data.condition}</p>
+  </TaskNodeCard>;
 }
 
 type CanvasNode = AgentNode | SystemNode | RouteNode | FrameNode | ForeachNode | HumanNode | ExperimentNode | WaitNode;
@@ -255,7 +269,7 @@ function WorkflowHelp({ onClose }: { onClose: () => void }) {
     </div>
     <dl className="m-0 flex flex-col gap-2.5 text-subtext">
       <div><dt className="font-normal text-text">节点 = 专家任务</dt><dd className="m-0">把左侧专家拖进画布即成一个任务节点；画布上只摆你添加的专家任务，节点描述谁做什么、产出什么；开启「完成后需主理人确认」会生成任务检查点。范围确认与交付确认在提交后的聊天与运行视图展示。</dd></div>
-      <div><dt className="font-normal text-text">连线 = 先后顺序</dt><dd className="m-0">从上方专家的底部拖线到下方专家的顶部，表示「前者做完，后者才开始」。拖住实线两端的小圆点，可以把它改接到别的专家；选中实线后按 Delete 删除；虚线是系统自带的，不能改也不能删。系统环节（范围确认、交付确认、研究交付）不用手动连线：放进画布后，与任务的约束线自动生成。「需主理人确认」和「结论把关」决定下游任务什么时候开始。</dd></div>
+      <div><dt className="font-normal text-text">连线 = 先后顺序</dt><dd className="m-0">从上方专家的底部拖线到下方专家的顶部，表示「前者做完，后者才开始」。拖住实线两端的小圆点，可以把它改接到别的专家；选中实线后按 Delete 删除，或右键实线选「删除连线」；虚线是系统自带的，不能改也不能删。系统环节（范围确认、交付确认、研究交付）不用手动连线：放进画布后，与任务的约束线自动生成。「需主理人确认」和「结论把关」决定下游任务什么时候开始。</dd></div>
       <div><dt className="font-normal text-text">条件分流 = 走其中一条</dt><dd className="m-0">从节点库拖入「条件分流」，从上游连一条线进来，再向下连出两条线：第一条标「成立」，第二条标「不成立」。运行时按前置结论（通过 / 有问题）或失败情况自动选一条，另一条显示「已跳过」。</dd></div>
       <div><dt className="font-normal text-text">阶段分组 = 只帮忙看</dt><dd className="m-0">节点多时，用「阶段分组」框把节点圈成几个阶段。它只作展示，不进入执行计划。</dd></div>
       <div><dt className="font-normal text-text">产物 = 可追溯的输出</dt><dd className="m-0">每个节点声明输出文件路径；提交后专家把结果写入研究目录，供下游专家与审查引用。</dd></div>
@@ -270,9 +284,31 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
   onChange: (draft: WorkflowDraftInput) => void;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
+  // 连线选中态由受控组件自己保存：点选实线后按 Delete，React Flow 才知道要删哪些依赖线。
+  const [selectedEdges, setSelectedEdges] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [dropActive, setDropActive] = useState(false);
+  // 右键连线的小菜单：记录边 id 与画布内坐标；实线给删除项，虚线只提示不可删。
+  const [edgeMenu, setEdgeMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  // 点菜单外、按 Esc、拖动画布时收起菜单。
+  useEffect(() => {
+    if (!edgeMenu) return;
+    const close = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest("[data-edge-menu]")) return;
+      setEdgeMenu(null);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setEdgeMenu(null);
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [edgeMenu]);
   const viewportDirty = useRef(false);
   const flowRef = useRef<ReactFlowInstance<CanvasNode> | null>(null);
   // 编辑画布只呈现主理人显式添加的内容：固定链路（G1/G4/交付）留在节点库说明与运行视图，不自动铺上画布。
@@ -337,6 +373,8 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
             taskId: task.id,
             brief: task.brief,
             condition: foreachConditionText(task),
+            itemOutput: task.forEach?.itemOutput ?? "",
+            dependencyCount: task.dependsOn.length,
             onDelete: () => {
               onChange(removeWorkflowTask(draft, task.id));
               setSelected(null);
@@ -354,7 +392,8 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
           data: {
             taskId: task.id,
             brief: task.brief,
-            outputs: task.outputs.join("、"),
+            outputCount: task.outputs.length,
+            dependencyCount: task.dependsOn.length,
             onDelete: () => {
               onChange(removeWorkflowTask(draft, task.id));
               setSelected(null);
@@ -373,6 +412,7 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
             taskId: task.id,
             brief: task.brief,
             condition: waitConditionText(task),
+            dependencyCount: task.dependsOn.length,
             onDelete: () => {
               onChange(removeWorkflowTask(draft, task.id));
               setSelected(null);
@@ -391,6 +431,7 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
             taskId: task.id,
             brief: task.brief,
             output: task.outputs[0] ?? "产物",
+            dependencyCount: task.dependsOn.length,
             onDelete: () => {
               onChange(removeWorkflowTask(draft, task.id));
               setSelected(null);
@@ -426,6 +467,7 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
   ], [draft, graph, selected, agentNames, onChange]);
   const edges = useMemo<Edge[]>(() => graph.edges.map((edge) => ({
     ...edge,
+    selected: selectedEdges.has(edge.id),
     deletable: !!edge.dependency,
     // 只有任务依赖线可以拖端点改接；系统约束线保持固定。
     reconnectable: !!edge.dependency,
@@ -436,11 +478,11 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
     labelShowBg: true,
     labelBgPadding: [4, 2],
     labelBgBorderRadius: 4,
-    labelStyle: { fontSize: 11, fill: edge.branch === ROUTE_ELSE ? "var(--color-text-subtext, #6b7280)" : "var(--color-text, #111827)" },
+    labelStyle: { fontSize: 11, fill: edge.branch === ROUTE_ELSE ? "var(--color-subtext)" : "var(--color-text)" },
     style: edge.dependency
       ? (edge.branch === ROUTE_ELSE ? { strokeDasharray: "5 4" } : undefined)
       : { strokeDasharray: "5 4" },
-  })), [graph]);
+  })), [graph, selectedEdges]);
   const selectedTask = draft.tasks.find((task) => task.id === selected) ?? null;
   const selectedFrame = selected?.startsWith(FRAME_PREFIX)
     ? (draft.frames ?? []).find((frame) => frame.id === selected.slice(FRAME_PREFIX.length)) ?? null
@@ -509,10 +551,38 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
     if (next !== draft) onChange(next);
   }
 
+  // 右键连线：把浏览器默认菜单换成画布内小菜单，坐标换成画布内偏移。
+  function onEdgeContextMenu(event: ReactMouseEvent, edge: Edge) {
+    event.preventDefault();
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    setEdgeMenu({
+      id: edge.id,
+      x: bounds ? event.clientX - bounds.left : event.clientX,
+      y: bounds ? event.clientY - bounds.top : event.clientY,
+    });
+  }
+
   function onEdgesChange(changes: EdgeChange<Edge>[]) {
     let next = draft;
+    let selection: Set<string> | null = null;
     for (const change of changes) {
+      if (change.type === "select") {
+        // 选中态只在组件内累积，批次处理完再一次性写回，避免每次点击都触发额外渲染。
+        if (!selection) selection = new Set(selectedEdges);
+        if (change.selected) selection.add(change.id);
+        else selection.delete(change.id);
+        continue;
+      }
       if (change.type !== "remove") continue;
+      // 右键菜单正指向被删的线时随手收起，避免残留一条已不存在的边。
+      setEdgeMenu((current) => (current?.id === change.id ? null : current));
+      if (selection) selection.delete(change.id);
+      else setSelectedEdges((current) => {
+        if (!current.has(change.id)) return current;
+        const cleaned = new Set(current);
+        cleaned.delete(change.id);
+        return cleaned;
+      });
       const dependency = graph.edges.find((edge) => edge.id === change.id)?.dependency;
       if (!dependency) continue;
       const { source, target } = dependency;
@@ -527,6 +597,7 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
         }),
       };
     }
+    if (selection) setSelectedEdges(selection);
     if (next !== draft) onChange(next);
   }
 
@@ -674,48 +745,42 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
         <h3 className="mb-1 text-sm font-normal text-subtext">流程控制</h3>
         {[{ id: systemNodeIds.scope, title: "G1 · 研究范围确认" }, { id: systemNodeIds.delivery, title: "G4 · 交付确认" }].map(({ id, title }) => <button key={id} type="button" draggable title={`拖拽「${title}」到画布放置；点击查看说明`} onDragStart={dragSystem(id)} aria-pressed={selected === id} className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-start text-sm hover:bg-surface" onClick={() => selectSystem(id)}><ShieldCheck size={15} className="shrink-0 text-subtext" />{title}</button>)}
         <button type="button" disabled={!selectedTask || !!selectedTask.requiresApproval} title="先选择专家任务，再为它设置人工确认" className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-start text-sm hover:bg-surface disabled:opacity-50" onClick={addApproval}><ShieldCheck size={15} className="shrink-0 text-subtext" />任务后人工确认<Plus size={14} className="ms-auto shrink-0 text-subtext" /></button>
-        <div draggable title="拖拽「条件分流」到画布放置；拖入后从分流节点连出两条线：第一条标「成立」，第二条标「不成立」" onDragStart={(event) => { event.dataTransfer.setData(ROUTE_MIME, "route"); event.dataTransfer.effectAllowed = "copy"; }} className="flex cursor-grab items-start gap-2 rounded-md border border-transparent px-2 py-2 text-start hover:border-border hover:bg-surface active:cursor-grabbing">
-          <Split size={15} className="mt-0.5 shrink-0 text-subtext" aria-hidden="true" />
-          <span className="min-w-0 flex-1">
-            <strong className="block truncate text-sm font-normal text-text">条件分流</strong>
-            <span className="block truncate text-xs text-subtext">按上游结论或失败情况，走其中一条分支</span>
-          </span>
-        </div>
-        <div draggable title="拖拽「逐项处理」到画布放置" onDragStart={(event) => { event.dataTransfer.setData(FOREACH_MIME, "foreach"); event.dataTransfer.effectAllowed = "copy"; }} className="flex cursor-grab items-start gap-2 rounded-md border border-transparent px-2 py-2 text-start hover:border-border hover:bg-surface active:cursor-grabbing">
-          <ListOrdered size={15} className="mt-0.5 shrink-0 text-subtext" aria-hidden="true" />
-          <span className="min-w-0 flex-1">
-            <strong className="block truncate text-sm font-normal text-text">逐项处理</strong>
-            <span className="block truncate text-xs text-subtext">按上游清单逐项派发专家，完成后继续</span>
-          </span>
-        </div>
-        <div draggable title="拖拽「事件等待」到画布放置" onDragStart={(event) => { event.dataTransfer.setData(WAIT_MIME, "wait"); event.dataTransfer.effectAllowed = "copy"; }} className="flex cursor-grab items-start gap-2 rounded-md border border-transparent px-2 py-2 text-start hover:border-border hover:bg-surface active:cursor-grabbing">
-          <Hourglass size={15} className="mt-0.5 shrink-0 text-subtext" aria-hidden="true" />
-          <span className="min-w-0 flex-1">
-            <strong className="block truncate text-sm font-normal text-text">事件等待</strong>
-            <span className="block truncate text-xs text-subtext">等研究目录下某个文件出现，再继续</span>
-          </span>
-        </div>
+        <Tooltip content="按上游结论或失败情况走其中一条分支；连出两条线，第一条标「成立」，第二条标「不成立」" interactive className="w-full">
+          <div draggable onDragStart={(event) => { event.dataTransfer.setData(ROUTE_MIME, "route"); event.dataTransfer.effectAllowed = "copy"; }} className="flex min-h-11 w-full cursor-grab items-center gap-2 rounded-md border border-transparent px-2 text-start hover:border-border hover:bg-surface active:cursor-grabbing">
+            <Split size={15} className="shrink-0 text-subtext" aria-hidden="true" />
+            <strong className="min-w-0 flex-1 truncate text-sm font-normal text-text">条件分流</strong>
+          </div>
+        </Tooltip>
+        <Tooltip content="按上游清单逐项派发专家，全部完成后流程继续" interactive className="w-full">
+          <div draggable onDragStart={(event) => { event.dataTransfer.setData(FOREACH_MIME, "foreach"); event.dataTransfer.effectAllowed = "copy"; }} className="flex min-h-11 w-full cursor-grab items-center gap-2 rounded-md border border-transparent px-2 text-start hover:border-border hover:bg-surface active:cursor-grabbing">
+            <ListOrdered size={15} className="shrink-0 text-subtext" aria-hidden="true" />
+            <strong className="min-w-0 flex-1 truncate text-sm font-normal text-text">逐项处理</strong>
+          </div>
+        </Tooltip>
+        <Tooltip content="等研究目录下某个文件出现，再继续往下走" interactive className="w-full">
+          <div draggable onDragStart={(event) => { event.dataTransfer.setData(WAIT_MIME, "wait"); event.dataTransfer.effectAllowed = "copy"; }} className="flex min-h-11 w-full cursor-grab items-center gap-2 rounded-md border border-transparent px-2 text-start hover:border-border hover:bg-surface active:cursor-grabbing">
+            <Hourglass size={15} className="shrink-0 text-subtext" aria-hidden="true" />
+            <strong className="min-w-0 flex-1 truncate text-sm font-normal text-text">事件等待</strong>
+          </div>
+        </Tooltip>
       </section>
       <section aria-label="实验" className="mb-4">
         <h3 className="mb-1 text-sm font-normal text-subtext">实验</h3>
-        <div draggable title="拖拽「实验节点」到画布放置" onDragStart={(event) => { event.dataTransfer.setData(EXPERIMENT_MIME, "experiment"); event.dataTransfer.effectAllowed = "copy"; }} className="flex cursor-grab items-start gap-2 rounded-md border border-transparent px-2 py-2 text-start hover:border-border hover:bg-surface active:cursor-grabbing">
-          <FlaskConical size={15} className="mt-0.5 shrink-0 text-subtext" aria-hidden="true" />
-          <span className="min-w-0 flex-1">
-            <strong className="block truncate text-sm font-normal text-text">实验节点</strong>
-            <span className="block truncate text-xs text-subtext">G2/G3 批准后按已批准契约自动运行</span>
-          </span>
-        </div>
-        <p className="mx-2 my-1 text-xs leading-4 text-subtext">提交后用 orx research prepare-run 绑定运行契约；批准 G2/G3 后引擎自动运行并按声明产物验收。</p>
+        <Tooltip content="提交后用 orx research prepare-run 绑定运行契约；批准 G2/G3 后引擎自动运行并按声明产物验收" interactive className="w-full">
+          <div draggable onDragStart={(event) => { event.dataTransfer.setData(EXPERIMENT_MIME, "experiment"); event.dataTransfer.effectAllowed = "copy"; }} className="flex min-h-11 w-full cursor-grab items-center gap-2 rounded-md border border-transparent px-2 text-start hover:border-border hover:bg-surface active:cursor-grabbing">
+            <FlaskConical size={15} className="shrink-0 text-subtext" aria-hidden="true" />
+            <strong className="min-w-0 flex-1 truncate text-sm font-normal text-text">实验节点</strong>
+          </div>
+        </Tooltip>
       </section>
       <section aria-label="人工任务" className="mb-4">
         <h3 className="mb-1 text-sm font-normal text-subtext">人工任务</h3>
-        <div draggable title="拖拽「等你完成的一项」到画布放置；运行到这一步会停下来等你：在研究面板提交文字产出即可" onDragStart={(event) => { event.dataTransfer.setData(HUMAN_MIME, "human"); event.dataTransfer.effectAllowed = "copy"; }} className="flex cursor-grab items-start gap-2 rounded-md border border-transparent px-2 py-2 text-start hover:border-border hover:bg-surface active:cursor-grabbing">
-          <UserRound size={15} className="mt-0.5 shrink-0 text-subtext" aria-hidden="true" />
-          <span className="min-w-0 flex-1">
-            <strong className="block truncate text-sm font-normal text-text">等你完成的一项</strong>
-            <span className="block truncate text-xs text-subtext">主理人亲自提交产出后，流程继续</span>
-          </span>
-        </div>
+        <Tooltip content="运行到这一步会停下来等你；在研究面板亲自提交文字产出后，流程继续" interactive className="w-full">
+          <div draggable onDragStart={(event) => { event.dataTransfer.setData(HUMAN_MIME, "human"); event.dataTransfer.effectAllowed = "copy"; }} className="flex min-h-11 w-full cursor-grab items-center gap-2 rounded-md border border-transparent px-2 text-start hover:border-border hover:bg-surface active:cursor-grabbing">
+            <UserRound size={15} className="shrink-0 text-subtext" aria-hidden="true" />
+            <strong className="min-w-0 flex-1 truncate text-sm font-normal text-text">等你完成的一项</strong>
+          </div>
+        </Tooltip>
       </section>
       <section aria-label="阶段分组" className="mb-4">
         <h3 className="mb-1 text-sm font-normal text-subtext">阶段分组</h3>
@@ -724,17 +789,16 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
       <section aria-label="专家任务">
       <h3 className="mb-1 text-sm font-normal text-subtext">专家任务</h3>
       <div className="flex flex-col gap-1">
-        {agents.map((agent) => <div key={agent.id} draggable title={`拖拽「${agent.name}」到画布`} onDragStart={(event) => { event.dataTransfer.setData(AGENT_MIME, agent.id); event.dataTransfer.effectAllowed = "copy"; }} className="flex cursor-grab items-start gap-2 rounded-md border border-transparent px-2 py-2 text-start hover:border-border hover:bg-surface active:cursor-grabbing">
-          <GripVertical size={15} className="mt-0.5 shrink-0 text-subtext" aria-hidden="true" />
-          <span className="min-w-0 flex-1">
-            <strong className="block truncate text-sm font-normal text-text">{agent.name}</strong>
-            <span className="block truncate text-xs text-subtext">{agent.description || (agent.builtIn ? "内置专家" : `自定义 v${agent.version}`)}</span>
-          </span>
-        </div>)}
+        {agents.map((agent) => <Tooltip key={agent.id} content={agent.description || (agent.builtIn ? "内置专家" : `自定义 v${agent.version}`)} interactive className="w-full">
+          <div draggable onDragStart={(event) => { event.dataTransfer.setData(AGENT_MIME, agent.id); event.dataTransfer.effectAllowed = "copy"; }} className="flex min-h-11 w-full cursor-grab items-center gap-2 rounded-md border border-transparent px-2 text-start hover:border-border hover:bg-surface active:cursor-grabbing">
+            <GripVertical size={15} className="shrink-0 text-subtext" aria-hidden="true" />
+            <strong className="min-w-0 flex-1 truncate text-sm font-normal text-text">{agent.name}</strong>
+          </div>
+        </Tooltip>)}
       </div>
       </section>
     </aside>
-    <div className="workflow-canvas relative min-h-120 min-w-0 border-b border-border xl:min-h-0 xl:border-b-0" aria-label="W1 工作流编辑画布" onDragOver={onDragOverCanvas} onDragLeave={onDragLeaveCanvas} onDrop={onDropCanvas}>
+    <div ref={canvasRef} className="workflow-canvas relative min-h-120 min-w-0 border-b border-border xl:min-h-0 xl:border-b-0" aria-label="W1 工作流编辑画布" onDragOver={onDragOverCanvas} onDragLeave={onDragLeaveCanvas} onDrop={onDropCanvas}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -742,6 +806,7 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
         onInit={(flow) => { flowRef.current = flow; }}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        onEdgeContextMenu={onEdgeContextMenu}
         onConnect={connect}
         onReconnect={reconnect}
         reconnectRadius={16}
@@ -751,7 +816,7 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
         maxZoom={1.5}
         connectionRadius={30}
         deleteKeyCode={["Backspace", "Delete"]}
-        onMoveStart={(event) => { if (event) viewportDirty.current = true; }}
+        onMoveStart={(event) => { if (event) viewportDirty.current = true; setEdgeMenu(null); }}
         onMoveEnd={(_, viewport) => {
           if (!viewportDirty.current) return;
           viewportDirty.current = false;
@@ -763,8 +828,15 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
         <Controls showInteractive={false} position="bottom-right" />
       </ReactFlow>
       {dropActive && <div aria-hidden="true" className="pointer-events-none absolute inset-2 z-20 rounded-lg border-2 border-dashed border-primary/60 bg-primary/5" />}
+      {edgeMenu && (() => {
+        const dependency = graph.edges.find((edge) => edge.id === edgeMenu.id)?.dependency;
+        return <div data-edge-menu role="menu" aria-label="连线操作" className="absolute z-30 min-w-40 rounded-md border border-border bg-background p-1 text-sm shadow-control-subtle" style={{ left: edgeMenu.x, top: edgeMenu.y }}>
+          {dependency
+            ? <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-start text-accent-red hover:bg-surface" onClick={() => { onEdgesChange([{ id: edgeMenu.id, type: "remove" }]); setEdgeMenu(null); }}><Trash2 size={14} />删除连线</button>
+            : <p className="m-0 px-2 py-1.5 text-subtext">系统约束线，不可删除</p>}
+        </div>;
+      })()}
       {!draft.tasks.length && <div className="pointer-events-none absolute inset-x-3 top-14 text-center text-sm text-subtext">从左侧把专家拖到画布上，加入第一个专家。</div>}
-      <div className="pointer-events-none absolute bottom-3 start-3 max-w-[min(26rem,calc(100%-6rem))] rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-subtext shadow-sm">从专家节点边缘圆点拖线；拖实线两端圆点可改接<br />系统环节不用手动连线，约束线自动生成 · 进展在聊天中展示</div>
       <Button variant="default" size="small" className="absolute end-3 top-3" aria-expanded={helpOpen} onClick={() => setHelpOpen((open) => !open)}><CircleHelp size={14} />工作流说明</Button>
       {helpOpen && <WorkflowHelp onClose={() => setHelpOpen(false)} />}
       {error && <div role="alert" className="absolute inset-x-3 bottom-3 rounded-md border border-accent-red bg-background px-3 py-2 text-sm text-accent-red">{error}</div>}
@@ -801,6 +873,12 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
             <option value="pass">结论为「通过」</option>
             <option value="blocked">结论为「有问题」</option>
           </select></label>
+          <label className="flex flex-col gap-1.5 text-sm">上游拿不到结论时走哪条<select className="h-8 rounded-md border border-border bg-background px-2 text-sm text-text" value={selectedTask.route?.defaultBranch ?? ""} onChange={(event) => updateTask(selectedTask.id, { route: { ...selectedTask.route!, defaultBranch: (event.target.value || undefined) as "then" | "else" | undefined } })}>
+            <option value="">停在分流节点等你处理</option>
+            <option value="then">直接走「成立」分支</option>
+            <option value="else">直接走「不成立」分支</option>
+          </select></label>
+          <p className="m-0 text-xs leading-4 text-subtext">上游失败或被跳过时结论不会再产生；不选兜底流程会停在这里。选了兜底就按所选分支继续，并记录原因。</p>
         </>}
         {selectedTask.route?.on === "failure" && <p className="m-0 rounded-md border border-border bg-surface p-3 text-xs leading-5 text-subtext">任一直接前置执行失败时走「成立」分支；全部正常完成时走「不成立」分支。失败的判定只看执行结果，不看结论内容。</p>}
         <div className="flex flex-col gap-1.5 text-sm">

@@ -15,6 +15,7 @@ import { NewProjectForm } from "./NewProjectForm";
 import { Button, showAlert } from "./ui";
 import { getComposerStashStore, type ComposerStash } from "../composerStash";
 import { getWorkspaceGeneration } from "../queries/client";
+import { takePendingWorkflowUse } from "../workflow/pendingUse";
 import { useNavigate } from "@tanstack/react-router";
 import { ResearchStartPanel, ResearchCases } from "../product/ResearchStartPanel";
 
@@ -143,8 +144,17 @@ export function ProjectsHome({
   const stashKey = initialProjectId ? `${initialProjectId}:new` : "research-home";
   const [draft, setDraft] = useState(() => homeStashes.get(stashKey)?.draft ?? "");
   const [workMode, setWorkMode] = useState<NonNullable<ComposerStash["workMode"]>>(() => homeStashes.get(stashKey)?.workMode ?? "normal");
+  const [workflowDraftId, setWorkflowDraftId] = useState<string | null>(() => homeStashes.get(stashKey)?.workflowDraftId ?? null);
   const [attachments, setAttachments] = useState<ComposerStash["attachments"]>(() => homeStashes.get(stashKey)?.attachments ?? []);
-  useEffect(() => { homeStashes.set(stashKey, { draft, attachments, annotations: [], workMode }); }, [homeStashes, stashKey, draft, attachments, workMode]);
+  useEffect(() => { homeStashes.set(stashKey, { draft, attachments, annotations: [], workMode, workflowDraftId }); }, [homeStashes, stashKey, draft, attachments, workMode, workflowDraftId]);
+  // 编辑器「在对话中使用」留下的待用标记：新对话页读到后直接预选工作流模式。
+  // 新对话壳里的兜底消费在 ChatPanel，两边谁先读到谁消费。
+  useEffect(() => {
+    const pending = takePendingWorkflowUse();
+    if (!pending) return;
+    setWorkMode("workflow");
+    setWorkflowDraftId(pending.draftId);
+  }, []);
   useEffect(() => { if (initialDialogOpen) setModalOpen(true); }, [initialDialogOpen]);
   const [projectPendingDelete, setProjectPendingDelete] = useState<Project | null>(null);
   const activity = useQuery(listProjectActivityQuery());
@@ -154,7 +164,7 @@ export function ProjectsHome({
     <div className="home research-home flex-1 min-h-0 overflow-y-auto [scrollbar-gutter:stable_both-edges] bg-canvas">
       <div className="home-inner research-home-inner max-w-294 my-0 mx-auto pt-10 px-7 pb-16 [@media((max-width:_960px))]:px-5 max-sm:px-4">
         {existingProject && <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-background p-3 text-sm"><span>继续研究：{existingProject.name}</span><Button size="small" onClick={() => void navigate({ to: "/projects", search: {} })}>切换为新建项目</Button></div>}
-        <ResearchStartPanel starting={starting} preferredAgent={preferredAgent} projects={projects} activity={activity.data ?? []} project={existingProject} onSelectProject={(id) => void navigate({ to: "/projects", search: id ? { project: id } : {} })} workMode={workMode} onWorkModeChange={setWorkMode} draft={draft} onDraftChange={setDraft} attachments={attachments} onAttachmentsChange={setAttachments} onStart={() => existingProject ? onResume(existingProject, { draft, attachments, annotations: [], workMode }) : setModalOpen(true)} onError={(message) => showAlert(message, "error")} />
+        <ResearchStartPanel starting={starting} preferredAgent={preferredAgent} projects={projects} activity={activity.data ?? []} project={existingProject} onSelectProject={(id) => void navigate({ to: "/projects", search: id ? { project: id } : {} })} workMode={workMode} onWorkModeChange={setWorkMode} workflowDraftId={workflowDraftId} onWorkflowDraftChange={setWorkflowDraftId} draft={draft} onDraftChange={setDraft} attachments={attachments} onAttachmentsChange={setAttachments} onStart={() => existingProject ? onResume(existingProject, { draft, attachments, annotations: [], workMode, workflowDraftId }) : setModalOpen(true)} onError={(message) => showAlert(message, "error")} />
         <div className="research-home-sections grid grid-cols-[minmax(0,1.05fr)_minmax(0,1.8fr)] gap-8 [@media((max-width:_1200px))]:grid-cols-1">
           <section aria-labelledby="continue-research-title" className="min-w-0">
             <h2 id="continue-research-title" className="product-page-section-title mt-0 mb-5 flex items-center gap-2">继续研究<ChevronRight size={20} className="text-muted" /></h2>
@@ -180,7 +190,7 @@ export function ProjectsHome({
           onCreated={(project, githubPublicationError) => {
             setModalOpen(false);
             homeStashes.delete(stashKey);
-            onCreated(project, githubPublicationError, { draft, attachments, annotations: [], workMode });
+            onCreated(project, githubPublicationError, { draft, attachments, annotations: [], workMode, workflowDraftId });
           }}
         />
       )}

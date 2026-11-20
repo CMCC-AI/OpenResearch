@@ -18,7 +18,8 @@ test("W1 template compiles into a valid complete expert DAG; the goal is a run i
 
 test("new workflows start from a blank canvas and the first added task lands at the grid origin", () => {
   const draft = createBlankDraft();
-  assert.equal(draft.name, "");
+  // 自动保存下新草稿带默认名，可随时落库；主理人改名直接覆盖。
+  assert.equal(draft.name, "未命名工作流");
   assert.deepEqual(draft.tasks, []);
   assert.deepEqual(draft.positions, {});
   const withTask = addAgentTask(draft, { id: "agent-solo", name: "Solo analyst", description: "", prompt: "", version: 1, builtIn: false, createdAt: 1, updatedAt: 1 });
@@ -172,6 +173,17 @@ test("removing a route node clears stale branch labels on its children", () => {
   const removed = removeWorkflowTask(draft, draft.tasks.find((task) => task.kind === "route").id);
   assert.equal(removed.tasks.find((task) => task.id === "task-4").routeBranch, undefined);
   assert.equal(removed.tasks.find((task) => task.id === "task-5").routeBranch, undefined);
+});
+
+test("route fallback branch accepts then and else, rejects other values", () => {
+  const draft = routedDraft();
+  const rewrite = (defaultBranch) => ({ ...draft, tasks: draft.tasks.map((task) => task.kind === "route" ? { ...task, route: { ...task.route, defaultBranch } } : task) });
+  const withThen = rewrite("then");
+  assert.deepEqual(validateWorkflowDraft(withThen, agentsFor(withThen)), []);
+  const withElse = rewrite("else");
+  assert.deepEqual(validateWorkflowDraft(withElse, agentsFor(withElse)), []);
+  const invalid = rewrite("both");
+  assert.ok(validateWorkflowDraft(invalid, agentsFor(invalid)).some((message) => message.includes("兜底分支无效")));
 });
 
 test("join-any strategy needs at least two incoming connections", () => {

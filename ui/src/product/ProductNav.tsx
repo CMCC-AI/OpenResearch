@@ -20,7 +20,7 @@ const productLinks = [
 ];
 
 function WorkflowNavigationLink({ projectId, active }: { projectId?: string; active: boolean }) {
-  const label = projectId ? "使用工作流" : "工作流编排";
+  const label = projectId ? "工作流" : "我的工作流";
   const content = <><Workflow size={18} className="shrink-0" /><span className="research-nav-label">{label}</span></>;
   const props = { title: label, "aria-label": label, "aria-current": active ? "page" as const : undefined, className: "product-nav-item flex h-9 items-center gap-2.5 rounded-xl px-3 text-sm font-medium text-text no-underline" };
   return projectId
@@ -37,12 +37,14 @@ export function ProductWordmark({ compact = false, heading = false }: { compact?
   </Link>;
 }
 
-export function ProductSidebar({ children, connectionInfo, onCollapse, projectId }: { children?: ReactNode; connectionInfo?: ReactNode; onCollapse?: () => void; projectId?: string }) {
+export function ProductSidebar({ children, connectionInfo, onCollapse, collapsed = false, width, projectId }: { children?: ReactNode; connectionInfo?: ReactNode; onCollapse?: () => void; collapsed?: boolean; width?: number; projectId?: string }) {
   const pathname = useRouterState({ select: (state) => stripAppBase(state.location.pathname) });
   const { user, canAccessResearch } = useAuthSession();
   const [mobileOpen, setMobileOpen] = useState(false);
-  return <aside className={`product-sidebar session-rail [&_.rail-body]:ps-1 [&_.rail-body]:pe-1 flex w-70 min-h-0 shrink-0 flex-col px-3 py-4 mac-titlebar:pt-10 win-titlebar:pt-10 ${mobileOpen ? "[@media((max-width:_820px))]:absolute [@media((max-width:_820px))]:inset-y-0 [@media((max-width:_820px))]:start-0 [@media((max-width:_820px))]:z-40" : ""} ${children || mobileOpen ? "" : "[@media((max-width:_820px))]:w-16 [@media((max-width:_820px))]:px-2 [@media((max-width:_820px))]:[&_.product-brand-text]:hidden [@media((max-width:_820px))]:[&_.research-nav-label]:hidden [@media((max-width:_820px))]:[&_.research-projects]:hidden"}`}>
-    <div className={`flex shrink-0 items-center justify-between gap-1 px-2 pb-4 ${!children && !mobileOpen ? "[@media((max-width:_820px))]:flex-col [@media((max-width:_820px))]:px-0 [@media((max-width:_820px))]:gap-2" : ""}`}><ProductWordmark />{!children && <button type="button" aria-label={mobileOpen ? "收起项目导航" : "展开历史项目"} aria-expanded={mobileOpen} onClick={() => setMobileOpen((value) => !value)} className="hidden [@media((max-width:_820px))]:block"><PanelLeft size={17} /></button>}{onCollapse && <IconButton size="small" aria-label="收起导航" title="收起导航" onClick={onCollapse}><PanelLeft size={17} /></IconButton>}</div>
+  // 桌面端收缩复用窄屏图标栏的那套隐藏规则；窄屏自身的媒体查询行为保持不变。
+  const collapsedClasses = "w-16 px-2 [&_.product-brand-text]:hidden [&_.research-nav-label]:hidden [&_.research-projects]:hidden";
+  return <aside style={width !== undefined && !collapsed ? { width } : undefined} className={`product-sidebar session-rail [&_.rail-body]:ps-1 [&_.rail-body]:pe-1 flex min-h-0 shrink-0 flex-col py-4 mac-titlebar:pt-10 win-titlebar:pt-10 ${collapsed ? collapsedClasses : "w-70 px-3"} ${mobileOpen ? "[@media((max-width:_820px))]:absolute [@media((max-width:_820px))]:inset-y-0 [@media((max-width:_820px))]:start-0 [@media((max-width:_820px))]:z-40" : ""} ${children || mobileOpen || collapsed ? "" : "[@media((max-width:_820px))]:w-16 [@media((max-width:_820px))]:px-2 [@media((max-width:_820px))]:[&_.product-brand-text]:hidden [@media((max-width:_820px))]:[&_.research-nav-label]:hidden [@media((max-width:_820px))]:[&_.research-projects]:hidden"}`}>
+    <div className={`flex shrink-0 items-center justify-between gap-1 px-2 pb-4 ${!children && !mobileOpen ? "[@media((max-width:_820px))]:flex-col [@media((max-width:_820px))]:px-0 [@media((max-width:_820px))]:gap-2" : ""}`}><ProductWordmark compact={collapsed} />{!children && <button type="button" aria-label={mobileOpen ? "收起项目导航" : "展开历史项目"} aria-expanded={mobileOpen} onClick={() => setMobileOpen((value) => !value)} className="hidden [@media((max-width:_820px))]:block"><PanelLeft size={17} /></button>}{onCollapse && <IconButton size="small" aria-label={collapsed ? "展开导航" : "收起导航"} title={collapsed ? "展开导航" : "收起导航"} onClick={onCollapse}><PanelLeft size={17} /></IconButton>}</div>
     <nav aria-label="MobileSci 菜单" className="product-navigation flex shrink-0 flex-col gap-1 pb-4">
       {productLinks.filter(() => canAccessResearch).map(({ to, label, image }) => {
         const active = to === "/projects" ? pathname === to : pathname === to || pathname.startsWith(`${to}/`);
@@ -63,9 +65,59 @@ export function ProductHeader({ title, actions }: { title: ReactNode; actions?: 
   </header>;
 }
 
-export function PlatformFrame({ title, children, projectId }: { title: string; children: ReactNode; projectId?: string }) {
-  return <div className="product-frame flex h-full min-h-0 overflow-hidden">
-    <ProductSidebar projectId={projectId} />
-    <div className="flex min-w-0 flex-1 flex-col"><ProductHeader title={title} />{children}</div>
+// 侧栏宽度可拖拽调整并持久化；不带 title 的页面（如工作流编辑器）不渲染页头横幅。
+const SIDEBAR_WIDTH_KEY = "product-sidebar-width";
+const SIDEBAR_COLLAPSED_KEY = "product-sidebar-collapsed";
+const SIDEBAR_DEFAULT_WIDTH = 280;
+const SIDEBAR_MIN_WIDTH = 220;
+const SIDEBAR_MAX_WIDTH = 360;
+
+function storedSidebarWidth(): number {
+  try {
+    const parsed = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    if (Number.isFinite(parsed) && parsed > 0) return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, parsed));
+  } catch { /* 隐私模式等场景忽略 */ }
+  return SIDEBAR_DEFAULT_WIDTH;
+}
+
+export function PlatformFrame({ title, children, projectId }: { title?: string; children: ReactNode; projectId?: string }) {
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1"; } catch { return false; }
+  });
+  const [width, setWidth] = useState(storedSidebarWidth);
+  const toggleCollapse = () => setCollapsed((value) => {
+    try { localStorage.setItem(SIDEBAR_COLLAPSED_KEY, value ? "0" : "1"); } catch { /* 忽略 */ }
+    return !value;
+  });
+  // 拖侧栏右缘调宽：与工作区右栏同一套指针捕获手法，松手时持久化。
+  const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = width;
+    const prevUserSelect = document.body.style.userSelect;
+    document.body.style.userSelect = "none";
+    const rtl = document.documentElement.dir === "rtl";
+    const onMove = (moveEvent: PointerEvent) => {
+      const delta = rtl ? startX - moveEvent.clientX : moveEvent.clientX - startX;
+      setWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, startWidth + delta)));
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      document.body.style.userSelect = prevUserSelect;
+      setWidth((current) => {
+        try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(current)); } catch { /* 忽略 */ }
+        return current;
+      });
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+  };
+  return <div className="product-frame relative flex h-full min-h-0 overflow-hidden">
+    <ProductSidebar projectId={projectId} collapsed={collapsed} onCollapse={toggleCollapse} width={width} />
+    {!collapsed && <div role="separator" aria-orientation="vertical" aria-label="拖拽调整导航宽度" className="absolute top-0 bottom-0 z-30 hidden w-1.5 cursor-col-resize [&:hover]:bg-resizer-hover [&:active]:bg-resizer-hover [@media((min-width:_821px))]:block" style={{ insetInlineStart: `${width - 3}px` }} onPointerDown={startResize} />}
+    <div className="flex min-w-0 flex-1 flex-col">{title != null && <ProductHeader title={title} />}{children}</div>
   </div>;
 }

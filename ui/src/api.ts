@@ -2072,7 +2072,7 @@ export interface TurnOptions {
 export const createChatSession = (
   projectId: string,
   harness: HarnessId | undefined,
-  opts: TurnOptions & { autonomy?: Autonomy; research?: { mode: import("./research").ResearchMode; objective: string } } = {},
+  opts: TurnOptions & { autonomy?: Autonomy; research?: { mode: import("./research").ResearchMode; objective: string; workflowDraftId?: string | null } } = {},
 ) =>
   post<{ session: ChatSession }>("/api/chat/sessions", { projectId, harness, ...opts }).then(
     (r) => r.session,
@@ -2410,8 +2410,6 @@ export const createWorkflow = (input: import("./workflow/model").WorkflowDraftIn
   post<{ draft: import("./workflow/model").WorkflowDraft }>("/api/workflows", { ...input, projectId }).then((result) => result.draft);
 export const saveWorkflow = (id: string, input: import("./workflow/model").WorkflowDraftInput) =>
   put<{ draft: import("./workflow/model").WorkflowDraft }>(`/api/workflows/${encodeURIComponent(id)}`, input).then((result) => result.draft);
-export const copyWorkflow = (id: string) =>
-  post<{ draft: import("./workflow/model").WorkflowDraft }>(`/api/workflows/${encodeURIComponent(id)}/copy`, {}).then((result) => result.draft);
 export const deleteWorkflow = (id: string) =>
   writeResponse(`/api/workflows/${encodeURIComponent(id)}`, { method: "DELETE" }).then((response) => json<{ ok: boolean }>(response));
 export const submitWorkflowDraft = (sessionId: string, draftId: string, objective: string) =>
