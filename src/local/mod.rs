@@ -18,6 +18,7 @@ pub mod claude;
 pub mod codex;
 pub mod datadir;
 pub mod demo;
+pub mod draft_support;
 pub mod experiments;
 pub mod files;
 pub mod git;
@@ -52,6 +53,7 @@ pub mod ssh_identity;
 pub mod starter;
 pub mod storage;
 pub mod user_skills;
+pub mod workflow_draft;
 
 use crate::error::{anyhow, Result};
 use crate::store::{now_ms, Store, StoredRun};

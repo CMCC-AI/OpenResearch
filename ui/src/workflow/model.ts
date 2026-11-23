@@ -248,6 +248,90 @@ export function migrateDraftLayout(draft: WorkflowDraftInput): WorkflowDraftInpu
   return { ...draft, positions: gridPositions(draft.tasks), viewport: null };
 }
 
+/** AI 排流程的返回：名称加一条任务链。后端只保证结构与专家引用合法，不带画布坐标。 */
+export interface GeneratedWorkflowDraft {
+  name: string;
+  tasks: WorkflowTask[];
+}
+
+/** 同一层的任务并排展开的间距：对齐现有网格的 320 列距，节点宽 256，互不遮挡。 */
+const LAYER_PEER_GAP = 320;
+/** 层与层之间的间距：节点高度随内容变化，留出简报折叠后仍不重叠的距离。 */
+const LAYER_STEP = 300;
+/**
+ * 排版时假设的画布形状（宽 ÷ 高）。编辑器是「节点库 | 画布 | 属性栏」三栏，画布实测
+ * 约 460×670，是个竖长的区域——流程自上而下走能用上它更长的那条边。这个值只在两种
+ * 排法之间做比较用，不参与实际渲染；窗口变化时 fitView 自己会再适配。
+ */
+const CANVAS_ASPECT = 460 / 670;
+
+/** 每个任务所在的层：= 它最晚完成的前置所在层 + 1。成环等不到前置的任务兜底落回第 0 层。 */
+function dependencyRanks(tasks: WorkflowTask[]): Map<string, number> {
+  const ranks = new Map<string, number>();
+  const remaining = new Set(tasks.map((task) => task.id));
+  while (remaining.size) {
+    let advanced = false;
+    for (const task of tasks) {
+      if (!remaining.has(task.id) || task.dependsOn.some((id) => remaining.has(id))) continue;
+      ranks.set(task.id, Math.max(-1, ...task.dependsOn.filter((id) => ranks.has(id)).map((id) => ranks.get(id)!)) + 1);
+      remaining.delete(task.id);
+      advanced = true;
+    }
+    // 一份坏草稿不该把界面卡死：剩下的都在环里，直接放到起点层。
+    if (!advanced) { for (const id of remaining) ranks.set(id, 0); break; }
+  }
+  return ranks;
+}
+
+/**
+ * 按依赖分层排版：同一层的任务按声明顺序并排。方向按流程形状和画布形状一起选——
+ * 画布打开时要把整张图放进视野，能放多大取决于内容的长边落在画布的哪条边上。
+ * 所以分别算「流程横着走」和「流程竖着走」各能得到的缩放，取大的那个。
+ */
+export function layeredPositions(tasks: WorkflowTask[]): Record<string, FlowPoint> {
+  const ranks = dependencyRanks(tasks);
+  const widthOf = new Map<number, number>();
+  let layerCount = 0;
+  for (const rank of ranks.values()) {
+    widthOf.set(rank, (widthOf.get(rank) ?? 0) + 1);
+    layerCount = Math.max(layerCount, rank + 1);
+  }
+  const widest = Math.max(0, ...widthOf.values());
+  // 内容在「流程方向」与「并排方向」上各占多长。
+  const along = layerCount * LAYER_STEP;
+  const across = widest * LAYER_PEER_GAP;
+  // 画布按上面的比例归一成「宽 = CANVAS_ASPECT、高 = 1」；放进视野的缩放是两个方向里更紧的那个。
+  const fitZoom = (wide: number, tall: number) => Math.min(CANVAS_ASPECT / wide, 1 / tall);
+  // 横排：流程方向占画布的宽边。竖排：流程方向占画布的高边。
+  const horizontal = fitZoom(along, across) >= fitZoom(across, along);
+  const seen = new Map<number, number>();
+  return Object.fromEntries(tasks.map((task) => {
+    const rank = ranks.get(task.id) ?? 0;
+    const peer = seen.get(rank) ?? 0;
+    seen.set(rank, peer + 1);
+    const flow = rank * LAYER_STEP;
+    const side = peer * LAYER_PEER_GAP;
+    return [task.id, horizontal ? { x: flow, y: side } : { x: side, y: flow }];
+  }));
+}
+
+/**
+ * AI 生成的任务链 → 可直接进编辑器的完整草稿。坐标按依赖分层补齐；名称用模型给的，
+ * 空则落回默认名；目标与摘要是提交运行时才收集的内容，这里保持为空。
+ */
+export function generatedToDraftInput(generated: GeneratedWorkflowDraft): WorkflowDraftInput {
+  return {
+    name: generated.name.trim() || DEFAULT_WORKFLOW_NAME,
+    objective: "",
+    summary: "",
+    workflow: "custom",
+    tasks: generated.tasks,
+    positions: layeredPositions(generated.tasks),
+    viewport: null,
+    frames: [],
+  };
+}
+
 export function addAgentTask(draft: WorkflowDraftInput, agent: WorkflowAgent, position?: FlowPoint): WorkflowDraftInput {
   let index = draft.tasks.length + 1;
   while (draft.tasks.some((task) => task.id === `task-${index}`)) index++;

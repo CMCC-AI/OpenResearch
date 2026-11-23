@@ -40,19 +40,7 @@ fn built_in_agents() -> Vec<Value> {
     crate::local::research::ROLES
         .iter()
         .map(|(id, prompt)| {
-            let name = prompt
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .unwrap_or(id)
-                .trim_start_matches('#')
-                .trim();
-            let description = prompt
-                .lines()
-                .map(str::trim)
-                .skip(1)
-                .find(|line| !line.is_empty())
-                .unwrap_or(name);
+            let (name, description) = crate::local::research::role_brief(id, prompt);
             // 内置角色的提示词由核心调优维护，不在 API 结果中下发；派发侧经 role_for_store 内部解析。
             json!({
                 "id": id,
@@ -176,6 +164,58 @@ pub(super) async fn delete_agent(Path(id): Path<String>) -> ApiResult {
         Ok(Json(json!({"ok":true})))
     })
     .await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DraftGenerationRequest {
+    pub intent: String,
+    #[serde(default)]
+    pub locale: String,
+}
+
+/// 一句话生成整张工作流草稿：同样一次 headless 模型调用；产出只含 agent 任务，
+/// 已消毒为可通过结构校验的 DAG，坐标由前端按依赖分层补齐。
+pub(super) async fn generate_workflow_draft(Json(req): Json<DraftGenerationRequest>) -> ApiResult {
+    let (intent, locale) = draft_intent(req)?;
+    let agents =
+        tokio::task::spawn_blocking(
+            move || local::workflow_draft::agent_inventory(&Store::open()?),
+        )
+        .await
+        .map_err(|e| ApiError::from(anyhow!("workflow draft task failed: {e}")))?
+        .map_err(ApiError::from)?;
+    let draft = local::workflow_draft::generate(&intent, &locale, &agents)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(json!({
+        "draft": {
+            "name": draft.name,
+            "objective": "",
+            "summary": "",
+            "workflow": "custom",
+            "tasks": draft.tasks,
+        }
+    })))
+}
+
+fn draft_intent(req: DraftGenerationRequest) -> std::result::Result<(String, String), ApiError> {
+    let intent = req.intent.trim().to_string();
+    if intent.is_empty() {
+        return Err(bad_request("请先用一句话描述要生成的内容"));
+    }
+    if intent.chars().count() > local::draft_support::INTENT_CHARS {
+        return Err(bad_request(format!(
+            "描述请控制在 {} 字以内",
+            local::draft_support::INTENT_CHARS
+        )));
+    }
+    let locale = if req.locale.trim().is_empty() {
+        "en".to_string()
+    } else {
+        req.locale.trim().to_string()
+    };
+    Ok((intent, locale))
 }
 
 /// 能力中心的技能视图：内置 orx-* 模块与用户技能（上传 + 镜像）合并成一份只读列表，

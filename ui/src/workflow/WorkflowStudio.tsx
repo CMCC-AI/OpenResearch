@@ -35,14 +35,24 @@ type SaveState = "idle" | "saving" | "saved" | "error";
 export function WorkflowStudio({ projectId, sessionId = null, onOpenSession, onOpenChats }: { projectId?: string; sessionId?: string | null; onOpenSession: (sessionId: string, projectId: string) => void; onOpenChats?: () => void }) {
   // undefined=工作流库总览，null=新建，字符串=编辑库里这条；项目与全局共用同一个库。
   const [draftId, setDraftId] = useState<string | null | undefined>(undefined);
-  if (draftId === undefined) return <WorkflowLibrary onEdit={(draftId) => setDraftId(draftId)} />;
-  return <WorkflowEditor key={draftId ?? "new"} projectId={projectId} sessionId={sessionId} draftId={draftId} onOpenSession={onOpenSession} onOpenChats={onOpenChats} onBack={() => setDraftId(undefined)} />;
+  // AI 排流程的生成稿：带着它进编辑器当起点。库页在进入编辑器时卸载，
+  // 所以种子挂在这里而不是库组件上。
+  const [seed, setSeed] = useState<WorkflowDraftInput | null>(null);
+  // 每次生成都递增：新建态的 draftId 恒为 null，靠它让「再生成一次」也能重挂载编辑器。
+  const [seedVersion, setSeedVersion] = useState(0);
+  if (draftId === undefined) return <WorkflowLibrary
+    onEdit={(draftId) => { setSeed(null); setDraftId(draftId); }}
+    onGeneratedDraft={(draft) => { setSeed(draft); setSeedVersion((version) => version + 1); setDraftId(null); }}
+  />;
+  return <WorkflowEditor key={draftId ?? `new-${seedVersion}`} projectId={projectId} sessionId={sessionId} draftId={draftId} seed={seed} onOpenSession={onOpenSession} onOpenChats={onOpenChats} onBack={() => setDraftId(undefined)} />;
 }
 
-function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, onOpenSession, onOpenChats, onBack }: {
+function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, seed = null, onOpenSession, onOpenChats, onBack }: {
   projectId?: string;
   sessionId?: string | null;
   draftId: string | null;
+  /** 进编辑器时的起点草稿（AI 生成稿）；没有则从空白画布开始。 */
+  seed?: WorkflowDraftInput | null;
   onOpenSession: (sessionId: string, projectId: string) => void;
   onOpenChats?: () => void;
   onBack?: () => void;
@@ -60,7 +70,8 @@ function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, 
   const libraryQuery = useQuery({ queryKey: workspaceKey("workflowList"), queryFn: ({ signal }) => listWorkflows(signal) });
   // 项目列表常开：技能生效范围的绑定勾选在项目工作区内也要可用。
   const projectsQuery = useQuery({ ...listProjectsQuery() });
-  const [draft, setDraft] = useState<WorkflowDraftInput>(createBlankDraft);
+  // AI 生成稿自带分层坐标，直接当起点；它和空白画布一样要等用户动过才落库。
+  const [draft, setDraft] = useState<WorkflowDraftInput>(() => seed ?? createBlankDraft());
   const [hydrated, setHydrated] = useState(id === null);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);

@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import React from "react";
 import ts from "typescript";
-import { createLiteratureDraft, searchWorkflows } from "../src/workflow/model.ts";
+import { createLiteratureDraft, generatedToDraftInput, layeredPositions, searchWorkflows } from "../src/workflow/model.ts";
 const require = createRequire(import.meta.url);
 const code = ts.transpileModule(readFileSync(new URL("../src/workflow/WorkflowLibrary.tsx", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 const searchBoxExports = {};
@@ -21,25 +21,29 @@ function nodes(tree) {
   if (typeof tree.type === "function") return nodes(tree.type(tree.props));
   return [tree, ...React.Children.toArray(tree.props.children).flatMap(nodes)];
 }
-function harness({ choices = library, error = null, confirmAnswer = true } = {}) {
+function harness({ choices = library, error = null, confirmAnswer = true, generated = null } = {}) {
   let cursor = 0;
   const slots = [], calls = [], exported = {};
-  const state = initial => { const index = cursor++; if (!(index in slots)) slots[index] = initial; return [slots[index], next => { slots[index] = next; }]; };
+  // 与 React 一致：setter 既接受值也接受函数式更新。
+  const state = initial => { const index = cursor++; if (!(index in slots)) slots[index] = initial; return [slots[index], next => { slots[index] = typeof next === "function" ? next(slots[index]) : next; }]; };
   new Function("require", "exports", code)(name => {
     if (name === "react") return { ...React, useState: state };
+    if (name === "lucide-react") return new Proxy({}, { get: (_, icon) => (props) => React.createElement("i", { "data-icon": String(icon), ...props }) });
+    if (name === "../locale") return { useLocale: () => "zh-CN" };
     if (name === "./CapabilityTile") return { CapabilityTile: "CapabilityTile" };
     if (name === "./WorkflowSearch") return searchBoxExports;
-    if (name === "./model") return { searchWorkflows };
+    if (name === "./model") return { searchWorkflows, generatedToDraftInput };
     if (name === "@tanstack/react-query") return { useQuery: () => ({ data: choices, isPending: false, error, refetch() {} }) };
     if (name === "../queries/client") return { workspaceKey: (...parts) => parts.join(":"), queryClient: { invalidateQueries() {} } };
     if (name === "../components/ui") return { Button: "Button", IconButton: "IconButton", Spinner: "Spinner", showAlert: (...args) => calls.push(["alert", ...args]) };
     if (name === "../api") return {
       timeAgo: () => "刚刚",
       deleteWorkflow: async (id) => { calls.push(["delete", id]); return { ok: true }; },
+      generateWorkflowDraft: async (body) => { calls.push(["generate", body]); if (generated instanceof Error) throw generated; return generated; },
     };
     return require(name);
   }, exported);
-  const render = () => { cursor = 0; return nodes(exported.WorkflowLibrary({ onEdit: (...args) => calls.push(["edit", ...args]) })); };
+  const render = () => { cursor = 0; return nodes(exported.WorkflowLibrary({ onEdit: (...args) => calls.push(["edit", ...args]), onGeneratedDraft: (...args) => calls.push(["generated", ...args]) })); };
   return { render, calls };
 }
 const cardButtons = tree => tree.filter(node => node.type === "button" && React.Children.toArray(node.props.children).some(child => child?.type === "strong"));
@@ -94,4 +98,146 @@ test("empty and failed libraries show guidance without cards", () => {
   const failed = harness({ error: new Error("offline") }).render();
   assert.ok(failed.some(node => node.props.role === "alert"));
   assert.equal(failed.filter(node => node.type === "IconButton").length, 0);
+});
+
+// ---- AI 排流程：纯函数 ----
+
+const chain = (...ids) => ids.map((id, index) => ({ id, role: "as-research-synthesizer", brief: "b", dependsOn: index ? [ids[index - 1]] : [], outputs: [`${id}/result.md`] }));
+
+// 排布方向的判据：有依赖关系的上下游之间，坐标沿哪个轴推进。x 变化多=流程横着走。
+function flowAxis(tasks) {
+  const positions = layeredPositions(tasks);
+  let alongX = 0, alongY = 0;
+  for (const task of tasks) for (const dep of task.dependsOn) {
+    if (!positions[dep]) continue;
+    if (positions[task.id].x !== positions[dep].x) alongX++;
+    if (positions[task.id].y !== positions[dep].y) alongY++;
+  }
+  return alongX > alongY ? "x" : alongY > alongX ? "y" : "none";
+}
+
+test("layeredPositions runs a chain top-down: each layer one step below the last", () => {
+  // 编辑器的画布是竖长的（约 460×670），流程自上而下走能用上它更长的那条边。
+  const positions = layeredPositions(chain("t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8"));
+  assert.equal(flowAxis(chain("t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8")), "y");
+  assert.deepEqual(Object.values(positions).map(p => p.x), new Array(8).fill(0));
+  assert.deepEqual(Object.values(positions).map(p => p.y), [0, 300, 600, 900, 1200, 1500, 1800, 2100]);
+});
+
+test("layeredPositions fans peers of one layer out sideways and joins them below", () => {
+  // 菱形：a → b、a → c（同层并排）、b+c → d。
+  const tasks = [
+    { id: "a", role: "r", brief: "b", dependsOn: [], outputs: ["a.md"] },
+    { id: "b", role: "r", brief: "b", dependsOn: ["a"], outputs: ["b.md"] },
+    { id: "c", role: "r", brief: "b", dependsOn: ["a"], outputs: ["c.md"] },
+    { id: "d", role: "r", brief: "b", dependsOn: ["b", "c"], outputs: ["d.md"] },
+  ];
+  assert.equal(flowAxis(tasks), "y");
+  assert.deepEqual(layeredPositions(tasks), {
+    a: { x: 0, y: 0 },
+    b: { x: 0, y: 300 },
+    c: { x: 320, y: 300 },
+    d: { x: 0, y: 600 },
+  });
+});
+
+test("layeredPositions turns a wide fan sideways: one row per layer would only make it taller", () => {
+  // 2 层、第二层 8 个并排：内容又宽又扁。竖排时 8 个并排会把宽度撑到 2560px（画布只有
+  // 460 宽），横排把并排方向放到 670 高的边上，能放进视野的部分更多。
+  const fan = ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8"];
+  const tasks = [
+    { id: "root", role: "r", brief: "b", dependsOn: [], outputs: ["root.md"] },
+    ...fan.map(id => ({ id, role: "r", brief: "b", dependsOn: ["root"], outputs: [`${id}.md`] })),
+  ];
+  assert.equal(flowAxis(tasks), "x");
+  const positions = layeredPositions(tasks);
+  assert.deepEqual(positions.root, { x: 0, y: 0 });
+  assert.deepEqual(fan.map(id => positions[id].x), new Array(8).fill(300));
+  assert.deepEqual(fan.map(id => positions[id].y), [0, 320, 640, 960, 1280, 1600, 1920, 2240]);
+});
+
+test("layeredPositions places a task below its latest prerequisite, not just one layer down", () => {
+  // b 等到最晚的 c 完成：c 在第 1 层，所以 b 落在第 2 层而不是第 1 层。
+  const tasks = [
+    { id: "a", role: "r", brief: "b", dependsOn: [], outputs: ["a.md"] },
+    { id: "b", role: "r", brief: "b", dependsOn: ["a", "c"], outputs: ["b.md"] },
+    { id: "c", role: "r", brief: "b", dependsOn: ["a"], outputs: ["c.md"] },
+  ];
+  assert.equal(layeredPositions(tasks).b.y, 600);
+  assert.equal(layeredPositions(tasks).c.y, 300);
+});
+
+test("layeredPositions never freezes on a cycle and still gives every task a position", () => {
+  const cyclic = [
+    { id: "x", role: "r", brief: "b", dependsOn: ["y"], outputs: ["x.md"] },
+    { id: "y", role: "r", brief: "b", dependsOn: ["x"], outputs: ["y.md"] },
+  ];
+  const positions = layeredPositions(cyclic);
+  assert.deepEqual(Object.keys(positions).sort(), ["x", "y"]);
+  // 环里的任务都兜底到第 0 层，并排错开而不重叠。
+  assert.deepEqual(positions.x, { x: 0, y: 0 });
+  assert.deepEqual(positions.y, { x: 0, y: 320 });  assert.deepEqual(layeredPositions([]), {});
+});
+
+test("generatedToDraftInput fills a complete draft with layered positions and no run goal", () => {
+  const draft = generatedToDraftInput({ name: " 文献综述流程 ", tasks: chain("search", "read", "write") });
+  assert.equal(draft.name, "文献综述流程");
+  assert.equal(draft.workflow, "custom");
+  // 目标与摘要是提交运行时才收集的内容，生成稿不填。
+  assert.equal(draft.objective, "");
+  assert.equal(draft.summary, "");
+  assert.equal(draft.viewport, null);
+  assert.deepEqual(draft.frames, []);
+  assert.deepEqual(draft.positions, { search: { x: 0, y: 0 }, read: { x: 0, y: 300 }, write: { x: 0, y: 600 } });
+  // 名称缺失时落回默认名，不留下空名草稿。
+  assert.equal(generatedToDraftInput({ name: "  ", tasks: [] }).name, "未命名工作流");
+});
+
+// ---- AI 排流程：库页入口 ----
+
+const generateButton = tree => tree.find(node => node.type === "Button" && JSON.stringify(node.props.children).includes("AI 排流程"));
+const findLabelled = (tree, label) => tree.find(node => node.props?.role === "dialog" && node.props["aria-label"] === label);
+
+test("the library offers an AI entry and keeps its prompt closed until asked", () => {
+  const tree = harness().render();
+  const entry = generateButton(tree);
+  assert.ok(entry, "缺少 AI 排流程入口");
+  assert.equal(entry.props["aria-expanded"], false);
+  assert.equal(findLabelled(tree, "AI 排流程"), undefined);
+});
+
+test("the AI prompt opens, sends the sentence with the UI locale, and hands the laid-out draft to the editor", async () => {
+  const generated = { name: "综述流水线", tasks: chain("search", "read", "write") };
+  const h = harness({ generated });
+  generateButton(h.render()).props.onClick();
+  assert.ok(findLabelled(h.render(), "AI 排流程"), "弹层没有打开");
+  // 每一步都从最新一次渲染的树上取节点：输入会触发重渲染，旧快照上的按钮状态已过期。
+  const submit = () => nodes(findLabelled(h.render(), "AI 排流程")).find(node => node.type === "Button" && JSON.stringify(node.props.children).includes("生成流程"));
+  const textbox = () => nodes(findLabelled(h.render(), "AI 排流程")).find(node => node.type === "textarea");
+  // 一句话为空时不能提交。
+  assert.equal(submit().props.disabled, true);
+  textbox().props.onChange({ target: { value: "先检索再精读最后成稿" } });
+  assert.equal(textbox().props.value, "先检索再精读最后成稿");
+  assert.equal(submit().props.disabled, false);
+  submit().props.onClick();
+  await settle();
+  assert.deepEqual(h.calls.filter(call => call[0] === "generate"), [["generate", { intent: "先检索再精读最后成稿", locale: "zh-CN" }]]);
+  const handed = h.calls.find(call => call[0] === "generated");
+  assert.ok(handed, "生成稿没有交给编辑器");
+  assert.equal(handed[1].name, "综述流水线");
+  // 坐标已按依赖分层排好：三步链自上而下走。
+  assert.deepEqual(handed[1].positions, { search: { x: 0, y: 0 }, read: { x: 0, y: 300 }, write: { x: 0, y: 600 } });
+  // 生成稿没有被当成「新建空白工作流」。
+  assert.ok(!h.calls.some(call => call[0] === "edit"));
+});
+
+test("a failed generation reports the reason and keeps the user on the library", async () => {
+  const h = harness({ generated: new Error("没有可用的对话引擎") });
+  generateButton(h.render()).props.onClick();
+  const submit = () => nodes(findLabelled(h.render(), "AI 排流程")).find(node => node.type === "Button" && JSON.stringify(node.props.children).includes("生成流程"));
+  nodes(findLabelled(h.render(), "AI 排流程")).find(node => node.type === "textarea").props.onChange({ target: { value: "来一条流程" } });
+  submit().props.onClick();
+  await settle();
+  assert.deepEqual(h.calls.filter(call => call[0] === "alert"), [["alert", "没有可用的对话引擎", "error"]]);
+  assert.ok(!h.calls.some(call => call[0] === "generated" || call[0] === "edit"));
 });

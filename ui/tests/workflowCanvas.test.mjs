@@ -220,3 +220,19 @@ test("route inspector offers a fallback branch for verdicts that can never arriv
   select.props.onChange({ target: { value: "" } });
   assert.equal(h.draft().tasks.find((task) => task.id === routeId).route.defaultBranch, undefined);
 });
+
+test("a fresh canvas fits the whole flow into view but never shrinks nodes below a readable size", () => {
+  // 实机暴露的问题：8 节点流程打开时 fitView 把节点缩到 0.2 倍（约 52px 宽），字看不清。
+  const fresh = harness({ ...model.createBlankDraft(), viewport: null });
+  const fit = fresh.flow();
+  assert.equal(fit.fitView, true);
+  assert.equal(fit.fitViewOptions.minZoom, 0.55);
+  // 自动适配有下限，但用户手动缩放的范围不变：仍能自己缩小看全貌。
+  assert.equal(fit.minZoom, 0.2);
+  assert.equal(fit.maxZoom, 1.5);
+  // 已保存过视口的草稿不再自动适配，沿用用户上次的位置和缩放。
+  const saved = harness({ ...model.createBlankDraft(), viewport: { x: 40, y: -60, zoom: 0.9 } });
+  const resumed = saved.flow();
+  assert.equal(resumed.fitView, false);
+  assert.deepEqual(resumed.defaultViewport, { x: 40, y: -60, zoom: 0.9 });
+});

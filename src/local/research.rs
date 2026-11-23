@@ -145,6 +145,25 @@ pub fn role(id: &str) -> Result<&'static str> {
         .ok_or_else(|| anyhow!("未知专家角色: {id}"))
 }
 
+/// 内置角色的展示名称与一句话说明：取提示词的前两个非空行（首行去掉 `#` 标题记号）。
+/// 提示词本体不对外下发，API 结果与 AI 草稿素材都只携带这两行。
+pub fn role_brief<'a>(id: &'a str, prompt: &'a str) -> (&'a str, &'a str) {
+    let name = prompt
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or(id)
+        .trim_start_matches('#')
+        .trim();
+    let description = prompt
+        .lines()
+        .map(str::trim)
+        .skip(1)
+        .find(|line| !line.is_empty())
+        .unwrap_or(name);
+    (name, description)
+}
+
 pub fn role_for_store(store: &Store, id: &str) -> Result<String> {
     if let Ok(prompt) = role(id) {
         return Ok(prompt.to_string());

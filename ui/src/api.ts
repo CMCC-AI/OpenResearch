@@ -2446,6 +2446,10 @@ export const createWorkflow = (input: import("./workflow/model").WorkflowDraftIn
   post<{ draft: import("./workflow/model").WorkflowDraft }>("/api/workflows", { ...input, projectId }).then((result) => result.draft);
 export const saveWorkflow = (id: string, input: import("./workflow/model").WorkflowDraftInput) =>
   put<{ draft: import("./workflow/model").WorkflowDraft }>(`/api/workflows/${encodeURIComponent(id)}`, input).then((result) => result.draft);
+/** Slow: one headless model call over the agent list (~180s budget). Returns name and a
+ *  validated task chain; canvas positions are laid out by the caller. */
+export const generateWorkflowDraft = (body: { intent: string; locale: string }) =>
+  post<{ draft: import("./workflow/model").GeneratedWorkflowDraft }>("/api/workflows/generate", body).then((result) => result.draft);
 export const deleteWorkflow = (id: string) =>
   writeResponse(`/api/workflows/${encodeURIComponent(id)}`, { method: "DELETE" }).then((response) => json<{ ok: boolean }>(response));
 export const submitWorkflowDraft = (sessionId: string, draftId: string, objective: string) =>

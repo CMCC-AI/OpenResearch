@@ -832,6 +832,9 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
         reconnectRadius={16}
         defaultViewport={draft.viewport ?? { x: 0, y: 0, zoom: 1 }}
         fitView={!draft.viewport}
+        // 首次打开时自适应，但不为一个长流程把节点缩到看不清：低于这个缩放就保持
+        // 可读大小、从起点开始显示，后面的平移查看。手动缩放的范围仍由 minZoom 决定。
+        fitViewOptions={{ minZoom: 0.55, padding: 0.1 }}
         minZoom={0.2}
         maxZoom={1.5}
         connectionRadius={30}

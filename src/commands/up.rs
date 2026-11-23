@@ -546,6 +546,10 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
                 .delete(workflow::delete_workflow),
         )
         .route(
+            "/api/workflows/generate",
+            post(workflow::generate_workflow_draft),
+        )
+        .route(
             "/api/projects/{project}/research/deliveries",
             get(research::deliveries),
         )
