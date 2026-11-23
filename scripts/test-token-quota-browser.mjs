@@ -269,7 +269,7 @@ try {
     (
       await page
         .getByRole("heading", {
-          name: "<target> · user@example.com",
+          name: "<target>",
           exact: true,
         })
         .textContent()
