@@ -299,7 +299,12 @@ export function nativeUsage(value) {
   // Cached input and reasoning output are already included by this protocol.
   return input + output;
 }
-export function publicModelConfig(models, base, secret, opencodeFreeModels = []) {
+export function publicModelConfig(
+  models,
+  base,
+  secret,
+  opencodeFreeModels = [],
+) {
   const groups = new Map();
   for (const model of models) {
     const id = model.providerId || "mobilesci";
@@ -326,14 +331,19 @@ export function publicModelConfig(models, base, secret, opencodeFreeModels = [])
       limit: { context: model.contextTokens, output: model.maxOutputTokens },
     };
   }
-  if (Array.isArray(opencodeFreeModels) && opencodeFreeModels.length > 0 && !groups.has("opencode")) {
+  if (
+    Array.isArray(opencodeFreeModels) &&
+    opencodeFreeModels.length > 0 &&
+    !groups.has("opencode")
+  ) {
     groups.set("opencode", {
       whitelist: [...opencodeFreeModels],
     });
   }
-  const selected = models.length > 0
-    ? `${models[0].providerId || "mobilesci"}/${models[0].id}`
-    : `opencode/${opencodeFreeModels[0]}`;
+  const selected =
+    models.length > 0
+      ? `${models[0].providerId || "mobilesci"}/${models[0].id}`
+      : `opencode/${opencodeFreeModels[0]}`;
   return {
     enabled_providers: [...groups.keys()],
     model: selected,
@@ -390,7 +400,9 @@ export function modelGateway({
     check(settings.enabled, 404, "Token 配额模型网关未启用");
     const user = await identity(req);
     await limit(`model-gateway:${user.user_id}`, 120, 60);
-    const { models, opencodeFreeModels } = await loadQuotaDocument(settings.modelsFile);
+    const { models, opencodeFreeModels } = await loadQuotaDocument(
+      settings.modelsFile,
+    );
     const send = (value) => {
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(value));

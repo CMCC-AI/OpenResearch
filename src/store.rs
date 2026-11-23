@@ -755,6 +755,7 @@ impl Store {
     }
 
     /// Read the store without acquiring its WAL write lock, creating it first if it doesn't exist.
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn open_read_only(dir: PathBuf) -> Result<Self> {
         let db = dir.join("orx.db");
         let exists = db

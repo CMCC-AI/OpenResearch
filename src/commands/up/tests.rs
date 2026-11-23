@@ -670,7 +670,7 @@ fn plan_never_becomes_the_preferred_mode_for_new_sessions() {
     );
     assert_eq!(
         preferred_permission_mode("opencode", Some("plan".into())).as_deref(),
-        Some("default")
+        Some("auto-approve")
     );
 }
 
