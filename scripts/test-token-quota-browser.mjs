@@ -252,7 +252,7 @@ try {
     .getByRole("link", { name: "Token 额度", exact: true })
     .click();
   await page
-    .getByRole("heading", { name: "用户 Token 额度", exact: true })
+    .getByRole("heading", { name: "Token 额度", exact: true })
     .waitFor();
   assert.equal(
     await page.getByLabel("用户邮箱").inputValue(),
