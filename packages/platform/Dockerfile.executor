@@ -11,7 +11,7 @@ RUN if [ "$APT_MIRROR" != "deb.debian.org" ]; then sed -i "s|deb.debian.org|$APT
       apt-get -o Acquire::Retries=5 -o Acquire::http::Pipeline-Depth=0 -o Acquire::http::Timeout=30 -o Dir::State::status=/dev/null install -y --download-only --no-install-recommends \
         git openssh-client ca-certificates curl wget bash \
         python3 python-is-python3 python3-pip python3-venv python3-dev \
-        build-essential pkg-config ripgrep jq sqlite3 zip unzip file procps time poppler-utils \
+        build-essential pkg-config ripgrep jq sqlite3 zip unzip file procps lsof time poppler-utils \
         python3-numpy python3-pandas python3-scipy python3-matplotlib python3-openpyxl \
         python3-requests python3-bs4 python3-lxml python3-pil python3-docx \
         python3-pyshp python3-shapely python3-pypdf2 && break; \

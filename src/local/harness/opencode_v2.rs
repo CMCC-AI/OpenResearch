@@ -1157,6 +1157,18 @@ fn reconnect_command(path: &Path) -> String {
     }
 }
 
+fn provider_whitelisted(config: &Value, provider: &str, id: &str) -> bool {
+    let Some(whitelist) = config
+        .get("provider")
+        .and_then(|providers| providers.get(provider))
+        .and_then(|entry| entry.get("whitelist"))
+        .and_then(Value::as_array)
+    else {
+        return true;
+    };
+    whitelist.iter().any(|item| item.as_str() == Some(id))
+}
+
 fn selectable_model(model: &Value, connected: &HashSet<&str>) -> bool {
     if model["enabled"] != true {
         return false;
@@ -1212,11 +1224,22 @@ pub(super) async fn detect(
                 })
                 .filter_map(|integration| integration["id"].as_str())
                 .collect();
+            let (config, _) = snapshot_config();
             info.models = models["data"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .filter(|model| selectable_model(model, &connected))
+                .filter(|model| {
+                    let Some(provider) = model["providerID"].as_str() else {
+                        return false;
+                    };
+                    let Some(id) = model["id"].as_str() else {
+                        return false;
+                    };
+                    provider_enabled(&config, provider)
+                        && provider_whitelisted(&config, provider, id)
+                })
                 .filter_map(|model| {
                     let provider = model["providerID"].as_str()?;
                     let id = model["id"].as_str()?;
@@ -2204,6 +2227,27 @@ mod catalog_tests {
         assert!(selectable_model(&model, &anonymous));
         model["enabled"] = json!(false);
         assert!(!selectable_model(&model, &anonymous));
+    }
+
+    #[test]
+    fn provider_whitelist_filters_opencode_models() {
+        let config = json!({
+            "enabled_providers": ["deepseek", "opencode"],
+            "provider": {
+                "opencode": {
+                    "whitelist": ["deepseek-v4.1-flash-free", "mimo-v2.6-flash-free"]
+                }
+            }
+        });
+        assert!(provider_enabled(&config, "opencode"));
+        assert!(provider_whitelisted(
+            &config,
+            "opencode",
+            "deepseek-v4.1-flash-free"
+        ));
+        assert!(!provider_whitelisted(&config, "opencode", "big-pickle"));
+        assert!(provider_whitelisted(&config, "deepseek", "deepseek-flash"));
+        assert!(!provider_enabled(&config, "anthropic"));
     }
 
     #[test]

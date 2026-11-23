@@ -89,6 +89,15 @@ export async function prepareQuotaExecutor({
     throw new Error("Invalid quota model configuration");
   for (const id of providers) {
     const provider = config.provider[id];
+    if (id === "opencode") {
+      if (
+        !provider ||
+        !Array.isArray(provider.whitelist) ||
+        provider.whitelist.length === 0
+      )
+        throw new Error("Invalid quota model configuration");
+      continue;
+    }
     if (
       !provider ||
       provider.npm !== "@ai-sdk/openai-compatible" ||

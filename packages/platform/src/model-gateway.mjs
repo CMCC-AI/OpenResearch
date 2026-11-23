@@ -57,13 +57,23 @@ function safeMetadata(value) {
   );
 }
 export async function loadQuotaModels(file, options = {}) {
+  const { models } = await loadQuotaDocument(file, options);
+  return models;
+}
+export async function loadQuotaDocument(file, options = {}) {
   let document;
   try {
     document = JSON.parse(await readFile(file, "utf8"));
   } catch {
     throw new HttpError(503, "平台模型配置不可用");
   }
-  return validateQuotaModels(document, options);
+  validateQuotaModels(document, options);
+  return {
+    models: document.models,
+    opencodeFreeModels: Array.isArray(document.opencodeFreeModels)
+      ? document.opencodeFreeModels
+      : [],
+  };
 }
 export function validateQuotaModels(document, { allowEmpty = false } = {}) {
   check(
@@ -238,6 +248,38 @@ export function validateQuotaModels(document, { allowEmpty = false } = {}) {
         );
     }
   }
+  if (document.opencodeFreeModels !== undefined) {
+    check(
+      Array.isArray(document.opencodeFreeModels) &&
+        document.opencodeFreeModels.length <= 100 &&
+        document.opencodeFreeModels.every(
+          (id) =>
+            typeof id === "string" &&
+            /^[a-zA-Z0-9_.:-]{1,120}$/.test(id) &&
+            !["__proto__", "prototype", "constructor"].includes(id),
+        ),
+      503,
+      "OpenCode 免费模型列表无效",
+    );
+  }
+  if (document.availableOpenCodeFreeModels !== undefined) {
+    check(
+      Array.isArray(document.availableOpenCodeFreeModels) &&
+        document.availableOpenCodeFreeModels.length <= 200 &&
+        document.availableOpenCodeFreeModels.every(
+          (item) =>
+            item &&
+            typeof item === "object" &&
+            typeof item.id === "string" &&
+            /^[a-zA-Z0-9_.:-]{1,120}$/.test(item.id) &&
+            typeof item.name === "string" &&
+            item.name.length > 0 &&
+            item.name.length <= 200,
+        ),
+      503,
+      "OpenCode 免费模型目录缓存无效",
+    );
+  }
   return document.models;
 }
 export function nativeUsage(value) {
@@ -257,7 +299,7 @@ export function nativeUsage(value) {
   // Cached input and reasoning output are already included by this protocol.
   return input + output;
 }
-export function publicModelConfig(models, base, secret) {
+export function publicModelConfig(models, base, secret, opencodeFreeModels = []) {
   const groups = new Map();
   for (const model of models) {
     const id = model.providerId || "mobilesci";
@@ -284,7 +326,14 @@ export function publicModelConfig(models, base, secret) {
       limit: { context: model.contextTokens, output: model.maxOutputTokens },
     };
   }
-  const selected = `${models[0].providerId || "mobilesci"}/${models[0].id}`;
+  if (Array.isArray(opencodeFreeModels) && opencodeFreeModels.length > 0 && !groups.has("opencode")) {
+    groups.set("opencode", {
+      whitelist: [...opencodeFreeModels],
+    });
+  }
+  const selected = models.length > 0
+    ? `${models[0].providerId || "mobilesci"}/${models[0].id}`
+    : `opencode/${opencodeFreeModels[0]}`;
   return {
     enabled_providers: [...groups.keys()],
     model: selected,
@@ -341,13 +390,13 @@ export function modelGateway({
     check(settings.enabled, 404, "Token 配额模型网关未启用");
     const user = await identity(req);
     await limit(`model-gateway:${user.user_id}`, 120, 60);
-    const models = await loadQuotaModels(settings.modelsFile);
+    const { models, opencodeFreeModels } = await loadQuotaDocument(settings.modelsFile);
     const send = (value) => {
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(value));
     };
     if (path === configPath && req.method === "GET") {
-      send(publicModelConfig(models, "", user.secret));
+      send(publicModelConfig(models, "", user.secret, opencodeFreeModels));
       return true;
     }
     if (path === prefix + "/models" && req.method === "GET") {

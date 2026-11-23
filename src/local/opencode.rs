@@ -468,6 +468,13 @@ async fn spawn_agent(
         cmd.env("OPENCODE_CONFIG", config)
             .env("OPENCODE_DISABLE_PROJECT_CONFIG", "1")
             .env("OPENCODE_CONFIG_PROJECT_DISABLE", "1");
+    } else if std::env::var_os("OPENCODE_CONFIG_PROJECT_DISABLE").is_some()
+        || std::env::var_os("OPENCODE_DISABLE_PROJECT_CONFIG").is_some()
+    {
+        // Managed containers set OPENCODE_CONFIG_PROJECT_DISABLE=1 globally;
+        // pass the generated opencode.json via OPENCODE_CONFIG so MobileSci
+        // persona prompt and playbook instructions are still loaded.
+        cmd.env("OPENCODE_CONFIG", repo.join("opencode.json"));
     }
     let (mut child, endpoint) = runtime::start_server(&binary, cmd).await?;
     if let Some(model) = model {
