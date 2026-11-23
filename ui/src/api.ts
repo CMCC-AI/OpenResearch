@@ -230,6 +230,8 @@ export interface UiState {
   tourCompleted: boolean;
   preferredAgent: AgentSelection | null;
   preferredAutonomy: Autonomy | null;
+  /** The `provider/model` that reviews OpenCode's Auto requests; null is the chat's own. */
+  opencodeReviewModel?: string | null;
 }
 
 /** How much of the research the agent owns before checking in. */
@@ -263,6 +265,7 @@ export const updateUiState = (body: {
   tourCompleted?: boolean;
   preferredAgent?: AgentSelection;
   preferredAutonomy?: Autonomy;
+  opencodeReviewModel?: string;
 }) => post<UiState>("/api/settings/ui-state", body);
 
 export const completeOnboarding = (selection: OnboardingSelection, profile: Profile) =>
@@ -1648,6 +1651,28 @@ export function harnessModelLabel(model: HarnessModel): string {
     : provider;
   const label = modelLabel(model.id.replace(/-(?:FP|BF)\d+$/i, ""));
   return endpoint ? `${label} · ${endpoint}` : label;
+}
+
+/** OpenCode's Auto names who reviews: the chat's own model, or the one picked in Settings.
+ * A chat on a local model (one a local server was connected for) always reviews with its own. */
+export function withAutoReviewer(
+  choices: OptionChoice[],
+  harness: Harness | undefined,
+  reviewModel: string | null | undefined,
+  chatModel: string | null | undefined,
+): OptionChoice[] {
+  if (harness?.id !== "opencode") return choices;
+  const matched = reviewModel && !chatModel?.startsWith("orx-local-")
+    ? harness.models.find((model) => model.id === reviewModel)
+    : undefined;
+  const named = reviewModel && !chatModel?.startsWith("orx-local-")
+    ? (matched ? harnessModelLabel(matched) : modelLabel(reviewModel))
+    : null;
+  return choices.map((choice) => (
+    choice.id !== "auto"
+      ? choice
+      : { ...choice, description: named ? m.opencode_auto_model({ model: named }) : m.opencode_auto_same_model() }
+  ));
 }
 
 /** One selectable value in a composer toggle (permission mode / reasoning). */

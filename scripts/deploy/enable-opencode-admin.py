@@ -47,7 +47,7 @@ def values(config):
 def admin_service(image):
     return {
         'image': image, 'network_mode': 'host',
-        'command': ['sh', '-ec', 'mkdir -p "$$XDG_DATA_HOME/opencode"; cp /run/orx-auth/auth.json "$$XDG_DATA_HOME/opencode/auth.json"; exec opencode serve --pure --hostname 127.0.0.1 --port 4970'],
+        'command': ['sh', '-ec', 'mkdir -p "$$XDG_DATA_HOME/opencode"; cp /run/orx-auth/auth.json "$$XDG_DATA_HOME/opencode/auth.json"; exec opencode serve --hostname 127.0.0.1 --port 4970'],
         'environment': {
             'HOME': '/tmp/opencode-admin', 'XDG_CONFIG_HOME': '/run/orx-config',
             'XDG_DATA_HOME': '/tmp/opencode-admin/data', 'XDG_STATE_HOME': '/tmp/opencode-admin/state',

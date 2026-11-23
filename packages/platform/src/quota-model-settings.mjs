@@ -124,6 +124,12 @@ export function quotaModelSettings(file, { fetcher = fetch } = {}) {
       backend: "quota",
       revision: state.revision,
       providers: [...providersById.values()],
+      opencodeFreeModels: Array.isArray(state.document.opencodeFreeModels)
+        ? state.document.opencodeFreeModels
+        : [],
+      ...(Array.isArray(state.document.availableOpenCodeFreeModels)
+        ? { availableOpenCodeFreeModels: state.document.availableOpenCodeFreeModels }
+        : {}),
       models: state.document.models.map((model) => ({
         ...Object.fromEntries(
           fields
@@ -211,6 +217,32 @@ export function quotaModelSettings(file, { fetcher = fetch } = {}) {
         ) {
           delete state.document.providers[providerId];
         }
+      } else if (action === "setOpenCodeFreeModels") {
+        check(
+          Array.isArray(data.models) && data.models.length <= 100,
+          400,
+          "OpenCode 免费模型列表无效",
+        );
+        const normalized = [];
+        const seen = new Set();
+        for (const raw of data.models) {
+          check(typeof raw === "string", 400, "OpenCode 免费模型 ID 无效");
+          const trimmed = raw.trim();
+          const id = trimmed.startsWith("opencode/")
+            ? trimmed.slice("opencode/".length).trim()
+            : trimmed;
+          check(
+            /^[a-zA-Z0-9_.:-]{1,120}$/.test(id) &&
+              !["__proto__", "prototype", "constructor"].includes(id),
+            400,
+            "OpenCode 免费模型 ID 无效",
+          );
+          if (!seen.has(id)) {
+            seen.add(id);
+            normalized.push(id);
+          }
+        }
+        state.document.opencodeFreeModels = normalized;
       } else {
         const index = models.findIndex((m) => m.id === data.id);
         if (action === "remove" || action === "default") {
@@ -388,6 +420,82 @@ export function quotaModelSettings(file, { fetcher = fetch } = {}) {
     ].slice(0, 200);
     return { models };
   }
+  async function probeOpenCodeFreeModels(_data, audit = async () => {}) {
+    let payload;
+    try {
+      const response = await fetcher("https://models.dev/api.json", {
+        method: "GET",
+        headers: { accept: "application/json" },
+        redirect: "error",
+        signal: AbortSignal.timeout(15000),
+      });
+      check(response.ok, 502, "获取 OpenCode 官方模型目录失败，请稍后重试");
+      payload = await response.json();
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      if (["TimeoutError", "AbortError"].includes(error?.name))
+        throw new HttpError(504, "探测 OpenCode 官方模型超时，请稍后重试");
+      throw new HttpError(502, "获取 OpenCode 官方模型目录失败，请检查网络连接");
+    }
+    const rawModels = payload?.opencode?.models;
+    check(
+      rawModels && typeof rawModels === "object" && !Array.isArray(rawModels),
+      502,
+      "OpenCode 官方模型目录格式无效",
+    );
+    const catalog = [];
+    for (const [rawId, entry] of Object.entries(rawModels)) {
+      if (!entry || typeof entry !== "object") continue;
+      if (entry.status === "deprecated") continue;
+      const id = String(rawId).trim();
+      if (
+        !/^[a-zA-Z0-9_.:-]{1,120}$/.test(id) ||
+        ["__proto__", "prototype", "constructor"].includes(id)
+      )
+        continue;
+      const cost = entry.cost;
+      if (!cost || cost.input !== 0 || cost.output !== 0) continue;
+      const name =
+        typeof entry.name === "string" && entry.name.trim()
+          ? entry.name.trim().slice(0, 200)
+          : id;
+      catalog.push({
+        id,
+        name,
+        description: "OpenCode 官方免费模型（不消耗平台 Token 额度）",
+      });
+    }
+    catalog.sort((a, b) => a.id.localeCompare(b.id));
+    check(catalog.length > 0, 502, "未在 OpenCode 官方目录中发现免费模型");
+
+    const operation = pending.then(async () => {
+      const state = await load();
+      state.document.availableOpenCodeFreeModels = catalog.slice(0, 200);
+      const text = JSON.stringify(state.document, null, 2) + "\n";
+      const temporary = `${file}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(temporary, text, { mode: 0o600, flag: "wx" });
+        check(
+          revision(await readFile(file, "utf8")) === state.revision,
+          409,
+          "模型清单已更新，请刷新页面后重试",
+        );
+        await audit();
+        await rename(temporary, file);
+      } catch (error) {
+        if (error instanceof HttpError) throw error;
+        throw new HttpError(
+          500,
+          "保存失败，请检查模型清单目录为平台专用可写挂载",
+        );
+      } finally {
+        await unlink(temporary).catch(() => {});
+      }
+      return summary({ document: state.document, revision: revision(text) });
+    });
+    pending = operation.catch(() => {});
+    return operation;
+  }
   return {
     async read() {
       return summary(await load());
@@ -407,6 +515,10 @@ export function quotaModelSettings(file, { fetcher = fetch } = {}) {
     disconnectProvider(data, audit = async () => {}) {
       return update("disconnectProvider", data, audit);
     },
+    setOpenCodeFreeModels(data, audit = async () => {}) {
+      return update("setOpenCodeFreeModels", data, audit);
+    },
+    probeOpenCodeFreeModels,
     probeModels,
   };
 }

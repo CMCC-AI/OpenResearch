@@ -117,9 +117,38 @@ test("AdminQuotaModels renders OpenCode-style provider/model tabs and switch tog
 
   assert.match(html, /role="tab"[^>]*>提供商</);
   assert.match(html, /role="tab"[^>]*>模型</);
+  assert.match(html, /role="tab"[^>]*>OpenCode 免费模型</);
   assert.match(html, /Kimi \/ Moonshot/);
   assert.match(html, /默认模型/);
   assert.match(html, /role="switch"/);
   assert.match(html, /aria-checked="true"/);
   assert.match(html, /aria-checked="false"/);
+});
+
+test("resolveOpenCodeFreeModels merges presets, backend list, and custom enabled ids", () => {
+  const { resolveOpenCodeFreeModels, normalizeOpenCodeFreeModelId } = loadCatalog();
+  assert.equal(normalizeOpenCodeFreeModelId("opencode/big-pickle"), "big-pickle");
+  assert.equal(normalizeOpenCodeFreeModelId("  beam-free "), "beam-free");
+
+  const resolved = resolveOpenCodeFreeModels({
+    enabled: true,
+    backend: "quota",
+    revision: "rev-1",
+    models: [],
+    opencodeFreeModels: ["opencode/big-pickle", "custom-free-v1"],
+  });
+
+  const bigPickle = resolved.find((m) => m.id === "big-pickle");
+  assert.ok(bigPickle);
+  assert.equal(bigPickle.enabled, true);
+  assert.equal(bigPickle.isCustom, false);
+
+  const custom = resolved.find((m) => m.id === "custom-free-v1");
+  assert.ok(custom);
+  assert.equal(custom.enabled, true);
+  assert.equal(custom.isCustom, true);
+
+  const beam = resolved.find((m) => m.id === "beam-free");
+  assert.ok(beam);
+  assert.equal(beam.enabled, false);
 });

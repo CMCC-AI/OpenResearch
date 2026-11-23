@@ -20,12 +20,20 @@ export interface QuotaBackendProvider {
   discoveredModels?: string[];
 }
 
+export interface OpenCodeFreeModelPreset {
+  id: string;
+  name: string;
+  description?: string;
+}
+
 export interface QuotaModels {
   enabled: boolean;
   backend: "quota";
   revision: string;
   providers?: QuotaBackendProvider[];
   models: QuotaModel[];
+  opencodeFreeModels?: string[];
+  availableOpenCodeFreeModels?: OpenCodeFreeModelPreset[];
 }
 
 export interface CatalogModelPreset {
@@ -345,4 +353,64 @@ export function resolveConnectedProviders(
     if (b.enabledCount !== a.enabledCount) return b.enabledCount - a.enabledCount;
     return a.name.localeCompare(b.name, "zh-CN");
   });
+}
+
+export const OPENCODE_FREE_MODEL_PRESETS: OpenCodeFreeModelPreset[] = [
+  { id: "big-pickle", name: "Big Pickle", description: "OpenCode 官方内置免费模型" },
+  { id: "beam-free", name: "Beam Free", description: "OpenCode 官方免费通用模型" },
+  { id: "deepseek-v4.1-flash-free", name: "DeepSeek V4.1 Flash Free", description: "快速响应免费模型" },
+  { id: "flint-40b-free", name: "Flint 40B Free", description: "轻量高效免费模型" },
+  { id: "glm-5.3-flash-free", name: "GLM 5.3 Flash Free", description: "智谱 Flash 免费通道" },
+  { id: "mimo-v2.6-flash-free", name: "MiMo V2.6 Flash Free", description: "MiMo Flash 免费通道" },
+  { id: "nemotron-3-ultra-free", name: "Nemotron 3 Ultra Free", description: "NVIDIA Nemotron 免费模型" },
+  { id: "nemotron-3.5-lightning-free", name: "Nemotron 3.5 Lightning Free", description: "低延迟免费推理模型" },
+  { id: "nemotron-3.5-super-vl-free", name: "Nemotron 3.5 Super VL Free", description: "支持视觉理解的免费模型" },
+];
+
+export interface ResolvedOpenCodeFreeModel {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  isCustom: boolean;
+}
+
+export function normalizeOpenCodeFreeModelId(raw: string): string {
+  const trimmed = raw.trim();
+  return trimmed.startsWith("opencode/") ? trimmed.slice("opencode/".length).trim() : trimmed;
+}
+
+export function resolveOpenCodeFreeModels(settings: QuotaModels): ResolvedOpenCodeFreeModel[] {
+  const enabledSet = new Set((settings.opencodeFreeModels || []).map(normalizeOpenCodeFreeModelId).filter(Boolean));
+  const byId = new Map<string, ResolvedOpenCodeFreeModel>();
+
+  const sourceList = settings.availableOpenCodeFreeModels?.length
+    ? settings.availableOpenCodeFreeModels
+    : OPENCODE_FREE_MODEL_PRESETS;
+
+  for (const item of sourceList) {
+    const id = normalizeOpenCodeFreeModelId(item.id);
+    if (!id) continue;
+    byId.set(id, {
+      id,
+      name: item.name || id,
+      description: item.description || "OpenCode 官方免费模型（不消耗平台 Token 额度）",
+      enabled: enabledSet.has(id),
+      isCustom: false,
+    });
+  }
+
+  for (const id of enabledSet) {
+    if (!byId.has(id)) {
+      byId.set(id, {
+        id,
+        name: id,
+        description: "自定义 OpenCode 免费模型 ID",
+        enabled: true,
+        isCustom: true,
+      });
+    }
+  }
+
+  return [...byId.values()];
 }

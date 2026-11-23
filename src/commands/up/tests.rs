@@ -102,6 +102,7 @@ fn new_chat_uses_saved_preferences_and_normalizes_model_settings() {
         tour_completed: true,
         workspace: None,
         preferred_autonomy: Some(Autonomy::Copilot),
+        opencode_review_model: None,
         preferred_agent: Some(StoredAgentSelection {
             harness: "codex".into(),
             model: Some("custom-model".into()),
@@ -131,6 +132,7 @@ fn new_chat_falls_back_only_when_no_preference_exists() {
         tour_completed: false,
         workspace: None,
         preferred_autonomy: None,
+        opencode_review_model: None,
         preferred_agent: None,
     };
     let catalog = json!({"harnesses": [{"id":"claude-code", "agentReady":true,
@@ -408,6 +410,7 @@ async fn workspace_requests_validate_metadata_and_allow_independent_preferences(
         preferred_agent: None,
         workspace: Some(invalid),
         preferred_autonomy: None,
+        opencode_review_model: None,
     }))
     .await;
     assert_eq!(result.err().unwrap().0, StatusCode::BAD_REQUEST);

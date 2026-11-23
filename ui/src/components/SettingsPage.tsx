@@ -35,7 +35,7 @@ import {
 } from "../queries/settings";
 
 import { getOverleafSettingsQuery } from "../queries/files";
-import { listRunsQuery } from "../queries/projects";
+import { getUiStateQuery, listRunsQuery } from "../queries/projects";
 import {
   ArrowLeft,
   ArrowRight,
@@ -110,6 +110,8 @@ import {
   applyUpdate,
   installCli,
   setAutoUpdate as setAutoUpdateApi,
+  updateUiState,
+  harnessModelLabel,
   type InstallChannel,
   type InstalledCli,
 } from "../api";
@@ -519,10 +521,45 @@ export function HarnessesTab({ remote }: { remote: boolean }) {
               <CommandRunTerminal run={setupRun.run} onComplete={() => load(true, true)} onClose={setupRun.clear} />
             </div>
           )}
+          {h.id === "opencode" && !remote && <AutoReviewerSetting opencode={h} />}
           {h.id === "opencode" && canConfigureModels && <LocalModelSetup installed={h.installed} />}
         </div>
       )}
     </>
+  );
+}
+
+function AutoReviewerSetting({ opencode }: { opencode: Harness }) {
+  const { data: uiState } = useQuery(getUiStateQuery());
+  const save = useMutation({
+    mutationFn: (opencodeReviewModel: string) => updateUiState({ opencodeReviewModel }),
+    onSuccess: (next) => {
+      queryClient.setQueryData(getUiStateQuery().queryKey, next);
+    },
+  });
+  const remoteModels = opencode.models.filter((model) => !model.id.startsWith("orx-local-"));
+  const choices = [
+    { id: "", label: m.settings_auto_reviewer_same() },
+    ...remoteModels.map((model) => ({ id: model.id, label: harnessModelLabel(model) })),
+  ];
+  return (
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-4 border-t border-border pt-4">
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-text">{m.settings_auto_reviewer()}</div>
+        <p className="mt-0.5 text-sm text-subtext">{m.settings_auto_reviewer_description()}</p>
+      </div>
+      <div className="w-64 shrink-0">
+        <OptionPicker
+          choices={choices}
+          value={uiState?.opencodeReviewModel ?? ""}
+          title={m.settings_auto_reviewer()}
+          variant="field"
+          dropDown
+          disabled={save.isPending}
+          onSelect={(id) => save.mutate(id)}
+        />
+      </div>
+    </div>
   );
 }
 

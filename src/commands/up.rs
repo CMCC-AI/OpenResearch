@@ -6362,6 +6362,8 @@ struct SetUiStateReq {
     preferred_agent: Option<StoredAgentSelectionReq>,
     workspace: Option<GlobalWorkspaceState>,
     preferred_autonomy: Option<Autonomy>,
+    /// `provider/model`, or empty for the chat's own.
+    opencode_review_model: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -6374,9 +6376,24 @@ struct StoredAgentSelectionReq {
     reasoning_level: Option<String>,
 }
 
-async fn set_ui_state(Json(req): Json<SetUiStateReq>) -> ApiResult {
+async fn set_ui_state(Json(mut req): Json<SetUiStateReq>) -> ApiResult {
     if let Some(workspace) = &req.workspace {
         workspace.validate().map_err(bad_request)?;
+    }
+    let review_model = req
+        .opencode_review_model
+        .take()
+        .map(|model| model.trim().to_owned());
+    if review_model.as_deref().is_some_and(|model| {
+        !model.is_empty()
+            && (model.len() > 200
+                || model
+                    .split_once('/')
+                    .is_none_or(|(provider, id)| provider.is_empty() || id.is_empty()))
+    }) {
+        return Err(bad_request(
+            "The Auto reviewer must be a model in provider/model form",
+        ));
     }
     tokio::task::spawn_blocking(move || -> Result<Json<Value>> {
         let store = Store::open()?;
@@ -6419,6 +6436,9 @@ async fn set_ui_state(Json(req): Json<SetUiStateReq>) -> ApiResult {
         }
         if let Some(workspace) = req.workspace {
             store.set_global_workspace_state(&workspace)?;
+        }
+        if let Some(model) = review_model {
+            store.set_opencode_review_model((!model.is_empty()).then_some(model.as_str()))?;
         }
         Ok(Json(json!(store.ui_state()?)))
     })

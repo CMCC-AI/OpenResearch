@@ -30,6 +30,7 @@ const ZH_CN: Record<string, string> = {
   // Permission mode descriptions.
   "Ask before actions that need your approval": "执行需要授权的操作前先询问你",
   "Approve requests automatically, except actions you have denied": "自动批准请求，已拒绝的操作除外",
+  "Approve every request without asking, except actions you have denied": "无需询问直接批准所有请求，已拒绝的操作除外",
   "Ask before changes; allow read-only planning": "修改前先询问；允许只读规划",
   "Allow commands and skip tool confirmation prompts": "允许执行命令并跳过工具确认",
   "Always ask before making changes": "每次修改前都先询问",

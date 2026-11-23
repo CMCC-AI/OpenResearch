@@ -349,9 +349,6 @@ async fn run(
         let lease = if request.harness == "opencode" && matches!(request.action, Action::Login) {
             let prepared = async {
                 let binary = crate::local::opencode::resolve_binary().await?;
-                if binary.protocol != crate::local::opencode::Protocol::V2 {
-                    return Ok::<_, crate::error::Error>(None);
-                }
                 let db = crate::local::native_store::prepare_opencode(
                     crate::local::native_store::NativeStore::Isolated,
                 )?;

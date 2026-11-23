@@ -567,6 +567,8 @@ export async function createPlatform(
                 "connectProvider",
                 "disconnectProvider",
                 "probeModels",
+                "setOpenCodeFreeModels",
+                "probeOpenCodeFreeModels",
               ]
             : ["disconnect", "verify"]
           ).includes(settings.action),
@@ -575,7 +577,11 @@ export async function createPlatform(
       );
       const disconnect = settings.action === "disconnect";
       const verify = settings.action === "verify";
-      if (verify || settings.action === "probeModels")
+      if (
+        verify ||
+        settings.action === "probeModels" ||
+        settings.action === "probeOpenCodeFreeModels"
+      )
         await limit(`model-verify:${s.user_id}`, 12, 60);
       const saved = await modelSettings[
         config.tokenQuota.enabled
@@ -598,7 +604,12 @@ export async function createPlatform(
                 ? "opencode.provider.disconnect"
                 : "opencode.config.update",
           config.tokenQuota.enabled
-            ? settings.id || settings.providerId
+            ? settings.id ||
+              settings.providerId ||
+              (settings.action === "setOpenCodeFreeModels" ||
+              settings.action === "probeOpenCodeFreeModels"
+                ? "opencode"
+                : undefined)
             : settings.providerId,
         );
       });

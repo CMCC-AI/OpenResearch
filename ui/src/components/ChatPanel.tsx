@@ -12,7 +12,7 @@ import { createClientTurnId } from "../clientTurnId";
 import { QuickChatGroupControls, SessionFilterMenu, SessionRow, TitleReveal, TITLE_REVEAL_CLEAR_MS, useCollapsedSidebarGroups, type SessionFilter } from "./NativeSidebarRows";
 import { ResearchNavigationMore } from "./ResearchNavigation";
 import { ProductSidebar } from "../product/ProductNav";
-import { isDemoProjectId } from "../api";
+import { isDemoProjectId, withAutoReviewer } from "../api";
 import { WorkModeSwitch, type WorkMode } from "./WorkModeSwitch";
 import { getResearchStudy } from "../api";
 import { researchModes } from "../research";
@@ -51,7 +51,7 @@ import {
   getSkillsQuery,
 } from "../queries/settings";
 import { listChatSessionsQuery, getChatMessagesQuery, listNativeChatsQuery, readSidebarChatPage } from "../queries/chat";
-import { listProjectsQuery, listProjectActivityQuery } from "../queries/projects";
+import { getUiStateQuery, listProjectsQuery, listProjectActivityQuery } from "../queries/projects";
 import { getCodeTreeQuery } from "../queries/files";
 import {
   fileMentionContext,
@@ -4362,6 +4362,7 @@ export function ChatPanel({
   const folderInputRef = useRef<HTMLInputElement>(null);
   const [state, dispatch, historyQuery] = useChatState(projectId, mainView === "chat" ? activeId : null);
   const harnessesQuery = useQuery(getHarnessesQuery());
+  const uiStateQuery = useQuery(getUiStateQuery());
   const { data: harnesses = EMPTY_HARNESSES } = harnessesQuery;
   const [selection, setSelection] = useState<ModelSelection | null>(preferredAgent);
   useEffect(() => setSelection(preferredAgent), [preferredAgent]);
@@ -7160,7 +7161,7 @@ export function ChatPanel({
                 <ModelPicker
                   value={composerSelection}
                   onSelect={selectModel}
-                  permissionChoices={activeHarness?.agentReady ? (opts?.permissionModes ?? []) : []}
+                  permissionChoices={activeHarness?.agentReady ? withAutoReviewer(opts?.permissionModes ?? [], activeHarness, uiStateQuery.data?.opencodeReviewModel, composerSelection?.model) : []}
                   defaultPermissionId={opts?.defaultPermissionMode ?? null}
                   onSelectPermission={setPermissionMode}
                   reasoningChoices={activeHarness?.agentReady ? reasoning.choices : []}

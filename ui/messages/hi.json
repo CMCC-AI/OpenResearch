@@ -1310,5 +1310,10 @@
   "remote_repair_terminal": "Repair terminal",
   "chat_skip_question": "प्रश्न छोड़ें",
   "chat_skip_questions": "प्रश्नों का यह समूह छोड़ें",
-  "chat_question_skipped": "छोड़ा गया"
+  "chat_question_skipped": "छोड़ा गया",
+  "settings_auto_reviewer": "Auto समीक्षक",
+  "settings_auto_reviewer_description": "वह मॉडल जो Auto में OpenCode के कमांड की समीक्षा करता है। छोटा मॉडल समीक्षा को सस्ता और तेज़ रखता है। लोकल मॉडल वाली चैट हमेशा अपने ही मॉडल से समीक्षा करती है।",
+  "settings_auto_reviewer_same": "चैट वाला ही मॉडल",
+  "opencode_auto_same_model": "हर कमांड की समीक्षा के लिए वही मॉडल इस्तेमाल करता है और भरोसा न होने पर आपसे पूछता है",
+  "opencode_auto_model": "हर कमांड की समीक्षा के लिए {model} इस्तेमाल करता है और भरोसा न होने पर आपसे पूछता है"
 }
