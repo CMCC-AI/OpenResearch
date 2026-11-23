@@ -22,7 +22,7 @@ import { ExpertConversationHeader } from "./ExpertConversationHeader";
 import { readTranscriptScroll, rememberTranscriptScroll } from "../transcriptScrollMemory";
 import { ProjectInfoCard } from "./ProjectInfoCard";
 import { fitSidebarRows, sidebarRowHeight, sidebarClasses, type SidebarRow } from "../sidebarLayout";
-import { useVirtualizer, defaultRangeExtractor, measureElement as measureVirtualElement, type Range as VirtualRange } from "@tanstack/react-virtual";
+import { useVirtualizer, defaultRangeExtractor, elementScroll, measureElement as measureVirtualElement, type Range as VirtualRange } from "@tanstack/react-virtual";
 import { markLiveUpdate } from "../queries/live";
 import { removeSession as removeCachedSession } from "../queries/invalidation";
 import {
@@ -2425,7 +2425,7 @@ function ToolRow({
       ) : (
         <ToolActivityIcon activity={activity} className="text-muted" />
       )}
-      <span className={`${TOOL_LINE_CLASS_NAME} ${failed ? "text-accent-red" : "text-subtext"}`}>
+      <span className={`${TOOL_LINE_CLASS_NAME} ${failed ? "text-accent-red group-hover/detail:text-text" : "text-subtext"}`}>
         <ToolActivityLabel
           activity={activity}
           onOpenFile={onOpenFile}
@@ -2450,15 +2450,18 @@ function ToolRow({
 
   return (
     <div className="tool-row tool-row-error flex flex-col min-w-0">
-      <div className="flex items-start gap-2 w-fit max-w-full py-[3px] px-1 min-w-0 rounded-sm">
+      <div
+        className="group/detail flex items-start gap-2 w-fit max-w-full py-[3px] px-1 min-w-0 rounded-sm cursor-pointer hover:bg-surface"
+        onClick={toggleUnlessControl(() => setDetailOpen((current) => !current))}
+      >
         {line}
         <button
           type="button"
-          className="tool-row-detail-toggle inline-flex h-6 shrink-0 items-center justify-center p-0.5 rounded-sm cursor-pointer hover:bg-surface"
+          data-row-toggle
+          className="tool-row-detail-toggle inline-flex h-6 shrink-0 items-center justify-center p-0.5 rounded-sm cursor-pointer"
           aria-expanded={detailOpen}
           aria-controls={detailId}
           aria-label={detailOpen ? m.a11y_hide_error_details({ activity: activity.label }) : m.a11y_show_error_details({ activity: activity.label })}
-          onClick={() => setDetailOpen((current) => !current)}
         >
           <ChevronRight size={16} className={`text-accent-red transition-transform duration-120 ease-standard ${detailOpen ? "rotate-90" : ""}`} />
         </button>
@@ -2472,6 +2475,15 @@ function ToolRow({
       )}
     </div>
   );
+}
+
+/** Toggles the row on click, unless a nested link or button without `data-row-toggle` was hit. */
+function toggleUnlessControl(toggle: () => void) {
+  return (event: React.MouseEvent<HTMLElement>) => {
+    const control = (event.target as Element).closest("a, button, [role='button']");
+    if (control && !control.hasAttribute("data-row-toggle")) return;
+    toggle();
+  };
 }
 
 /** Consecutive calls render as one Codex-style activity group: a readable
@@ -2562,7 +2574,10 @@ function ToolGroup({
 
   return (
     <div className="tool-group my-3.5 mx-0">
-      <div className="tool-group-summary flex items-start gap-2 w-fit max-w-full py-[3px] px-1 text-base leading-6 text-subtext text-start">
+      <div
+        className="tool-group-summary flex items-start gap-2 w-fit max-w-full py-[3px] px-1 text-base leading-6 text-subtext text-start cursor-pointer"
+        onClick={toggleUnlessControl(toggle)}
+      >
         <ToolActivityIcon activity={iconActivity} className={shimmering ? "tool-running-shimmer-icon" : "text-muted"} />
         {pendingActivity ? (
           <span
@@ -2583,7 +2598,7 @@ function ToolGroup({
           <button
             type="button"
             className="tool-group-label min-w-0 whitespace-normal break-words cursor-pointer text-start"
-            onClick={toggle}
+            data-row-toggle
             aria-expanded={open}
           >
             {summaryLabel}
@@ -2592,7 +2607,7 @@ function ToolGroup({
         <button
           type="button"
           className="tool-group-chevron-button inline-flex h-6 shrink-0 items-center justify-center p-px cursor-pointer rounded-sm"
-          onClick={toggle}
+          data-row-toggle
           aria-expanded={open}
           aria-label={open ? m.chat_collapse_tool_activity() : m.chat_expand_tool_activity()}
         >
@@ -3774,6 +3789,7 @@ export const Transcript = memo(function Transcript({
   scrollRef,
   scrollToEndRef,
   stickToBottom,
+  programmaticScroll,
   onPinToBottom,
   allMessages,
   canFork,
@@ -3799,6 +3815,8 @@ export const Transcript = memo(function Transcript({
   scrollRef: React.RefObject<HTMLDivElement | null>;
   scrollToEndRef: React.RefObject<(() => void) | null>;
   stickToBottom: React.RefObject<boolean>;
+  /** Where the virtualizer last scrolled, so the bottom pin follows only other scrolls. */
+  programmaticScroll?: React.RefObject<number | null>;
   onPinToBottom: () => void;
   /** Every branch, for counting the forks of each turn. */
   allMessages: ChatMessage[];
@@ -3882,6 +3900,15 @@ export const Transcript = memo(function Transcript({
     followOnAppend: true,
     scrollEndThreshold: 60,
     rangeExtractor,
+    scrollToFn: (offset, options, instance) => {
+      // virtual-core passes size corrections with the last scroll event's offset; apply them to the live scrollTop so a scroll since isn't undone.
+      const element = instance.scrollElement;
+      const target = options.adjustments === undefined ? offset : (element?.scrollTop ?? offset) + options.adjustments;
+      // A write that leaves scrollTop in place fires no scroll event, and a stale record would claim the user's next one.
+      const landing = element ? Math.max(0, Math.min(target, element.scrollHeight - element.clientHeight)) : target;
+      if (programmaticScroll) programmaticScroll.current = element && Math.abs(landing - element.scrollTop) < 0.5 ? null : landing;
+      elementScroll(target, { behavior: options.behavior }, instance);
+    },
   });
   useLayoutEffect(() => {
     const scroll = () => virtualizer.scrollToEnd();
@@ -4447,6 +4474,8 @@ export function ChatPanel({
   const threadInnerRef = useRef<HTMLDivElement>(null);
   const scrollToEndRef = useRef<(() => void) | null>(null);
   const stickToBottom = useRef(true);
+  const programmaticScroll = useRef<number | null>(null);
+  const lastTranscriptTop = useRef(0);
   const [transcriptAtBottom, setTranscriptAtBottom] = useState(true);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const [resumeOpen, setResumeOpen] = useState(false);
@@ -5353,8 +5382,15 @@ export function ChatPanel({
   const demoHintVisible =
     projectId === DEMO_PROJECT_ID && draft === DEMO_RUN_EXPERIMENT_PROMPT && !demoHintDismissed;
   const updateTranscriptBottom = useCallback((el: HTMLDivElement) => {
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-    stickToBottom.current = atBottom;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distance < 60;
+    // Wheels, keys, focus moves and screen readers scroll unannounced; only the virtualizer's own scrolls are recorded.
+    const programmatic = programmaticScroll.current !== null && Math.abs(el.scrollTop - programmaticScroll.current) <= 1;
+    const movedUp = el.scrollTop < lastTranscriptTop.current;
+    programmaticScroll.current = null;
+    lastTranscriptTop.current = el.scrollTop;
+    // Trackpads scroll a pixel at a time, so any upward scroll lets go before the next resize re-pins it.
+    if (!programmatic) stickToBottom.current = distance <= 1 || (atBottom && !movedUp);
     setTranscriptAtBottom(atBottom);
   }, []);
   const pinTranscriptToBottom = useCallback(() => {
@@ -6546,6 +6582,7 @@ export function ChatPanel({
                   scrollRef={threadRef}
                   scrollToEndRef={scrollToEndRef}
                   stickToBottom={stickToBottom}
+                  programmaticScroll={programmaticScroll}
                   onPinToBottom={pinTranscriptToBottom}
                   messages={messages}
                   allMessages={allMessages}

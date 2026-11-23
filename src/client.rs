@@ -961,9 +961,11 @@ impl From<PaperHit> for LitHit {
     }
 }
 
-/// `https://openalex.org/W123` (or any `.../W123`) → `W123`.
+/// `https://openalex.org/W123` (or any `.../W123`, with an optional trailing
+/// slash, query or fragment) → `W123`.
 fn strip_openalex_prefix(id: &str) -> &str {
-    id.rsplit('/').next().unwrap_or(id)
+    let id = id.split(['?', '#']).next().unwrap_or(id);
+    id.trim_end_matches('/').rsplit('/').next().unwrap_or(id)
 }
 
 /// `https://doi.org/10.1101/x` / `doi:10.1101/x` → `10.1101/x`.
@@ -1433,15 +1435,45 @@ pub async fn discover_pubmed(
     query: &str,
     options: PubmedDiscoveryOptions<'_>,
 ) -> Result<Vec<LitHit>> {
+    discover_pubmed_with_feedback(query, options)
+        .await
+        .map(|(hits, _)| hits)
+}
+
+/// Search PubMed, keeping esearch's relevance order unless a date priority reranks it.
+/// Also returns esearch's query feedback (terms it did not find or ignored), which
+/// does not make the search fail.
+pub async fn discover_pubmed_with_feedback(
+    query: &str,
+    options: PubmedDiscoveryOptions<'_>,
+) -> Result<(Vec<LitHit>, Vec<String>)> {
     let base = crate::config::pubmed_api_url();
     let url = pubmed_discovery_url(&base, query, &crate::config::ncbi_email(), options)?;
 
+    #[derive(Deserialize, Default)]
+    struct ErrorList {
+        #[serde(default)]
+        phrasesnotfound: Vec<String>,
+        #[serde(default)]
+        fieldsnotfound: Vec<String>,
+    }
+    #[derive(Deserialize, Default)]
+    struct WarningList {
+        #[serde(default)]
+        quotedphrasesnotfound: Vec<String>,
+        #[serde(default)]
+        phrasesignored: Vec<String>,
+    }
     #[derive(Deserialize)]
     struct SearchResult {
         #[serde(default)]
         idlist: Vec<String>,
         #[serde(rename = "ERROR")]
         error: Option<String>,
+        #[serde(default)]
+        errorlist: ErrorList,
+        #[serde(default)]
+        warninglist: WarningList,
     }
     #[derive(Deserialize)]
     struct SearchResponse {
@@ -1455,18 +1487,34 @@ pub async fn discover_pubmed(
     if let Some(error) = result.error {
         return Err(anyhow!("PubMed search failed: {error}"));
     }
+
+    let feedback = [
+        ("phrases not found", &result.errorlist.phrasesnotfound),
+        ("fields not found", &result.errorlist.fieldsnotfound),
+        (
+            "quoted phrases not found",
+            &result.warninglist.quotedphrasesnotfound,
+        ),
+        ("phrases ignored", &result.warninglist.phrasesignored),
+    ]
+    .into_iter()
+    .filter(|(_, terms)| !terms.is_empty())
+    .map(|(kind, terms)| format!("PubMed {kind}: {}", terms.join(", ")))
+    .collect();
+
     if result.idlist.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), feedback));
     }
 
     // efetch returns records in the order of the requested ids.
     let mut articles = fetch_pubmed_articles(&result.idlist).await?;
     rerank_pubmed_articles(&mut articles, options.prioritize);
-    Ok(articles
+    let hits = articles
         .into_iter()
         .take(options.limit as usize)
         .map(PubmedArticle::into_lit_hit)
-        .collect())
+        .collect();
+    Ok((hits, feedback))
 }
 
 fn rerank_pubmed_articles(articles: &mut [PubmedArticle], prioritize: &str) {
@@ -2294,6 +2342,13 @@ mod tests {
             openalex_selector("https://openalex.org/W2919115771"),
             "W2919115771"
         );
+        for url in [
+            "https://openalex.org/W2919115771/",
+            "https://openalex.org/W2919115771?foo=bar",
+            "https://openalex.org/W2919115771/#abstract",
+        ] {
+            assert_eq!(openalex_selector(url), "W2919115771", "{url}");
+        }
     }
 
     /// An OpenAlex `/works` row (id + doi as URLs, citations, inverted-index
@@ -2615,5 +2670,71 @@ mod tests {
             .to_string();
         assert_eq!(err, format!("{url} is too large to download"));
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn discover_pubmed_returns_query_feedback() {
+        if crate::test_support::run_isolated(
+            "client::tests::discover_pubmed_returns_query_feedback",
+            &[
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+            ],
+        ) {
+            return;
+        }
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        std::env::set_var(
+            "PUBMED_API_URL",
+            format!("http://{}", listener.local_addr().unwrap()),
+        );
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 4096];
+                let read = stream.read(&mut buf).await.unwrap();
+                let request = String::from_utf8_lossy(&buf[..read]);
+                let (kind, body) = if request.starts_with("GET /esearch") {
+                    (
+                        "json",
+                        r#"{"esearchresult":{"idlist":["111"],"errorlist":{"phrasesnotfound":["zzqqxxyy"],"fieldsnotfound":[]},"warninglist":{"quotedphrasesnotfound":[],"phrasesignored":["the"]}}}"#,
+                    )
+                } else {
+                    ("xml", "<PubmedArticleSet><PubmedArticle><MedlineCitation><PMID>111</PMID><Article><ArticleTitle>T</ArticleTitle></Article></MedlineCitation></PubmedArticle></PubmedArticleSet>")
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/{kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let (hits, feedback) = super::discover_pubmed_with_feedback(
+            "crispr[tiab] OR zzqqxxyy[tiab]",
+            PubmedDiscoveryOptions {
+                limit: 10,
+                published_after: None,
+                published_before: None,
+                prioritize: "popular",
+            },
+        )
+        .await
+        .unwrap();
+
+        server.abort();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            feedback,
+            [
+                "PubMed phrases not found: zzqqxxyy",
+                "PubMed phrases ignored: the"
+            ]
+        );
     }
 }

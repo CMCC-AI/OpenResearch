@@ -197,3 +197,41 @@ test("returning from an expert restores reading instead of forcing the main tran
   cleanup();
   assert.deepEqual(remembered, { key: "main", offset: 1600, atBottom: false, width: 800 });
 });
+
+test("any upward user scroll unpins from bottom while virtualizer adjustments preserve pin", () => {
+  const expression = find(node => ts.isVariableDeclaration(node) && node.name.getText(file) === "updateTranscriptBottom").initializer;
+  const stickToBottom = { current: true };
+  const programmaticScroll = { current: null };
+  const lastTranscriptTop = { current: 0 };
+  let transcriptAtBottom = true;
+  const update = evaluate(`return ${expression.getText(file)}`, {
+    useCallback: callback => callback,
+    stickToBottom,
+    programmaticScroll,
+    lastTranscriptTop,
+    setTranscriptAtBottom: value => { transcriptAtBottom = value; },
+  });
+
+  const el = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400 };
+  update(el);
+  assert.equal(stickToBottom.current, true);
+  assert.equal(transcriptAtBottom, true);
+
+  // Trackpad scrolls up by 2px (still within 60px threshold): must unpin at once.
+  el.scrollTop = 398;
+  update(el);
+  assert.equal(stickToBottom.current, false);
+  assert.equal(transcriptAtBottom, true);
+
+  // Scrolling back to the end re-pins it.
+  el.scrollTop = 400;
+  update(el);
+  assert.equal(stickToBottom.current, true);
+
+  // Virtualizer programmatic scroll adjustment moving scrollTop slightly up does not unpin.
+  programmaticScroll.current = 398;
+  el.scrollTop = 398;
+  update(el);
+  assert.equal(stickToBottom.current, true);
+  assert.equal(programmaticScroll.current, null);
+});
