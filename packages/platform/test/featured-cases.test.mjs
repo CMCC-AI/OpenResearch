@@ -632,6 +632,8 @@ test("admin meta endpoint edits draft and published case metadata with optimisti
     "建筑电力负荷预测实证研究",
     "利用气象数据改善预测精度。",
     "实证分析",
+    false,
+    null,
   ]);
   assert.deepEqual(audits.at(-1), ["admin-1", "case.meta", caseId]);
 
@@ -736,7 +738,7 @@ test("admin native sync updates metadata when provided and preserves existing me
     );
 
   await postNative({ revision: 4, workspace, assets: [] });
-  assert.deepEqual(updates[0].slice(3), [null, null, null]);
+  assert.deepEqual(updates[0].slice(3), [null, null, null, false, null]);
 
   await postNative({
     revision: 4,
@@ -746,5 +748,76 @@ test("admin native sync updates metadata when provided and preserves existing me
     summary: " 新描述 ",
     category: " 实验复现 ",
   });
-  assert.deepEqual(updates[1].slice(3), ["新标题", "新描述", "实验复现"]);
+  assert.deepEqual(updates[1].slice(3), [
+    "新标题",
+    "新描述",
+    "实验复现",
+    false,
+    null,
+  ]);
+});
+
+test("admin cover upload stores hashed cover image, updates case cover, and rejects invalid mime", async () => {
+  const caseId = "11111111-1111-4111-8111-111111111111";
+  const queries = [];
+  const db = {
+    query: async (sql, params) => {
+      queries.push([sql, params]);
+      if (sql.includes("FOR UPDATE")) return { rows: [{ revision: 5 }] };
+      return { rows: [] };
+    },
+    release() {},
+  };
+  let result;
+  const route = featuredCaseRoutes({
+    config: {
+      origin: new URL("http://localhost:5300"),
+      appOrigin: "http://localhost:5201",
+    },
+    pool: { connect: async () => db },
+    session: async () => ({ user_id: "admin-1", is_admin: true }),
+    json: (_res, data, status) => {
+      result = { data, status };
+    },
+    audit: async () => {},
+    limit: async () => {},
+  });
+  const pngBytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  await route(
+    Object.assign(Readable.from([pngBytes]), {
+      method: "POST",
+      url: `/api/platform/admin/cases/${caseId}/cover?revision=5`,
+      headers: {
+        origin: "http://localhost:5201",
+        "content-type": "image/png",
+      },
+    }),
+    { setHeader() {} },
+    `/api/platform/admin/cases/${caseId}/cover`,
+  );
+  assert.equal(result.status, 201);
+  assert.match(result.data.cover, /^asset:cover-[0-9a-f]{64}\.png$/);
+  assert.ok(
+    queries.some(
+      ([sql, params]) =>
+        sql.startsWith("UPDATE featured_cases SET cover=$2") &&
+        params[1] === result.data.cover,
+    ),
+  );
+
+  await assert.rejects(
+    route(
+      Object.assign(Readable.from([pngBytes]), {
+        method: "POST",
+        url: `/api/platform/admin/cases/${caseId}/cover`,
+        headers: {
+          origin: "http://localhost:5201",
+          "content-type": "text/plain",
+        },
+      }),
+      { setHeader() {} },
+      `/api/platform/admin/cases/${caseId}/cover`,
+    ),
+    { status: 415 },
+  );
 });

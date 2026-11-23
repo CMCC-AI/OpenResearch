@@ -36,6 +36,7 @@ function components(rows=[detail],admin=false,queryResult=null,progressSnapshot=
     getQueryData: () => ({ cases: cachedList }),
     prefetchQuery: async () => {},
   };
+  const caseCovers = load("../src/product/caseCovers.ts", {});
   return load("../src/product/FeaturedCases.tsx",{
     "@tanstack/react-query":{isCancelledError:()=>false,useQuery:()=>queryResult??({data:{cases:rows},isPending:false,isFetching:false,error:null,refetch:async()=>{}})},
     "@tanstack/react-router":{Link:({to,params,children,...props})=>React.createElement("a",{...props,href:params?`/cases/${params.caseId}`:to},children),useNavigate:()=>async()=>{}},
@@ -44,6 +45,7 @@ function components(rows=[detail],admin=false,queryResult=null,progressSnapshot=
     "./AuthSession":{useAuthSession:()=>({accountUrl:"http://localhost:5300",user:{id:"reader",isAdmin:admin}})},
     "./CloudWorkspace":{isCloudWorkspace:()=>false},
     "./ProductNav":{PlatformFrame:({children})=>children},
+    "./caseCovers": caseCovers,
     "../components/ui":{Button:({children,...props})=>React.createElement("button",props,children),Spinner:()=>React.createElement("span",{"data-spinner":"true"})},
     "../components/ProgressBar":{ProgressBar:({value,max,label,caption})=>React.createElement("div",{"data-progressbar":"true","data-value":value,"data-max":max},label,caption)},
     "../queries/client":{queryClient:clientStub},
@@ -213,4 +215,13 @@ test("full-page cases view renders category filters, search, badges, and avoids 
   assert.ok(html.includes("查看完整研究对话、推理过程与公开成果文件"));
   assert.ok(html.includes("2026-06-15"));
   assert.equal(html.split("缺失数据条件下的建筑电力负荷预测").length - 1, 1);
+
+  const assetCoverCase = {
+    ...reviewCase,
+    id: "case-asset",
+    cover: `asset:cover-${"a".repeat(64)}.png`,
+  };
+  const assetView = components([assetCoverCase], false);
+  const assetHtml = renderToStaticMarkup(React.createElement(assetView.ResearchCases, { fullPage: true }));
+  assert.ok(assetHtml.includes(`/api/platform/cases/case-asset/assets?name=cover-${"a".repeat(64)}.png`));
 });

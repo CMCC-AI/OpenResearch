@@ -1,6 +1,3 @@
-import reproductionCover from "../assets/workbench/reproduction.png";
-import experimentCover from "../assets/workbench/experiment.png";
-import reviewCover from "../assets/workbench/review.png";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { isCancelledError, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -12,6 +9,7 @@ import { PlatformFrame } from "./ProductNav";
 import { Button, Spinner } from "../components/ui";
 import { ProgressBar } from "../components/ProgressBar";
 import { queryClient } from "../queries/client";
+import { pickAutoCaseCover, resolveCaseCoverSrc } from "./caseCovers";
 import {
   caseDetailMeta,
   caseDetailRequest,
@@ -182,16 +180,6 @@ function useCaseProgress(base: string, caseId: string | null, admin: boolean) {
     readProgress,
     readProgress,
   );
-}
-
-const CASE_COVERS = [reproductionCover, experimentCover, reviewCover];
-
-function pickCaseCover(item: FeaturedCase, index: number) {
-  const source = `${item.category ?? ""} ${item.title ?? ""}`;
-  if (/综述|文献|survey|review/i.test(source)) return reviewCover;
-  if (/实验|数据|预测|分析|实证|experiment|benchmark/i.test(source)) return experimentCover;
-  if (/复现|模型|系统|架构|reproduction/i.test(source)) return reproductionCover;
-  return CASE_COVERS[index % CASE_COVERS.length];
 }
 
 function categoryBadgeClass(category: string) {
@@ -482,10 +470,14 @@ export function ResearchCases({ fullPage = false }: { fullPage?: boolean }) {
                   <article className="research-case-card flex h-full flex-1 flex-col overflow-hidden rounded-2xl border border-border-variant bg-background shadow-hairline">
                     <div className="research-case-cover relative overflow-hidden bg-surface">
                       <img
-                        src={pickCaseCover(item, index)}
+                        src={resolveCaseCoverSrc(base, item, index)}
                         alt=""
                         className="research-case-cover-img block w-full object-cover"
                         loading="lazy"
+                        onError={(event) => {
+                          const fallback = pickAutoCaseCover(item, index);
+                          if (event.currentTarget.src !== fallback) event.currentTarget.src = fallback;
+                        }}
                       />
                       <span className={`research-case-badge ${categoryBadgeClass(category)}`}>
                         {category}

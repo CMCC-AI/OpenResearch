@@ -1,11 +1,14 @@
 import type { Project } from "../api";
 import { captureNativeProject } from "./captureNativeProject";
-import { caseRequest, caseWrite, type FeaturedCaseDetail } from "./featuredCasesApi";
+import { caseRequest, caseWrite, uploadCaseCover, type FeaturedCaseDetail } from "./featuredCasesApi";
 
 export interface CaseMetadataInput {
   title?: string;
   summary?: string;
   category?: string;
+  cover?: string | null;
+  coverFile?: File | null;
+  coverArtifactPath?: string | null;
 }
 
 /** One user action: preserve the original project page, then make it visible in cases. */
@@ -18,6 +21,12 @@ export async function addProjectToCases(base: string, project: Pick<Project, "id
   const customTitle = meta?.title?.trim();
   const customSummary = meta?.summary?.trim();
   const customCategory = meta?.category?.trim();
+  let resolvedCover: string | null | undefined = meta?.cover;
+  if (meta?.coverArtifactPath) {
+    const assetKey = `/api/projects/${project.id}/files/file?path=${encodeURIComponent(meta.coverArtifactPath)}`;
+    const assetName = native.workspace.assets[assetKey];
+    if (assetName) resolvedCover = `asset:${assetName}`;
+  }
   if (current) {
     await caseWrite(base, `admin/cases/${current.id}/native`, {
       revision: current.revision,
@@ -25,6 +34,7 @@ export async function addProjectToCases(base: string, project: Pick<Project, "id
       ...(customTitle ? { title: customTitle } : {}),
       ...(customSummary ? { summary: customSummary } : {}),
       ...(customCategory ? { category: customCategory } : {}),
+      ...(resolvedCover !== undefined ? { cover: resolvedCover } : {}),
     });
   } else {
     const sessions = native.workspace.responses[`/api/chat/sessions?projectId=${project.id}`] as { sessions: { id: string; title: string }[] };
@@ -35,6 +45,7 @@ export async function addProjectToCases(base: string, project: Pick<Project, "id
       title: customTitle || defaultTitle,
       summary: customSummary || summary,
       category: customCategory || "科研实践",
+      ...(resolvedCover !== undefined ? { cover: resolvedCover } : {}),
       snapshot: { sessions: [], projectName: project.name, workspace: native.workspace },
       expectedFileCount: native.assets.length,
     });
@@ -50,8 +61,12 @@ export async function addProjectToCases(base: string, project: Pick<Project, "id
       method: "POST", headers: { "content-type": "application/octet-stream" }, body: new Blob([bytes]),
     });
   }
+  if (meta?.coverFile) {
+    progress("正在上传自定义封面图…");
+    await uploadCaseCover(base, current.id, meta.coverFile);
+  }
   current = await caseRequest<FeaturedCaseDetail>(base, `admin/cases/${current.id}`);
-  if (!current || current.files.length !== current.expected_file_count) throw new Error("项目内容尚未准备完成，请重试。");
+  if (!current || current.files.filter((file) => !file.name.startsWith("cover-")).length !== current.expected_file_count) throw new Error("项目内容尚未准备完成，请重试。");
   progress("正在加入案例集…");
   await caseWrite(base, `admin/cases/${current.id}/publish`, { revision: current.revision, reviewed: true });
   return current.id;

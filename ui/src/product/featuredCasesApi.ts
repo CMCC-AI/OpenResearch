@@ -4,6 +4,7 @@ import { snapshotMessages, type CaseSnapshot } from "./caseSnapshot";
 
 export interface FeaturedCase {
   id: string; title: string; summary: string; category: string;
+  cover?: string | null;
   source_project_id?: string;
   source_session_id?: string | null;
   status: "draft" | "published"; revision: number; sort_order: number;
@@ -127,6 +128,15 @@ export async function caseDetailRequest(
   }
 }
 export const caseWrite = <T,>(base: string, path: string, data: unknown) => caseRequest<T>(base, path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(data) });
+
+export async function uploadCaseCover(base: string, caseId: string, file: File, revision?: number): Promise<{ ok: true; cover: string; name: string }> {
+  const query = revision === undefined ? "" : `?revision=${encodeURIComponent(String(revision))}`;
+  return caseRequest<{ ok: true; cover: string; name: string }>(base, `admin/cases/${encodeURIComponent(caseId)}/cover${query}`, {
+    method: "POST",
+    headers: { "content-type": file.type || "application/octet-stream" },
+    body: file,
+  });
+}
 
 export async function captureProject(projectId: string, projectName?: string): Promise<CaseSnapshot> {
   const sessions = await listChatSessions(projectId);

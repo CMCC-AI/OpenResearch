@@ -553,6 +553,8 @@ form.stack {
 .auth-input-icon {
   position: absolute;
   left: 13px;
+  top: 50%;
+  transform: translateY(-50%);
   width: 16px;
   height: 16px;
   color: #7b90a6;

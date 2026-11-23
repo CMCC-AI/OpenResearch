@@ -33,9 +33,14 @@ function page({ projects = [], projectState = "success", status = "draft", resea
     "./AuthSession": { useAuthSession: () => ({ user: { id: "admin", isAdmin: true }, canAccessResearch: research }) },
     "./FeaturedCases": { useCasesBase: () => "" },
     "./addProjectToCases": { addProjectToCases: async (...args) => calls.push(["capture", ...args]) },
+    "./caseCovers": {
+      CASE_COVER_PRESETS: [{ id: "preset:experiment", label: "科学实验", src: "exp.png" }],
+      resolveCaseCoverSrc: (_base, item) => item.cover || "auto.png",
+    },
     "./featuredCasesApi": {
       caseRequest: async (...args) => { calls.push(["request", ...args]); if (failure) throw new Error(failure); },
       caseWrite: async (...args) => { calls.push(["write", ...args]); if (failure) throw new Error(failure); },
+      uploadCaseCover: async (...args) => { calls.push(["cover", ...args]); return { ok: true, cover: "asset:cover-abc.png", name: "cover-abc.png" }; },
     },
   };
   new Function("require", "exports", output)((id) => { assert.ok(id in dependencies, id); return dependencies[id]; }, exports);
@@ -154,7 +159,7 @@ test("selecting a conversation prefills editable title, category, and summary an
   const selects = () => p.nodes(p.render()).filter(node => node.type === "select");
   selects()[1].props.onChange({ target: { value: "s1" } });
 
-  const inputs = () => p.nodes(p.render()).filter(node => node.type === "input");
+  const inputs = () => p.nodes(p.render()).filter(node => node.type === "input" && node.props.type !== "file");
   const textareas = () => p.nodes(p.render()).filter(node => node.type === "textarea");
   assert.equal(inputs().length, 2);
   assert.equal(textareas().length, 1);
@@ -172,6 +177,7 @@ test("selecting a conversation prefills editable title, category, and summary an
     title: "自定义案例标题",
     summary: "自定义案例简介内容",
     category: "实验复现",
+    cover: null,
   });
 });
 
@@ -179,7 +185,7 @@ test("editing metadata works on both draft and published cases and invalidates q
   for (const status of ["draft", "published"]) {
     const p = page({ status });
     p.button("编辑信息").props.onClick();
-    const inputs = () => p.nodes(p.render()).filter(node => node.type === "input");
+    const inputs = () => p.nodes(p.render()).filter(node => node.type === "input" && node.props.type !== "file");
     const textareas = () => p.nodes(p.render()).filter(node => node.type === "textarea");
     assert.equal(inputs()[0].props.value, "历史项目");
     inputs()[0].props.onChange({ target: { value: " 新标题 " } });
@@ -191,7 +197,7 @@ test("editing metadata works on both draft and published cases and invalidates q
       "write",
       "",
       "admin/cases/saved/meta",
-      { revision: 7, title: "新标题", summary: "更清晰的案例描述", category: "文献综述" },
+      { revision: 7, title: "新标题", summary: "更清晰的案例描述", category: "文献综述", cover: null },
     ]]);
     assert.equal(p.invalidations.length, 3);
     assert.equal(p.button("保存修改"), undefined);

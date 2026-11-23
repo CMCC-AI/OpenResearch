@@ -26,7 +26,18 @@ const CASE_JSON_LIMIT = NATIVE_METADATA_LIMIT + 1024 * 1024;
 const uuid = (value) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 const fields =
-  "id,title,summary,category,status,revision,sort_order,created_at,updated_at,published_at";
+  "id,title,summary,category,cover,status,revision,sort_order,created_at,updated_at,published_at";
+const COVER_PATTERN =
+  /^(?:preset:[a-z0-9_-]{1,40}|asset:(?:native|cover)-[0-9a-f]{64}\.(?:png|jpg|jpeg|webp|svg))$/i;
+function normalizeCover(value) {
+  if (value === undefined || value === null || value === "") return null;
+  check(
+    typeof value === "string" && COVER_PATTERN.test(value.trim()),
+    400,
+    "封面标识格式无效",
+  );
+  return value.trim();
+}
 
 // PostgreSQL jsonb rejects U+0000 and unpaired UTF-16 surrogates (22P05).
 // Tool output from binary files or truncated text can contain either, so
@@ -845,11 +856,12 @@ export function featuredCaseRoutes({
           value.expectedFileCount <= (value.snapshot.workspace ? 2000 : 200),
       );
       const source = text(value.sourceProjectId, 100);
+      const cover = normalizeCover(value.cover);
       const caseId = id();
       await authorize();
       await transaction(pool, async (db) => {
         await db.query(
-          `INSERT INTO featured_cases(id,created_by,source_project_id,title,summary,category,snapshot,expected_file_count) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+          `INSERT INTO featured_cases(id,created_by,source_project_id,title,summary,category,snapshot,expected_file_count,cover) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
           [
             caseId,
             user.user_id,
@@ -859,6 +871,7 @@ export function featuredCaseRoutes({
             text(value.category, 80),
             jsonbString(snapshot),
             value.expectedFileCount,
+            cover,
           ],
         );
         await audit(db, user.user_id, null, "case.draft", caseId);
@@ -874,7 +887,7 @@ export function featuredCaseRoutes({
       const name = new URL(req.url, config.origin).searchParams.get("name");
       check(
         typeof name === "string" &&
-          /^native-[0-9a-f]{64}\.[a-z0-9]{1,10}$/i.test(name),
+          /^(?:native|cover)-[0-9a-f]{64}\.[a-z0-9]{1,10}$/i.test(name),
         404,
       );
       const result = await pool.query(
@@ -957,6 +970,8 @@ export function featuredCaseRoutes({
         value.summary === undefined ? null : text(value.summary, 4000);
       const nextCategory =
         value.category === undefined ? null : text(value.category, 80);
+      const updateCover = value.cover !== undefined;
+      const nextCover = updateCover ? normalizeCover(value.cover) : null;
       const manifestNames = new Set(Object.values(native.assets));
       check(manifestNames.size <= 2000, 413, "原项目副本最多包含 2,000 个文件");
       const copies = list(
@@ -1034,7 +1049,7 @@ export function featuredCaseRoutes({
             [file.id, caseId, file.name, file.size, file.sha256, file.content],
           );
         await db.query(
-          "UPDATE featured_cases SET snapshot=$2,expected_file_count=$3,title=COALESCE($4,title),summary=COALESCE($5,summary),category=COALESCE($6,category),revision=revision+1,updated_at=now() WHERE id=$1",
+          "UPDATE featured_cases SET snapshot=$2,expected_file_count=$3,title=COALESCE($4,title),summary=COALESCE($5,summary),category=COALESCE($6,category),cover=CASE WHEN $7 THEN $8 ELSE cover END,revision=revision+1,updated_at=now() WHERE id=$1",
           [
             caseId,
             jsonbString({
@@ -1046,6 +1061,8 @@ export function featuredCaseRoutes({
             nextTitle,
             nextSummary,
             nextCategory,
+            updateCover,
+            nextCover,
           ],
         );
         await audit(db, user.user_id, null, "case.native", caseId);
@@ -1189,6 +1206,63 @@ export function featuredCaseRoutes({
       json(res, file, 201);
       return true;
     }
+    if (action === "cover" && !fileId) {
+      check(req.method === "POST", 405);
+      const mimeType = String(req.headers["content-type"] || "")
+        .split(";")[0]
+        .trim()
+        .toLowerCase();
+      const extension = {
+        "image/png": "png",
+        "image/jpeg": "jpg",
+        "image/webp": "webp",
+        "image/svg+xml": "svg",
+      }[mimeType];
+      check(extension, 415, "仅支持 PNG、JPG、WebP 或 SVG 格式封面图");
+      const content = await body(req, 5 * 1024 * 1024);
+      check(content.length > 0, 400, "封面图不能为空");
+      const revisionParam = new URL(req.url, config.origin).searchParams.get(
+        "revision",
+      );
+      const expectedRevision =
+        revisionParam === null ? null : Number(revisionParam);
+      if (expectedRevision !== null) {
+        check(Number.isSafeInteger(expectedRevision), 400);
+      }
+      await authorize();
+      const sha256 = createHash("sha256").update(content).digest("hex");
+      const name = `cover-${sha256}.${extension}`;
+      const cover = `asset:${name}`;
+      await transaction(pool, async (db) => {
+        const row = (
+          await db.query(
+            "SELECT revision FROM featured_cases WHERE id=$1 FOR UPDATE",
+            [caseId],
+          )
+        ).rows[0];
+        check(row, 404);
+        check(
+          expectedRevision === null || row.revision === expectedRevision,
+          409,
+          "案例已变化，请重新读取",
+        );
+        await db.query(
+          "DELETE FROM featured_case_files WHERE case_id=$1 AND name LIKE 'cover-%' AND name <> $2",
+          [caseId, name],
+        );
+        await db.query(
+          "INSERT INTO featured_case_files VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(case_id,name) DO UPDATE SET size=EXCLUDED.size,sha256=EXCLUDED.sha256,content=EXCLUDED.content",
+          [id(), caseId, name, content.length, sha256, content],
+        );
+        await db.query(
+          "UPDATE featured_cases SET cover=$2,revision=revision+1,updated_at=now() WHERE id=$1",
+          [caseId, cover],
+        );
+        await audit(db, user.user_id, null, "case.cover", caseId);
+      });
+      json(res, { ok: true, cover, name }, 201);
+      return true;
+    }
     if (!action && req.method === "DELETE") {
       await transaction(pool, async (db) => {
         const row = (
@@ -1232,7 +1306,7 @@ export function featuredCaseRoutes({
           "请先审核完整对话和成果文件",
         );
         const files = await db.query(
-          "SELECT count(*)::int AS count FROM featured_case_files WHERE case_id=$1",
+          "SELECT count(*)::int AS count FROM featured_case_files WHERE case_id=$1 AND name NOT LIKE 'cover-%'",
           [caseId],
         );
         check(
@@ -1253,9 +1327,18 @@ export function featuredCaseRoutes({
         const nextTitle = text(value.title, 200);
         const nextSummary = text(value.summary, 4000);
         const nextCategory = text(value.category, 80);
+        const updateCover = value.cover !== undefined;
+        const nextCover = updateCover ? normalizeCover(value.cover) : null;
         await db.query(
-          "UPDATE featured_cases SET title=$2,summary=$3,category=$4,revision=revision+1,updated_at=now() WHERE id=$1",
-          [caseId, nextTitle, nextSummary, nextCategory],
+          "UPDATE featured_cases SET title=$2,summary=$3,category=$4,cover=CASE WHEN $5 THEN $6 ELSE cover END,revision=revision+1,updated_at=now() WHERE id=$1",
+          [
+            caseId,
+            nextTitle,
+            nextSummary,
+            nextCategory,
+            updateCover,
+            nextCover,
+          ],
         );
       } else {
         check(
