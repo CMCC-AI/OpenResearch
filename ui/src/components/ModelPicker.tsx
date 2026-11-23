@@ -28,6 +28,7 @@ import { IconButton, MenuItem } from "./ui";
 import { cn } from "./ui/cn";
 
 import { LocalModelSetup } from "./LocalModelSetup";
+import { ProviderLogo, groupModelsByProvider, resolveModelProvider } from "./ProviderLogo";
 import { localizeOptionChoices } from "../optionChoiceLabels";
 
 const EMPTY_CHOICES: OptionChoice[] = [];
@@ -171,6 +172,7 @@ export function ModelPicker({
     return () => { window.removeEventListener("resize", update); window.removeEventListener("scroll", update, true); };
   }, [open]);
   const [filter, setFilter] = useState("");
+  const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>({});
   const [page, setPage] = useState<"root" | "models" | "reasoning" | "speed" | "permissions" | "autonomy">("root");
 
   const close = () => {
@@ -209,8 +211,14 @@ export function ModelPicker({
       lockHarness && value ? harnesses.filter((h) => h.id === value.harness) : harnesses;
     return shown.map((h) => {
       let models = h.models;
-      if (q) models = models.filter((m) => `${m.id} ${harnessModelLabel(m)}`.toLowerCase().includes(q));
-      return { harness: h, models, hidden: q ? 0 : h.models.length - models.length };
+      if (q) {
+        models = models.filter((m) => {
+          const providerLabel = resolveModelProvider(m.id).label;
+          return `${m.id} ${harnessModelLabel(m)} ${providerLabel}`.toLowerCase().includes(q);
+        });
+      }
+      const providerGroups = groupModelsByProvider(models);
+      return { harness: h, models, providerGroups, hidden: q ? 0 : h.models.length - models.length };
     });
   }, [harnesses, filter, lockHarness, value]);
 
@@ -394,6 +402,8 @@ export function ModelPicker({
       >
         {effectiveServiceTier === "priority" ? (
           <Zap size={14} fill="currentColor" aria-hidden="true" />
+        ) : value?.model ? (
+          <ProviderLogo providerKey={resolveModelProvider(value.model).key} size={14} />
         ) : (
           <Sparkles size={14} className="shrink-0 text-muted" aria-hidden="true" />
         )}
@@ -426,7 +436,7 @@ export function ModelPicker({
                 onChange={(e) => setFilter(e.target.value)}
               />
               <div className="model-menu-list min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5 [scrollbar-width:thin] [scrollbar-color:var(--muted)_transparent] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted/40 hover:[&::-webkit-scrollbar-thumb]:bg-muted/70 active:[&::-webkit-scrollbar-thumb]:bg-muted">
-                {groups.map(({ harness, models, hidden }) => (
+                {groups.map(({ harness, providerGroups, hidden }) => (
                   <div key={harness.id}>
                     {!harness.agentReady ? (
                       <div className="model-more [&_code]:font-mono [&_code]:text-xs [&_code]:bg-surface [&_code]:border [&_code]:border-border-variant [&_code]:rounded-xs [&_code]:py-px [&_code]:px-[5px] [&_code]:whitespace-nowrap pt-1 px-2 pb-2 text-sm text-muted model-unavailable leading-normal border-b border-b-border-variant">
@@ -448,19 +458,54 @@ export function ModelPicker({
                         {harness.models.length === 0 && harness.agentNote && (
                           <div className={MODEL_MORE_CLASS_NAME}>{renderNote(harness.agentNote)}</div>
                         )}
-                        {models.map((m) => (
-                          <MenuItem
-                            key={m.id}
-                            ref={value?.harness === harness.id && value?.model === m.id ? activeModelRef : undefined}
-                            title={m.id}
-                            onClick={() => pick(harness, m.id)}
-                          >
-                            <span>{harnessModelLabel(m)}</span>
-                            {value?.harness === harness.id && value?.model === m.id && (
-                              <Check size={13} />
-                            )}
-                          </MenuItem>
-                        ))}
+                        {providerGroups.map((pg, groupIndex) => {
+                          const isSearching = filter.trim().length > 0;
+                          const isCollapsed = !isSearching && !!collapsedProviders[pg.groupId];
+                          return (
+                            <div
+                              key={pg.groupId}
+                              className={cn(
+                                (groupIndex > 0 || !isSearching) && "mt-1.5 border-t border-border-variant pt-1.5",
+                              )}
+                            >
+                              <button
+                                type="button"
+                                aria-expanded={!isCollapsed}
+                                className="flex w-full items-center gap-1.5 rounded-sm px-2 py-1 text-start text-xs font-medium text-subtext transition-[background,color] duration-120 ease-standard hover:bg-surface hover:text-text"
+                                onClick={() =>
+                                  setCollapsedProviders((prev) => ({
+                                    ...prev,
+                                    [pg.groupId]: !prev[pg.groupId],
+                                  }))
+                                }
+                              >
+                                <ProviderLogo providerKey={pg.key} size={13} />
+                                <span className="min-w-0 flex-1 truncate">{pg.label}</span>
+                                <span className="text-xs font-normal tabular-nums text-muted">
+                                  {pg.models.length}
+                                </span>
+                                {isCollapsed ? (
+                                  <ChevronRight size={12} className="shrink-0 text-muted" aria-hidden="true" />
+                                ) : (
+                                  <ChevronDown size={12} className="shrink-0 text-muted" aria-hidden="true" />
+                                )}
+                              </button>
+                              {!isCollapsed && pg.models.map((entry) => (
+                                <MenuItem
+                                  key={entry.id}
+                                  ref={value?.harness === harness.id && value?.model === entry.id ? activeModelRef : undefined}
+                                  title={entry.id}
+                                  onClick={() => pick(harness, entry.id)}
+                                >
+                                  <span>{harnessModelLabel(entry)}</span>
+                                  {value?.harness === harness.id && value?.model === entry.id && (
+                                    <Check size={13} />
+                                  )}
+                                </MenuItem>
+                              ))}
+                            </div>
+                          );
+                        })}
                         {/* An explicit ID is passed to the CLI without claiming availability. */}
                         {filter.trim().length > 0 &&
                           !harness.models.some((m) => m.id === filter.trim()) && (
@@ -475,15 +520,17 @@ export function ModelPicker({
                       </>
                     )}
                     {harness.id === "opencode" && (
-                      <MenuItem type="button" className="font-medium" aria-haspopup="dialog" onClick={() => {
-                        close();
-                        triggerRef.current?.focus();
-                        setAddingLocalModel(true);
-                      }}>
-                        <span className="inline-flex items-center gap-1.5">
-                          {m.model_picker_add_local_model()}<Plus size={14} aria-hidden="true" />
-                        </span>
-                      </MenuItem>
+                      <div className="mt-1.5 border-t border-border-variant pt-1.5">
+                        <MenuItem type="button" className="font-medium" aria-haspopup="dialog" onClick={() => {
+                          close();
+                          triggerRef.current?.focus();
+                          setAddingLocalModel(true);
+                        }}>
+                          <span className="inline-flex items-center gap-1.5">
+                            {m.model_picker_add_local_model()}<Plus size={14} aria-hidden="true" />
+                          </span>
+                        </MenuItem>
+                      </div>
                     )}
                     {harness.agentReady && hidden > 0 && (
                       <div className={MODEL_MORE_CLASS_NAME}>{m.model_picker_more({ count: fmtNumber(hidden) })}</div>
