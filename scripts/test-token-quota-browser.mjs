@@ -210,7 +210,7 @@ try {
   assert.equal(monthlyLimit, 2000000);
   assert.equal(pending, true);
   await page.getByRole("switch", { name: "关闭模型 Kimi updated", exact: true }).click();
-  await page.getByRole("alert").filter({ hasText: "平台至少需要保留 1 个可用模型" }).waitFor();
+  await page.getByRole("alert").filter({ hasText: "平台至少需要保留 1 个可用网关模型" }).waitFor();
 
   await page.getByRole("tab", { name: "提供商", exact: true }).click();
   await page
