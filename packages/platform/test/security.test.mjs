@@ -8,6 +8,9 @@ import {
   verifyPassword,
   hostWorkspace,
   sessionCookie,
+  sessionRenewal,
+  DEFAULT_SESSION_IDLE_TTL,
+  DEFAULT_SESSION_ABSOLUTE_TTL,
   workspaceEntryOrigin,
   browserSessionOrigin,
 } from "../src/security.mjs";
@@ -190,4 +193,112 @@ test("browser session reads accept same-origin GETs without Origin, but reject f
     { ...request, headers: { ...request.headers, origin: "http://evil.test" } },
   ])
     assert.throws(() => browserSessionOrigin(req, origin), { status: 403 });
+});
+
+test("sliding session renewal extends idle sessions up to the absolute cap", () => {
+  assert.match(sessionCookie("tok", false), /Max-Age=604800\b/);
+  const base = Date.UTC(2026, 10, 23, 0, 0, 0);
+  const iso = (offsetSec) => new Date(base + offsetSec * 1000).toISOString();
+  const idle = DEFAULT_SESSION_IDLE_TTL;
+  const abs = DEFAULT_SESSION_ABSOLUTE_TTL;
+
+  // Fresh session (> half of 7d remaining): no renewal yet.
+  assert.deepEqual(
+    sessionRenewal(
+      {
+        created_at: iso(0),
+        expires_at: iso(idle),
+        max_expires_at: iso(abs),
+        db_now: iso(2 * 86400),
+      },
+      idle,
+      abs,
+    ),
+    { renew: false, renewParent: false, nextMaxAge: 0 },
+  );
+
+  // Past halfway (< 3.5d remaining): renews for full 7d.
+  assert.deepEqual(
+    sessionRenewal(
+      {
+        created_at: iso(0),
+        expires_at: iso(idle),
+        max_expires_at: iso(abs),
+        db_now: iso(4 * 86400),
+      },
+      idle,
+      abs,
+    ),
+    { renew: true, renewParent: false, nextMaxAge: idle },
+  );
+
+  // Near 30d absolute cap: renews only up to remaining absolute lifetime.
+  assert.deepEqual(
+    sessionRenewal(
+      {
+        created_at: iso(0),
+        expires_at: iso(abs - 86400),
+        max_expires_at: iso(abs),
+        db_now: iso(abs - 3 * 86400),
+      },
+      idle,
+      abs,
+    ),
+    { renew: true, renewParent: false, nextMaxAge: 3 * 86400 },
+  );
+
+  // Already at absolute cap: does not renew past max_expires_at.
+  assert.deepEqual(
+    sessionRenewal(
+      {
+        created_at: iso(0),
+        expires_at: iso(abs),
+        max_expires_at: iso(abs),
+        db_now: iso(abs - 86400),
+      },
+      idle,
+      abs,
+    ),
+    { renew: false, renewParent: false, nextMaxAge: 0 },
+  );
+
+  // Child session also triggers parent renewal when parent is past halfway.
+  assert.deepEqual(
+    sessionRenewal(
+      {
+        created_at: iso(86400),
+        expires_at: iso(86400 + idle),
+        max_expires_at: iso(abs),
+        parent_hash: "parent-hash",
+        parent_created_at: iso(0),
+        parent_expires_at: iso(idle),
+        parent_max_expires_at: iso(abs),
+        db_now: iso(4 * 86400),
+      },
+      idle,
+      abs,
+    ),
+    { renew: false, renewParent: true, nextMaxAge: idle },
+  );
+
+  // Configuration validates session TTL environment variables.
+  const validEnv = {
+    DATABASE_URL: "postgres://test:test@localhost/test",
+    PLATFORM_ORIGIN: "https://platform.test",
+    OPENRESEARCH_APP_ORIGIN: "https://app.test",
+    SESSION_IDLE_TTL_SECONDS: "3600",
+    SESSION_ABSOLUTE_TTL_SECONDS: "7200",
+  };
+  const cfg = configuration(validEnv);
+  assert.equal(cfg.sessionIdleTtl, 3600);
+  assert.equal(cfg.sessionAbsoluteTtl, 7200);
+  assert.throws(
+    () =>
+      configuration({
+        ...validEnv,
+        SESSION_IDLE_TTL_SECONDS: "7200",
+        SESSION_ABSOLUTE_TTL_SECONDS: "3600",
+      }),
+    /SESSION_ABSOLUTE_TTL_SECONDS/,
+  );
 });

@@ -10,6 +10,12 @@ import { listCaseArtifacts, selectedCaseArtifacts, artifactSelectionSummary } fr
 import { addProjectToCases } from "./addProjectToCases";
 import { caseRequest, caseWrite, type FeaturedCase } from "./featuredCasesApi";
 
+const CASE_CATEGORY_PRESETS = ["科研实践", "文献综述", "实验复现", "数据分析", "课题构思"];
+
+function defaultCaseSummary(title: string) {
+  return title ? `围绕「${title}」的完整研究过程与公开成果记录。` : "";
+}
+
 export function ManageCasesPage({ initialProject = "" }: { initialProject?: string }) {
   const base = useCasesBase();
   const { user, canAccessResearch } = useAuthSession();
@@ -17,6 +23,10 @@ export function ManageCasesPage({ initialProject = "" }: { initialProject?: stri
   const [projectId, setProjectId] = useState(initialProject);
   const [sessionId, setSessionId] = useState("");
   const [artifactPaths, setArtifactPaths] = useState<string[]>([]);
+  const [caseTitle, setCaseTitle] = useState("");
+  const [caseSummary, setCaseSummary] = useState("");
+  const [caseCategory, setCaseCategory] = useState("科研实践");
+  const [editing, setEditing] = useState<{ id: string; revision: number; title: string; summary: string; category: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
@@ -51,7 +61,12 @@ export function ManageCasesPage({ initialProject = "" }: { initialProject?: stri
   }
 
   function add(project: { id: string; name: string }, existingId?: string, sourceSessionId?: string, paths: string[] = artifactPaths) {
-    return action(() => addProjectToCases(base, project, setProgress, existingId, sourceSessionId, paths), "已加入案例集，用户可以查看所选范围的对话和文件。");
+    const meta = {
+      title: caseTitle.trim(),
+      summary: caseSummary.trim(),
+      category: caseCategory.trim() || "科研实践",
+    };
+    return action(() => addProjectToCases(base, project, setProgress, existingId, sourceSessionId, paths, meta), "已加入案例集，用户可以查看所选范围的对话和文件。");
   }
 
   const selectedProject = projects.data?.find((row) => row.id === projectId);
@@ -129,6 +144,9 @@ export function ManageCasesPage({ initialProject = "" }: { initialProject?: stri
                     setProjectId(event.target.value);
                     setSessionId("");
                     setArtifactPaths([]);
+                    setCaseTitle("");
+                    setCaseSummary("");
+                    setCaseCategory("科研实践");
                   }}
                   className="h-9 rounded-md border border-border bg-background px-2.5 text-sm text-text"
                 >
@@ -149,8 +167,23 @@ export function ManageCasesPage({ initialProject = "" }: { initialProject?: stri
                     value={sessionId}
                     disabled={busy || !sessions.isSuccess}
                     onChange={(event) => {
-                      setSessionId(event.target.value);
+                      const nextSessionId = event.target.value;
+                      setSessionId(nextSessionId);
                       setArtifactPaths([]);
+                      const matchedSession = mainSessions?.find((session) => session.id === nextSessionId);
+                      const matchedExisting =
+                        cases.data?.cases.find((item) => item.source_project_id === projectId && (item.source_session_id || "") === nextSessionId && item.status === "published") ??
+                        cases.data?.cases.find((item) => item.source_project_id === projectId && (item.source_session_id || "") === nextSessionId);
+                      if (nextSessionId) {
+                        const fallbackTitle = matchedSession?.title || selectedProject.name || "";
+                        setCaseTitle(matchedExisting?.title || fallbackTitle);
+                        setCaseSummary(matchedExisting?.summary || defaultCaseSummary(fallbackTitle));
+                        setCaseCategory(matchedExisting?.category || "科研实践");
+                      } else {
+                        setCaseTitle("");
+                        setCaseSummary("");
+                        setCaseCategory("科研实践");
+                      }
                     }}
                     className="h-9 rounded-md border border-border bg-background px-2.5 text-sm text-text"
                   >
@@ -166,6 +199,80 @@ export function ManageCasesPage({ initialProject = "" }: { initialProject?: stri
                 </label>
               )}
             </div>
+
+            {selectedProject && sessionId && (
+              <div className="flex flex-col gap-3 rounded-xl border border-border-variant bg-surface/50 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-text">展示信息（可自定义）</span>
+                  <span className="text-xs text-subtext">
+                    {existing?.status === "published" ? "该对话已发布，可在下方列表点击「编辑信息」修改展示内容。" : "将直接展示在精选案例卡片上，支持后续随时修改。"}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
+                  <label className="flex flex-col gap-1.5 text-xs font-medium text-text">
+                    案例标题
+                    <input
+                      type="text"
+                      required
+                      maxLength={200}
+                      value={caseTitle}
+                      disabled={busy || existing?.status === "published"}
+                      onChange={(event) => setCaseTitle(event.target.value)}
+                      placeholder="输入向用户展示的案例标题"
+                      className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal text-text focus:border-primary focus:outline-none disabled:opacity-60"
+                    />
+                  </label>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="flex flex-col gap-1.5 text-xs font-medium text-text">
+                      研究分类
+                      <input
+                        type="text"
+                        required
+                        maxLength={80}
+                        value={caseCategory}
+                        disabled={busy || existing?.status === "published"}
+                        onChange={(event) => setCaseCategory(event.target.value)}
+                        placeholder="如：科研实践、文献综述、实验复现"
+                        className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal text-text focus:border-primary focus:outline-none disabled:opacity-60"
+                      />
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {CASE_CATEGORY_PRESETS.map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          disabled={busy || existing?.status === "published"}
+                          onClick={() => setCaseCategory(preset)}
+                          className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${
+                            caseCategory.trim() === preset
+                              ? "border-primary bg-primary-subtle font-medium text-primary"
+                              : "border-border-variant bg-background text-subtext hover:border-border hover:text-text"
+                          } disabled:opacity-50`}
+                        >
+                          {preset}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <label className="flex flex-col gap-1.5 text-xs font-medium text-text">
+                  <span className="flex items-center justify-between gap-2">
+                    <span>案例简介</span>
+                    <span className="font-normal tabular-nums text-muted">{caseSummary.length} / 4000</span>
+                  </span>
+                  <textarea
+                    rows={3}
+                    required
+                    maxLength={4000}
+                    value={caseSummary}
+                    disabled={busy || existing?.status === "published"}
+                    onChange={(event) => setCaseSummary(event.target.value)}
+                    placeholder="简要介绍研究背景、方法路径与主要成果，帮助其他研究者快速了解案例价值"
+                    className="rounded-md border border-border bg-background px-3 py-2 text-sm font-normal text-text focus:border-primary focus:outline-none disabled:opacity-60"
+                  />
+                </label>
+              </div>
+            )}
 
             {selectedProject && sessions.isPending && (
               <p role="status" className="m-0 text-xs text-subtext">
@@ -304,94 +411,224 @@ export function ManageCasesPage({ initialProject = "" }: { initialProject?: stri
             {visibleCases.map((item) => {
               const sourceProject = projects.data?.find((row) => row.id === item.source_project_id);
               const isPublished = item.status === "published";
+              const isEditing = editing?.id === item.id;
               return (
                 <article
                   key={item.id}
-                  className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border bg-background p-4 shadow-xs transition-colors hover:border-border-strong"
+                  className="flex flex-col gap-3 rounded-xl border border-border bg-background p-4 shadow-xs transition-colors hover:border-border-strong"
                 >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="m-0 text-base font-medium text-text">{item.title}</h3>
-                      <span
-                        className={`inline-flex items-center rounded-full border px-2 py-px text-xs ${
-                          isPublished
-                            ? "border-accent-green bg-accent-green-subtle text-accent-green"
-                            : "border-accent-amber bg-accent-amber-subtle text-accent-amber"
-                        }`}
-                      >
-                        {isPublished ? "已加入案例集" : "未发布的案例副本"}
-                      </span>
-                      <span className="inline-flex items-center rounded-full bg-surface px-2 py-px text-xs text-subtext">
-                        {item.source_session_id ? `单个对话 · ${sourceProject?.name || "原项目"}` : "整个项目"}
-                      </span>
-                    </div>
-                    {projects.isSuccess && !sourceProject && (
-                      <p className="mb-0 mt-1.5 text-xs text-subtext">
-                        当前工作空间未找到原项目，可能已删除或位于其他工作空间。已保存的案例副本仍可查看和管理。
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Link
-                      to="/cases/$caseId"
-                      params={{ caseId: item.id }}
-                      search={item.status === "draft" ? { preview: true } : {}}
-                      className="inline-flex h-7 items-center gap-1 rounded-sm border border-border-variant bg-surface/60 px-2.5 text-xs font-medium text-primary no-underline transition-colors hover:bg-primary-subtle"
-                    >
-                      查看案例副本
-                    </Link>
-
-                    {item.status === "draft" && (
-                      <>
-                        {sourceProject && canAccessResearch && (
-                          <Button
-                            size="small"
-                            disabled={busy}
-                            onClick={() => {
-                              setProjectId(sourceProject.id);
-                              setSessionId(item.source_session_id || "");
-                              setArtifactPaths([]);
-                              setProgress("请在上方选择主对话和要公开的成果，再加入案例集。");
-                            }}
-                          >
-                            {item.source_session_id ? "选择成果并更新" : "创建对话案例"}
-                          </Button>
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="m-0 text-base font-medium text-text">{item.title}</h3>
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2 py-px text-xs ${
+                            isPublished
+                              ? "border-accent-green bg-accent-green-subtle text-accent-green"
+                              : "border-accent-amber bg-accent-amber-subtle text-accent-amber"
+                          }`}
+                        >
+                          {isPublished ? "已加入案例集" : "未发布的案例副本"}
+                        </span>
+                        {item.category && (
+                          <span className="inline-flex items-center rounded-full bg-primary-subtle px-2 py-px text-xs text-primary">
+                            {item.category}
+                          </span>
                         )}
-                        <Button
-                          size="small"
-                          variant="primary"
-                          disabled={busy}
-                          onClick={() => setConfirmation({ item, kind: "publish" })}
-                        >
-                          发布已保存副本
-                        </Button>
-                        <Button
-                          size="small"
-                          variant="danger"
-                          disabled={busy}
-                          onClick={() => setConfirmation({ item, kind: "delete" })}
-                        >
-                          删除草稿
-                        </Button>
-                      </>
-                    )}
+                        <span className="inline-flex items-center rounded-full bg-surface px-2 py-px text-xs text-subtext">
+                          {item.source_session_id ? `单个对话 · ${sourceProject?.name || "原项目"}` : "整个项目"}
+                        </span>
+                      </div>
+                      {item.summary && (
+                        <p className="mb-0 mt-1.5 line-clamp-2 text-xs text-subtext">{item.summary}</p>
+                      )}
+                      {projects.isSuccess && !sourceProject && (
+                        <p className="mb-0 mt-1.5 text-xs text-subtext">
+                          当前工作空间未找到原项目，可能已删除或位于其他工作空间。已保存的案例副本仍可查看和管理。
+                        </p>
+                      )}
+                    </div>
 
-                    {isPublished && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Link
+                        to="/cases/$caseId"
+                        params={{ caseId: item.id }}
+                        search={item.status === "draft" ? { preview: true } : {}}
+                        className="inline-flex h-7 items-center gap-1 rounded-sm border border-border-variant bg-surface/60 px-2.5 text-xs font-medium text-primary no-underline transition-colors hover:bg-primary-subtle"
+                      >
+                        查看案例副本
+                      </Link>
+
                       <Button
                         size="small"
                         disabled={busy}
-                        onClick={() =>
-                          void action(
-                            () => caseWrite(base, `admin/cases/${item.id}/unpublish`, { revision: item.revision }),
-                            "已从案例集移除，原项目仍保留。",
-                          )
-                        }
+                        onClick={() => {
+                          setConfirmation(null);
+                          setEditing(
+                            isEditing
+                              ? null
+                              : {
+                                  id: item.id,
+                                  revision: item.revision,
+                                  title: item.title || "",
+                                  summary: item.summary || "",
+                                  category: item.category || "科研实践",
+                                },
+                          );
+                        }}
                       >
-                        移出案例集
+                        {isEditing ? "收起编辑" : "编辑信息"}
                       </Button>
-                    )}
+
+                      {item.status === "draft" && (
+                        <>
+                          {sourceProject && canAccessResearch && (
+                            <Button
+                              size="small"
+                              disabled={busy}
+                              onClick={() => {
+                                setProjectId(sourceProject.id);
+                                setSessionId(item.source_session_id || "");
+                                setArtifactPaths([]);
+                                setCaseTitle(item.title || "");
+                                setCaseSummary(item.summary || "");
+                                setCaseCategory(item.category || "科研实践");
+                                setProgress("请在上方选择主对话和要公开的成果，再加入案例集。");
+                              }}
+                            >
+                              {item.source_session_id ? "选择成果并更新" : "创建对话案例"}
+                            </Button>
+                          )}
+                          <Button
+                            size="small"
+                            variant="primary"
+                            disabled={busy}
+                            onClick={() => {
+                              setEditing(null);
+                              setConfirmation({ item, kind: "publish" });
+                            }}
+                          >
+                            发布已保存副本
+                          </Button>
+                          <Button
+                            size="small"
+                            variant="danger"
+                            disabled={busy}
+                            onClick={() => {
+                              setEditing(null);
+                              setConfirmation({ item, kind: "delete" });
+                            }}
+                          >
+                            删除草稿
+                          </Button>
+                        </>
+                      )}
+
+                      {isPublished && (
+                        <Button
+                          size="small"
+                          disabled={busy}
+                          onClick={() => {
+                            setEditing(null);
+                            void action(
+                              () => caseWrite(base, `admin/cases/${item.id}/unpublish`, { revision: item.revision }),
+                              "已从案例集移除，原项目仍保留。",
+                            );
+                          }}
+                        >
+                          移出案例集
+                        </Button>
+                      )}
+                    </div>
                   </div>
+
+                  {isEditing && editing && (
+                    <div className="flex flex-col gap-3 rounded-lg border border-border-variant bg-surface/50 p-4">
+                      <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
+                        <label className="flex flex-col gap-1.5 text-xs font-medium text-text">
+                          案例标题
+                          <input
+                            type="text"
+                            maxLength={200}
+                            value={editing.title}
+                            disabled={busy}
+                            onChange={(event) => setEditing({ ...editing, title: event.target.value })}
+                            placeholder="输入案例标题"
+                            className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal text-text focus:border-primary focus:outline-none"
+                          />
+                        </label>
+                        <div className="flex flex-col gap-1.5">
+                          <label className="flex flex-col gap-1.5 text-xs font-medium text-text">
+                            研究分类
+                            <input
+                              type="text"
+                              maxLength={80}
+                              value={editing.category}
+                              disabled={busy}
+                              onChange={(event) => setEditing({ ...editing, category: event.target.value })}
+                              placeholder="如：科研实践、文献综述"
+                              className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal text-text focus:border-primary focus:outline-none"
+                            />
+                          </label>
+                          <div className="flex flex-wrap gap-1.5">
+                            {CASE_CATEGORY_PRESETS.map((preset) => (
+                              <button
+                                key={preset}
+                                type="button"
+                                disabled={busy}
+                                onClick={() => setEditing({ ...editing, category: preset })}
+                                className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${
+                                  editing.category.trim() === preset
+                                    ? "border-primary bg-primary-subtle font-medium text-primary"
+                                    : "border-border-variant bg-background text-subtext hover:border-border hover:text-text"
+                                }`}
+                              >
+                                {preset}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                      <label className="flex flex-col gap-1.5 text-xs font-medium text-text">
+                        <span className="flex items-center justify-between gap-2">
+                          <span>案例简介</span>
+                          <span className="font-normal tabular-nums text-muted">{editing.summary.length} / 4000</span>
+                        </span>
+                        <textarea
+                          rows={3}
+                          maxLength={4000}
+                          value={editing.summary}
+                          disabled={busy}
+                          onChange={(event) => setEditing({ ...editing, summary: event.target.value })}
+                          placeholder="简要介绍研究背景、方法与成果"
+                          className="rounded-md border border-border bg-background px-3 py-2 text-sm font-normal text-text focus:border-primary focus:outline-none"
+                        />
+                      </label>
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        <Button size="small" disabled={busy} onClick={() => setEditing(null)}>
+                          取消
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="primary"
+                          disabled={busy || !editing.title.trim() || !editing.summary.trim() || !editing.category.trim()}
+                          onClick={() =>
+                            void action(async () => {
+                              await caseWrite(base, `admin/cases/${editing.id}/meta`, {
+                                revision: editing.revision,
+                                title: editing.title.trim(),
+                                summary: editing.summary.trim(),
+                                category: editing.category.trim() || "科研实践",
+                              });
+                              setEditing(null);
+                            }, "已更新案例标题与描述信息。")
+                          }
+                        >
+                          保存修改
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </article>
               );
             })}

@@ -145,3 +145,55 @@ test("case scope lists only the two main conversations, hiding expert and side c
   assert.deepEqual(p.nodes(select).filter(node => node.type === "option").map(node => node.props.value), ["", "greeting", "paper"]);
   assert.doesNotMatch(p.text(select), /内部专家|侧边讨论/);
 });
+
+test("selecting a conversation prefills editable title, category, and summary and passes customized values on submit", async () => {
+  const p = page({
+    projects: [{ id: "gone", name: "研究项目" }],
+    sessions: [{ id: "s1", title: "建筑电力负荷预测" }],
+  });
+  const selects = () => p.nodes(p.render()).filter(node => node.type === "select");
+  selects()[1].props.onChange({ target: { value: "s1" } });
+
+  const inputs = () => p.nodes(p.render()).filter(node => node.type === "input");
+  const textareas = () => p.nodes(p.render()).filter(node => node.type === "textarea");
+  assert.equal(inputs().length, 2);
+  assert.equal(textareas().length, 1);
+  assert.equal(inputs()[0].props.value, "建筑电力负荷预测");
+  assert.equal(inputs()[1].props.value, "科研实践");
+  assert.match(textareas()[0].props.value, /建筑电力负荷预测/);
+
+  inputs()[0].props.onChange({ target: { value: "  自定义案例标题  " } });
+  p.button("实验复现").props.onClick();
+  textareas()[0].props.onChange({ target: { value: "  自定义案例简介内容  " } });
+
+  p.nodes(p.render()).find(node => node.type === "form").props.onSubmit({ preventDefault() {} });
+  await settle();
+  assert.deepEqual(p.calls[0][7], {
+    title: "自定义案例标题",
+    summary: "自定义案例简介内容",
+    category: "实验复现",
+  });
+});
+
+test("editing metadata works on both draft and published cases and invalidates queries", async () => {
+  for (const status of ["draft", "published"]) {
+    const p = page({ status });
+    p.button("编辑信息").props.onClick();
+    const inputs = () => p.nodes(p.render()).filter(node => node.type === "input");
+    const textareas = () => p.nodes(p.render()).filter(node => node.type === "textarea");
+    assert.equal(inputs()[0].props.value, "历史项目");
+    inputs()[0].props.onChange({ target: { value: " 新标题 " } });
+    inputs()[1].props.onChange({ target: { value: " 文献综述 " } });
+    textareas()[0].props.onChange({ target: { value: " 更清晰的案例描述 " } });
+    p.button("保存修改").props.onClick();
+    await settle();
+    assert.deepEqual(p.calls, [[
+      "write",
+      "",
+      "admin/cases/saved/meta",
+      { revision: 7, title: "新标题", summary: "更清晰的案例描述", category: "文献综述" },
+    ]]);
+    assert.equal(p.invalidations.length, 3);
+    assert.equal(p.button("保存修改"), undefined);
+  }
+});

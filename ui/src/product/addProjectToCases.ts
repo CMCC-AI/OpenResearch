@@ -2,21 +2,41 @@ import type { Project } from "../api";
 import { captureNativeProject } from "./captureNativeProject";
 import { caseRequest, caseWrite, type FeaturedCaseDetail } from "./featuredCasesApi";
 
+export interface CaseMetadataInput {
+  title?: string;
+  summary?: string;
+  category?: string;
+}
+
 /** One user action: preserve the original project page, then make it visible in cases. */
-export async function addProjectToCases(base: string, project: Pick<Project, "id" | "name">, progress: (message: string) => void, existingId?: string, sourceSessionId?: string, artifactPaths?: string[]) {
+export async function addProjectToCases(base: string, project: Pick<Project, "id" | "name">, progress: (message: string) => void, existingId?: string, sourceSessionId?: string, artifactPaths?: string[], meta?: CaseMetadataInput) {
   let current = existingId ? await caseRequest<FeaturedCaseDetail>(base, `admin/cases/${existingId}`) : null;
   if (current && (current.snapshot.workspace?.sourceSessionId || undefined) !== sourceSessionId) throw new Error("案例来源对话不匹配，请重新选择。");
   if (current?.status === "published") return current.id;
   // Send the project manifest separately from file bytes so a large archive stays resumable.
   const native = await captureNativeProject(project.id, () => progress("正在准备项目内容，请稍候…"), sourceSessionId, artifactPaths);
+  const customTitle = meta?.title?.trim();
+  const customSummary = meta?.summary?.trim();
+  const customCategory = meta?.category?.trim();
   if (current) {
-    await caseWrite(base, `admin/cases/${current.id}/native`, { revision: current.revision, workspace: native.workspace });
+    await caseWrite(base, `admin/cases/${current.id}/native`, {
+      revision: current.revision,
+      workspace: native.workspace,
+      ...(customTitle ? { title: customTitle } : {}),
+      ...(customSummary ? { summary: customSummary } : {}),
+      ...(customCategory ? { category: customCategory } : {}),
+    });
   } else {
     const sessions = native.workspace.responses[`/api/chat/sessions?projectId=${project.id}`] as { sessions: { id: string; title: string }[] };
     const summary = sessions.sessions.find((session) => session.id === native.workspace.sessionId)?.title || project.name;
+    const defaultTitle = sourceSessionId ? summary : project.name;
     const saved = await caseWrite<{ id: string }>(base, "admin/cases", {
-      sourceProjectId: project.id, title: sourceSessionId ? summary : project.name, summary, category: "科研实践",
-      snapshot: { sessions: [], projectName: project.name, workspace: native.workspace }, expectedFileCount: native.assets.length,
+      sourceProjectId: project.id,
+      title: customTitle || defaultTitle,
+      summary: customSummary || summary,
+      category: customCategory || "科研实践",
+      snapshot: { sessions: [], projectName: project.name, workspace: native.workspace },
+      expectedFileCount: native.assets.length,
     });
     current = { id: saved.id } as FeaturedCaseDetail;
   }

@@ -36,7 +36,10 @@ import {
   verifyPassword,
   cookie,
   cookieName,
+  DEFAULT_SESSION_ABSOLUTE_TTL,
+  DEFAULT_SESSION_IDLE_TTL,
   sessionCookie,
+  sessionRenewal,
   hostWorkspace,
   workspaceOrigin,
   workspaceEntryOrigin,
@@ -111,6 +114,23 @@ export function configuration(env = process.env) {
     500,
     "MANAGED_CAPACITY must be a positive integer",
   );
+  const sessionIdleTtl = Number(
+    env.SESSION_IDLE_TTL_SECONDS || DEFAULT_SESSION_IDLE_TTL,
+  );
+  const sessionAbsoluteTtl = Number(
+    env.SESSION_ABSOLUTE_TTL_SECONDS || DEFAULT_SESSION_ABSOLUTE_TTL,
+  );
+  check(
+    Number.isSafeInteger(sessionIdleTtl) && sessionIdleTtl > 0,
+    500,
+    "SESSION_IDLE_TTL_SECONDS must be a positive integer",
+  );
+  check(
+    Number.isSafeInteger(sessionAbsoluteTtl) &&
+      sessionAbsoluteTtl >= sessionIdleTtl,
+    500,
+    "SESSION_ABSOLUTE_TTL_SECONDS must be at least SESSION_IDLE_TTL_SECONDS",
+  );
   const deepLiteratureOrigin = env.DEEPLIT_ORIGIN
     ? new URL(env.DEEPLIT_ORIGIN)
     : null;
@@ -155,6 +175,8 @@ export function configuration(env = process.env) {
     privateSpaces: env.PRIVATE_USER_SPACES === "true",
     sharedOriginSpaces,
     managedCapacity,
+    sessionIdleTtl,
+    sessionAbsoluteTtl,
     database: env.DATABASE_URL,
     port: Number(env.PORT || 5300),
     bind: env.BIND_ADDRESS || "127.0.0.1",
@@ -249,17 +271,61 @@ export async function createPlatform(
     );
     check(rows[0].attempts <= maximum, 429, "请求过于频繁，请稍后再试");
   }
-  async function session(req) {
-    const digest = hash(cookie(req, cookieName(config.secure)));
+  async function session(req, res = null) {
+    const rawToken = cookie(req, cookieName(config.secure));
+    const digest = hash(rawToken);
     const { rows } = await pool.query(
-      `SELECT s.*,u.email,u.name,u.is_admin FROM platform_sessions s JOIN platform_users u ON u.id=s.user_id
+      `SELECT s.*,u.email,u.name,u.is_admin,
+      p.expires_at AS parent_expires_at,p.max_expires_at AS parent_max_expires_at,p.created_at AS parent_created_at,
+      now() AS db_now
+      FROM platform_sessions s JOIN platform_users u ON u.id=s.user_id
       LEFT JOIN platform_sessions p ON p.token_hash=s.parent_hash
       WHERE s.token_hash=$1 AND s.host=$2 AND s.expires_at>now() AND NOT u.disabled
       AND (s.parent_hash IS NULL OR p.expires_at>now())`,
       [digest, req.headers.host],
     );
-    check(rows[0], 401, "请先登录");
-    return rows[0];
+    const current = rows[0];
+    check(current, 401, "请先登录");
+    const renewal = sessionRenewal(
+      current,
+      config.sessionIdleTtl,
+      config.sessionAbsoluteTtl,
+    );
+    if (renewal.renew || renewal.renewParent) {
+      if (renewal.renew) {
+        await pool.query(
+          `UPDATE platform_sessions
+          SET expires_at=LEAST(COALESCE(max_expires_at,created_at+$3*interval '1 second'),now()+$2*interval '1 second')
+          WHERE token_hash=$1 AND expires_at>now()`,
+          [digest, config.sessionIdleTtl, config.sessionAbsoluteTtl],
+        );
+      }
+      if (renewal.renewParent && current.parent_hash) {
+        await pool.query(
+          `UPDATE platform_sessions
+          SET expires_at=LEAST(COALESCE(max_expires_at,created_at+$3*interval '1 second'),now()+$2*interval '1 second')
+          WHERE token_hash=$1 AND expires_at>now()`,
+          [
+            current.parent_hash,
+            config.sessionIdleTtl,
+            config.sessionAbsoluteTtl,
+          ],
+        );
+      }
+      if (
+        renewal.renew &&
+        res &&
+        !res.headersSent &&
+        typeof res.setHeader === "function" &&
+        req.method !== "OPTIONS"
+      ) {
+        res.setHeader(
+          "set-cookie",
+          sessionCookie(rawToken, config.secure, renewal.nextMaxAge),
+        );
+      }
+    }
+    return current;
   }
   // Private research access is determined only by immutable user identity.
   // Legacy membership rows are retained for rollback, but never grant access.
@@ -271,8 +337,8 @@ export async function createPlatform(
     );
     check(rows.length, 404, "工作空间不存在");
   }
-  async function access(req, workspace, websocket = false) {
-    const s = await session(req);
+  async function access(req, workspace, websocket = false, res = null) {
+    const s = await session(req, res);
     await spaceOwner(s.user_id, workspace);
     const url = new URL(req.url, config.origin);
     check(
@@ -290,8 +356,8 @@ export async function createPlatform(
       sameOrigin(req, workspaceOrigin(config, workspace));
     return { s };
   }
-  async function personalAccess(req, websocket = false) {
-    const s = await session(req);
+  async function personalAccess(req, websocket = false, res = null) {
+    const s = await session(req, res);
     const { rows } = await pool.query(
       "SELECT workspace_id FROM personal_spaces WHERE user_id=$1",
       [s.user_id],
@@ -353,10 +419,35 @@ export async function createPlatform(
   }
   async function newSession(db, user, host, parent = null) {
     const secret = token();
-    await db.query(
-      `INSERT INTO platform_sessions(token_hash,user_id,host,parent_hash,expires_at) VALUES($1,$2,$3,$4,now()+interval '12 hours')`,
-      [hash(secret), user, host, parent],
-    );
+    if (parent) {
+      await db.query(
+        `INSERT INTO platform_sessions(token_hash,user_id,host,parent_hash,expires_at,max_expires_at)
+        SELECT $1,$2,$3,$4,
+        LEAST(COALESCE(p.max_expires_at,p.created_at+$6*interval '1 second'),now()+$5*interval '1 second'),
+        COALESCE(p.max_expires_at,p.created_at+$6*interval '1 second')
+        FROM platform_sessions p WHERE p.token_hash=$4`,
+        [
+          hash(secret),
+          user,
+          host,
+          parent,
+          config.sessionIdleTtl,
+          config.sessionAbsoluteTtl,
+        ],
+      );
+    } else {
+      await db.query(
+        `INSERT INTO platform_sessions(token_hash,user_id,host,parent_hash,expires_at,max_expires_at)
+        VALUES($1,$2,$3,NULL,now()+$4*interval '1 second',now()+$5*interval '1 second')`,
+        [
+          hash(secret),
+          user,
+          host,
+          config.sessionIdleTtl,
+          config.sessionAbsoluteTtl,
+        ],
+      );
+    }
     return secret;
   }
   function deepLiteratureRedirect() {
@@ -545,7 +636,7 @@ export async function createPlatform(
       res.writeHead(204);
       return res.end();
     }
-    const s = currentSession || (await session(req));
+    const s = currentSession || (await session(req, res));
     await limit(`admin-users:${s.user_id}`, 180, 60);
     const path = new URL(req.url, config.origin).pathname;
     if (await quotaRoutes(req, res, path, s, origin)) return;
@@ -605,11 +696,11 @@ export async function createPlatform(
                 : "opencode.config.update",
           config.tokenQuota.enabled
             ? settings.id ||
-              settings.providerId ||
-              (settings.action === "setOpenCodeFreeModels" ||
-              settings.action === "probeOpenCodeFreeModels"
-                ? "opencode"
-                : undefined)
+                settings.providerId ||
+                (settings.action === "setOpenCodeFreeModels" ||
+                settings.action === "probeOpenCodeFreeModels"
+                  ? "opencode"
+                  : undefined)
             : settings.providerId,
         );
       });
@@ -683,12 +774,16 @@ export async function createPlatform(
             );
           });
           res.writeHead(303, {
-            "set-cookie": sessionCookie(secret, config.secure),
+            "set-cookie": sessionCookie(
+              secret,
+              config.secure,
+              config.sessionIdleTtl,
+            ),
             location: "/projects",
           });
           return res.end();
         }
-        const s = await session(req);
+        const s = await session(req, res);
         await spaceOwner(s.user_id, workspace);
         if (
           /^\/api\/platform\/(?:token-quota|password|admin\/(?:token-quotas(?:\/reconcile)?|users(?:\/[0-9a-f-]{36}\/(?:password|role|delete))?|opencode))$/.test(
@@ -799,7 +894,7 @@ export async function createPlatform(
           );
         }
         if (path.startsWith("/api/")) {
-          await access(req, workspace);
+          await access(req, workspace, false, res);
           let tunnel;
           if (config.privateSpaces && config.managed) {
             try {
@@ -862,7 +957,7 @@ export async function createPlatform(
         !path.startsWith("/api/platform/") &&
         !path.startsWith("/api/auth/")
       ) {
-        const { s, workspace } = await personalAccess(req);
+        const { s, workspace } = await personalAccess(req, false, res);
         let tunnel;
         try {
           tunnel = await personalRuntimeTunnel(
@@ -905,7 +1000,7 @@ export async function createPlatform(
         return json(res, { ok: true });
       }
       if (path === "/api/auth/sso/authorize" && req.method === "GET") {
-        const s = await session(req);
+        const s = await session(req, res);
         return await authorizeDeepLiterature(req, res, s);
       }
       if (
@@ -945,7 +1040,7 @@ export async function createPlatform(
           );
           const inserted = await pool.query(
             `INSERT INTO sso_grants(id,client,root_session_hash,user_id,workspace_id,expires_at)
-             SELECT $1,'deeplit',$2,$3,$4,LEAST(expires_at,now()+interval '12 hours')
+             SELECT $1,'deeplit',$2,$3,$4,LEAST(expires_at,now()+$5*interval '1 second')
              FROM platform_sessions WHERE token_hash=$2 AND expires_at>now()
              RETURNING expires_at`,
             [
@@ -953,6 +1048,7 @@ export async function createPlatform(
               issued.root_session_hash,
               issued.user_id,
               issued.workspace_id,
+              config.sessionIdleTtl,
             ],
           );
           check(inserted.rows[0], 401, "Platform session expired");
@@ -1010,7 +1106,7 @@ export async function createPlatform(
           res.writeHead(204);
           return res.end();
         }
-        const s = await session(req);
+        const s = await session(req, res);
         if (
           [
             "/api/platform/browser-session",
@@ -1116,7 +1212,10 @@ export async function createPlatform(
           await audit(db, rows[0].id, null, "login");
           return secret;
         });
-        res.setHeader("set-cookie", sessionCookie(secret, config.secure));
+        res.setHeader(
+          "set-cookie",
+          sessionCookie(secret, config.secure, config.sessionIdleTtl),
+        );
         return json(res, { ok: true });
       }
       if (path === "/api/platform/register" && req.method === "POST") {
@@ -1149,12 +1248,15 @@ export async function createPlatform(
             throw new HttpError(409, "该邮箱已注册，请直接登录");
           throw error;
         }
-        res.setHeader("set-cookie", sessionCookie(secret, config.secure));
+        res.setHeader(
+          "set-cookie",
+          sessionCookie(secret, config.secure, config.sessionIdleTtl),
+        );
         return json(res, { ok: true }, 201);
       }
       if (path === "/api/platform/invites/accept")
         throw new HttpError(404, "团队邀请功能已移除");
-      const s = await session(req);
+      const s = await session(req, res);
       await limit(`portal:${s.user_id}`, 180, 60);
       if (path === "/api/platform/storage") {
         check(req.method === "GET", 405, "服务器存储仅支持查看");

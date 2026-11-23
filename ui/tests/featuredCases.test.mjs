@@ -184,3 +184,33 @@ test("legacy cases route administrators to explicit conversation and output sele
   assert.ok(html.includes('href="/admin/cases"'));
   assert.equal(html.includes("从原项目同步完整历史与文件"), false);
 });
+
+test("full-page cases view renders category filters, search, badges, and avoids repeating identical title summaries", () => {
+  const duplicateSummaryCase = {
+    id: "case-dup",
+    title: "缺失数据条件下的建筑电力负荷预测",
+    summary: "缺失数据条件下的建筑电力负荷预测",
+    category: "实验复现",
+    status: "published",
+    revision: 1,
+    published_at: "2026-06-15T10:00:00Z",
+  };
+  const reviewCase = {
+    id: "case-rev",
+    title: "多模态学习综述",
+    summary: "梳理视觉编码与统一自回归框架进展",
+    category: "文献综述",
+    status: "published",
+    revision: 1,
+  };
+  const { ResearchCases } = components([duplicateSummaryCase, reviewCase], false);
+  const html = renderToStaticMarkup(React.createElement(ResearchCases, { fullPage: true }));
+  assert.ok(html.includes("共 2 个公开案例"));
+  assert.ok(html.includes('aria-label="按分类筛选案例"'));
+  assert.ok(html.includes('aria-label="搜索精选案例"'));
+  assert.ok(html.includes("实验复现"));
+  assert.ok(html.includes("文献综述"));
+  assert.ok(html.includes("查看完整研究对话、推理过程与公开成果文件"));
+  assert.ok(html.includes("2026-06-15"));
+  assert.equal(html.split("缺失数据条件下的建筑电力负荷预测").length - 1, 1);
+});

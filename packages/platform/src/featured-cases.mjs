@@ -951,6 +951,12 @@ export function featuredCaseRoutes({
       check(admin && req.method === "POST", 405);
       const value = await caseInput(req, 768 * 1024 * 1024);
       const native = normalizeNativeWorkspace(value.workspace);
+      const nextTitle =
+        value.title === undefined ? null : text(value.title, 200);
+      const nextSummary =
+        value.summary === undefined ? null : text(value.summary, 4000);
+      const nextCategory =
+        value.category === undefined ? null : text(value.category, 80);
       const manifestNames = new Set(Object.values(native.assets));
       check(manifestNames.size <= 2000, 413, "原项目副本最多包含 2,000 个文件");
       const copies = list(
@@ -1028,7 +1034,7 @@ export function featuredCaseRoutes({
             [file.id, caseId, file.name, file.size, file.sha256, file.content],
           );
         await db.query(
-          "UPDATE featured_cases SET snapshot=$2,expected_file_count=$3,revision=revision+1,updated_at=now() WHERE id=$1",
+          "UPDATE featured_cases SET snapshot=$2,expected_file_count=$3,title=COALESCE($4,title),summary=COALESCE($5,summary),category=COALESCE($6,category),revision=revision+1,updated_at=now() WHERE id=$1",
           [
             caseId,
             jsonbString({
@@ -1037,6 +1043,9 @@ export function featuredCaseRoutes({
               workspace: native,
             }),
             manifestNames.size,
+            nextTitle,
+            nextSummary,
+            nextCategory,
           ],
         );
         await audit(db, user.user_id, null, "case.native", caseId);
@@ -1198,7 +1207,7 @@ export function featuredCaseRoutes({
     }
     check(
       req.method === "POST" &&
-        ["publish", "unpublish", "order"].includes(action),
+        ["publish", "unpublish", "order", "meta"].includes(action),
       405,
     );
     const value = await caseInput(req);
@@ -1239,6 +1248,14 @@ export function featuredCaseRoutes({
         await db.query(
           "UPDATE featured_cases SET status='draft',revision=revision+1,updated_at=now() WHERE id=$1",
           [caseId],
+        );
+      } else if (action === "meta") {
+        const nextTitle = text(value.title, 200);
+        const nextSummary = text(value.summary, 4000);
+        const nextCategory = text(value.category, 80);
+        await db.query(
+          "UPDATE featured_cases SET title=$2,summary=$3,category=$4,revision=revision+1,updated_at=now() WHERE id=$1",
+          [caseId, nextTitle, nextSummary, nextCategory],
         );
       } else {
         check(

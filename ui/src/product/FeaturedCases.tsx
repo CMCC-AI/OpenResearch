@@ -4,7 +4,7 @@ import reviewCover from "../assets/workbench/review.png";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { isCancelledError, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ArrowRight, ChevronRight } from "lucide-react";
+import { ArrowRight, BookOpen, ChevronRight, Search, SlidersHorizontal, X } from "lucide-react";
 import { ReadOnlyProject } from "./ReadOnlyProject";
 import { useAuthSession } from "./AuthSession";
 import { isCloudWorkspace } from "./CloudWorkspace";
@@ -184,18 +184,99 @@ function useCaseProgress(base: string, caseId: string | null, admin: boolean) {
   );
 }
 
+const CASE_COVERS = [reproductionCover, experimentCover, reviewCover];
+
+function pickCaseCover(item: FeaturedCase, index: number) {
+  const source = `${item.category ?? ""} ${item.title ?? ""}`;
+  if (/综述|文献|survey|review/i.test(source)) return reviewCover;
+  if (/实验|数据|预测|分析|实证|experiment|benchmark/i.test(source)) return experimentCover;
+  if (/复现|模型|系统|架构|reproduction/i.test(source)) return reproductionCover;
+  return CASE_COVERS[index % CASE_COVERS.length];
+}
+
+function categoryBadgeClass(category: string) {
+  if (/综述|文献|survey|review/i.test(category)) return "research-case-badge-purple";
+  if (/实验|数据|预测|分析|实证|experiment|benchmark/i.test(category)) return "research-case-badge-teal";
+  if (/复现|模型|系统|架构|reproduction/i.test(category)) return "research-case-badge-blue";
+  return "";
+}
+
+function displayCaseSummary(item: FeaturedCase) {
+  const summary = item.summary?.trim() ?? "";
+  const title = item.title?.trim() ?? "";
+  if (!summary || summary === title) return "查看完整研究对话、推理过程与公开成果文件";
+  return summary;
+}
+
+function formatCaseDate(item: FeaturedCase) {
+  const raw = item.published_at || item.updated_at || item.created_at;
+  if (!raw) return null;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return null;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function CasesGridSkeleton({ fullPage }: { fullPage: boolean }) {
+  return (
+    <div
+      aria-label="正在读取案例…"
+      role="status"
+      className={`research-case-grid grid ${fullPage ? "grid-cols-3 gap-6 max-lg:grid-cols-2 max-sm:grid-cols-1" : "grid-cols-3 gap-5 max-md:grid-cols-1"} motion-safe:animate-pulse`}
+    >
+      {[0, 1, 2].map((item) => (
+        <div key={item} aria-hidden="true" className="flex flex-col overflow-hidden rounded-2xl border border-border-variant bg-background">
+          <div className="research-case-cover-img w-full bg-panel" />
+          <div className={`flex flex-1 flex-col gap-2.5 ${fullPage ? "p-5" : "p-4"}`}>
+            <div className="h-5 w-4/5 rounded bg-panel" />
+            <div className="h-3.5 w-full rounded bg-panel" />
+            <div className="h-3.5 w-2/3 rounded bg-panel" />
+          </div>
+          <div className={`border-t border-divider-faint ${fullPage ? "px-5 py-3.5" : "px-4 py-3"}`}>
+            <div className="h-3.5 w-1/3 rounded bg-panel" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function ResearchCases({ fullPage = false }: { fullPage?: boolean }) {
   const base = useCasesBase();
   const { user } = useAuthSession();
   const navigate = useNavigate();
   const query = useQuery({ queryKey: ["featured-cases", base, user?.id], queryFn: () => caseRequest<{ cases: FeaturedCase[] }>(base, "cases"), enabled: Boolean(base && user), staleTime: 10000, refetchInterval: 30000 });
-  const rows = fullPage ? query.data?.cases : query.data?.cases.slice(0, 3);
-  const covers = [reproductionCover, experimentCover, reviewCover];
+  const [selectedCategory, setSelectedCategory] = useState("全部");
+  const [searchQuery, setSearchQuery] = useState("");
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [cardError, setCardError] = useState<{ id: string; message: string } | null>(null);
   const attemptRef = useRef(0);
   const openingIdRef = useRef<string | null>(null);
   const activeProgress = useCaseProgress(base, openingId, false);
+
+  const allCases = query.data?.cases ?? [];
+  const categoryCounts = new Map<string, number>();
+  for (const item of allCases) {
+    const category = item.category?.trim() || "科研实践";
+    categoryCounts.set(category, (categoryCounts.get(category) ?? 0) + 1);
+  }
+  const categories = Array.from(categoryCounts.entries());
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const activeCategory = selectedCategory !== "全部" && categoryCounts.has(selectedCategory) ? selectedCategory : "全部";
+  const rows = fullPage
+    ? allCases.filter((item) => {
+        const category = item.category?.trim() || "科研实践";
+        if (activeCategory !== "全部" && category !== activeCategory) return false;
+        if (!normalizedQuery) return true;
+        return (
+          item.title.toLowerCase().includes(normalizedQuery) ||
+          item.summary.toLowerCase().includes(normalizedQuery) ||
+          category.toLowerCase().includes(normalizedQuery)
+        );
+      })
+    : allCases.slice(0, 3);
 
   useEffect(() => () => {
     attemptRef.current += 1;
@@ -235,52 +316,219 @@ export function ResearchCases({ fullPage = false }: { fullPage?: boolean }) {
     }
   };
 
-  return <section aria-labelledby="research-cases-title" className={`research-cases min-w-0 ${fullPage ? "research-cases-full" : ""}`}>
-    <div className="mb-5 flex flex-wrap items-center justify-between gap-3">{fullPage
-      ? <h1 id="research-cases-title" className="product-page-title m-0">精选案例</h1>
-      : <h2 id="research-cases-title" className="product-page-section-title m-0 flex items-center gap-2">精选案例<Link to="/cases" aria-label="查看全部精选案例" className="inline-flex text-muted hover:text-primary"><ChevronRight size={20} /></Link></h2>}
-      <div className="flex gap-3 text-sm">{user?.isAdmin && <Link to="/admin/cases" className="text-primary">管理精选案例</Link>}</div>
-    </div>
-    {fullPage && <p className="product-page-description mb-5">查看真实项目的完整研究对话与成果文件，了解研究如何一步步推进。</p>}
-    {query.isPending && <p className="text-base text-muted">正在读取案例…</p>}
-    {query.error && <p role="alert" className="text-base text-accent-red">{query.error.message} <Button size="small" onClick={() => void query.refetch()}>重试</Button></p>}
-    {query.data && !rows?.length && <div className="research-cases-empty rounded-xl border border-border-variant p-6 text-base text-subtext">暂时没有已发布的精选案例。管理员发布后，会显示在这里。</div>}
-    <div className="research-case-grid grid grid-cols-3 gap-4 max-sm:grid-cols-1">{rows?.map((item, index) => {
-      const loadingCard = openingId === item.id;
-      const errorForCard = cardError?.id === item.id ? cardError.message : null;
-      return <div key={item.id} className="min-w-0 flex flex-col">
-        <Link
-          to="/cases/$caseId"
-          params={{ caseId: item.id }}
-          aria-busy={loadingCard || undefined}
-          onPointerDown={() => prefetchCase(item.id)}
-          onFocus={() => prefetchCase(item.id)}
-          onClick={(event) => {
-            if (!base || !user || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
-            const options = caseDetailQuery(base, user.id, item.id, false);
-            const state = queryClient.getQueryState(options.queryKey);
-            if (state?.data && !state.isInvalidated && Date.now() - state.dataUpdatedAt < options.staleTime) return;
-            event.preventDefault();
-            void openCase(item.id);
-          }}
-          className="research-case-card min-w-0 rounded-xl text-text no-underline"
-        >
-          <div className="research-case-cover mb-3 overflow-hidden rounded-xl border border-border-variant"><img src={covers[index % covers.length]} alt="" className="block h-full w-full object-cover" loading="lazy" /></div>
-          <strong className="product-page-card-title mb-1.5 block">{item.title}</strong>
-          <span className="product-page-copy mb-2 line-clamp-3 block text-subtext">{item.summary}</span>
-          {loadingCard
-            ? <CaseLoadingProgress progress={activeProgress} compact />
-            : <span className="flex items-center justify-between gap-1 text-sm text-subtext"><span className="truncate">{item.category} · 真实研究记录</span><ArrowRight size={16} className="shrink-0" /></span>}
-        </Link>
-        {errorForCard && !loadingCard && (
-          <div role="alert" className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-border-variant bg-background px-3 py-2 text-xs">
-            <span className="min-w-0 truncate text-accent-red">{errorForCard}</span>
-            <Button size="small" onClick={() => void openCase(item.id)}>重试</Button>
+  return (
+    <section aria-labelledby="research-cases-title" className={`research-cases min-w-0 ${fullPage ? "research-cases-full" : ""}`}>
+      {fullPage ? (
+        <header className="mb-7 flex flex-col gap-4 border-b border-border-variant pb-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-3">
+                <h1 id="research-cases-title" className="product-page-title m-0">精选案例</h1>
+                {query.data && (
+                  <span className="inline-flex items-center rounded-full border border-border-variant bg-surface px-2.5 py-0.5 text-xs font-medium text-subtext tabular-nums">
+                    共 {allCases.length} 个公开案例
+                  </span>
+                )}
+              </div>
+              <p className="product-page-description mt-2 mb-0 max-w-2xl">
+                查看真实项目的完整研究对话与成果文件，了解研究如何一步步推进。
+              </p>
+            </div>
+            {user?.isAdmin && (
+              <Link
+                to="/admin/cases"
+                className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3.5 text-sm font-medium text-text no-underline shadow-hairline transition-colors hover:border-primary hover:bg-primary-subtle hover:text-primary"
+              >
+                <SlidersHorizontal size={15} aria-hidden="true" />
+                <span>管理精选案例</span>
+              </Link>
+            )}
           </div>
-        )}
-      </div>;
-    })}</div>
-  </section>;
+          {allCases.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+              <div role="group" aria-label="按分类筛选案例" className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  aria-pressed={activeCategory === "全部"}
+                  onClick={() => setSelectedCategory("全部")}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                    activeCategory === "全部"
+                      ? "border-primary bg-primary-subtle text-primary"
+                      : "border-border-variant bg-background text-subtext hover:border-border hover:text-text"
+                  }`}
+                >
+                  <span>全部</span>
+                  <span className="tabular-nums opacity-75">{allCases.length}</span>
+                </button>
+                {categories.map(([category, count]) => (
+                  <button
+                    key={category}
+                    type="button"
+                    aria-pressed={activeCategory === category}
+                    onClick={() => setSelectedCategory(category)}
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                      activeCategory === category
+                        ? "border-primary bg-primary-subtle text-primary"
+                        : "border-border-variant bg-background text-subtext hover:border-border hover:text-text"
+                    }`}
+                  >
+                    <span>{category}</span>
+                    <span className="tabular-nums opacity-75">{count}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="relative w-64 max-sm:w-full">
+                <Search size={14} aria-hidden="true" className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted" />
+                <input
+                  type="search"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="搜索案例标题、分类或简介…"
+                  aria-label="搜索精选案例"
+                  className="h-9 w-full rounded-lg border border-border bg-background pr-8 pl-8 text-sm text-text placeholder:text-muted focus:border-primary focus:outline-none"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    aria-label="清除搜索"
+                    onClick={() => setSearchQuery("")}
+                    className="absolute top-1/2 right-2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full text-muted hover:bg-surface hover:text-text"
+                  >
+                    <X size={13} aria-hidden="true" />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </header>
+      ) : (
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+          <h2 id="research-cases-title" className="product-page-section-title m-0 flex items-center gap-2">
+            精选案例
+            <Link to="/cases" aria-label="查看全部精选案例" className="inline-flex items-center gap-0.5 text-sm font-normal text-muted no-underline hover:text-primary">
+              <span>全部</span>
+              <ChevronRight size={18} aria-hidden="true" />
+            </Link>
+          </h2>
+          <div className="flex items-center gap-3 text-sm">
+            {user?.isAdmin && (
+              <Link
+                to="/admin/cases"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border-variant bg-background px-2.5 py-1 text-xs font-medium text-primary no-underline transition-colors hover:border-primary hover:bg-primary-subtle"
+              >
+                <SlidersHorizontal size={13} aria-hidden="true" />
+                <span>管理精选案例</span>
+              </Link>
+            )}
+          </div>
+        </div>
+      )}
+
+      {query.isPending && <CasesGridSkeleton fullPage={fullPage} />}
+      {query.error && (
+        <p role="alert" className="rounded-xl border border-danger-notice-border bg-accent-red-subtle px-4 py-3 text-sm text-accent-red">
+          {query.error.message} <Button size="small" onClick={() => void query.refetch()}>重试</Button>
+        </p>
+      )}
+      {query.data && !allCases.length && (
+        <div className="research-cases-empty flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border bg-background/60 px-6 py-14 text-center">
+          <div className="flex h-11 w-11 items-center justify-center rounded-full bg-surface text-muted">
+            <BookOpen size={20} aria-hidden="true" />
+          </div>
+          <p className="m-0 text-base text-subtext">暂时没有已发布的精选案例。管理员发布后，会显示在这里。</p>
+        </div>
+      )}
+      {query.data && allCases.length > 0 && !rows.length && (
+        <div className="research-cases-empty flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border bg-background/60 px-6 py-12 text-center">
+          <p className="m-0 text-sm text-subtext">没有找到符合当前筛选条件的精选案例。</p>
+          <Button
+            size="small"
+            onClick={() => {
+              setSelectedCategory("全部");
+              setSearchQuery("");
+            }}
+          >
+            重置筛选
+          </Button>
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div className={`research-case-grid grid ${fullPage ? "grid-cols-3 gap-6 max-lg:grid-cols-2 max-sm:grid-cols-1" : "grid-cols-3 gap-5 max-md:grid-cols-1"}`}>
+          {rows.map((item, index) => {
+            const loadingCard = openingId === item.id;
+            const errorForCard = cardError?.id === item.id ? cardError.message : null;
+            const category = item.category?.trim() || "科研实践";
+            const summaryText = displayCaseSummary(item);
+            const dateText = formatCaseDate(item);
+            return (
+              <div key={item.id} className="min-w-0 flex flex-col">
+                <Link
+                  to="/cases/$caseId"
+                  params={{ caseId: item.id }}
+                  aria-busy={loadingCard || undefined}
+                  onPointerDown={() => prefetchCase(item.id)}
+                  onFocus={() => prefetchCase(item.id)}
+                  onClick={(event) => {
+                    if (!base || !user || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+                    const options = caseDetailQuery(base, user.id, item.id, false);
+                    const state = queryClient.getQueryState(options.queryKey);
+                    if (state?.data && !state.isInvalidated && Date.now() - state.dataUpdatedAt < options.staleTime) return;
+                    event.preventDefault();
+                    void openCase(item.id);
+                  }}
+                  className="research-case-link flex min-w-0 flex-1 flex-col rounded-2xl text-text no-underline focus-visible:outline-none"
+                >
+                  <article className="research-case-card flex h-full flex-1 flex-col overflow-hidden rounded-2xl border border-border-variant bg-background shadow-hairline">
+                    <div className="research-case-cover relative overflow-hidden bg-surface">
+                      <img
+                        src={pickCaseCover(item, index)}
+                        alt=""
+                        className="research-case-cover-img block w-full object-cover"
+                        loading="lazy"
+                      />
+                      <span className={`research-case-badge ${categoryBadgeClass(category)}`}>
+                        {category}
+                      </span>
+                    </div>
+                    <div className={`research-case-body flex flex-1 flex-col ${fullPage ? "p-5" : "p-4"}`}>
+                      <strong className="research-case-title block text-base font-semibold leading-snug text-text line-clamp-2">
+                        {item.title}
+                      </strong>
+                      <p className={`mt-2 mb-0 text-sm leading-relaxed text-subtext ${fullPage ? "line-clamp-3" : "line-clamp-2"}`}>
+                        {summaryText}
+                      </p>
+                    </div>
+                    <footer className={`research-case-footer mt-auto border-t border-divider-faint ${fullPage ? "px-5 py-3.5" : "px-4 py-3"}`}>
+                      {loadingCard ? (
+                        <CaseLoadingProgress progress={activeProgress} compact />
+                      ) : (
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate text-xs text-muted tabular-nums">
+                            {dateText ? `发布于 ${dateText}` : "真实研究记录"}
+                          </span>
+                          <span className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-primary">
+                            <span>查看详情</span>
+                            <ArrowRight size={14} aria-hidden="true" className="research-case-arrow" />
+                          </span>
+                        </div>
+                      )}
+                    </footer>
+                  </article>
+                </Link>
+                {errorForCard && !loadingCard && (
+                  <div role="alert" className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-border-variant bg-background px-3 py-2 text-xs">
+                    <span className="min-w-0 truncate text-accent-red">{errorForCard}</span>
+                    <Button size="small" onClick={() => void openCase(item.id)}>重试</Button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
 }
 
 export function CasesPage() {
