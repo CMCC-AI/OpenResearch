@@ -103,6 +103,7 @@ fn new_chat_uses_saved_preferences_and_normalizes_model_settings() {
         workspace: None,
         preferred_autonomy: Some(Autonomy::Copilot),
         opencode_review_model: None,
+        draft_model: None,
         preferred_agent: Some(StoredAgentSelection {
             harness: "codex".into(),
             model: Some("custom-model".into()),
@@ -133,6 +134,7 @@ fn new_chat_falls_back_only_when_no_preference_exists() {
         workspace: None,
         preferred_autonomy: None,
         opencode_review_model: None,
+        draft_model: None,
         preferred_agent: None,
     };
     let catalog = json!({"harnesses": [{"id":"claude-code", "agentReady":true,
@@ -411,6 +413,7 @@ async fn workspace_requests_validate_metadata_and_allow_independent_preferences(
         workspace: Some(invalid),
         preferred_autonomy: None,
         opencode_review_model: None,
+        draft_model: None,
     }))
     .await;
     assert_eq!(result.err().unwrap().0, StatusCode::BAD_REQUEST);
@@ -419,6 +422,31 @@ async fn workspace_requests_validate_metadata_and_allow_independent_preferences(
     }))
     .unwrap();
     let result = set_project_ui_state(Path("project".into()), Json(unsupported)).await;
+    assert_eq!(result.err().unwrap().0, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn draft_model_preference_must_be_provider_model() {
+    // 校验在打开 store 之前完成，所以非法值可以直接断言 400。
+    let result = set_ui_state(Json(SetUiStateReq {
+        tour_completed: None,
+        preferred_agent: None,
+        workspace: None,
+        preferred_autonomy: None,
+        opencode_review_model: None,
+        draft_model: Some("glm-5.3".into()),
+    }))
+    .await;
+    assert_eq!(result.err().unwrap().0, StatusCode::BAD_REQUEST);
+    let result = set_ui_state(Json(SetUiStateReq {
+        tour_completed: None,
+        preferred_agent: None,
+        workspace: None,
+        preferred_autonomy: None,
+        opencode_review_model: None,
+        draft_model: Some("zhipu-coding/".into()),
+    }))
+    .await;
     assert_eq!(result.err().unwrap().0, StatusCode::BAD_REQUEST);
 }
 
@@ -668,9 +696,10 @@ fn plan_never_becomes_the_preferred_mode_for_new_sessions() {
         preferred_permission_mode("codex", Some("plan".into())).as_deref(),
         Some("approve-for-me")
     );
+    // OpenCode 2.x 的默认权限档是 Auto（auto-approve）；plan 不能作为新会话偏好。
     assert_eq!(
         preferred_permission_mode("opencode", Some("plan".into())).as_deref(),
-        Some("default")
+        Some("auto-approve")
     );
 }
 

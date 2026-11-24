@@ -58,14 +58,14 @@ impl Store {
             name: draft.input.name.clone(),
             updated_at: draft.updated_at,
         };
+        // 工作流绑定后给新会话一个稳定标题：否则标题生成器可能拿后续的
+        // 编排唤醒文案当标题（例如“G3通过后执行实验任务”）。已有用户标题
+        // 保持不动。
+        let workflow_name = source.name.clone();
         let input = draft.input.into_plan(objective);
         let existing = self.research_for_session(session_id)?;
-        validate_plan_with_roles(
-            &input,
-            existing.as_ref().map_or("team", |s| s.mode.as_str()),
-            true,
-            |role| crate::local::research::role_for_store(self, role).map(|_| ()),
-        )?;
+        // 先检查绑定锁定，再校验新草稿：已经绑定了别的工作流的会话应看到
+        // “不能更换”，而不是新草稿自身的一条结构校验错误。
         if let Some(study) = &existing {
             study.ensure_active()?;
             // 绑定锁定：会话已经用过别的工作流就不再换绑；同一工作流的迭代提交
@@ -80,6 +80,12 @@ impl Store {
                 }
             }
         }
+        validate_plan_with_roles(
+            &input,
+            existing.as_ref().map_or("team", |s| s.mode.as_str()),
+            true,
+            |role| crate::local::research::role_for_store(self, role).map(|_| ()),
+        )?;
         let study = match existing {
             Some(study) => study,
             None => self.research_create(session_id, "team", objective)?,
@@ -92,6 +98,7 @@ impl Store {
                 .is_some_and(|plan| plan.workflow_source.as_ref() == Some(&source))
             && self.research_plan_equivalent(&study, &input, &agents)?
         {
+            self.set_chat_session_title_if_placeholder(session_id, &workflow_name)?;
             return Ok((study.id.clone(), study.plan()?.version, true));
         }
         let mut prepared = self.research_prepare_plan_with_inspector(
@@ -107,6 +114,7 @@ impl Store {
         prepared.objective = Some(objective.to_owned());
         prepared.deduplicate = true;
         let (version, deduplicated) = self.research_commit_plan(prepared)?;
+        self.set_chat_session_title_if_placeholder(session_id, &workflow_name)?;
         Ok((study.id, version, deduplicated))
     }
     pub fn research_set_plan(&self, id: &str, input: PlanInput) -> Result<()> {

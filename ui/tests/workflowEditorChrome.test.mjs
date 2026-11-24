@@ -18,6 +18,7 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
 function harness({ projectId, sessionId = null, nameSlot = null } = {}) {
   let cursor = 0;
   const slots = [], calls = [], exported = {};
+  let hookOptions = null;
   const state = (initial) => {
     const index = cursor++;
     if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
@@ -30,7 +31,7 @@ function harness({ projectId, sessionId = null, nameSlot = null } = {}) {
   };
   const query = (data = []) => ({ data, isPending: false, error: null, refetch() {} });
   new Function("require", "exports", code)(name => {
-    if (name === "react") return { ...React, useState: state, useRef: ref, useEffect: () => {}, useContext: () => nameSlot };
+    if (name === "react") return { ...React, useState: state, useRef: ref, useEffect: () => {}, useContext: () => nameSlot, useMemo: (factory) => factory() };
     if (name === "react-dom") return { createPortal: (children, target) => React.createElement("portal", { "data-target": target }, children) };
     if (name === "@tanstack/react-query") return { useQuery: (options) => {
       const key = options.queryKey.join(":");
@@ -56,6 +57,21 @@ function harness({ projectId, sessionId = null, nameSlot = null } = {}) {
     }) };
     if (name === "./pendingUse") return { stagePendingWorkflowUse: (workflow) => calls.push(["pending", workflow.id, workflow.name]) };
     if (name === "./conversation") return { stageWorkflowConversation: (projectId, sessionId, workflow) => calls.push(["stage", projectId, sessionId, workflow.id]) };
+    // 生成编排是异步 + SSE 的，这里换成可控桩：测试按需触发 onGenerated/onError。
+    if (name === "./useWorkflowDraftGeneration") return {
+      WORKFLOW_DRAFT_STAGES: [{ key: "writing", label: "AI 正在编排流程" }],
+      useWorkflowDraftGeneration: (options) => {
+        hookOptions = options;
+        return {
+          running: false,
+          stage: "inventory",
+          elapsed: 0,
+          previewTasks: [],
+          start: (intent) => calls.push(["start", intent]),
+          stop: () => calls.push(["stop"]),
+        };
+      },
+    };
     if (name === "../api") return {
       createWorkflow: async (input, projectId) => { calls.push(["create", input.name, projectId]); return { ...input, id: "wf1", projectId, createdAt: 1, updatedAt: 1 }; },
       saveWorkflow: async (id, input) => { calls.push(["save", id, input.name]); return { ...input, id, projectId: "", createdAt: 1, updatedAt: 1 }; },
@@ -81,7 +97,7 @@ function harness({ projectId, sessionId = null, nameSlot = null } = {}) {
     render().find(node => node.type === "WorkflowLibrary").props.onEdit(draftId);
     return { render, calls };
   };
-  return { openEditor, render, calls };
+  return { openEditor, render, calls, hook: () => hookOptions };
 }
 
 test("editor opens with the default name and drops the removed chrome", () => {
@@ -163,7 +179,7 @@ test("invalid drafts block submission with the error list instead of saving", as
   assert.ok(render().some(node => node.props.role === "alert" && JSON.stringify(node.props.children).includes("至少需要一个 Agent 任务")));
 });
 
-// ---- AI 排流程：入口在编排页，生成稿直接落到画布 ----
+// ---- AI 排流程：入口在编排页，确认在开始前，生成稿由编排 hook 交回落盘 ----
 
 const generated = model.generatedToDraftInput({
   name: "综述流水线",
@@ -177,28 +193,45 @@ test("the canvas page hosts the AI prompt and lands a generated flow on the blan
   const { render } = h.openEditor(null);
   assert.ok(promptOf(render), "编排页缺少 AI 排流程入口");
   assert.equal(promptOf(render).props.disabled, false);
-  assert.equal(promptOf(render).props.onGenerated(generated), true);
-  // 生成算一次编辑：排上自动保存，草稿整份换成生成稿。
-  assert.deepEqual(h.calls, [["schedule"]]);
+  // 空画布不问替换，直接把句子交给生成编排。
+  assert.equal(promptOf(render).props.onGenerate("先检索再精读最后成稿"), true);
+  assert.deepEqual(h.calls, [["start", "先检索再精读最后成稿"]]);
+  // 生成完成：算一次编辑，草稿整份换成生成稿。
+  render();
+  h.hook().onGenerated(generated);
+  assert.deepEqual(h.calls, [["start", "先检索再精读最后成稿"], ["schedule"]]);
   assert.equal(canvasDraft(render).name, "综述流水线");
   assert.deepEqual(canvasDraft(render).tasks.map(task => task.id), ["search", "read", "write"]);
 });
 
-test("generating over an existing flow asks first and keeps the workflow's own name", () => {
+test("generating over an existing flow asks before starting and keeps the workflow's own name", () => {
   globalThis.window = { confirm: () => false };
   const h = harness();
   const { render } = h.openEditor(null);
   render().find(node => node.type === "WorkflowCanvas").props.onChange({ ...validDraft, name: "我的流程" });
-  assert.equal(promptOf(render).props.onGenerated(generated), false);
-  // 拒绝替换：画布保持原样，不触发新的自动保存。
+  assert.equal(promptOf(render).props.onGenerate("换一版"), false);
+  // 拒绝替换：不启动生成，画布保持原样。
+  assert.deepEqual(h.calls, [["schedule"]]);
   assert.equal(canvasDraft(render).name, "我的流程");
   assert.deepEqual(canvasDraft(render).tasks.map(task => task.id), ["t1"]);
-  assert.deepEqual(h.calls, [["schedule"]]);
   globalThis.window.confirm = () => true;
-  assert.equal(promptOf(render).props.onGenerated(generated), true);
-  // 同意替换：任务换成生成稿，但工作流已有的名字不被顺手改掉。
+  assert.equal(promptOf(render).props.onGenerate("换一版"), true);
+  assert.deepEqual(h.calls, [["schedule"], ["start", "换一版"]]);
+  // 已确认过替换：落稿时不再问第二遍，且工作流已有的名字不被顺手改掉。
+  render();
+  h.hook().onGenerated(generated);
+  assert.deepEqual(h.calls, [["schedule"], ["start", "换一版"], ["schedule"]]);
   assert.equal(canvasDraft(render).name, "我的流程");
   assert.deepEqual(canvasDraft(render).tasks.map(task => task.id), ["search", "read", "write"]);
-  assert.deepEqual(h.calls, [["schedule"], ["schedule"]]);
   delete globalThis.window;
+});
+
+test("a failed generation reports the reason without touching the canvas", () => {
+  const h = harness();
+  const { render } = h.openEditor(null);
+  promptOf(render).props.onGenerate("来一条流程");
+  render();
+  h.hook().onError("没有可用的对话引擎");
+  assert.deepEqual(h.calls, [["start", "来一条流程"], ["alert", "没有可用的对话引擎", "error"]]);
+  assert.deepEqual(canvasDraft(render).tasks, []);
 });

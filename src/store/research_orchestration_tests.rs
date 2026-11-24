@@ -47,7 +47,8 @@ fn rework_config_requires_gating_bounds_and_non_operator() {
     operator_gates
         .tasks
         .insert(1, spec("execute", "as-experiment-operator", &["design"]));
-    operator_gates.tasks.last_mut().unwrap().gate_downstream = true;
+    // 插入后 execute 位于 tasks[1]；实验执行者不能开启结论把关。
+    operator_gates.tasks[1].gate_downstream = true;
     assert!(validate_plan(&operator_gates, "team").is_err());
 }
 
@@ -361,6 +362,59 @@ fn branch_spec(id: &str, role: &str, deps: &[&str], branch: &str) -> TaskSpec {
     let mut task = spec(id, role, deps);
     task.route_branch = branch.into();
     task
+}
+
+#[test]
+fn an_incomplete_route_is_saveable_as_a_draft_but_not_as_a_plan() {
+    let mut design = spec("design", "as-experiment-designer", &[]);
+    design.gate_downstream = true;
+    let brancher = route_spec(
+        "brancher",
+        &["design"],
+        RouteSpec {
+            on: "verdict".into(),
+            source: "design.md".into(),
+            verdict_is: "pass".into(),
+            default_branch: "else".into(),
+        },
+    );
+    let draft = crate::workflow::WorkflowDraftInput {
+        name: "正在连分支的草稿".into(),
+        objective: String::new(),
+        summary: String::new(),
+        workflow: "custom".into(),
+        tasks: vec![design, brancher],
+        positions: std::collections::HashMap::new(),
+        viewport: None,
+        frames: Vec::new(),
+    };
+    // 画布自动保存允许草稿暂时不完整，否则刚拖入分流就会把编辑器卡在“保存失败”。
+    crate::workflow::validate_draft(&draft).expect("草稿应可保存");
+    // 提交计划时仍必须补齐两条分支。
+    let plan = PlanInput {
+        workflow: None,
+        summary: String::new(),
+        tasks: draft.tasks.clone(),
+    };
+    assert!(validate_plan(&plan, "team").is_err());
+}
+
+#[test]
+fn reviewer_may_be_followed_by_a_human_task() {
+    // 审稿之后接人工定稿、分流或成稿是工作流的常见编排；审查独立性只要求
+    // 至少一个待审材料上游，不能把下游的非审查任务也当成必须的祖先。
+    let mut input = PlanInput {
+        workflow: None,
+        summary: "review then human".into(),
+        tasks: vec![
+            spec("strategy", "as-literature-strategist", &[]),
+            spec("review", "as-independent-reviewer", &["strategy"]),
+            spec("audit", "as-quality-citation-auditor", &["review"]),
+            human_spec("approve", &["audit"], "approval.md"),
+        ],
+    };
+    input.tasks[1].gate_downstream = true;
+    validate_plan(&input, "team").expect("审稿后接人工任务应保持合法");
 }
 
 #[test]

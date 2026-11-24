@@ -1,5 +1,21 @@
+use std::time::Instant;
+
+use tokio_util::sync::CancellationToken;
+
 use super::*;
 use crate::workflow::{AgentDefinition, AgentInput, WorkflowDraftInput};
+
+/// 生成中的正文快照节流间隔：足够让画布逐步长出节点，又不至于塞满事件总线。
+const DELTA_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// 随 handler future 一起丢弃：客户端断开时取消还在跑的生成。
+struct CancelOnDrop(CancellationToken);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
 
 fn agent_json(
     agent: &AgentDefinition,
@@ -177,7 +193,7 @@ pub(super) struct DraftGenerationRequest {
     pub request_id: String,
 }
 
-/// 一句话生成自定义 Agent 草稿：一次 headless 模型调用（约 180s 预算），
+/// 一句话生成自定义 Agent 草稿：一次 headless 模型调用（最长 300s），
 /// 产出直接可进创建接口的 AgentInput；引用只来自本机库存，内置提示词不出库。
 /// 等待期借 `/api/events` 广播 `agentDraft.progress` 阶段事件（datadir.move 同款
 /// 管道），前端右侧按真实动作推进过程清单。
@@ -215,9 +231,47 @@ pub(super) async fn generate_agent_draft(
 }
 
 /// 一句话生成整张工作流草稿：同样一次 headless 模型调用；产出只含 agent 任务，
-/// 已消毒为可通过结构校验的 DAG，坐标由前端按依赖分层补齐。
-pub(super) async fn generate_workflow_draft(Json(req): Json<DraftGenerationRequest>) -> ApiResult {
+/// 已消毒为可通过结构校验的 DAG，坐标由前端按依赖分层补齐。等待期按真实节点
+/// 广播 `workflowDraft.progress`，前端和 AI 建专家一样有过程清单。
+pub(super) async fn generate_workflow_draft(
+    State(state): State<AppState>,
+    Json(req): Json<DraftGenerationRequest>,
+) -> ApiResult {
+    let request_id = req.request_id.trim().to_string();
     let (intent, locale) = draft_intent(req)?;
+    let chat = state.chat.clone();
+    let progress = {
+        let (chat, request_id) = (chat.clone(), request_id.clone());
+        move |stage: local::draft_support::DraftStage| {
+            chat.emit_event(
+                "workflowDraft.progress",
+                json!({ "requestId": request_id, "stage": stage.as_str() }),
+            );
+        }
+    };
+    // 客户端断开时 handler future 被丢弃，guard 随即取消生成；否则一次 300s 的
+    // 模型调用会在后台白跑。
+    let cancel = CancellationToken::new();
+    let _cancel_guard = CancelOnDrop(cancel.clone());
+    let sink = local::harness::OneShotSink {
+        on_text: std::sync::Arc::new({
+            let (chat, request_id) = (chat.clone(), request_id.clone());
+            // 正文快照按 ~150ms 节流：事件总线只有 16 个槽位，逐 token 发会丢事件。
+            let last = std::sync::Arc::new(std::sync::Mutex::new(None::<Instant>));
+            move |text: &str| {
+                let mut last = last.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if last.is_some_and(|at| at.elapsed() < DELTA_INTERVAL) {
+                    return;
+                }
+                *last = Some(Instant::now());
+                chat.emit_event(
+                    "workflowDraft.delta",
+                    json!({ "requestId": request_id, "text": text }),
+                );
+            }
+        }),
+        cancel: Some(cancel.clone()),
+    };
     let agents =
         tokio::task::spawn_blocking(
             move || local::workflow_draft::agent_inventory(&Store::open()?),
@@ -225,7 +279,8 @@ pub(super) async fn generate_workflow_draft(Json(req): Json<DraftGenerationReque
         .await
         .map_err(|e| ApiError::from(anyhow!("workflow draft task failed: {e}")))?
         .map_err(ApiError::from)?;
-    let draft = local::workflow_draft::generate(&intent, &locale, &agents)
+    progress(local::draft_support::DraftStage::Inventory);
+    let draft = local::workflow_draft::generate(&intent, &locale, &agents, progress, Some(sink))
         .await
         .map_err(ApiError::from)?;
     Ok(Json(json!({

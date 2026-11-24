@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import React from "react";
 import ts from "typescript";
-import { createLiteratureDraft, generatedToDraftInput, layeredPositions, searchWorkflows } from "../src/workflow/model.ts";
+import { createLiteratureDraft, generatedToDraftInput, layeredPositions, parsePartialTasks, searchWorkflows } from "../src/workflow/model.ts";
 const require = createRequire(import.meta.url);
 const code = ts.transpileModule(readFileSync(new URL("../src/workflow/WorkflowLibrary.tsx", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 const searchBoxExports = {};
@@ -189,6 +189,22 @@ test("generatedToDraftInput fills a complete draft with layered positions and no
   assert.deepEqual(draft.positions, { search: { x: 0, y: 0 }, read: { x: 0, y: 300 }, write: { x: 0, y: 600 } });
   // 名称缺失时落回默认名，不留下空名草稿。
   assert.equal(generatedToDraftInput({ name: "  ", tasks: [] }).name, "未命名工作流");
+});
+
+// ---- 流式草稿：只认已经写完的任务对象 ----
+
+test("parsePartialTasks yields only complete task objects and tolerates truncation", () => {
+  const task = (id, extra = "") => `{"id":"${id}","role":"as-x","brief":"说明","dependsOn":[],"outputs":["${id}.md"]${extra}}`;
+  const text = `{"name":"流程","tasks":[${task("a")},${task("b",`,"note":"含 } 和 \\" 引号"`)},{"id":"c","role":"as-x","bri`;
+  assert.deepEqual(
+    parsePartialTasks(text).map(item => item.id),
+    ["a", "b"],
+  );
+  // 还没到 tasks 数组、或者没有完整对象时，预览保持为空。
+  assert.deepEqual(parsePartialTasks('{"name":"流程","tas'), []);
+  assert.deepEqual(parsePartialTasks(`{"name":"流程","tasks":[{"id":"c","role":"as-x"}`), []);
+  // 缺必填字段的对象跳过；重复 id 只留第一个。
+  assert.deepEqual(parsePartialTasks(`{"tasks":[{"id":"a","role":"r","brief":"b"},{"id":"a","role":"r","brief":"b"}]}`).map(item => item.id), ["a"]);
 });
 
 // ---- AI 排流程：库页不再放入口 ----

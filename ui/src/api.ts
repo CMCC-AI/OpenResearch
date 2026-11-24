@@ -174,10 +174,11 @@ async function writeResponse(url: string, init: RequestInit, personal = false): 
   if (response.ok) invalidateWrite(url, scope);
   return response;
 }
-const post = <T>(url: string, body?: unknown, keepalive = false, personal = false) =>
+const post = <T>(url: string, body?: unknown, keepalive = false, personal = false, signal?: AbortSignal) =>
   writeResponse(url, {
     method: "POST",
     keepalive,
+    signal,
     headers: body === undefined ? {} : { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }, personal).then((r) => json<T>(r));
@@ -232,6 +233,8 @@ export interface UiState {
   preferredAutonomy: Autonomy | null;
   /** The `provider/model` that reviews OpenCode's Auto requests; null is the chat's own. */
   opencodeReviewModel?: string | null;
+  /** The `provider/model` one-sentence drafts run on; null is the chat's own. */
+  draftModel?: string | null;
 }
 
 /** How much of the research the agent owns before checking in. */
@@ -266,6 +269,7 @@ export const updateUiState = (body: {
   preferredAgent?: AgentSelection;
   preferredAutonomy?: Autonomy;
   opencodeReviewModel?: string;
+  draftModel?: string;
 }) => post<UiState>("/api/settings/ui-state", body);
 
 export const completeOnboarding = (selection: OnboardingSelection, profile: Profile) =>
@@ -2411,7 +2415,7 @@ export const updateWorkflowAgent = (id: string, input: import("./workflow/model"
   put<{ agent: import("./workflow/model").WorkflowAgent }>(`/api/workflow/agents/${encodeURIComponent(id)}`, input).then((result) => result.agent);
 export const deleteWorkflowAgent = (id: string) =>
   writeResponse(`/api/workflow/agents/${encodeURIComponent(id)}`, { method: "DELETE" }).then((response) => json<{ ok: boolean }>(response));
-/** Slow: one headless model call over the local agent/tool inventories (~180s budget).
+/** Slow: one headless model call over the local agent/tool inventories (up to 300s).
  *  等待期借 /api/events 的 agentDraft.progress 阶段事件展示真实进度；requestId 让发起页只推进自己的过程清单。 */
 export const generateWorkflowAgentDraft = (body: { intent: string; locale: string; requestId?: string }) =>
   post<{ agent: import("./workflow/model").WorkflowAgentInput }>("/api/workflow/agents/generate", body).then((result) => result.agent);
@@ -2450,10 +2454,10 @@ export const createWorkflow = (input: import("./workflow/model").WorkflowDraftIn
   post<{ draft: import("./workflow/model").WorkflowDraft }>("/api/workflows", { ...input, projectId }).then((result) => result.draft);
 export const saveWorkflow = (id: string, input: import("./workflow/model").WorkflowDraftInput) =>
   put<{ draft: import("./workflow/model").WorkflowDraft }>(`/api/workflows/${encodeURIComponent(id)}`, input).then((result) => result.draft);
-/** Slow: one headless model call over the agent list (~180s budget). Returns name and a
- *  validated task chain; canvas positions are laid out by the caller. */
-export const generateWorkflowDraft = (body: { intent: string; locale: string }) =>
-  post<{ draft: import("./workflow/model").GeneratedWorkflowDraft }>("/api/workflows/generate", body).then((result) => result.draft);
+/** Slow: one headless model call over the agent list (up to 300s). Streams
+ *  `workflowDraft.delta` snapshots while it runs; aborting `signal` stops it. */
+export const generateWorkflowDraft = (body: { intent: string; locale: string; requestId?: string }, signal?: AbortSignal) =>
+  post<{ draft: import("./workflow/model").GeneratedWorkflowDraft }>("/api/workflows/generate", body, false, false, signal).then((result) => result.draft);
 export const deleteWorkflow = (id: string) =>
   writeResponse(`/api/workflows/${encodeURIComponent(id)}`, { method: "DELETE" }).then((response) => json<{ ok: boolean }>(response));
 export const submitWorkflowDraft = (sessionId: string, draftId: string, objective: string) =>

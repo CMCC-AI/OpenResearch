@@ -120,7 +120,7 @@ export function ProjectsPage() {
         ...(mode !== "normal" ? { research: { mode: mode === "workflow" ? "team" : mode, objective: draft.draft.trim() || (mode === "workflow" ? "工作流研究" : researchModes[mode]), ...(draft.workflowDraftId ? { workflowDraftId: draft.workflowDraftId } : {}) } } : {}),
       };
       const direct = canStartQuestionDirectly(draft);
-      const signature = JSON.stringify([projectId, draft.draft.trim(), mode]);
+      const signature = JSON.stringify([projectId, draft.draft.trim(), mode, draft.workflowDraftId ?? null]);
       const savedAttempt = questionAttempts.current.get(projectId);
       const previous = savedAttempt?.generation === generation ? savedAttempt : null;
       if (previous && (!direct || previous.signature !== signature)) {

@@ -19,7 +19,7 @@ function elements(node, predicate) {
   const children = React.Children.toArray(node.props?.children);
   return [...(predicate(node) ? [node] : []), ...children.flatMap((child) => elements(child, predicate))];
 }
-function setup(initialDraft = "") {
+function setup(initialDraft = "", overrides = {}) {
   let stateIndex = 0;
   const states = [];
   let draft = initialDraft;
@@ -53,7 +53,7 @@ function setup(initialDraft = "") {
   }).ResearchStartPanel;
   const render = () => {
     stateIndex = 0;
-    return component({ draft, onDraftChange: (value) => { draft = value; }, attachments: [], onAttachmentsChange() {}, onStart: () => { starts++; }, onError: (error) => { throw new Error(error); }, workMode: "normal", onWorkModeChange() {}, preferredAgent: selection, projects: [], activity: [], onSelectProject() {} });
+    return component({ draft, onDraftChange: (value) => { draft = value; }, attachments: [], onAttachmentsChange() {}, onStart: () => { starts++; }, onError: (error) => { throw new Error(error); }, workMode: "normal", onWorkModeChange() {}, preferredAgent: selection, projects: [], activity: [], onSelectProject() {}, ...overrides });
   };
   const textarea = (tree) => elements(tree, (node) => node.type === "textarea")[0];
   const type = (value) => { textarea(render()).props.onChange({ target: { value, selectionStart: value.length } }); return render(); };
@@ -105,4 +105,14 @@ test("mode control stays inside the composer and project selection sits outside 
   assert.equal(elements(tree, (node) => node.type === app.projectPicker).length, 1);
   const mode = elements(form, (node) => node.type === app.workModeSwitch)[0];
   assert.equal(mode.props.compact, true);
+});
+
+test("home mode switch carries the picked workflow through to the first message", () => {
+  const picked = [];
+  const app = setup("", { workMode: "workflow", workflowDraftId: "wf-1", onWorkflowDraftChange: (id) => picked.push(id) });
+  const mode = elements(app.render(), (node) => node.type === app.workModeSwitch)[0];
+  // 工作流档必须把已选工作流和改选回调交给选择器，否则点了保存的工作流也不会绑定。
+  assert.equal(mode.props.workflowDraftId, "wf-1");
+  mode.props.onWorkflowDraftChange("wf-2");
+  assert.deepEqual(picked, ["wf-2"]);
 });

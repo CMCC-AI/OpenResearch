@@ -361,7 +361,7 @@ async fn prepare_decision(
             None
         } else {
             Some(format!(
-                "研究闸门 {gate} 已由用户批准。前置已完成任务已保留，请立即为下一环节实验任务执行 `orx research prepare-run` 绑定运行契约，或推进剩余未完成步骤；严禁重新调用 `orx research plan` 重置已有进度。"
+                "研究闸门 {gate} 已由用户批准。前置已完成任务已保留，请查看当前研究状态并推进剩余未完成步骤；如下一环节是实验节点，再执行 `orx research prepare-run` 绑定运行契约。严禁重新调用 `orx research plan` 重置已有进度。"
             ))
         };
         Ok::<_, ApiError>((lifecycle_gate, study.session_id, prompt))

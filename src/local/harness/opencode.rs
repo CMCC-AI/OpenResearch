@@ -33,8 +33,8 @@ use super::options::{
     HarnessOptions, OptionChoice, PermissionMode, PlanActivation, REASONING_DEFAULT_ID,
 };
 use super::{
-    CompactCtx, CompactOutcome, Harness, OneShot, ResumeAction, TurnFailure, TurnOutcome,
-    TurnResult, ORX_MAX_ATTEMPTS,
+    CompactCtx, CompactOutcome, Harness, OneShot, OneShotSink, ResumeAction, TurnFailure,
+    TurnOutcome, TurnResult, ORX_MAX_ATTEMPTS,
 };
 use crate::error::{anyhow, Result};
 use crate::local::chat::{
@@ -178,6 +178,19 @@ impl Harness for OpenCode {
     async fn one_shot(&self, request: OneShot<'_>) -> Result<String> {
         selected_generation_model(request.model)?;
         opencode_one_shot(&crate::local::opencode::resolve_binary().await?, request).await
+    }
+
+    async fn one_shot_streaming(&self, request: OneShot<'_>, sink: OneShotSink) -> Result<String> {
+        let model = selected_generation_model(request.model)?;
+        let message = format!("{}\n\n{}", request.system, request.prompt);
+        v2::generate_streaming(
+            &crate::local::opencode::resolve_binary().await?,
+            model,
+            message,
+            request.timeout,
+            sink,
+        )
+        .await
     }
 
     async fn detect(&self) -> Option<HarnessInfo> {

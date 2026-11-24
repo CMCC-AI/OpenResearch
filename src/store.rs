@@ -1109,6 +1109,11 @@ impl Store {
             "opencode-review-model-v1",
             &["ALTER TABLE ui_state ADD COLUMN opencode_review_model TEXT"],
         )?;
+        schema::migrate_columns(
+            &conn,
+            "workflow-draft-model-v1",
+            &["ALTER TABLE ui_state ADD COLUMN draft_model TEXT"],
+        )?;
         phase("columns");
         conn.execute_batch("CREATE TRIGGER IF NOT EXISTS delete_chat_invocation_identities AFTER DELETE ON chat_sessions BEGIN DELETE FROM native_invocation_identities WHERE session_id = OLD.id; END;")?;
         conn.execute(
@@ -1224,7 +1229,7 @@ impl Store {
             "SELECT onboarding_completed, tour_completed, preferred_harness,
                     preferred_model, preferred_service_tier,
                     preferred_permission_mode, preferred_reasoning_level, workspace_state_json,
-                    preferred_autonomy, opencode_review_model
+                    preferred_autonomy, opencode_review_model, draft_model
              FROM ui_state WHERE id = 1",
             [],
             |row| {
@@ -1252,6 +1257,7 @@ impl Store {
                         .as_deref()
                         .and_then(Autonomy::from_id),
                     opencode_review_model: row.get(9)?,
+                    draft_model: row.get(10)?,
                 })
             },
         )?)
@@ -1260,6 +1266,14 @@ impl Store {
     pub fn set_opencode_review_model(&self, model: Option<&str>) -> Result<()> {
         self.conn.execute(
             "UPDATE ui_state SET opencode_review_model = ?1 WHERE id = 1",
+            params![model],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_draft_model(&self, model: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE ui_state SET draft_model = ?1 WHERE id = 1",
             params![model],
         )?;
         Ok(())
@@ -3731,6 +3745,8 @@ pub struct StoredUiState {
     pub preferred_autonomy: Option<Autonomy>,
     /// The `provider/model` that reviews OpenCode's Auto requests; none means the chat's own.
     pub opencode_review_model: Option<String>,
+    /// The `provider/model` the one-sentence draft generators run on; none means the chat's own.
+    pub draft_model: Option<String>,
 }
 
 /// Normalized transcript entry; `parts_json` is the wire-format parts array

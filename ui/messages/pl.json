@@ -1314,6 +1314,9 @@
   "settings_auto_reviewer": "Recenzent trybu Auto",
   "settings_auto_reviewer_description": "Model, który sprawdza polecenia OpenCode w trybie Auto. Mniejszy model utrzymuje sprawdzanie tanie i szybkie. Czat na modelu lokalnym zawsze sprawdza własnym modelem.",
   "settings_auto_reviewer_same": "Ten sam model co w czacie",
+  "settings_draft_model": "Model generowania AI",
+  "settings_draft_model_description": "Używany, gdy jedno zdanie zamienia się w przepływ pracy lub eksperta. Jeśli generowanie trwa zbyt długo, wybierz tutaj szybszy model; czat zachowuje swój model.",
+  "settings_draft_model_same": "Ten sam model co w czacie",
   "opencode_auto_same_model": "Używa tego samego modelu do sprawdzania każdego polecenia i pyta, gdy ma wątpliwości",
   "opencode_auto_model": "Używa modelu {model} do sprawdzania każdego polecenia i pyta, gdy ma wątpliwości"
 }

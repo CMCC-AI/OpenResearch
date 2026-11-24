@@ -144,7 +144,7 @@ export function WorkflowPane({ sessionId, onOpenSession, onOpenStudio }: {
     <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-3">
       <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary-subtle text-primary"><WorkflowIcon size={16} aria-hidden="true" /></span>
       <div className="min-w-0 flex-1"><h2 className="m-0 truncate text-base font-normal">工作流 · {name ?? "未绑定"}</h2>{statusLine && <p role="status" className="m-0 text-xs text-subtext">{statusLine}</p>}</div>
-      <Button size="small" variant="ghost" onClick={onOpenStudio}>打开工作室</Button>
+      <Button size="small" variant="ghost" onClick={onOpenStudio}>打开工作流库</Button>
     </header>
     {!sessionId ? <EmptyHint text="开始对话后，这里会显示绑定的工作流画布。" /> : studyQuery.isPending ? <p className="p-4 text-sm text-subtext">正在读取工作流状态…</p> : studyQuery.error ? <div role="alert" className="p-4 text-sm text-accent-red">工作流状态读取失败：{studyQuery.error.message}<Button size="small" className="ms-2" onClick={() => void studyQuery.refetch()}>重试</Button></div> : !graph ? <EmptyHint text="这个对话还没有工作流画布。在输入框切换到「工作流模式」后，画布会显示在这里。" /> : <>
       <div className="relative min-h-32 flex-1 border-b border-border" aria-label="工作流画布">

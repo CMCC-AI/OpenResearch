@@ -1039,7 +1039,10 @@ fn research_wakeup_text(
     }
     if let Some(exp_task) = plan.tasks.iter().find(|t| {
         t.state == "pending"
-            && t.spec.role == "as-experiment-operator"
+            // Workflow experiment nodes carry kind=experiment and no role; the
+            // lead still needs the prepare-run nudge just like the legacy
+            // as-experiment-operator task.
+            && (t.spec.role == "as-experiment-operator" || t.spec.kind == "experiment")
             && t.run_contract.is_none()
             && t.spec.depends_on.iter().all(|d| {
                 study

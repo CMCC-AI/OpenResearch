@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{anyhow, Result};
-use crate::store::research::{validate_route_rules, PlanInput, TaskSpec, ROUTE_KIND};
+use crate::store::research::{PlanInput, TaskSpec, ROUTE_KIND};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -243,7 +243,9 @@ pub fn validate_draft(input: &WorkflowDraftInput) -> Result<()> {
     if input.tasks.len() > 40 {
         return Err(anyhow!("工作流最多包含 40 个任务"));
     }
-    validate_route_rules(&input.tasks)?;
+    // 画布草稿允许暂时不完整（例如分流刚拖入、还没连两条分支）：自动保存
+    // 不应因此失败，把工作卡死在编辑器里。跨任务拓扑在提交计划时由
+    // validate_plan_with_roles / validate_route_rules 统一把关。
     // 40 个任务、每任务最多一个确认检查点，以及输入、G1、G4、交付。
     // 展示节点只占布局空间，不消耗专家任务名额，也不进入 PlanInput。
     if input.positions.len() > 84 {
@@ -485,7 +487,7 @@ mod tests {
     }
 
     #[test]
-    fn draft_route_tasks_validate_topology_before_save() {
+    fn draft_route_tasks_save_but_validate_topology_on_submit() {
         let mut design = summary_task("design");
         design.gate_downstream = true;
         let mut route = summary_task("route-1");
@@ -517,13 +519,14 @@ mod tests {
             frames: Vec::new(),
         };
         validate_draft(&draft).unwrap();
-        // 「不成立」分支缺失时拒绝保存。
+        // 画布自动保存允许半成品分流；提交计划时才拒绝缺分支或未开结论把关。
         let mut missing_else = draft.clone();
         missing_else.tasks[3].route_branch = "then".into();
-        assert!(validate_draft(&missing_else).is_err());
-        // 来源任务未开启结论把关时拒绝保存。
+        assert!(validate_draft(&missing_else).is_ok());
+        assert!(crate::store::research::validate_route_rules(&missing_else.tasks).is_err());
         let mut ungated = draft.clone();
         ungated.tasks[0].gate_downstream = false;
-        assert!(validate_draft(&ungated).is_err());
+        assert!(validate_draft(&ungated).is_ok());
+        assert!(crate::store::research::validate_route_rules(&ungated.tasks).is_err());
     }
 }

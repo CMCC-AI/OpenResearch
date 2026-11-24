@@ -13,9 +13,10 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use serde::Deserialize;
 
 use super::draft_support::{
-    built_in_picks, clip, custom_agent_picks, generation_agent, Pick, GENERATION_TIMEOUT,
+    built_in_picks, clip, custom_agent_picks, generation_agent, staged, DraftStage, Pick,
+    GENERATION_TIMEOUT,
 };
-use super::harness::{OneShot, OneShotQuality};
+use super::harness::{OneShot, OneShotQuality, OneShotSink};
 use crate::error::{anyhow, Result};
 use crate::store::research::{validate_route_rules, TaskSpec};
 use crate::store::Store;
@@ -50,21 +51,33 @@ pub fn agent_inventory(store: &Store) -> Result<Vec<Pick>> {
 }
 
 /// 生成一份可通过结构校验的流程草稿。引擎不可用、模型超时或产出违反硬约束
-/// （清单外的专家、空简报、审查链断链）时返回带可读文案的错误。
-pub async fn generate(intent: &str, locale: &str, agents: &[Pick]) -> Result<GeneratedWorkflow> {
+/// （清单外的专家、空简报、审查链断链）时返回带可读文案的错误。`on_stage`
+/// 在推进到真实节点时回调，调用侧借此把进度广播给前端。
+pub async fn generate(
+    intent: &str,
+    locale: &str,
+    agents: &[Pick],
+    on_stage: impl Fn(DraftStage) + Send + Sync,
+    sink: Option<OneShotSink>,
+) -> Result<GeneratedWorkflow> {
     let (harness, model) = generation_agent()
         .await
         .ok_or_else(|| anyhow!("没有可用的对话引擎；请先在对话设置里登录一个引擎"))?;
-    let raw = harness
-        .one_shot(OneShot {
+    let raw = staged(&on_stage, || async {
+        let request = OneShot {
             system: SYSTEM_PROMPT,
             prompt: &generation_prompt(intent, locale, agents),
             quality: OneShotQuality::Standard,
             model: model.as_deref(),
             timeout: GENERATION_TIMEOUT,
-        })
-        .await
-        .map_err(|e| anyhow!("引擎调用失败：{e}"))?;
+        };
+        match &sink {
+            Some(sink) => harness.one_shot_streaming(request, sink.clone()).await,
+            None => harness.one_shot(request).await,
+        }
+        .map_err(|e| anyhow!("引擎调用失败：{e}"))
+    })
+    .await?;
     let (name, tasks) = parse_draft(&raw, agents)?;
     validate_route_rules(&tasks).map_err(|e| anyhow!("{e}"))?;
     Ok(GeneratedWorkflow { name, tasks })

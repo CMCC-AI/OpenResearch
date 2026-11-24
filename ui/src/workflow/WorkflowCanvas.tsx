@@ -288,20 +288,20 @@ function WorkflowHelp({ onClose }: { onClose: () => void }) {
       <Button size="small" variant="ghost" aria-label="关闭说明" onClick={onClose}><X size={14} /></Button>
     </div>
     <dl className="m-0 flex flex-col gap-2.5 text-subtext">
-      <div><dt className="font-normal text-text">节点 = 专家任务</dt><dd className="m-0">把左侧专家拖进画布即成一个任务节点；画布上只摆你添加的专家任务，节点描述谁做什么、产出什么；开启「完成后需主理人确认」会生成任务检查点。范围确认与交付确认在提交后的聊天与运行视图展示。</dd></div>
-      <div><dt className="font-normal text-text">连线 = 先后顺序</dt><dd className="m-0">从上方专家的底部拖线到下方专家的顶部，表示「前者做完，后者才开始」。拖住实线两端的小圆点，可以把它改接到别的专家；选中实线后按 Delete 删除，或右键实线选「删除连线」；虚线是系统自带的，不能改也不能删。系统环节（范围确认、交付确认、研究交付）不用手动连线：放进画布后，与任务的约束线自动生成。「需主理人确认」和「结论把关」决定下游任务什么时候开始。</dd></div>
-      <div><dt className="font-normal text-text">条件分流 = 走其中一条</dt><dd className="m-0">从节点库拖入「条件分流」，从上游连一条线进来，再向下连出两条线：第一条标「成立」，第二条标「不成立」。运行时按前置结论（通过 / 有问题）或失败情况自动选一条，另一条显示「已跳过」。</dd></div>
-      <div><dt className="font-normal text-text">阶段分组 = 只帮忙看</dt><dd className="m-0">节点多时，用「阶段分组」框把节点圈成几个阶段。它只作展示，不进入执行计划。</dd></div>
-      <div><dt className="font-normal text-text">产物 = 可追溯的输出</dt><dd className="m-0">每个节点声明输出文件路径；提交后专家把结果写入研究目录，供下游专家与审查引用。</dd></div>
-      <div><dt className="font-normal text-text">在对话中使用</dt><dd className="m-0">把方法带回聊天，直接描述你的需求；AI 会给出执行计划，你确认后专家开始工作，进展和成果都在同一个对话里。</dd></div>
+      <div><dt className="font-normal text-text">节点 = 专家任务</dt><dd className="m-0">从左侧拖入一位专家就是一个节点，写明谁做什么、产出什么；产出写入研究目录，供后面的专家引用。</dd></div>
+      <div><dt className="font-normal text-text">连线 = 先后顺序</dt><dd className="m-0">前者做完，后者才开始。虚线是系统环节自带的，不用手动连，也不能改不能删；「需主理人确认」「结论把关」决定下游什么时候开始。</dd></div>
+      <div><dt className="font-normal text-text">条件分流 = 二选一</dt><dd className="m-0">一条线进来、两条线出去，按前置结论走「成立」或「不成立」，没走的标「已跳过」。</dd></div>
+      <div><dt className="font-normal text-text">阶段分组 = 只是画面分区</dt><dd className="m-0">只把节点圈成几段方便看，不参与执行。</dd></div>
     </dl>
   </div>;
 }
 
-export function WorkflowCanvas({ draft, agents, onChange }: {
+export function WorkflowCanvas({ draft, agents, onChange, preview = false }: {
   draft: WorkflowDraftInput;
   agents: WorkflowAgent[];
   onChange: (draft: WorkflowDraftInput) => void;
+  /** 生成中的只读预览：禁止拖拽/连线/删除，也不写回草稿。 */
+  preview?: boolean;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   // 连线选中态由受控组件自己保存：点选实线后按 Delete，React Flow 才知道要删哪些依赖线。
@@ -331,6 +331,11 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
   }, [edgeMenu]);
   const viewportDirty = useRef(false);
   const flowRef = useRef<ReactFlowInstance<WorkflowCanvasNode> | null>(null);
+  // 生成预览每长出一个节点就重新装下整张图：fitView 只在挂载时生效，靠这里补。
+  useEffect(() => {
+    if (!preview || draft.tasks.length === 0) return;
+    void flowRef.current?.fitView({ padding: 0.1, duration: 200 });
+  }, [preview, draft.tasks.length]);
   // 编辑画布只呈现主理人显式添加的内容：固定链路（G1/G4/交付）留在节点库说明与运行视图，不自动铺上画布。
   const graph = useMemo(() => buildWorkflowGraph(draft.tasks, draft.positions, { fixedChain: "never" }), [draft.tasks, draft.positions]);
   const agentNames = useMemo(() => new Map(agents.map((agent) => [agent.id, agent.name])), [agents]);
@@ -680,7 +685,7 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
   }
 
   function onDragOverCanvas(event: DragEvent<HTMLDivElement>) {
-    if (!isLibraryDrag(event)) return;
+    if (preview || !isLibraryDrag(event)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
     setDropActive(true);
@@ -693,7 +698,7 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
   }
 
   function onDropCanvas(event: DragEvent<HTMLDivElement>) {
-    if (!isLibraryDrag(event)) return;
+    if (preview || !isLibraryDrag(event)) return;
     event.preventDefault();
     setDropActive(false);
     // 落点换算成画布坐标后作为节点位置：水平居中于光标（节点宽 256px），标题大致对准落点。
@@ -838,7 +843,10 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
         minZoom={0.2}
         maxZoom={1.5}
         connectionRadius={30}
-        deleteKeyCode={["Backspace", "Delete"]}
+        nodesDraggable={!preview}
+        nodesConnectable={!preview}
+        elementsSelectable={!preview}
+        deleteKeyCode={preview ? null : ["Backspace", "Delete"]}
         onMoveStart={(event) => { if (event) viewportDirty.current = true; setEdgeMenu(null); }}
         onMoveEnd={(_, viewport) => {
           if (!viewportDirty.current) return;

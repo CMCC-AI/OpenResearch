@@ -165,6 +165,50 @@ function emitAgentDraftProgress(ev: AgentDraftProgressEvent) {
   agentDraftProgressListeners.forEach((fn) => fn(ev));
 }
 
+// AI 排流程的阶段事件：和 AI 建专家共用同一套阶段名，发起页按 requestId
+// 推进自己的生成状态条；生成中的正文另走 workflowDraft.delta。
+export interface WorkflowDraftProgressEvent {
+  requestId: string;
+  stage: "inventory" | "engine" | "writing" | "reviewing";
+}
+
+export type WorkflowDraftStage = WorkflowDraftProgressEvent["stage"];
+
+type WorkflowDraftProgressListener = (ev: WorkflowDraftProgressEvent) => void;
+const workflowDraftProgressListeners = new Set<WorkflowDraftProgressListener>();
+
+export function onWorkflowDraftProgress(fn: WorkflowDraftProgressListener): () => void {
+  workflowDraftProgressListeners.add(fn);
+  return () => {
+    workflowDraftProgressListeners.delete(fn);
+  };
+}
+
+function emitWorkflowDraftProgress(ev: WorkflowDraftProgressEvent) {
+  workflowDraftProgressListeners.forEach((fn) => fn(ev));
+}
+
+// 生成中的正文快照（累计到当前的全部文本）：前端据此增量解析已完成的节点，
+// 在画布上逐个铺开；事件按约 150ms 节流，只会带来最新快照。
+export interface WorkflowDraftDeltaEvent {
+  requestId: string;
+  text: string;
+}
+
+type WorkflowDraftDeltaListener = (ev: WorkflowDraftDeltaEvent) => void;
+const workflowDraftDeltaListeners = new Set<WorkflowDraftDeltaListener>();
+
+export function onWorkflowDraftDelta(fn: WorkflowDraftDeltaListener): () => void {
+  workflowDraftDeltaListeners.add(fn);
+  return () => {
+    workflowDraftDeltaListeners.delete(fn);
+  };
+}
+
+function emitWorkflowDraftDelta(ev: WorkflowDraftDeltaEvent) {
+  workflowDraftDeltaListeners.forEach((fn) => fn(ev));
+}
+
 // Overleaf live-sync events fan out the same way: the .tex tab that opened the
 // channel is the one that reloads on a pull or shows the connection state.
 export type OverleafEvent =
@@ -419,6 +463,14 @@ export function useOrxEventStream(handlers: OrxEventHandlers) {
       es.addEventListener("agentDraft.progress", (e) => {
         const d = parse<{ requestId?: string; stage?: string }>(e as MessageEvent);
         if (d?.requestId && d.stage) emitAgentDraftProgress({ requestId: d.requestId, stage: d.stage as AgentDraftProgressEvent["stage"] });
+      });
+      es.addEventListener("workflowDraft.progress", (e) => {
+        const d = parse<{ requestId?: string; stage?: string }>(e as MessageEvent);
+        if (d?.requestId && d.stage) emitWorkflowDraftProgress({ requestId: d.requestId, stage: d.stage as WorkflowDraftProgressEvent["stage"] });
+      });
+      es.addEventListener("workflowDraft.delta", (e) => {
+        const d = parse<{ requestId?: string; text?: string }>(e as MessageEvent);
+        if (d?.requestId && typeof d.text === "string") emitWorkflowDraftDelta({ requestId: d.requestId, text: d.text });
       });
       es.addEventListener("update.status", (e) => {
         const d = parse<UpdateStatus>(e as MessageEvent);

@@ -6,6 +6,8 @@ use futures::stream::BoxStream;
 use futures::{FutureExt, StreamExt, TryStreamExt};
 
 use super::*;
+use tokio_util::sync::CancellationToken;
+
 use crate::error::Context;
 use crate::local::opencode::AgentEndpoint;
 
@@ -1418,12 +1420,217 @@ pub(super) async fn generate(
                 .ok_or_else(|| anyhow!("returned no reply"))
         })
         .await
-        .map_err(|_| anyhow!("timed out after {}s", timeout.as_secs()))
+        .map_err(|_| {
+            anyhow!(
+                "等了 {} 秒模型还没返回；可以重试一次，或换一个更快的模型",
+                timeout.as_secs()
+            )
+        })
         .and_then(|result| result);
         let _ = child.kill().await;
         result
     })
     .await?
+}
+
+/// The streaming twin of [`generate`]: same isolated child, but the prompt runs
+/// through a session so its reply reaches `sink` as it grows. Cancelling the
+/// sink stops the wait and kills the child; the caller's timeout still applies.
+pub(super) async fn generate_streaming(
+    binary: &crate::local::opencode::ResolvedBinary,
+    model: &str,
+    prompt: String,
+    timeout: Duration,
+    sink: OneShotSink,
+) -> Result<String> {
+    let model = selected_generation_model(Some(model))?.to_owned();
+    let (provider, id) = model
+        .split_once('/')
+        .filter(|(provider, id)| !provider.trim().is_empty() && !id.trim().is_empty())
+        .ok_or_else(|| anyhow!("OpenCode V2 needs a model in provider/model form."))?;
+    let (provider, id) = (provider.to_owned(), id.to_owned());
+    let binary = binary.clone();
+    tokio::spawn(async move {
+        let db = native_store::prepare_opencode(NativeStore::Isolated)?;
+        let lease = crate::local::opencode::prepare_database(&binary, &db).await?;
+        let mut cmd = tokio::process::Command::new(&binary.path);
+        crate::local::local_models::prepare_generation_env(&mut cmd, Some(&model))?;
+        cmd.env("OPENCODE_DB", lease.path())
+            .env("OPENCODE_CONFIG_PROJECT_DISABLE", "1")
+            .current_dir(std::env::temp_dir());
+        let (mut child, endpoint) = crate::local::opencode::start_server(&binary, cmd).await?;
+        if let Err(error) =
+            crate::local::opencode::verify_generation_models(&endpoint, &model).await
+        {
+            let _ = child.kill().await;
+            return Err(error);
+        }
+        let result = tokio::time::timeout(
+            timeout,
+            stream_generation(&endpoint, &provider, &id, &prompt, &sink),
+        )
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "等了 {} 秒模型还没返回；可以重试一次，或换一个更快的模型",
+                timeout.as_secs()
+            )
+        })
+        .and_then(|result| result);
+        let _ = child.kill().await;
+        result
+    })
+    .await?
+}
+
+/// Create a throwaway session on the isolated server, prompt it, and fold the
+/// event stream into the assistant text. The `plan` agent keeps tools read-only;
+/// anything that still asks is rejected so the wait cannot stall behind a card.
+async fn stream_generation(
+    endpoint: &AgentEndpoint,
+    provider: &str,
+    id: &str,
+    prompt: &str,
+    sink: &OneShotSink,
+) -> Result<String> {
+    let model = json!({"providerID":provider,"id":id});
+    let directory = std::env::temp_dir();
+    let body = json!({
+        "agent": "plan",
+        "location": { "directory": directory },
+        "model": model.clone(),
+    });
+    let session: Value = endpoint
+        .client
+        .post(format!("{}/api/session", endpoint.base_url))
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let native_id = session
+        .pointer("/data/id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("OpenCode V2 session response has no id"))?
+        .to_owned();
+    let path = format!("/api/session/{native_id}");
+    post(endpoint, &format!("{path}/agent"), &json!({"agent":"plan"})).await?;
+    post(endpoint, &format!("{path}/model"), &json!({"model":model})).await?;
+
+    // Subscribe before prompting: deltas that arrive first would fold to nothing.
+    let mut events = subscribe(endpoint).await?;
+    let prompt_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
+    post(
+        endpoint,
+        &format!("{path}/prompt"),
+        &json!({"id":prompt_id,"text":prompt}),
+    )
+    .await?;
+
+    let mut steps: Vec<Value> = Vec::new();
+    let mut text = String::new();
+    let mut failure: Option<String> = None;
+    let mut cancel = sink.cancel.clone();
+    loop {
+        let event = tokio::select! {
+            _ = cancelled(&mut cancel) => return Err(anyhow!("已停止生成")),
+            event = events.next() => event,
+        };
+        let Some(Ok(event)) = event else {
+            return Err(anyhow!("OpenCode 在生成过程中断开了事件流"));
+        };
+        let kind = event["type"].as_str().unwrap_or_default();
+        let data = &event["data"];
+        match fold(&mut steps, &native_id, &event) {
+            // Reasoning has its own deltas; only the answer text is the reply.
+            Some(Folded::Text { delta, .. }) if kind == "session.text.delta" => {
+                text.push_str(delta);
+                (sink.on_text)(&text);
+            }
+            None if data["sessionID"].as_str() == Some(native_id.as_str())
+                && matches!(
+                    kind,
+                    "session.execution.succeeded"
+                        | "session.execution.failed"
+                        | "session.execution.interrupted"
+                ) =>
+            {
+                if kind != "session.execution.succeeded" {
+                    failure = data.get("error").map(error_text);
+                }
+                break;
+            }
+            None if kind.starts_with("permission.") => {
+                if let Some(request) = data["id"].as_str() {
+                    let _ = reply_permission(
+                        endpoint,
+                        &format!("{path}/permission/{request}/reply"),
+                        "reject",
+                    )
+                    .await;
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(message) = failure {
+        // Provider limit errors surface through the event stream as text, not
+        // an HTTP body. Reuse the same plain-language mapping so one-sentence
+        // generation does not expose the raw provider payload.
+        if let Some(readable) = quota_message(0, &message) {
+            return Err(anyhow!("{readable}"));
+        }
+        return Err(anyhow!("{message}"));
+    }
+    Ok(reconcile_generation_text(endpoint, &native_id, text).await)
+}
+
+/// The export is authoritative; the delta buffer only covers a trailing write
+/// that has not reached it yet.
+async fn reconcile_generation_text(
+    endpoint: &AgentEndpoint,
+    native_id: &str,
+    fallback: String,
+) -> String {
+    for read in 0..FINAL_READS {
+        if read > 0 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let Ok(projection) = get(endpoint, &endpoint.v2_export_path(native_id)).await else {
+            break;
+        };
+        let Ok(messages) = messages(&projection) else {
+            break;
+        };
+        let text = messages
+            .iter()
+            .rev()
+            .find(|message| message["role"].as_str() == Some("assistant"))
+            .map(|message| {
+                message["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|content| content["type"] == "text")
+                    .filter_map(|content| content["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .unwrap_or_default();
+        if !text.trim().is_empty() {
+            return text;
+        }
+    }
+    fallback
+}
+
+/// Waits for the sink's cancellation; never resolves when there is no sink.
+async fn cancelled(cancel: &mut Option<CancellationToken>) {
+    match cancel {
+        Some(token) => token.cancelled().await,
+        None => std::future::pending::<()>().await,
+    }
 }
 
 /// A quota or throttle error as the researcher should read it: what happened,
@@ -1480,6 +1687,15 @@ mod tests {
         let message = quota_message(429, r#"{"error":"slow down"}"#).unwrap();
         assert!(message.contains("限流"));
         assert!(!message.contains("小时后"));
+
+        // 流式生成的失败来自事件流的错误文本，没有 HTTP 状态；只按正文识别。
+        let message = quota_message(0, "Free usage limit reached.").unwrap();
+        assert!(message.contains("免费额度"));
+        let body =
+            r#"{"reason":"rate_limit","message":"Free usage limit reached.","retryAfterMs":60000}"#;
+        let message = quota_message(0, body).unwrap();
+        assert!(message.contains("大约 1 分钟后"));
+        assert!(quota_message(0, "boom").is_none());
 
         // 非额度类失败保持原样，交给调用侧拼状态码和正文。
         assert!(quota_message(500, r#"{"message":"boom"}"#).is_none());

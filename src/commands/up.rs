@@ -6372,6 +6372,8 @@ struct SetUiStateReq {
     preferred_autonomy: Option<Autonomy>,
     /// `provider/model`, or empty for the chat's own.
     opencode_review_model: Option<String>,
+    /// `provider/model` for one-sentence drafts, or empty for the chat's own.
+    draft_model: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -6388,21 +6390,14 @@ async fn set_ui_state(Json(mut req): Json<SetUiStateReq>) -> ApiResult {
     if let Some(workspace) = &req.workspace {
         workspace.validate().map_err(bad_request)?;
     }
-    let review_model = req
-        .opencode_review_model
-        .take()
-        .map(|model| model.trim().to_owned());
-    if review_model.as_deref().is_some_and(|model| {
-        !model.is_empty()
-            && (model.len() > 200
-                || model
-                    .split_once('/')
-                    .is_none_or(|(provider, id)| provider.is_empty() || id.is_empty()))
-    }) {
-        return Err(bad_request(
-            "The Auto reviewer must be a model in provider/model form",
-        ));
-    }
+    let review_model = validated_model_ref(
+        req.opencode_review_model.take(),
+        "The Auto reviewer must be a model in provider/model form",
+    )?;
+    let draft_model = validated_model_ref(
+        req.draft_model.take(),
+        "The draft model must be a model in provider/model form",
+    )?;
     tokio::task::spawn_blocking(move || -> Result<Json<Value>> {
         let store = Store::open()?;
         let selection = req
@@ -6448,11 +6443,32 @@ async fn set_ui_state(Json(mut req): Json<SetUiStateReq>) -> ApiResult {
         if let Some(model) = review_model {
             store.set_opencode_review_model((!model.is_empty()).then_some(model.as_str()))?;
         }
+        if let Some(model) = draft_model {
+            store.set_draft_model((!model.is_empty()).then_some(model.as_str()))?;
+        }
         Ok(Json(json!(store.ui_state()?)))
     })
     .await
     .map_err(|error| ApiError::from(anyhow!("UI state task failed: {error}")))?
     .map_err(bad_request)
+}
+
+/// A `provider/model` preference, trimmed; empty means "inherit the chat's own".
+fn validated_model_ref(
+    value: Option<String>,
+    message: &str,
+) -> std::result::Result<Option<String>, ApiError> {
+    let model = value.map(|model| model.trim().to_owned());
+    if model.as_deref().is_some_and(|model| {
+        !model.is_empty()
+            && (model.len() > 200
+                || model
+                    .split_once('/')
+                    .is_none_or(|(provider, id)| provider.is_empty() || id.is_empty()))
+    }) {
+        return Err(bad_request(message));
+    }
+    Ok(model)
 }
 
 /// The lit-source toggles as booleans (enabled = not in the disabled set).
@@ -8437,6 +8453,10 @@ async fn create_chat_session(
         }
     }
     tx.commit().map_err(bad_request)?;
+    // A bound workflow sets the session title inside the transaction; return
+    // the persisted row so the sidebar shows it immediately instead of the
+    // pre-title snapshot.
+    let session = store.get_chat_session(&session.id)?.unwrap_or(session);
     state.chat.emit_session(Some(session.clone())).await;
     Ok(Json(
         json!({ "session": local::chat::session_json(&session, false) }),

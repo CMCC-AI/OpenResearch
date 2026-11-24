@@ -7,12 +7,56 @@ use super::harness::{chat_harness, detect_harness, Harness};
 use crate::error::Result;
 use crate::store::Store;
 
-/// A cold CLI start plus one reasoning round trip over a long output. Both
-/// generators write more than a title or a handful of prompts, so they take
-/// the compaction summary's budget rather than starter prompts' 90s.
-pub const GENERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+/// One reasoning round trip over a long output. Both generators write more
+/// than a title or a handful of prompts, and reasoning models take their time:
+/// on GLM-5.3 a short flow already costs ~110s, and a broad intent (survey plus
+/// reproduction) goes past three minutes, so the old 180s cut real drafts off.
+pub const GENERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 /// The user's one-sentence intent, as accepted from the API.
 pub const INTENT_CHARS: usize = 2000;
+
+/// 生成推进到的阶段。借 `/api/events` 的 SSE 广播发给前端，等待期不再只有
+/// 转圈；四个阶段都是后端真实动作，不是演示用的假进度。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DraftStage {
+    /// 本机清单就绪（内置角色、自定义专家、MCP 服务、上传技能）。
+    Inventory,
+    /// 生成引擎已选定，子进程即将启动。
+    Engine,
+    /// 模型撰写开始：整段等待的主体，前端就地显示已等待秒数。
+    Writing,
+    /// 模型输出已返回，正在校验引用并整理草稿。
+    Reviewing,
+}
+
+impl DraftStage {
+    /// 事件载荷里的阶段名，前端按它推进过程清单。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Inventory => "inventory",
+            Self::Engine => "engine",
+            Self::Writing => "writing",
+            Self::Reviewing => "reviewing",
+        }
+    }
+}
+
+/// 引擎选定之后按真实节点上报阶段：引擎就绪 → 开始撰写 → 模型已返回、开始校验。
+/// 单独拆出是为了不靠真引擎也能锁住事件顺序：实测漏发过 writing，整段等待里
+/// 前端一直把「启动生成引擎」显示为进行中，带计时的撰写行从未亮起。
+pub(crate) async fn staged<F>(
+    on_stage: &impl Fn(DraftStage),
+    call: impl FnOnce() -> F,
+) -> Result<String>
+where
+    F: std::future::Future<Output = Result<String>>,
+{
+    on_stage(DraftStage::Engine);
+    on_stage(DraftStage::Writing);
+    let raw = call().await?;
+    on_stage(DraftStage::Reviewing);
+    Ok(raw)
+}
 
 /// One pickable inventory entry; `key` is the reference the model must echo
 /// back (an expert id, an MCP service id, a skill name).
@@ -24,19 +68,45 @@ pub struct Pick {
 }
 
 /// The chat harness and model a draft is written on: the one the user last
-/// picked in the composer, else the first harness that is ready. OpenCode's
-/// one-shot needs an explicit model and the fallback path picks none, so take
-/// the first of its catalog there.
+/// picked in the composer, else the first harness that is ready. A configured
+/// draft model (`provider/model`, OpenCode only) wins over the chat's model so
+/// structure writing can run on something faster. OpenCode's one-shot needs an
+/// explicit model and the fallback path picks none, so take the first of its
+/// catalog there.
 pub(crate) async fn generation_agent() -> Option<(Box<dyn Harness>, Option<String>)> {
     let agent = super::starter::resolve_agent(None).await?;
-    let model = match agent.effective_model() {
-        Some(model) => Some(model.to_string()),
-        None if agent.harness == "opencode" => detect_harness("opencode")
-            .await
-            .and_then(|info| info.models.first().map(|m| m.id.clone())),
-        None => None,
-    };
+    let configured = tokio::task::spawn_blocking(|| {
+        Store::open()
+            .and_then(|store| store.ui_state())
+            .ok()
+            .and_then(|state| state.draft_model)
+    })
+    .await
+    .ok()
+    .flatten();
+    let model = draft_model_override(&agent.harness, configured.as_deref()).or(
+        match agent.effective_model() {
+            Some(model) => Some(model.to_string()),
+            None if agent.harness == "opencode" => detect_harness("opencode")
+                .await
+                .and_then(|info| info.models.first().map(|m| m.id.clone())),
+            None => None,
+        },
+    );
     Some((chat_harness(&agent.harness)?, model))
+}
+
+/// The draft-model preference, honoured only where a `provider/model` string
+/// means something (OpenCode). Other harnesses keep their own model resolution.
+fn draft_model_override(harness: &str, configured: Option<&str>) -> Option<String> {
+    (harness == "opencode")
+        .then(|| {
+            configured
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_owned)
+        })
+        .flatten()
 }
 
 /// Truncate to at most `chars` characters, trimming trailing whitespace.
@@ -81,6 +151,22 @@ pub(crate) fn custom_agent_picks(store: &Store) -> Result<Vec<Pick>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn draft_model_preference_only_applies_to_opencode() {
+        assert_eq!(
+            draft_model_override("opencode", Some(" zhipu-coding/glm-5.3 ")).as_deref(),
+            Some("zhipu-coding/glm-5.3")
+        );
+        // 空值和空白都等于「沿用聊天模型」。
+        assert_eq!(draft_model_override("opencode", Some("  ")), None);
+        assert_eq!(draft_model_override("opencode", None), None);
+        // provider/model 是 OpenCode 的写法；别的引擎不认，交回它自己的模型选择。
+        assert_eq!(
+            draft_model_override("codex", Some("zhipu-coding/glm-5.3")),
+            None
+        );
+    }
 
     #[test]
     fn clip_cuts_on_a_character_boundary_and_trims_the_tail() {

@@ -1314,6 +1314,9 @@
   "settings_auto_reviewer": "Revisor de Auto",
   "settings_auto_reviewer_description": "El modelo que revisa los comandos de OpenCode en Auto. Uno más pequeño mantiene las revisiones baratas y rápidas. Un chat con un modelo local siempre revisa con el suyo.",
   "settings_auto_reviewer_same": "El mismo modelo que el chat",
+  "settings_draft_model": "Modelo de generación con IA",
+  "settings_draft_model_description": "Se usa cuando una frase se convierte en un flujo de trabajo o un experto. Si la generación tarda demasiado, elige aquí un modelo más rápido; el chat mantiene el suyo.",
+  "settings_draft_model_same": "El mismo modelo que el chat",
   "opencode_auto_same_model": "Usa el mismo modelo para revisar cada comando y te pregunta cuando no está seguro",
   "opencode_auto_model": "Usa {model} para revisar cada comando y te pregunta cuando no está seguro"
 }

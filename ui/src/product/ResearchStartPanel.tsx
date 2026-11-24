@@ -16,12 +16,13 @@ import { ProductWordmark } from "./ProductNav";
 import { Spinner } from "../components/ui";
 import { IconButton } from "../components/ui/IconButton";
 
-export function ResearchStartPanel({ starting = false, draft, onDraftChange, attachments, onAttachmentsChange, onStart, onError, workMode, onWorkModeChange, preferredAgent, projects, activity, project, onSelectProject, onNewProject }: {
+export function ResearchStartPanel({ starting = false, draft, onDraftChange, attachments, onAttachmentsChange, onStart, onError, workMode, onWorkModeChange, workflowDraftId, onWorkflowDraftChange, preferredAgent, projects, activity, project, onSelectProject, onNewProject }: {
   starting?: boolean;
   preferredAgent: AgentSelection | null; projects: Project[]; activity: ProjectActivity[]; project?: Project; onSelectProject: (id: string) => void; onNewProject?: () => void;
   draft: string; onDraftChange: (value: string) => void;
   attachments: ComposerAttachment[]; onAttachmentsChange: (value: ComposerAttachment[]) => void;
   workMode: WorkMode; onWorkModeChange: (mode: WorkMode) => void;
+  workflowDraftId: string | null; onWorkflowDraftChange: (draftId: string | null) => void;
   onStart: () => void; onError: (message: string) => void;
 }) {
   const { data: harnesses = [] } = useQuery(getHarnessesQuery());
@@ -101,7 +102,7 @@ export function ResearchStartPanel({ starting = false, draft, onDraftChange, att
         <IconButton type="button" title="上传整个文件夹" aria-label="上传整个文件夹" onClick={() => folderPicker.current?.click()}><FolderUp size={16} /></IconButton>
         <div className="min-w-0 flex-1" />
         <ModelPicker value={selection} onSelect={(preferredAgent) => saveSelection.mutate({ preferredAgent })} permissionChoices={withAutoReviewer(harness?.options.permissionModes ?? [], harness, uiState?.opencodeReviewModel, selection?.model)} defaultPermissionId={harness?.options.defaultPermissionMode} onSelectPermission={(permissionMode) => { if (selection) saveSelection.mutate({ preferredAgent: { ...selection, permissionMode } }); }} reasoningChoices={reasoning.choices} defaultReasoningId={reasoning.defaultId} onSelectReasoning={(reasoningLevel) => { if (selection) saveSelection.mutate({ preferredAgent: { ...selection, reasoningLevel } }); }} openRequest={modelRequest} autonomy={uiState?.preferredAutonomy ?? undefined} onSelectAutonomy={(preferredAutonomy) => saveSelection.mutate({ preferredAutonomy })} />
-        <WorkModeSwitch value={workMode} onChange={onWorkModeChange} compact />
+        <WorkModeSwitch value={workMode} onChange={onWorkModeChange} workflowDraftId={workflowDraftId} onWorkflowDraftChange={onWorkflowDraftChange} compact />
         <IconButton type="submit" variant="primary" className="send-btn ms-auto" title="发送消息" aria-label="发送消息" disabled={starting || saveSelection.isPending || (!draft.trim() && attachments.length === 0)}>{starting ? <Spinner /> : <CornerDownLeft size={16} />}</IconButton>
       </div>
       </div>

@@ -522,6 +522,7 @@ export function HarnessesTab({ remote }: { remote: boolean }) {
             </div>
           )}
           {h.id === "opencode" && !remote && <AutoReviewerSetting opencode={h} />}
+          {h.id === "opencode" && !remote && <DraftModelSetting opencode={h} />}
           {h.id === "opencode" && canConfigureModels && <LocalModelSetup installed={h.installed} />}
         </div>
       )}
@@ -553,6 +554,41 @@ function AutoReviewerSetting({ opencode }: { opencode: Harness }) {
           choices={choices}
           value={uiState?.opencodeReviewModel ?? ""}
           title={m.settings_auto_reviewer()}
+          variant="field"
+          dropDown
+          disabled={save.isPending}
+          onSelect={(id) => save.mutate(id)}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** 一句话生成工作流/专家时用的模型；空值沿用对话模型，响应慢的思考模型可以在这里换成更快的。 */
+function DraftModelSetting({ opencode }: { opencode: Harness }) {
+  const { data: uiState } = useQuery(getUiStateQuery());
+  const save = useMutation({
+    mutationFn: (draftModel: string) => updateUiState({ draftModel }),
+    onSuccess: (next) => {
+      queryClient.setQueryData(getUiStateQuery().queryKey, next);
+    },
+  });
+  const remoteModels = opencode.models.filter((model) => !model.id.startsWith("orx-local-"));
+  const choices = [
+    { id: "", label: m.settings_draft_model_same() },
+    ...remoteModels.map((model) => ({ id: model.id, label: harnessModelLabel(model) })),
+  ];
+  return (
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-4 border-t border-border pt-4">
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-text">{m.settings_draft_model()}</div>
+        <p className="mt-0.5 text-sm text-subtext">{m.settings_draft_model_description()}</p>
+      </div>
+      <div className="w-64 shrink-0">
+        <OptionPicker
+          choices={choices}
+          value={uiState?.draftModel ?? ""}
+          title={m.settings_draft_model()}
           variant="field"
           dropDown
           disabled={save.isPending}

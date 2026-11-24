@@ -18,13 +18,16 @@ const categoryIcon = (category: WorkModeCategory) => category === "normal" ? Git
 const WORKFLOW_SEARCH_MIN = 6;
 
 type WorkModeSwitchProps = {
-  value: WorkMode; onChange: (mode: WorkMode) => void; readOnly?: boolean; activeWorkflow?: PresetWorkflowMode | null; compact?: boolean;
+  value: WorkMode; onChange: (mode: WorkMode) => void; readOnly?: boolean; activeWorkflow?: PresetWorkflowMode | null;
   /** 新会话预选绑定的保存工作流；发送时随会话创建一起绑定。 */
   workflowDraftId?: string | null;
-  onWorkflowDraftChange?: (draftId: string | null) => void;
   /** 会话已绑定的工作流名（取最新计划的 workflow_source），只读展示。 */
   boundWorkflowName?: string | null;
-};
+} & (
+  // 紧凑模式把工作流列表放进菜单，必须同时提供改选回调，否则点选保存的工作流会静默失效。
+  | { compact: true; onWorkflowDraftChange: (draftId: string | null) => void }
+  | { compact?: false; onWorkflowDraftChange?: (draftId: string | null) => void }
+);
 
 type CompactWorkModeSwitchProps = Pick<WorkModeSwitchProps, "value" | "onChange" | "workflowDraftId" | "onWorkflowDraftChange"> & {
   workflows: WorkflowDraft[]; workflowsPending: boolean; workflowsError: boolean;

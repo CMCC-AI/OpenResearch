@@ -1314,6 +1314,9 @@
   "settings_auto_reviewer": "Auto 검토 모델",
   "settings_auto_reviewer_description": "Auto에서 OpenCode 명령을 검토하는 모델입니다. 더 작은 모델을 쓰면 검토가 저렴하고 빠릅니다. 로컬 모델을 쓰는 채팅은 항상 자신의 모델로 검토합니다.",
   "settings_auto_reviewer_same": "채팅과 같은 모델",
+  "settings_draft_model": "AI 생성용 모델",
+  "settings_draft_model_description": "한 문장으로 워크플로나 전문가를 만들 때 사용하는 모델입니다. 생성이 너무 느리면 여기서 더 빠른 모델을 고르세요. 채팅은 위의 모델을 그대로 씁니다.",
+  "settings_draft_model_same": "채팅과 같은 모델",
   "opencode_auto_same_model": "같은 모델로 각 명령을 검토하고 확실하지 않으면 묻습니다",
   "opencode_auto_model": "{model}(으)로 각 명령을 검토하고 확실하지 않으면 묻습니다"
 }

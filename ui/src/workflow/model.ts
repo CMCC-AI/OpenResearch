@@ -332,6 +332,74 @@ export function generatedToDraftInput(generated: GeneratedWorkflowDraft): Workfl
   };
 }
 
+/**
+ * 从流式回复的累计文本里取出已经写完的任务。模型一次输出一个 JSON 对象，
+ * 任务在 "tasks" 数组里按顺序到达：只收花括号配平的完整对象，尾部没写完的
+ * 留到下一次；缺 id/role/brief 的跳过。最终仍以后端的结构校验结果为准。
+ */
+export function parsePartialTasks(text: string): WorkflowTask[] {
+  const key = text.indexOf('"tasks"');
+  if (key < 0) return [];
+  const open = text.indexOf("[", key);
+  if (open < 0) return [];
+  const tasks: WorkflowTask[] = [];
+  const seen = new Set<string>();
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let index = open + 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === "\"") inString = false;
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+    } else if (char === "{") {
+      if (depth === 0) start = index;
+      depth += 1;
+    } else if (char === "}") {
+      if (depth === 0) continue;
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        const task = parseStreamedTask(text.slice(start, index + 1));
+        if (task && !seen.has(task.id)) {
+          seen.add(task.id);
+          tasks.push(task);
+        }
+        start = -1;
+      }
+    } else if (char === "]" && depth === 0) {
+      break;
+    }
+  }
+  return tasks;
+}
+
+function parseStreamedTask(raw: string): WorkflowTask | null {
+  let value: Partial<WorkflowTask>;
+  try {
+    value = JSON.parse(raw) as Partial<WorkflowTask>;
+  } catch {
+    return null;
+  }
+  if (typeof value.id !== "string" || !value.id.trim()) return null;
+  if (typeof value.role !== "string" || !value.role.trim()) return null;
+  if (typeof value.brief !== "string") return null;
+  const strings = (input: unknown) =>
+    Array.isArray(input) ? input.filter((item): item is string => typeof item === "string") : [];
+  return {
+    id: value.id.trim(),
+    role: value.role.trim(),
+    brief: value.brief,
+    dependsOn: strings(value.dependsOn),
+    outputs: strings(value.outputs),
+  };
+}
+
 export function addAgentTask(draft: WorkflowDraftInput, agent: WorkflowAgent, position?: FlowPoint): WorkflowDraftInput {
   let index = draft.tasks.length + 1;
   while (draft.tasks.some((task) => task.id === `task-${index}`)) index++;

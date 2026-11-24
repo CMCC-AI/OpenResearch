@@ -34,6 +34,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::{anyhow, Error, Result};
 use crate::local::chat::{
@@ -362,6 +363,13 @@ pub trait Harness: Send + Sync {
         Err(anyhow!("{} cannot run one-shot requests", self.name()))
     }
 
+    /// Like [`Harness::one_shot`], but reports the reply as it grows and stops
+    /// early when the sink is cancelled. The default has nothing live to show,
+    /// so it runs the plain one-shot and returns the whole reply at once.
+    async fn one_shot_streaming(&self, request: OneShot<'_>, _sink: OneShotSink) -> Result<String> {
+        self.one_shot(request).await
+    }
+
     /// Whether `one_shot` runs on `OneShot::model`; callers caching by model
     /// should not vary the key for a harness that ignores it.
     fn one_shot_honours_model(&self) -> bool {
@@ -548,6 +556,16 @@ pub struct OneShot<'a> {
     /// provider with no working key); Claude keeps its per-quality alias.
     pub model: Option<&'a str>,
     pub timeout: Duration,
+}
+
+/// Optional hooks for a one-shot that can report progress while it runs.
+#[derive(Clone)]
+pub struct OneShotSink {
+    /// Receives the reply accumulated so far (not just the newest chunk), so a
+    /// consumer never has to reassemble it.
+    pub on_text: Arc<dyn Fn(&str) + Send + Sync>,
+    /// Cancelled when the caller goes away; the harness stops its child early.
+    pub cancel: Option<CancellationToken>,
 }
 
 /// A failed one-shot child's message from the first of `outputs` it wrote to,

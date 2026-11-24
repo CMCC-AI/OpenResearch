@@ -300,6 +300,7 @@ fn ui_state_roundtrips_functional_preferences() {
             workspace: None,
             preferred_autonomy: None,
             opencode_review_model: None,
+            draft_model: None,
         }
     );
 
@@ -317,6 +318,9 @@ fn ui_state_roundtrips_functional_preferences() {
     store
         .set_opencode_review_model(Some("openai/gpt-6-mini"))
         .unwrap();
+    store
+        .set_draft_model(Some("zhipu-coding/glm-5.3-flash"))
+        .unwrap();
 
     assert_eq!(
         store.ui_state().unwrap(),
@@ -327,6 +331,7 @@ fn ui_state_roundtrips_functional_preferences() {
             workspace: None,
             preferred_autonomy: Some(Autonomy::Copilot),
             opencode_review_model: Some("openai/gpt-6-mini".into()),
+            draft_model: Some("zhipu-coding/glm-5.3-flash".into()),
         }
     );
     let _ = std::fs::remove_dir_all(&dir);

@@ -1,35 +1,22 @@
-// AI 排流程：把一句话变成画布草稿。挂在编排页，生成结果由调用方决定怎么落到画布。
+// AI 排流程：把一句话交给编排页的生成编排。进度、节点预览和落盘都由画布负责，
+// 这里只收集句子，并在真正开始后收起弹层——生成慢也没关系，画布上能看到过程。
 import { useState } from "react";
 import { Sparkles } from "lucide-react";
-import { generateWorkflowDraft } from "../api";
-import { Button, showAlert, Spinner } from "../components/ui";
-import { useLocale } from "../locale";
-import { generatedToDraftInput, type WorkflowDraftInput } from "./model";
+import { Button } from "../components/ui";
 
-export function AiWorkflowPrompt({ disabled = false, onGenerated }: {
+export function AiWorkflowPrompt({ disabled = false, onGenerate }: {
   /** 画布内容还没就绪时先不开口，避免生成稿和随后加载到的草稿互相覆盖。 */
   disabled?: boolean;
-  /** 生成成功：把草稿交给画布；返回 false 表示没被采用（如用户拒绝替换），弹层保持打开。 */
-  onGenerated: (draft: WorkflowDraftInput) => boolean;
+  /** 开始生成；返回 false 表示没被采用（如用户拒绝替换），弹层保持打开。 */
+  onGenerate: (intent: string) => boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [intent, setIntent] = useState("");
-  const [generating, setGenerating] = useState(false);
-  const locale = useLocale();
+  const request = intent.trim();
 
-  async function generate() {
-    const request = intent.trim();
-    if (!request || generating) return;
-    setGenerating(true);
-    try {
-      const generated = await generateWorkflowDraft({ intent: request, locale });
-      // 画布没采用（例如用户拒绝替换）就保持弹层，一句话还在，可以直接重试。
-      if (onGenerated(generatedToDraftInput(generated))) setOpen(false);
-    } catch (error) {
-      showAlert(error instanceof Error ? error.message : String(error), "error");
-    } finally {
-      setGenerating(false);
-    }
+  function generate() {
+    if (!request) return;
+    if (onGenerate(request)) setOpen(false);
   }
 
   return <div className="relative" onKeyDown={(event) => { if (event.key === "Escape" && open) { event.stopPropagation(); setOpen(false); } }}>
@@ -40,9 +27,7 @@ export function AiWorkflowPrompt({ disabled = false, onGenerated }: {
       <textarea className="min-h-20 resize-y rounded-md border border-border bg-background p-2.5 text-sm text-text outline-none focus:border-text" value={intent} placeholder="这条流程要完成什么？" onChange={(event) => setIntent(event.target.value)} />
       <div className="flex items-center justify-between gap-2">
         <Button size="small" variant="ghost" onClick={() => setOpen(false)}>关闭</Button>
-        <Button size="small" variant="primary" disabled={!intent.trim() || generating} onClick={() => void generate()}>
-          {generating ? <span className="flex items-center gap-2"><Spinner />正在排版…</span> : "生成流程"}
-        </Button>
+        <Button size="small" variant="primary" disabled={!request} onClick={generate}>生成流程</Button>
       </div>
     </div>}
   </div>;

@@ -1314,6 +1314,9 @@
   "settings_auto_reviewer": "Auto のレビュー担当",
   "settings_auto_reviewer_description": "Auto で OpenCode のコマンドを確認するモデルです。小さいモデルを選ぶと、確認が安く速くなります。ローカルモデルのチャットは常に自分のモデルで確認します。",
   "settings_auto_reviewer_same": "チャットと同じモデル",
+  "settings_draft_model": "AI 生成用モデル",
+  "settings_draft_model_description": "一文からワークフローや専門家を作るときに使うモデルです。生成が遅い場合は、ここでより速いモデルを選べます。チャットは引き続き上のモデルを使います。",
+  "settings_draft_model_same": "チャットと同じモデル",
   "opencode_auto_same_model": "同じモデルで各コマンドを確認し、判断できないときは確認を求めます",
   "opencode_auto_model": "{model} で各コマンドを確認し、判断できないときは確認を求めます"
 }

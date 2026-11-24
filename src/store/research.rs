@@ -1225,14 +1225,25 @@ pub(crate) fn validate_plan_with_roles(
                     break;
                 }
             }
-            for upstream in &input.tasks {
-                let required = match task.role.as_str() {
-                    "as-independent-reviewer" => !matches!(
+            // 独立审稿只需要“待审材料”里的至少一个上游，不能要求计划中
+            // 每个非审查角色都是它的祖先：分流、人工任务、成稿等常常排在
+            // 审稿之后。审计/归档仍要求各自的上游审查者在祖先集合里。
+            if task.role == "as-independent-reviewer" {
+                let has_material = input.tasks.iter().any(|upstream| {
+                    !matches!(
                         upstream.role.as_str(),
                         "as-independent-reviewer"
                             | "as-quality-citation-auditor"
                             | "as-research-package-curator"
-                    ),
+                    ) && ancestors.contains(&upstream.id)
+                });
+                if !has_material {
+                    return Err(anyhow!("审查任务必须依赖待审材料: {}", task.id));
+                }
+                continue;
+            }
+            for upstream in &input.tasks {
+                let required = match task.role.as_str() {
                     "as-quality-citation-auditor" => upstream.role == "as-independent-reviewer",
                     _ => upstream.role == "as-quality-citation-auditor",
                 };
@@ -1725,6 +1736,12 @@ impl Store {
         id: &str,
         update: impl FnOnce(&mut Study) -> Result<T>,
     ) -> Result<T> {
+        // Callers that already hold a write transaction (notably creating a chat
+        // session with a bound workflow) must join it: SQLite rejects a nested
+        // BEGIN, and the caller owns the commit/rollback either way.
+        if !self.conn.is_autocommit() {
+            return self.research_update_in_tx(id, update);
+        }
         let tx = self.begin_immediate()?;
         let value = self.research_update_in_tx(id, update)?;
         tx.commit()?;
@@ -3266,6 +3283,71 @@ mod tests {
             )
             .unwrap();
         assert_eq!(direct, 0);
+    }
+
+    #[test]
+    fn workflow_binding_joins_an_outer_transaction() {
+        // 新会话首条消息携带 workflowDraftId 时，聊天会话与计划在同一事务里落库。
+        // 不得在事务内再开 BEGIN：SQLite 会报 cannot start a transaction within a transaction。
+        let (_dir, store, _) = setup();
+        let draft = saved_literature_workflow(&store);
+        let tx = store.begin_immediate().unwrap();
+        let (id, version, duplicate) = store
+            .research_use_workflow("lead", &draft.id, "Compare evidence")
+            .unwrap();
+        tx.commit().unwrap();
+        assert_eq!(version, 1);
+        assert!(!duplicate);
+        let study = store.research_study(&id).unwrap();
+        assert_eq!(study.session_id, "lead");
+        assert_eq!(
+            store
+                .get_chat_session("lead")
+                .unwrap()
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("Saved evidence review")
+        );
+        assert!(study
+            .decisions
+            .iter()
+            .any(|d| d.gate == "G1" && d.status == "pending"));
+    }
+
+    #[test]
+    fn workflow_binding_keeps_an_existing_user_title() {
+        let (_dir, store, _) = setup();
+        store
+            .set_chat_session_title("lead", "我的旧标题", "user")
+            .unwrap();
+        let draft = saved_literature_workflow(&store);
+        store
+            .research_use_workflow("lead", &draft.id, "Compare evidence")
+            .unwrap();
+        assert_eq!(
+            store
+                .get_chat_session("lead")
+                .unwrap()
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("我的旧标题")
+        );
+    }
+
+    #[test]
+    fn research_update_joins_an_outer_transaction_instead_of_committing() {
+        let (_dir, store, study) = setup();
+        let tx = store.begin_immediate().unwrap();
+        store
+            .research_update(&study.id, |study| {
+                study.status = "paused".into();
+                Ok(())
+            })
+            .unwrap();
+        tx.rollback().unwrap();
+        assert_eq!(store.research_study(&study.id).unwrap().status, "active");
     }
 
     #[test]

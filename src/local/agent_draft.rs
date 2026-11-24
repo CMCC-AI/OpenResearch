@@ -39,31 +39,9 @@ pub struct Inventories {
     pub skills: Vec<Pick>,
 }
 
-/// 生成推进到的阶段。借 `/api/events` 的 SSE 广播发给前端，等待期不再只有
-/// 转圈；四个阶段都是后端真实动作，不是演示用的假进度。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DraftStage {
-    /// 本机清单就绪（内置角色、自定义专家、MCP 服务、上传技能）。
-    Inventory,
-    /// 生成引擎已选定，子进程即将启动。
-    Engine,
-    /// 模型撰写开始：整段等待的主体，前端就地显示已等待秒数。
-    Writing,
-    /// 模型输出已返回，正在校验引用并整理草稿。
-    Reviewing,
-}
-
-impl DraftStage {
-    /// 事件载荷里的阶段名，前端按它推进过程清单。
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Inventory => "inventory",
-            Self::Engine => "engine",
-            Self::Writing => "writing",
-            Self::Reviewing => "reviewing",
-        }
-    }
-}
+use super::draft_support::staged;
+/// 阶段枚举与阶段顺序和工作流草稿共用，前端靠同一份阶段名推进过程清单。
+pub use super::draft_support::DraftStage;
 
 /// 本机库存：内置角色（只带名称/说明）、现有自定义专家、已启用的 MCP 服务、
 /// 上传技能。store 访问由调用侧包在 spawn_blocking 里。
@@ -125,20 +103,6 @@ pub async fn generate(
     .await?;
     parse_draft(&raw, &inv.mcp_servers, &inv.skills)
         .ok_or_else(|| anyhow!("模型没有返回有效的专家草稿；请重试或换个说法"))
-}
-
-/// 引擎选定之后按真实节点上报阶段：引擎就绪 → 开始撰写 → 模型已返回、开始校验。
-/// 单独拆出是为了不靠真引擎也能锁住事件顺序：实测漏发过 writing，整段等待里
-/// 前端一直把「启动生成引擎」显示为进行中，带计时的撰写行从未亮起。
-async fn staged<F>(on_stage: &impl Fn(DraftStage), call: impl FnOnce() -> F) -> Result<String>
-where
-    F: std::future::Future<Output = Result<String>>,
-{
-    on_stage(DraftStage::Engine);
-    on_stage(DraftStage::Writing);
-    let raw = call().await?;
-    on_stage(DraftStage::Reviewing);
-    Ok(raw)
 }
 
 fn generation_prompt(intent: &str, locale: &str, inv: &Inventories) -> String {
