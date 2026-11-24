@@ -1402,6 +1402,9 @@ pub(super) async fn generate(
             if !status.is_success() {
                 // The body carries the provider's reason; the URL is a throwaway local port.
                 let body = response.text().await.unwrap_or_default();
+                if let Some(message) = quota_message(status.as_u16(), &body) {
+                    return Err(anyhow!("{message}"));
+                }
                 return Err(anyhow!(
                     "{status}: {}",
                     crate::local::harness::one_line(&body, 300)
@@ -1423,9 +1426,64 @@ pub(super) async fn generate(
     .await?
 }
 
+/// A quota or throttle error as the researcher should read it: what happened,
+/// roughly when it clears, and what to do meanwhile. `None` leaves ordinary
+/// failures to the caller's status-plus-body form. The provider wraps these as
+/// JSON with internals (`_tag`, `providerID`, `retryAfterMs`); echoing that at
+/// a person explains nothing.
+fn quota_message(status: u16, body: &str) -> Option<String> {
+    let lower = body.to_ascii_lowercase();
+    let limited = status == 429 || lower.contains("rate_limit") || lower.contains("usage limit");
+    if !limited {
+        return None;
+    }
+    let subject = if lower.contains("free usage limit") {
+        "当前模型今天的免费额度用完了"
+    } else {
+        "当前模型暂时被限流了"
+    };
+    Some(match retry_after(body) {
+        Some(wait) => format!("{subject}，{wait}才能恢复；可以先在对话里换一个模型再试。"),
+        None => format!("{subject}；可以先在对话里换一个模型再试。"),
+    })
+}
+
+/// The wait the provider asked for, in plain words, from its `retryAfterMs`.
+fn retry_after(body: &str) -> Option<String> {
+    let body: Value = serde_json::from_str(body).ok()?;
+    let ms = body
+        .get("retryAfterMs")
+        .or_else(|| body.pointer("/data/retryAfterMs"))
+        .and_then(Value::as_u64)?;
+    let minutes = ms.div_ceil(60_000).max(1);
+    Some(if minutes < 60 {
+        format!("大约 {minutes} 分钟后")
+    } else {
+        format!("大约 {} 小时后", minutes.div_ceil(60))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quota_errors_read_plainly_instead_of_provider_json() {
+        // 截图里的那次失败：网关把 provider 的 429 包成 502，正文还是那段 JSON。
+        let body = r#"{"_tag":"ProviderRequestError","providerID":"opencode","reason":"rate_limit","message":"Free usage limit reached.","status":429,"retryAfterMs":78819000}"#;
+        let message = quota_message(502, body).unwrap();
+        assert!(message.contains("免费额度"));
+        assert!(message.contains("大约 22 小时后"));
+        assert!(!message.contains("_tag") && !message.contains("providerID"));
+
+        // 普通限流也认得出来，只是不编造恢复时间。
+        let message = quota_message(429, r#"{"error":"slow down"}"#).unwrap();
+        assert!(message.contains("限流"));
+        assert!(!message.contains("小时后"));
+
+        // 非额度类失败保持原样，交给调用侧拼状态码和正文。
+        assert!(quota_message(500, r#"{"message":"boom"}"#).is_none());
+    }
 
     #[test]
     fn dismissed_question_is_not_a_provider_failure() {
