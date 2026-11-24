@@ -9,5 +9,5 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   reporter: [['line'], ['json', { outputFile: 'test-results/browser-results.json' }]],
   outputDir: 'test-results/browser',
-  use: { browserName: 'chromium', headless: true, baseURL: process.env.ORX_BROWSER_BASE_URL, viewport: { width: 1280, height: 900 }, trace: 'retain-on-failure', screenshot: 'only-on-failure' },
+  use: { browserName: 'chromium', channel: process.env.ORX_BROWSER_CHANNEL || undefined, headless: true, baseURL: process.env.ORX_BROWSER_BASE_URL, viewport: { width: 1280, height: 900 }, trace: 'retain-on-failure', screenshot: 'only-on-failure' },
 });

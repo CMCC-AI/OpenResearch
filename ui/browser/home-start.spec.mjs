@@ -46,7 +46,7 @@ for (const prefix of ['', '/mobilesci']) {
       await page.goto(`${prefix}/projects`);
       const devtools = page.getByRole('button', { name: 'Close tanstack query devtools', exact: true });
       if (await devtools.isVisible()) await devtools.click();
-      await page.locator('.product-sidebar').getByRole('button', { name: /对话 · Handoff fixture$/ }).click();
+      await page.locator('.product-sidebar').getByRole('button', { name: '新对话 · Handoff fixture', exact: true }).click();
       await expect(page).toHaveURL(url => url.pathname === `${prefix}/projects` && url.searchParams.get('project') === project.id);
       const input = page.locator('#research-objective');
       await input.fill(question); await input.press('Enter');

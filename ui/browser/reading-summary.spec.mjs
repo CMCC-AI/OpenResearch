@@ -13,13 +13,13 @@ test('real uploaded material shows stable CLI unions and case copies never fall 
   await expect(page.getByRole('navigation', { name:'材料视图' })).toBeVisible(); await closeDevtools(page);
   await page.getByRole('button', { name:'读取范围', exact:true }).click();
   const section = page.getByRole('region', { name:'读取范围记录' });
-  await expect(section).toContainText('检查 2 条回执');
+  await expect(section).toContainText('2 条读取记录');
   await expect(section).toContainText('已确认输出 3 / 4 行');
   await expect(section).toContainText('行范围：1–3');
   await section.getByRole('checkbox', { name:'仅当前会话' }).check();
-  await expect(section).toContainText('检查 2 条回执');
+  await expect(section).toContainText('2 条读取记录');
   await section.getByRole('button', { name:'刷新读取范围', exact:true }).click();
-  await expect(section).toContainText('检查 2 条回执');
+  await expect(section).toContainText('2 条读取记录');
   await section.getByRole('combobox', { name:'筛选读取记录的文件' }).selectOption(fixture.readingManifest.files[0].id);
   await expect(section).toContainText('已确认输出 3 / 4 行');
   await page.screenshot({ path:info.outputPath('reading-summary-wide.png'),fullPage:true });
@@ -31,7 +31,7 @@ test('real uploaded material shows stable CLI unions and case copies never fall 
   await expect(section).toContainText('案例发布时保存的记录');
   await expect(section).toContainText('已确认输出 3 / 4 行');
   await section.getByRole('combobox', { name:'筛选读取记录的文件' }).selectOption(fixture.readingManifest.files[0].id);
-  await expect(section).toContainText('检查 2 条回执');
+  await expect(section).toContainText('2 条读取记录');
   await page.setViewportSize({ width:390,height:844 });
   await expect(section).toBeInViewport();
   await expect.poll(async () => {
