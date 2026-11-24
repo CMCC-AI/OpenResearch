@@ -36,14 +36,15 @@ function fixedChainCatalog(): { id: string; data: SystemNodeData }[] {
   ];
 }
 
-/** 空白画布不渲染固定链路；节点库选中这些系统节点时，用这份静态说明展示属性面板。 */
+/** 运行视图与节点库共用这份系统节点说明；编辑画布选中 G1/G4 时，用它展示属性面板。 */
 export function fixedSystemData(id: string): SystemNodeData | null {
   return fixedChainCatalog().find((node) => node.id === id)?.data ?? null;
 }
 
 export interface WorkflowGraphOptions {
-  /** 固定链路（G1→G4→交付）渲染策略："always"（默认，运行视图）始终渲染；
-   *  "never"（编辑画布）只在主理人把环节拖入画布后渲染——positions 里的 :system: 坐标键即“已放置”。 */
+  /** 固定链路渲染策略："always"（默认，运行视图）始终渲染 G1、G4 与研究交付；
+   *  "never"（编辑画布）只渲染主理人拖入画布的 G1/G4（positions 里的 :system: 坐标键即“已放置”），
+   *  研究交付是运行时结果出口，只在运行视图出现。 */
   fixedChain?: "always" | "never";
 }
 
@@ -67,6 +68,8 @@ export function buildWorkflowGraph(tasks: WorkflowTask[], positions: Record<stri
   // never 模式按“存在即渲染”：positions 里留有坐标的系统节点才上画布，节点不凭空出现。
   const placed = (id: string) => positions[id] !== undefined;
   const showFixed = (id: string) => chainAlways || placed(id);
+  // 研究交付是运行时生成的结果出口，编辑画布不放置它；旧草稿里的坐标继续留给运行视图定位。
+  const outputRendered = chainAlways;
   const fixedData = new Map(fixedChainCatalog().map((node) => [node.id, node.data]));
   // 旧 :system:input 坐标可继续读取保存；运行输入来自当前聊天，不再生成可见输入节点。
   if (showFixed(systemNodeIds.scope)) add(systemNodeIds.scope, { x: minX, y: minY - 180 }, fixedData.get(systemNodeIds.scope)!);
@@ -76,8 +79,8 @@ export function buildWorkflowGraph(tasks: WorkflowTask[], positions: Record<stri
     });
   }
   if (showFixed(systemNodeIds.delivery)) add(systemNodeIds.delivery, { x: minX, y: maxY + 400 }, fixedData.get(systemNodeIds.delivery)!);
-  // 研究交付缺省挂在交付确认下方；单独放置时以现有最底部节点为基准。
-  if (showFixed(systemNodeIds.output)) add(systemNodeIds.output, { x: minX, y: (systemNodes.at(-1)?.position.y ?? maxY + 400) + 180 }, fixedData.get(systemNodeIds.output)!);
+  // 研究交付只挂在运行视图的交付确认下方，沿用草稿里保存的坐标。
+  if (outputRendered) add(systemNodeIds.output, { x: minX, y: (systemNodes.at(-1)?.position.y ?? maxY + 400) + 180 }, fixedData.get(systemNodeIds.output)!);
 
   const edges: WorkflowGraphEdge[] = [];
   function edge(source: string, target: string, dependency?: WorkflowGraphEdge["dependency"]) {
@@ -104,7 +107,7 @@ export function buildWorkflowGraph(tasks: WorkflowTask[], positions: Record<stri
     if (deliveryRendered && !hasDownstream.has(task.id)) edge(task.id, systemNodeIds.delivery);
   }
   if (!tasks.length && scopeRendered && deliveryRendered) edge(systemNodeIds.scope, systemNodeIds.delivery);
-  if (deliveryRendered && showFixed(systemNodeIds.output)) edge(systemNodeIds.delivery, systemNodeIds.output);
+  if (deliveryRendered && outputRendered) edge(systemNodeIds.delivery, systemNodeIds.output);
   return { systemNodes, edges, taskPositions };
 }
 

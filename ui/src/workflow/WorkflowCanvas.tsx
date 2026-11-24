@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { Background, Controls, Handle, MarkerType, NodeResizeControl, Position, ReactFlow, type Connection, type Edge, type EdgeChange, type Node, type NodeChange, type NodeProps, type ReactFlowInstance } from "@xyflow/react";
-import { Bot, CircleHelp, FileText, FlaskConical, Frame, GripVertical, Hourglass, ListOrdered, PackageCheck, Plus, RefreshCw, ShieldCheck, Split, Trash2, UserRound, X } from "lucide-react";
+import { Bot, CircleHelp, FileText, FlaskConical, Frame, GripVertical, Hourglass, ListOrdered, Plus, RefreshCw, ShieldCheck, Split, Trash2, UserRound, X } from "lucide-react";
 import { Button, Tooltip } from "../components/ui";
 import { Switch } from "../components/ui/Switch";
 import { addAgentTask, addExperimentTask, addForeachTask, addHumanTask, addRouteTask, addWaitTask, addWorkflowFrame, connectWorkflowTasks, reconnectWorkflowTasks, removeWorkflowFrame, removeWorkflowTask, updateWorkflowFrame, MAX_REWORK, ROUTE_ELSE, ROUTE_THEN, type FlowPoint, type WorkflowAgent, type WorkflowDraftInput, type WorkflowFrame, type WorkflowTask } from "./model";
@@ -10,7 +10,7 @@ import { workflowTone, type WorkflowState } from "../research";
 
 // 拖拽添加专家任务时，dataTransfer 里携带 agent id 的数据类型。
 const AGENT_MIME = "application/x-orx-agent";
-// 拖拽添加系统环节（G1/G4/研究交付）时，携带系统节点 id。
+// 拖拽添加系统环节（G1/G4）时，携带系统节点 id。
 export const SYSTEM_MIME = "application/x-orx-system-node";
 // 拖拽添加条件分流节点时使用；阶段分组通过按钮添加，不需要拖拽 MIME。
 export const ROUTE_MIME = "application/x-orx-route-node";
@@ -336,7 +336,7 @@ export function WorkflowCanvas({ draft, agents, onChange, preview = false }: {
     if (!preview || draft.tasks.length === 0) return;
     void flowRef.current?.fitView({ padding: 0.1, duration: 200 });
   }, [preview, draft.tasks.length]);
-  // 编辑画布只呈现主理人显式添加的内容：固定链路（G1/G4/交付）留在节点库说明与运行视图，不自动铺上画布。
+  // 编辑画布只呈现主理人显式添加的内容：固定确认环节（G1/G4）留在节点库说明与运行视图，研究交付只在运行视图出现，都不自动铺上画布。
   const graph = useMemo(() => buildWorkflowGraph(draft.tasks, draft.positions, { fixedChain: "never" }), [draft.tasks, draft.positions]);
   const agentNames = useMemo(() => new Map(agents.map((agent) => [agent.id, agent.name])), [agents]);
   const nodes = useMemo<WorkflowCanvasNode[]>(() => [
@@ -525,7 +525,7 @@ export function WorkflowCanvas({ draft, agents, onChange, preview = false }: {
   const routeChildren = useMemo(() => (selectedTask?.kind === "route"
     ? draft.tasks.filter((task) => task.dependsOn.includes(selectedTask.id))
     : []), [selectedTask, draft.tasks]);
-  // 空白画布不渲染固定链路：从节点库选中 G1/G4/交付时，用静态说明展示属性面板。
+  // 空白画布不渲染固定链路：从节点库选中 G1/G4 时，用静态说明展示属性面板。
   const selectedSystem = graph.systemNodes.find((node) => node.id === selected)
     ?? (selected && fixedSystemData(selected) ? { id: selected, position: { x: 0, y: 0 }, data: fixedSystemData(selected)! } : null);
   const approvalTask = draft.tasks.find((task) => task.id === selectedSystem?.data.taskId);
@@ -766,10 +766,6 @@ export function WorkflowCanvas({ draft, agents, onChange, preview = false }: {
         <h3 className="mb-1 text-sm font-normal text-subtext">阶段分组</h3>
         <button type="button" title="画布放不下时，用分组框把节点圈成几个阶段，只作展示，不影响执行" className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-start text-sm hover:bg-surface" onClick={addFrame}><Frame size={15} className="shrink-0 text-subtext" />添加阶段分组<Plus size={14} className="ms-auto shrink-0 text-subtext" /></button>
       </section>
-      <section aria-label="交付" className="mb-4">
-        <h3 className="mb-1 text-sm font-normal text-subtext">交付</h3>
-        <button type="button" draggable title="拖拽「研究交付」到画布放置；点击查看说明" onDragStart={dragSystem(systemNodeIds.output)} aria-pressed={selected === systemNodeIds.output} className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-start text-sm hover:bg-surface" onClick={() => selectSystem(systemNodeIds.output)}><PackageCheck size={15} className="shrink-0 text-subtext" />研究交付<span className="ms-auto text-xs text-subtext">系统</span></button>
-      </section>
       <section aria-label="流程控制" className="mb-4">
         <h3 className="mb-1 text-sm font-normal text-subtext">流程控制</h3>
         {[{ id: systemNodeIds.scope, title: "G1 · 研究范围确认" }, { id: systemNodeIds.delivery, title: "G4 · 交付确认" }].map(({ id, title }) => <button key={id} type="button" draggable title={`拖拽「${title}」到画布放置；点击查看说明`} onDragStart={dragSystem(id)} aria-pressed={selected === id} className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-start text-sm hover:bg-surface" onClick={() => selectSystem(id)}><ShieldCheck size={15} className="shrink-0 text-subtext" />{title}</button>)}
@@ -881,7 +877,6 @@ export function WorkflowCanvas({ draft, agents, onChange, preview = false }: {
         <h2 className="m-0 text-base font-normal">{selectedSystem.data.title}</h2>
         <span className="text-xs text-subtext">{selectedSystem.data.taskId ? "任务检查点 · 随任务配置生成" : "系统环节 · 运行时执行"}</span>
         <p className="m-0 leading-5 text-subtext">{selectedSystem.data.description}</p>
-        {selectedSystem.data.kind === "output" && <p className="m-0 leading-5 text-subtext">报告和阶段产物会在当前聊天展示；交付确认后，研究成果就留在当前对话里。</p>}
         {selectedSystem.data.gate && <p className="m-0 leading-5 text-subtext">在聊天里的确认卡片上批准或拒绝，可以写原因；批准只对当前这版计划或产物有效。</p>}
         {approvalTask && <><Button onClick={() => setSelected(approvalTask.id)}>查看任务 {approvalTask.id}</Button><Button onClick={() => { updateTask(approvalTask.id, { requiresApproval: false }); setSelected(approvalTask.id); }}>取消该任务的人工确认</Button></>}
         {!selectedSystem.data.taskId && <p className="m-0 text-xs leading-4 text-subtext">系统环节的连线由系统自动维护，不用手动拖线。</p>}
