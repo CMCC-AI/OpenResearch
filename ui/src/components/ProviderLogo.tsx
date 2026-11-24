@@ -290,8 +290,8 @@ export function ProviderLogo({
     case "opencode":
       return (
         <svg {...props}>
-          <rect x="4.5" y="4.5" width="15" height="15" rx="2" stroke="currentColor" strokeWidth="1.8" />
-          <path d="M9.5 8.5V15.5M14.5 8.5V15.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+          <path d="M15.6 17.4H8.4V10.2H15.6V17.4Z" fill="currentColor" fillOpacity="0.4" />
+          <path d="M15.6 6.6H8.4V17.4H15.6V6.6ZM19.2 21H4.8V3H19.2V21Z" fill="currentColor" />
         </svg>
       );
     case "local":
