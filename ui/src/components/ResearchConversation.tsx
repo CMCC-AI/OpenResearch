@@ -5,7 +5,7 @@ import { artifactUrl, getArtifactFileText, interruptChat, type ChatMessage } fro
 import { queryClient, workspaceKey } from "../queries/client";
 import { useChatState } from "../queries/chatStore";
 import { activePath } from "../transcriptTree";
-import { currentDecisions, expertRoles, researchAttention, researchProgress, researchTaskStatus, resolveArtifactLinkPath, workflowTone, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
+import { currentDecisions, expertRoles, researchAttention, researchPackageUrl, researchProgress, researchTaskStatus, resolveArtifactLinkPath, workflowTone, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
 import { sha256Hex } from "../product/sha256";
 import type { TabOpenIntent } from "../tabPreview";
 import { Button, Spinner } from "./ui";
@@ -83,8 +83,8 @@ function ArtifactBody({ projectId, studyId, artifact, paths, query, contentClass
   </>;
 }
 
-function ResearchArtifact({ projectId, studyId, artifact, paths, onOpenArtifactFile }: { projectId: string; studyId: string; artifact: ResearchTask["artifacts"][number]; paths: Set<string>; onOpenArtifactFile?: (path: string, intent: TabOpenIntent) => void }) {
-  const [open, setOpen] = useState(false);
+function ResearchArtifact({ projectId, studyId, artifact, paths, onOpenArtifactFile, defaultOpen = false }: { projectId: string; studyId: string; artifact: ResearchTask["artifacts"][number]; paths: Set<string>; onOpenArtifactFile?: (path: string, intent: TabOpenIntent) => void; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
   const readOnly = useReadOnlyWorkspace();
   const path = `research/${studyId}/${artifact.path}`;
   const query = useArtifactText(projectId, studyId, artifact, open);
@@ -142,15 +142,38 @@ function TaskRow({ projectId, study, task, version, renderMessage, onOpenArtifac
   </li>;
 }
 
+/** 交付确认后的研究成果区块：叶子任务（无下游依赖）即最终产出，结论与产物默认展开。 */
+function DeliverableBlock({ projectId, study, onOpenArtifactFile }: { projectId: string; study: ResearchStudy; onOpenArtifactFile?: (path: string, intent: TabOpenIntent) => void }) {
+  const plan = study.plans.at(-1);
+  const tasks = plan?.tasks ?? [];
+  // 叶子任务没有下游依赖，是流程的最终产出；全被分流跳过时回退到所有已完成的任务。
+  const withResults = (task: ResearchTask) => task.state === "completed" && (Boolean(task.summary) || task.artifacts.length > 0);
+  const leaves = tasks.filter((task) => !tasks.some((candidate) => candidate.dependsOn.includes(task.id)));
+  const featured = leaves.filter(withResults);
+  const source = featured.length ? featured : tasks.filter(withResults);
+  if (!source.length) return null;
+  const paths = new Set(tasks.flatMap((task) => task.artifacts.map((file) => file.path)));
+  return <section aria-label="研究成果" className="flex flex-col gap-3 rounded-lg border border-accent-green bg-accent-green-subtle p-3">
+    <div className="flex items-center gap-2"><CheckCircle2 size={16} className="shrink-0 text-accent-green" aria-hidden="true" /><strong className="text-sm">研究成果 · 已确认</strong></div>
+    {source.map((task, taskIndex) => <div key={task.id} className="flex min-w-0 flex-col gap-2 rounded-md border border-border bg-background p-3">
+      <strong className="text-sm">{task.agent?.name ?? expertRoles[task.role] ?? (task.role || task.id)}</strong>
+      {task.summary && <div className="min-w-0 text-sm text-text"><Md text={task.summary} /></div>}
+      {task.artifacts.map((artifact, artifactIndex) => <ResearchArtifact key={artifact.sha256 + artifact.path} projectId={projectId} studyId={study.id} artifact={artifact} paths={paths} onOpenArtifactFile={onOpenArtifactFile} defaultOpen={taskIndex === 0 && artifactIndex === 0} />)}
+    </div>)}
+  </section>;
+}
+
 export function ResearchConversation({ projectId, study, renderMessage, onInspect, onOpenArtifactFile }: { projectId: string; study: ResearchStudy; renderMessage: ExpertRenderer; onInspect?: () => void; onOpenArtifactFile?: (path: string, intent: TabOpenIntent) => void }) {
   const plan = study.plans.at(-1);
   const [historyOpen, setHistoryOpen] = useState(false);
   const tasks = plan?.tasks ?? [];
   const progress = researchProgress(study);
+  const delivered = Boolean(researchPackageUrl(study)) && !study.evidenceReviewRequired;
   return <section aria-label="对话中的工作流" className="flex min-w-0 flex-col gap-4 rounded-lg border border-border p-4" onClickCapture={event => { if (event.target instanceof Element && event.target.closest("summary")) onInspect?.(); }}>
     <div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-sm">{plan?.workflowSource?.name ?? "科研工作流"}{plan ? ` · 计划 v${plan.version}` : ""}</strong><span role="status" className="text-xs text-subtext">{researchAttention(study)}</span></div>
     {progress.total > 0 && <div className="flex items-center gap-3"><div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-surface" role="progressbar" aria-label="已验收专家任务" aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progress.completed}><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progress.completed / progress.total * 100}%` }} /></div><span className="shrink-0 text-xs text-subtext">{progress.completed}/{progress.total} 任务已验收</span></div>}
     {study.objective.length > 120 ? <details className="group"><summary className="flex cursor-pointer list-none items-start gap-1.5 text-sm text-subtext [&::-webkit-details-marker]:hidden"><span className="line-clamp-2 min-w-0 flex-1 whitespace-pre-wrap group-open:line-clamp-none">{study.objective}</span><ChevronDown size={14} className="mt-1 shrink-0 transition-transform group-open:-rotate-180" aria-hidden="true" /></summary></details> : <p className="m-0 whitespace-pre-wrap text-sm text-subtext">{study.objective}</p>}
+    {delivered && <DeliverableBlock projectId={projectId} study={study} onOpenArtifactFile={onOpenArtifactFile} />}
     <ResearchPanel placement="conversation" sessionId={study.sessionId} disabled={false} />
     {tasks.length ? <ol className="flex flex-col gap-2" data-research-task-list>{tasks.map(task => <TaskRow key={`${plan!.version}:${task.id}:${task.sessionId ?? "pending"}`} projectId={projectId} study={study} task={task} version={plan!.version} renderMessage={renderMessage} onOpenArtifactFile={onOpenArtifactFile} />)}</ol> : plan && <p role="status" className="m-0 text-sm text-subtext">{currentDecisions(study).some(decision => decision.gate === "G1" && decision.status === "approved") ? "范围已确认，等待就绪专家开始。" : "请先确认本次研究范围，专家随后按依赖执行。"}</p>}
     {study.plans.length > 1 && <details open={historyOpen} onToggle={event => setHistoryOpen(event.currentTarget.open)}><summary className="cursor-pointer text-sm text-subtext">历史计划（{study.plans.length - 1}）</summary>{historyOpen && <div className="mt-3 flex flex-col gap-3">{study.plans.slice(0, -1).map(previous => <details key={previous.version}><summary className="cursor-pointer text-xs text-subtext">计划 v{previous.version}</summary><ol className="mt-2 flex flex-col gap-2">{previous.tasks.map(task => <TaskRow key={`${previous.version}:${task.id}:${task.sessionId ?? "pending"}`} projectId={projectId} study={study} task={task} version={previous.version} renderMessage={renderMessage} onOpenArtifactFile={onOpenArtifactFile} />)}</ol></details>)}</div>}</details>}

@@ -194,14 +194,22 @@ export function researchWorkflow(study: ResearchStudy) {
   });
 }
 
+/** 确认门的提示名：任务确认带专家名，避免裸任务号出现在状态提示里。 */
+function attentionGateName(study: ResearchStudy, gate: string): string {
+  if (!gate.startsWith("G5:")) return gateDisplayName(gate);
+  const id = gate.slice(3);
+  const task = study.plans.at(-1)?.tasks.find((entry) => entry.id === id);
+  return `任务确认 · ${task?.agent?.name ?? expertRoles[task?.role ?? ""] ?? id}`;
+}
+
 export function researchAttention(study: ResearchStudy) {
   if (study.status === "stopped") return "研究已停止";
   if (study.status === "paused") return "研究已暂停 · 可继续";
   const decisions = currentDecisions(study);
   const rejected = decisions.filter((decision) => decision.status === "rejected");
-  if (rejected.length) return `${[...new Set(rejected.map((decision) => gateDisplayName(decision.gate)))].join(" / ")} 已拒绝 · 等待调整计划`;
+  if (rejected.length) return `${[...new Set(rejected.map((decision) => attentionGateName(study, decision.gate)))].join(" / ")} 已拒绝 · 等待调整计划`;
   const pending = decisions.filter((decision) => decision.status === "pending");
-  if (pending.length) return `等待你确认 ${[...new Set(pending.map((decision) => gateDisplayName(decision.gate)))].join(" / ")}`;
+  if (pending.length) return `等待你确认 ${[...new Set(pending.map((decision) => attentionGateName(study, decision.gate)))].join(" / ")}`;
   if (study.evidenceReviewRequired) return "证据已修订 · 等待重新审查与交付确认";
   const tasks = study.plans.at(-1)?.tasks ?? [];
   const failed = tasks.filter((task) => ["failed", "cancelled"].includes(task.state));

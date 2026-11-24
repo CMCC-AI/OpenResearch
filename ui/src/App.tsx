@@ -1838,6 +1838,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             onOpenExperiment={openExperimentNotes}
             experimentName={experimentName}
             onOpenResearch={openResearchTab}
+            onOpenWorkflow={openWorkflowTab}
             onOpenPlan={openPlanTab}
             onOpenSubagent={openSubagentTab}
             onOpenSideChat={readOnly ? undefined : (parentSessionId, question) => void startSideChat(parentSessionId, question)}

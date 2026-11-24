@@ -16,7 +16,7 @@ test("an idle lead with dispatched experts keeps the research visibly in progres
   const value = study();
   const waiting = status(value);
   assert.equal(waiting.kind, "experts");
-  assert.match(waiting.label, /主理人正在等待专家结果/);
+  assert.match(waiting.label, /主理人正在等待任务结果/);
   assert.match(waiting.placeholder, /可以补充要求或提出问题/);
   assert.equal(status(value, { busy: true }).kind, "working");
   // A live child overrides a delayed persisted task state; unrelated sessions do not.
@@ -94,7 +94,7 @@ test("the status is announced and offers progress navigation without a stop cont
   const props = { status: status(study()), onOpen() {} };
   const html = renderToStaticMarkup(React.createElement(exported.ResearchConversationStatus, props));
   assert.match(html, /role="status"/);
-  assert.match(html, /主理人正在等待专家结果/);
+  assert.match(html, /主理人正在等待任务结果/);
   assert.match(html, /<button/);
   assert.doesNotMatch(html, /停止/);
   const nonInteractive = renderToStaticMarkup(React.createElement(exported.ResearchConversationStatus, { status: props.status }));

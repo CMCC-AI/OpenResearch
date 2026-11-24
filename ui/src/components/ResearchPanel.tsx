@@ -3,16 +3,16 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getResearchStudy, decideResearchGate, endResearchStudy } from "../api";
 import { workspaceKey } from "../queries/client";
-import { currentDecisions, deliveryGate, researchProgress, researchModes, presetWorkflowModes, researchWorkflowMode, researchAttention, researchWorkflow, gateNames, type ResearchDecision, type ResearchMode } from "../research";
+import { currentDecisions, deliveryGate, expertRoles, researchProgress, researchModes, presetWorkflowModes, researchWorkflowMode, researchAttention, researchWorkflow, gateNames, type ResearchDecision, type ResearchMode } from "../research";
 import { Button } from "./ui/Button";
 import { IconButton, MenuItem } from "./ui";
 import { ResearchStateErrorDialog } from "./ResearchOverviewDialog";
-import { Users, ArrowRight } from "lucide-react";
+import { Users, Workflow, ArrowRight } from "lucide-react";
 import { ResearchModulePreview } from "./ResearchModulePreview";
 import { ResearchTeamDagDialog } from "./ResearchTeamDag";
 
-export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSession, placement = "composer", expanded = false, onOpenResearch, active = false }: {
-  sessionId: string | null; onStartWorkflow?: (mode: ResearchMode) => Promise<void>; disabled: boolean; onOpenSession?: (sessionId: string) => void; placement?: "composer" | "workspace" | "pane" | "conversation"; expanded?: boolean; onOpenResearch?: () => void; active?: boolean;
+export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSession, placement = "composer", expanded = false, onOpenResearch, active = false, onOpenWorkflow, workflowActive = false }: {
+  sessionId: string | null; onStartWorkflow?: (mode: ResearchMode) => Promise<void>; disabled: boolean; onOpenSession?: (sessionId: string) => void; placement?: "composer" | "workspace" | "pane" | "conversation"; expanded?: boolean; onOpenResearch?: () => void; active?: boolean; onOpenWorkflow?: () => void; workflowActive?: boolean;
 }) {
   const readOnly = useReadOnlyWorkspace();
   const query = useQuery({ queryKey: workspaceKey("researchStudy", sessionId), queryFn: ({ signal }) => getResearchStudy(sessionId!, signal), enabled: Boolean(sessionId), refetchInterval: (query) => ["active", "paused"].includes(query.state.data?.study?.status ?? "") ? 2500 : false });
@@ -34,7 +34,9 @@ export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSess
   const progress = study ? researchProgress(study) : null;
   const decisions = study ? currentDecisions(study) : [];
   const activeStages = study ? researchWorkflow(study).filter((stage) => ["running", "blocked"].includes(stage.state)) : [];
-  const renderDecision = (decision: ResearchDecision) => <GateCard key={decision.id} decision={decision} readOnly={Boolean(readOnly)} disabled={working || study?.status === "stopped"} onDecide={(accepted, reason) => act(async () => {
+  // 确认卡用任务/专家名代替内部任务号；分流等无角色节点按类型兜底。
+  const taskNames = new Map((plan?.tasks ?? []).map((task) => [task.id, task.agent?.name ?? expertRoles[task.role] ?? (task.kind === "human" ? "人工任务" : task.id)]));
+  const renderDecision = (decision: ResearchDecision) => <GateCard key={decision.id} decision={decision} taskNames={taskNames} readOnly={Boolean(readOnly)} disabled={working || study?.status === "stopped"} onDecide={(accepted, reason) => act(async () => {
     if (!study) return;
     const result = await decideResearchGate(study.id, decision.id, decision.scopeHash, accepted, reason);
     if (result.resumeError) throw new Error(`决策已保存，但会话未恢复：${result.resumeError}。请在主对话中发送消息继续推进。`);
@@ -60,10 +62,17 @@ export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSess
   if (placement === "conversation") return <section aria-label="研究确认" className="flex flex-col gap-3">{queryError ? <div role="alert" className="text-sm text-accent-red">确认状态读取失败<Button size="small" onClick={() => void query.refetch()}>重试</Button></div> : study ? decisionCards : null}</section>;
   if (readOnly && !study && placement === "composer") return null;
   if (placement === "pane") return <div className="flex h-full min-h-0 flex-col">{pending && sessionId ? <p className="p-4 text-sm text-subtext">正在读取专家团状态…</p> : queryError ? <div role="alert" className="p-4 text-sm text-accent-red">研究状态读取失败：{queryError.message}<Button onClick={() => void query.refetch()}>重试</Button></div> : <ResearchTeamDagDialog embedded metrics={data?.metrics} study={study ?? null} runs={data?.runs ?? []} onClose={() => {}} confirmationContent={<>{decisionCards}{endResearchBlock}</>} onOpenSession={onOpenSession} />}</div>;
-  if (placement === "workspace") return <>
-    {expanded ? <MenuItem className="min-h-7 py-1" aria-label="科研专家团流程" onClick={openResearch} disabled={Boolean(sessionId) && pending}><span className="flex min-w-0 flex-col gap-0.5"><span className="flex items-center gap-4"><Users size={15} className="shrink-0 text-primary" />科研专家团</span><span className="truncate ps-[31px] text-menu text-subtext">{study ? researchAttention(study) : queryError ? "状态读取失败 · 点击重试" : readOnly ? "已结束 · 未保存流程" : "预设流程与执行"}</span></span></MenuItem> : <IconButton aria-label="科研专家团流程" data-tip="科研专家团 · 流程与执行" aria-pressed={active} active={active} disabled={Boolean(sessionId) && pending} onClick={openResearch}><Users size={15} /></IconButton>}
-    {dagDialog}
-  </>;
+  if (placement === "workspace") {
+    // 工作流对话里这个入口跟随工作流身份：直接打开画布侧栏，不再落回专家团面板。
+    const workflowEntry = Boolean(plan?.workflowSource) && Boolean(onOpenWorkflow);
+    const Icon = workflowEntry ? Workflow : Users;
+    const entryLabel = workflowEntry ? "工作流" : "科研专家团";
+    const pressActive = workflowEntry ? workflowActive : active;
+    return <>
+      {expanded ? <MenuItem className="min-h-7 py-1" aria-label={workflowEntry ? "工作流流程与执行" : "科研专家团流程"} onClick={workflowEntry ? onOpenWorkflow : openResearch} disabled={Boolean(sessionId) && pending}><span className="flex min-w-0 flex-col gap-0.5"><span className="flex items-center gap-4"><Icon size={15} className="shrink-0 text-primary" />{entryLabel}</span><span className="truncate ps-[31px] text-menu text-subtext">{study ? researchAttention(study) : queryError ? "状态读取失败 · 点击重试" : readOnly ? "已结束 · 未保存流程" : "预设流程与执行"}</span></span></MenuItem> : <IconButton aria-label={workflowEntry ? "工作流流程与执行" : "科研专家团流程"} data-tip={workflowEntry ? "工作流 · 流程与执行" : "科研专家团 · 流程与执行"} aria-pressed={pressActive} active={pressActive} disabled={Boolean(sessionId) && pending} onClick={workflowEntry ? onOpenWorkflow : openResearch}><Icon size={15} /></IconButton>}
+      {dagDialog}
+    </>;
+  }
   return <section className={`mb-2 rounded-lg border text-sm ${study ? "border-primary bg-primary-subtle" : "border-border bg-background"}`} aria-label="当前研究流程">
     {!study ? readOnly ? null : <div className="p-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -84,15 +93,16 @@ export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSess
   </section>;
 }
 
-function GateCard({ decision, disabled, onDecide, readOnly = false }: { readOnly?: boolean; decision: ResearchDecision; disabled: boolean; onDecide: (approved: boolean, reason: string) => Promise<void> }) {
+function GateCard({ decision, taskNames, disabled, onDecide, readOnly = false }: { readOnly?: boolean; decision: ResearchDecision; taskNames: Map<string, string>; disabled: boolean; onDecide: (approved: boolean, reason: string) => Promise<void> }) {
   const [reason, setReason] = useState("");
   let scope: { summary?: string; command?: string; revision?: string; options?: { backend?: string; flavor?: string; host?: string; timeout?: string }; plan?: { summary?: string }; taskId?: string; artifacts?: { path: string; sha256: string }[] } = {};
   try { const parsed: unknown = JSON.parse(decision.scope); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) scope = parsed; } catch { /* old text scopes remain readable */ }
+  // 界面上只出现中文名：任务确认带专家名，其余门用预定义名称，G 编码留在数据里。
   const taskApproval = decision.gate.startsWith("G5:");
-  const gateName = taskApproval ? "任务确认" : decision.gate === "G3" && !scope.command ? "实验方案确认" : gateNames[decision.gate] ?? decision.gate;
-  const gateLabel = taskApproval ? `任务确认 · ${scope.taskId ?? decision.gate.slice(3)}` : decision.gate;
-  return <section className={`rounded border p-3 ${decision.status === "pending" ? "border-primary bg-primary-subtle" : "border-border"}`} aria-label={`${gateLabel} ${gateName}`}>
-    <strong>{gateLabel} · {gateName} · {decision.status === "approved" ? "已批准" : decision.status === "rejected" ? "已拒绝" : "等待确认"}</strong>
+  const taskId = scope.taskId ?? (taskApproval ? decision.gate.slice(3) : null);
+  const gateLabel = taskApproval ? `任务确认 · ${taskId ? taskNames.get(taskId) ?? taskId : "任务"}` : decision.gate === "G3" && !scope.command ? "实验方案确认" : gateNames[decision.gate] ?? decision.gate;
+  return <section className={`rounded border p-3 ${decision.status === "pending" ? "border-primary bg-primary-subtle" : "border-border"}`} aria-label={gateLabel}>
+    <strong>{gateLabel} · {decision.status === "approved" ? "已批准" : decision.status === "rejected" ? "已拒绝" : "等待确认"}</strong>
     <p className="whitespace-pre-wrap py-1">{scope.summary ?? scope.plan?.summary}</p>
     {taskApproval && scope.artifacts?.length ? <p className="text-xs text-subtext break-all">已验收产物：{scope.artifacts.map((artifact) => artifact.path).join("、")}</p> : null}
     {scope.command && <><p>执行位置：{scope.options?.backend} {scope.options?.host} {scope.options?.flavor} {scope.options?.timeout}</p><pre className="whitespace-pre-wrap break-all text-xs">{scope.command}</pre><p className="text-xs text-subtext break-all">代码版本：{scope.revision}</p></>}
@@ -101,7 +111,7 @@ function GateCard({ decision, disabled, onDecide, readOnly = false }: { readOnly
     {decision.gate === "G4" && <p className="text-subtext">确认本次研究成果的结论、证据与局限。此操作生成批准记录，公开发布需另行操作。</p>}
     <details className="mt-2"><summary className="cursor-pointer text-subtext">查看完整审批范围</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(scope, null, 2)}</pre><p className="text-xs text-subtext break-all">范围校验：{decision.scopeHash}</p></details>
     {decision.status === "pending" && !readOnly ? <div className="flex flex-wrap gap-2 mt-2">
-      <input aria-label={`${decision.gate} 决策说明`} placeholder="说明或调整意见（可选）" value={reason} onChange={(e) => setReason(e.target.value)} className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1" />
+      <input aria-label={`${gateLabel} 决策说明`} placeholder="说明或调整意见（可选）" value={reason} onChange={(e) => setReason(e.target.value)} className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1" />
       <Button size="small" disabled={disabled} onClick={() => void onDecide(true, reason)}>批准当前版本</Button>
       <Button size="small" disabled={disabled} onClick={() => void onDecide(false, reason)}>拒绝并反馈</Button>
     </div> : decision.reason && <p>{decision.reason}</p>}

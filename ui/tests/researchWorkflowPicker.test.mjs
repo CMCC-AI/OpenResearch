@@ -134,7 +134,7 @@ test("workflow-bound studies display as workflow mode with the bound name", () =
   assert.ok(!tree.some((node) => node.type === "select"));
   const text = tree.filter((node) => node.type === "span").flatMap((node) => React.Children.toArray(node.props.children)).filter((child) => typeof child === "string").join("");
   assert.ok(text.includes("工作流模式"));
-  assert.ok(text.includes("已绑定工作流「文献流水线」，这个对话不再更换"));
+  assert.ok(text.includes("这个对话使用工作流「文献流水线」"));
   assert.ok(!text.includes("专家团模式"));
 });
 

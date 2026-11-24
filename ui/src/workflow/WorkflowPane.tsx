@@ -7,12 +7,12 @@ import { Background, Controls, MarkerType, ReactFlow, useNodesState, type Edge }
 import { Workflow as WorkflowIcon } from "lucide-react";
 import { getResearchStudy, getWorkflow, listWorkflowAgents } from "../api";
 import { workspaceKey } from "../queries/client";
-import { researchDagLayout, researchProgress, researchTaskStatus, type ResearchTask, type WorkflowState } from "../research";
+import { researchDagLayout, researchPackageUrl, researchProgress, researchTaskStatus, type ResearchTask, type WorkflowState } from "../research";
 import { reconcileFlowNodes } from "../flowNodes";
 import { Button } from "../components/ui";
 import { LocateCurrent } from "../components/ResearchTeamDag";
 import { TaskDetails } from "../components/ResearchWorkflow";
-import { buildWorkflowGraph, systemNodeForStudy } from "./graph";
+import { buildWorkflowGraph, systemNodeForStudy, systemNodeIds } from "./graph";
 import { foreachConditionText, routeConditionText, waitConditionText, workflowNodeTypes, type WorkflowCanvasNode } from "./WorkflowCanvas";
 import { ROUTE_ELSE, ROUTE_THEN, type WorkflowTask } from "./model";
 import "../components/ResearchTeamDag.css";
@@ -100,10 +100,10 @@ export function WorkflowPane({ sessionId, onOpenSession, onOpenStudio }: {
           return { ...common, type: "route", ariaLabel: `条件分流 ${ariaLabel}`, data: { taskId: task.id, brief: task.brief, condition: routeConditionText(definitionOf(task)), thenTargets: names(ROUTE_THEN), elseTargets: names(ROUTE_ELSE), state } };
         }
         if (task.kind === "foreach") return { ...common, type: "foreach", ariaLabel: `逐项处理 ${ariaLabel}`, data: { taskId: task.id, brief: task.brief, condition: foreachConditionText(definitionOf(task)), itemOutput: task.forEach?.itemOutput ?? "", dependencyCount: task.dependsOn.length, state } };
-        if (task.kind === "experiment") return { ...common, type: "experiment", ariaLabel: `实验节点 ${ariaLabel}`, data: { taskId: task.id, brief: task.brief, outputCount: task.outputs.length, dependencyCount: task.dependsOn.length, state } };
+        if (task.kind === "experiment") return { ...common, type: "experiment", ariaLabel: `实验节点 ${ariaLabel}`, data: { taskId: task.id, brief: task.brief, outputCount: task.state === "completed" ? task.artifacts.length : task.outputs.length, dependencyCount: task.dependsOn.length, state } };
         if (task.kind === "wait") return { ...common, type: "wait", ariaLabel: `事件等待 ${ariaLabel}`, data: { taskId: task.id, brief: task.brief, condition: waitConditionText(definitionOf(task)), dependencyCount: task.dependsOn.length, state } };
         if (task.kind === "human") return { ...common, type: "human", ariaLabel: `人工任务 ${ariaLabel}`, data: { taskId: task.id, brief: task.brief, output: task.outputs[0] ?? "产物", dependencyCount: task.dependsOn.length, state } };
-        return { ...common, type: "agent", ariaLabel: `专家任务 ${ariaLabel}`, data: { taskId: task.id, roleName: task.agent?.name ?? agentNames.get(task.role) ?? task.role, brief: task.brief, outputCount: task.outputs.length, dependencyCount: task.dependsOn.length, requiresApproval: !!task.requiresApproval, gateDownstream: !!task.gateDownstream, maxRework: task.maxRework ?? 0, state } };
+        return { ...common, type: "agent", ariaLabel: `专家任务 ${ariaLabel}`, data: { taskId: task.id, roleName: task.agent?.name ?? agentNames.get(task.role) ?? task.role, brief: task.brief, outputCount: task.state === "completed" ? task.artifacts.length : task.outputs.length, dependencyCount: task.dependsOn.length, requiresApproval: !!task.requiresApproval, gateDownstream: !!task.gateDownstream, maxRework: task.maxRework ?? 0, state } };
       }),
       ...graph.systemNodes.map((node): WorkflowCanvasNode => ({ ...node, type: "system", selected: selected === node.id, ariaLabel: node.data.title, data: systemNodeForStudy(node.data, study) })),
     ];
@@ -135,12 +135,15 @@ export function WorkflowPane({ sessionId, onOpenSession, onOpenStudio }: {
   const selectedSystem = graph?.systemNodes.find((node) => node.id === selected) ?? null;
   const systemSelection = selectedSystem && study ? systemNodeForStudy(selectedSystem.data, study) : null;
   const progress = study ? researchProgress(study) : { completed: 0, total: 0 };
-  const statusLine = !study ? "尚未开始研究" : draftMissing ? "原工作流已被删除 · 画布显示当前执行计划" : source ? "已绑定 · 这个对话不再更换" : "未绑定工作流 · 显示当前执行计划";
+  // 交付确认已批准且与验收快照一致时，成果就绪，可在主对话查看。
+  const delivered = Boolean(study && researchPackageUrl(study) && !study.evidenceReviewRequired);
+  // 已绑定是正常状态，不需要一行说明；只有异常情况才提示。
+  const statusLine = !study ? "尚未开始研究" : draftMissing ? "原工作流已被删除 · 画布显示当前执行计划" : source ? "" : "未绑定工作流 · 显示当前执行计划";
 
   return <div className="flex h-full min-h-0 flex-col bg-background text-text">
     <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-3">
       <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary-subtle text-primary"><WorkflowIcon size={16} aria-hidden="true" /></span>
-      <div className="min-w-0 flex-1"><h2 className="m-0 truncate text-base font-normal">工作流 · {name ?? "未绑定"}</h2><p role="status" className="m-0 text-xs text-subtext">{statusLine}</p></div>
+      <div className="min-w-0 flex-1"><h2 className="m-0 truncate text-base font-normal">工作流 · {name ?? "未绑定"}</h2>{statusLine && <p role="status" className="m-0 text-xs text-subtext">{statusLine}</p>}</div>
       <Button size="small" variant="ghost" onClick={onOpenStudio}>打开工作室</Button>
     </header>
     {!sessionId ? <EmptyHint text="开始对话后，这里会显示绑定的工作流画布。" /> : studyQuery.isPending ? <p className="p-4 text-sm text-subtext">正在读取工作流状态…</p> : studyQuery.error ? <div role="alert" className="p-4 text-sm text-accent-red">工作流状态读取失败：{studyQuery.error.message}<Button size="small" className="ms-2" onClick={() => void studyQuery.refetch()}>重试</Button></div> : !graph ? <EmptyHint text="这个对话还没有工作流画布。在输入框切换到「工作流模式」后，画布会显示在这里。" /> : <>
@@ -152,7 +155,7 @@ export function WorkflowPane({ sessionId, onOpenSession, onOpenStudio }: {
         <div className="flex flex-wrap gap-3 text-xs text-subtext" aria-label="任务状态图例">{[{ label: "执行中", state: "running" }, { label: "已验收", state: "completed" }, { label: "已跳过", state: "optional" }, { label: "待处理", state: "blocked" }, { label: "未安排", state: "waiting" }].map((item) => <span key={item.state} className="flex items-center gap-1.5"><span data-state={item.state} className="research-team-legend-dot size-2 shrink-0 rounded-full" />{item.label}</span>)}</div>
       </div>
       <section hidden={!selected} className="max-h-60 shrink-0 overflow-y-auto border-t border-border p-3" aria-label="节点详情">
-        {systemSelection ? <div className="flex flex-col items-start gap-2 text-sm"><strong>{systemSelection.title} · {systemSelection.label}</strong><p className="m-0 text-subtext">{systemSelection.description}</p></div>
+        {systemSelection ? <div className="flex flex-col items-start gap-2 text-sm"><strong>{systemSelection.title} · {systemSelection.label}</strong><p className="m-0 text-subtext">{systemSelection.description}</p>{selectedSystem?.id === systemNodeIds.output && delivered && study && onOpenSession && <Button size="small" onClick={() => onOpenSession(study.sessionId)}>查看研究成果</Button>}</div>
           : selectedTask ? <TaskDetails study={study!} task={selectedTask} runs={studyQuery.data?.runs ?? []} onOpenSession={onOpenSession} /> : null}
       </section>
     </>}

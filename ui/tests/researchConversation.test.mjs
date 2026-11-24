@@ -107,14 +107,29 @@ test("pending confirmations render above the expert checklist", () => {
   assert.ok(confirmation < list);
 });
 
-test("a delivered study no longer auto-picks a main report; artifacts stay inside their tasks", async () => {
+test("a delivered study surfaces its final results open while mid-chain artifacts stay collapsed", async () => {
   const file = { content: "Accepted report\n", binary: false, truncated: false };
   const app = load({ file }), study = fixture();
-  const artifact = { path: "writing/review.md", sha256: await sha256Hex(new TextEncoder().encode(file.content)), bytes: file.content.length };
-  study.plans[0].tasks[2] = { ...study.plans[0].tasks[2], state: "completed", artifacts: [artifact], runIds: [] };
+  const hash = await sha256Hex(new TextEncoder().encode(file.content));
+  // 叶子任务（research-package，无下游依赖）是最终产出：结论与首份产物默认展开。
+  const leaf = study.plans[0].tasks.at(-1);
+  study.plans[0].tasks[study.plans[0].tasks.length - 1] = { ...leaf, state: "completed", summary: "Final packaged conclusion", artifacts: [{ path: "writing/review.md", sha256: hash, bytes: file.content.length }], runIds: [] };
+  // 中段任务完成后保持折叠，产物不重复铺开。
+  study.plans[0].tasks[2] = { ...study.plans[0].tasks[2], state: "completed", artifacts: [{ path: "evidence/papers.md", sha256: hash, bytes: file.content.length }], runIds: [] };
   study.deliverySnapshot = { scopeHash: "delivery" };
   study.decisions.push({ id: "g4", gate: "G4", version: 1, status: "approved", scopeHash: "delivery" });
   const html = app.render(study);
+  assert.match(html, /aria-label="研究成果"/);
+  assert.match(html, /Final packaged conclusion/);
+  assert.match(html, /Accepted report/);
+  assert.doesNotMatch(html, /evidence\/papers\.md/);
   assert.doesNotMatch(html, /复制报告全文/);
-  assert.doesNotMatch(html, /Accepted report/);
+});
+
+test("an undelivered study keeps every task row collapsed with no result block", () => {
+  const app = load(), study = fixture();
+  study.plans[0].tasks[2] = { ...study.plans[0].tasks[2], state: "completed", summary: "Mid-chain summary", artifacts: [], runIds: [] };
+  const html = app.render(study);
+  assert.doesNotMatch(html, /aria-label="研究成果"/);
+  assert.doesNotMatch(html, /Mid-chain summary/);
 });

@@ -17,7 +17,7 @@ export function researchConversationStatus(study: ResearchStudy, {
   runs: readonly { id: string; status: string }[];
   unavailable?: boolean;
 }): ResearchConversationStatus {
-  if (unavailable) return { kind: "attention", label: "专家团状态暂不可用 · 点击查看" };
+  if (unavailable) return { kind: "attention", label: "研究状态暂不可用 · 点击查看" };
   if (study.status === "stopped") return { kind: "idle", label: "本轮研究已停止" };
   if (study.status === "paused") return { kind: "paused", label: "研究已暂停 · 点击继续按钮恢复" };
   if (stopping) return { kind: "working", label: "正在停止主理人的当前回复…" };
@@ -34,11 +34,11 @@ export function researchConversationStatus(study: ResearchStudy, {
   if (busy) return { kind: "working", label: "主理人正在处理…" };
   if (activeTasks.length) return {
     kind: "experts",
-    label: `主理人正在等待专家结果 · ${activeTasks.length} 项任务处理中`,
-    placeholder: "专家正在处理，你可以补充要求或提出问题…",
+    label: `主理人正在等待任务结果 · ${activeTasks.length} 项任务处理中`,
+    placeholder: "任务正在处理，你可以补充要求或提出问题…",
   };
   if (activeRuns.length) return {
-    kind: "experts", label: `专家团正在等待实验结果 · ${activeRuns.length} 个实验进行中`,
+    kind: "experts", label: `正在等待实验结果 · ${activeRuns.length} 个实验进行中`,
     placeholder: "实验正在进行，你可以补充要求或提出问题…",
   };
   if (decisions.some((decision) => decision.status === "rejected")
@@ -53,8 +53,8 @@ export function researchConversationStatus(study: ResearchStudy, {
     if (study.evidenceReviewRequired) return { kind: "attention", label: "证据已修订 · 等待重新审查与交付确认" };
     if (tasks.some(task => task.verdict?.status === "blocked")) return { kind: "attention", label: "专家结论有问题 · 等待处理" };
     return researchPackageUrl(study) && !study.deliveryError
-      ? { kind: "complete", label: "本轮研究已完成" }
+      ? { kind: "complete", label: "本轮研究已完成 · 查看成果" }
       : { kind: "attention", label: study.deliveryError ? `交付确认受阻 · ${study.deliveryError}` : "本轮任务已验收 · 交付确认尚未生成" };
   }
-  return { kind: "idle", label: tasks.length ? "专家团流程未完成 · 等待下一步处理" : "专家团已就绪 · 等待明确研究计划" };
+  return { kind: "idle", label: tasks.length ? "研究流程未完成 · 等待下一步处理" : "研究已就绪 · 等待明确计划" };
 }

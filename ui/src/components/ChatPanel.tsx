@@ -4050,6 +4050,7 @@ export function deriveComposerSelection(
 
 export function ChatPanel({
   onOpenResearch,
+  onOpenWorkflow,
   projectId,
   projectName,
   contentLoading = false,
@@ -4122,6 +4123,8 @@ export function ChatPanel({
   experimentName?: (experimentId: string) => string;
   /** Open a plan's markdown as a right-pane tab (plan strip / plan cards). */
   onOpenResearch?: () => void;
+  /** 打开工作流画布侧栏；工作流对话的状态条点击跳这里，不再落回专家团面板。 */
+  onOpenWorkflow?: () => void;
   onOpenPlan?: (
     plan: string,
     sessionId: string,
@@ -6909,7 +6912,7 @@ export function ChatPanel({
               </div>
             )}
             {!embedded && !isDemoProjectId(projectId) && (!activeId || researchState.data) && <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 pt-3 pb-1"><WorkModeSwitch value={currentWorkMode} onChange={setResearchMode} readOnly={Boolean(activeId)} activeWorkflow={researchState.data?.study?.plans.at(-1)?.workflow} workflowDraftId={workflowDraftId} onWorkflowDraftChange={setWorkflowDraftId} boundWorkflowName={researchState.data?.study?.plans.at(-1)?.workflowSource?.name ?? null} />
-              {conversationStatus ? <ResearchConversationStatus status={conversationStatus} onOpen={onOpenResearch} /> : stopping && <span role="status" className="text-xs text-subtext">{m.common_stopping()}</span>}
+              {conversationStatus ? <ResearchConversationStatus status={conversationStatus} onOpen={workflowBound && onOpenWorkflow ? onOpenWorkflow : onOpenResearch} /> : stopping && <span role="status" className="text-xs text-subtext">{m.common_stopping()}</span>}
             </div>}
             <div className={`composer-input relative flex overflow-hidden [&_textarea]:flex-1 ${bashActive ? "[&_textarea]:font-mono [&_textarea]:text-sm" : ""}`}>
               <textarea

@@ -1,6 +1,6 @@
 import { useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ArrowRight, CheckCircle2, Circle, CircleDot, GitBranch, ShieldCheck, Users, X } from "lucide-react";
+import { ArrowRight, CheckCircle2, Circle, CircleDot, GitBranch, ShieldCheck, Users, Workflow, X } from "lucide-react";
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { consultationCoverage, researchWorkflowMode, expertRoles, researchAttention, currentDecisions, researchDagLayout, researchModes, researchProgress, researchTaskStatus, researchWorkflow, workflowStateNames, workflowTone, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
 import { invalidateFamilies } from "../queries/invalidation";
@@ -42,7 +42,9 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
   useDialogFocus(ref, onClose);
-  const [layer, setLayer] = useState<"preview" | "plan" | "execution">(() => !study.plans.length ? "preview" : currentDecisions(study).some((decision) => decision.gate === "G1" && decision.status === "pending") ? "plan" : "execution");
+  // 绑定了保存工作流的对话按「工作流模式」呈现：标题用工作流名，不展示团队预设的阶段概览。
+  const workflowSource = study.plans.at(-1)?.workflowSource ?? null;
+  const [layer, setLayer] = useState<"preview" | "plan" | "execution">(() => study.plans.length ? (currentDecisions(study).some((decision) => decision.gate === "G1" && decision.status === "pending") ? "plan" : "execution") : workflowSource ? "plan" : "preview");
   const [view, setView] = useState<"dag" | "list">("dag");
   const [selected, setSelected] = useState<string | null>(null);
   const tasks = study.plans.at(-1)?.tasks ?? [];
@@ -63,17 +65,17 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
   }))), [tasks, study.status]);
   const content = <div ref={embedded ? undefined : ref} role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-labelledby={titleId} tabIndex={-1} className={`flex min-h-0 w-full flex-col overflow-hidden bg-background text-text ${embedded ? "h-full" : "max-h-full max-w-6xl rounded-xl border border-border shadow-elevated"}`} onClick={(event) => event.stopPropagation()}>
       <header className="flex shrink-0 items-start justify-between gap-3 border-b border-border p-4">
-        <div><div className="flex items-center gap-2"><Users size={20} className="text-primary" /><h2 id={titleId} className="font-semibold">{researchModes[workflowMode]} · 研究流程</h2></div><p role="status" className="mt-1 text-sm text-subtext">{researchAttention(study)} · {progress.completed}/{progress.total} 个任务已验收{study.plans.length ? ` · 计划 v${study.plans.at(-1)?.version}` : ""}</p></div>
-        <IconButton data-initial-focus aria-label={embedded ? "返回专家团流程图" : "关闭研究流程"} onClick={onClose}><X size={18} /></IconButton>
+        <div><div className="flex items-center gap-2">{workflowSource ? <Workflow size={20} className="text-primary" /> : <Users size={20} className="text-primary" />}<h2 id={titleId} className="font-semibold">{workflowSource ? `${workflowSource.name} · 研究流程` : `${researchModes[workflowMode]} · 研究流程`}</h2></div><p role="status" className="mt-1 text-sm text-subtext">{researchAttention(study)} · {progress.completed}/{progress.total} 个任务已验收{study.plans.length ? ` · 计划 v${study.plans.at(-1)?.version}` : ""}</p></div>
+        <IconButton data-initial-focus aria-label={embedded ? (workflowSource ? "返回工作流" : "返回专家团流程图") : "关闭研究流程"} onClick={onClose}><X size={18} /></IconButton>
       </header>
       <div className="flex min-h-0 flex-col gap-5 overflow-y-auto p-4 sm:p-5">
         <p className="text-sm text-text">{study.objective}</p>
-        <nav className="grid grid-cols-1 gap-2 sm:grid-cols-3" aria-label="研究模块三层展示">
+        <nav className={`grid grid-cols-1 gap-2 ${workflowSource ? "sm:grid-cols-2" : "sm:grid-cols-3"}`} aria-label={workflowSource ? "工作流两层展示" : "研究模块三层展示"}>
           {([
-            { id: "preview", title: "1 · 模块预览",  },
-            { id: "plan", title: "2 · 本次分工",  },
-            { id: "execution", title: "3 · 实际执行与成果",  },
-          ] as const).map((item) => <button key={item.id} type="button" aria-pressed={layer === item.id} onClick={() => setLayer(item.id)} className={`rounded-lg border p-3 text-start focus-visible:outline-2 focus-visible:outline-primary ${layer === item.id ? "border-primary bg-primary-subtle" : "border-border bg-surface"}`}><strong className="text-sm">{item.title}</strong></button>)}
+            ...(workflowSource ? [] : [{ id: "preview", title: "模块预览" }]),
+            { id: "plan", title: "本次分工" },
+            { id: "execution", title: "实际执行与成果" },
+          ] as { id: "preview" | "plan" | "execution"; title: string }[]).map((item, index) => <button key={item.id} type="button" aria-pressed={layer === item.id} onClick={() => setLayer(item.id)} className={`rounded-lg border p-3 text-start focus-visible:outline-2 focus-visible:outline-primary ${layer === item.id ? "border-primary bg-primary-subtle" : "border-border bg-surface"}`}><strong className="text-sm">{index + 1} · {item.title}</strong></button>)}
         </nav>
         {layer === "preview" && (workflowMode === "team" ? <ResearchJourneyIntro /> : <ResearchModulePreview mode={workflowMode} />)}
         {layer === "plan" && <section aria-label="本次专家分工" className="flex flex-col gap-3">
@@ -88,7 +90,7 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
         </section>}
         {layer === "execution" && <>
         <section aria-label="实际执行概览" className="rounded-lg border border-border bg-surface p-3"><h3 className="text-sm font-medium">实际执行概览</h3><p className="mt-2 text-sm">{coverage.dispatched}/{coverage.total} 个任务已开始 · {coverage.completed} 个已交付</p></section>
-        {study.mode === "team" && <section aria-label="完整研究路径">
+        {study.mode === "team" && !workflowSource && <section aria-label="完整研究路径">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-medium">完整研究路径</h3></div>
           <ol className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
             {stages.map((stage, index) => <li key={stage.id} className={`rounded-lg border p-3 ${workflowTone[stage.state]}`}>
@@ -134,16 +136,23 @@ export function TaskDetails({ study, task, runs, onOpenSession }: { study: Resea
     return parent.agent?.name ?? (expertRoles[parent.role] || kindLabels[parent.kind ?? ""] || parent.role || id);
   });
   return <section className="mt-3 rounded-lg border border-primary bg-primary-subtle p-4 text-sm" aria-label={`任务详情 ${task.id}`}>
-    <div className="flex flex-wrap justify-between gap-2"><strong>{task.agent?.name ?? expertRoles[task.role] ?? ((task.kind === "human" ? "人工任务" : task.kind === "foreach" ? "逐项处理" : task.role) || task.id)} · {task.id}</strong><span className="flex items-center gap-1 text-primary"><StateIcon state={status.state} />{status.label}</span></div>
+    <div className="flex flex-wrap justify-between gap-2"><strong>{task.agent?.name ?? expertRoles[task.role] ?? ((task.kind === "human" ? "人工任务" : task.kind === "foreach" ? "逐项处理" : task.role) || task.id)}</strong><span className="flex items-center gap-1 text-primary"><StateIcon state={status.state} />{status.label}</span></div>
     <p className="mt-2 whitespace-pre-wrap">{task.brief}</p>
     {dependencyNames.length > 0 && <p className="mt-2 flex items-center gap-1 text-xs text-subtext"><ArrowRight size={12} />前置：{dependencyNames.join("、")}</p>}
     {task.kind !== "foreach" && <p className="mt-1 text-xs text-subtext">要求产物：{task.outputs.join("、")}</p>}
     {task.kind === "foreach" && <ForEachProgress task={task} />}
     {task.state === "awaiting" && <HumanSubmitForm study={study} task={task} />}
-    {task.sessionId && onOpenSession && <Button size="small" className="mt-3" title={task.sessionId} onClick={() => onOpenSession(task.sessionId!)}>查看专家对话</Button>}
+    {task.sessionId && onOpenSession && <Button size="small" className="mt-3" onClick={() => onOpenSession(task.sessionId!)}>查看专家对话</Button>}
     {task.artifacts.length > 0 && <ul className="mt-3 flex flex-col gap-1 text-xs text-accent-green" aria-label="已交付产物">{task.artifacts.map((artifact) => <li key={artifact.path} className="break-all">{artifact.path} · {artifact.bytes} 字节</li>)}</ul>}
     {task.summary && <p className="mt-2 whitespace-pre-wrap">{task.summary}</p>}
-    {task.runIds.map((id) => { const run = runs.find((entry) => entry.id === id); return <p key={id} className="mt-2 break-all font-mono text-xs">Run {id} · {run?.status ?? "状态未知"}{run?.cancelRequested ? " · 已请求取消" : ""}</p>; })}
+    {(() => {
+      // 运行号是内部标识，列表里只给出次数与进行状态；排查时再看日志。
+      const runStatuses = task.runIds.map((id) => runs.find((entry) => entry.id === id));
+      const active = runStatuses.filter((run) => run && !["done", "failed", "cancelled"].includes(run.status)).length;
+      if (!runStatuses.length) return null;
+      const cancelled = runStatuses.some((run) => run?.cancelRequested) ? " · 有取消请求" : "";
+      return <p className="mt-2 text-xs text-subtext">实验运行 {runStatuses.length} 次{active ? ` · ${active} 个进行中` : ""}{cancelled}</p>;
+    })()}
   </section>;
 }
 
