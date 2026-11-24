@@ -1561,14 +1561,19 @@ async fn stream_generation(
                 }
                 break;
             }
+            // 一次性生成没有人可以点卡片：任何待批准的请求一律拒绝，别让等待卡住。
             None if kind.starts_with("permission.") => {
-                if let Some(request) = data["id"].as_str() {
-                    let _ = reply_permission(
-                        endpoint,
-                        &format!("{path}/permission/{request}/reply"),
-                        "reject",
-                    )
-                    .await;
+                if let Ok(pending) = get(endpoint, &format!("{path}/permission")).await {
+                    for request in pending["data"].as_array().into_iter().flatten() {
+                        if let Some(id) = request["id"].as_str() {
+                            let _ = reply_permission(
+                                endpoint,
+                                &format!("{path}/permission/{id}/reply"),
+                                "reject",
+                            )
+                            .await;
+                        }
+                    }
                 }
             }
             _ => {}
