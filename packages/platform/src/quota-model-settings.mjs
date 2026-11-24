@@ -405,6 +405,30 @@ export function quotaModelSettings(file, { fetcher = fetch } = {}) {
       : Array.isArray(payload?.models)
         ? payload.models
         : [];
+    const modelMeta = {};
+    for (const item of items) {
+      if (!item || typeof item !== "object" || typeof item.id !== "string") continue;
+      const id = item.id.trim();
+      if (!id || id.length > 200 || /[\x00-\x1f{}]/.test(id)) continue;
+      const meta = {};
+      if (typeof item.name === "string" && item.name.trim()) meta.name = item.name.trim();
+      if (Number.isSafeInteger(item.context_length) && item.context_length > 0) meta.contextTokens = item.context_length;
+      if (Number.isSafeInteger(item.max_output_tokens) && item.max_output_tokens > 0) meta.maxOutputTokens = item.max_output_tokens;
+      const opencode = {};
+      const inputMods = Array.isArray(item.architecture?.input_modalities) ? item.architecture.input_modalities.filter((x) => typeof x === "string") : null;
+      const outputMods = Array.isArray(item.architecture?.output_modalities) ? item.architecture.output_modalities.filter((x) => typeof x === "string") : null;
+      if (inputMods?.length) {
+        opencode.modalities = { input: inputMods, output: outputMods?.length ? outputMods : ["text"] };
+        opencode.attachment = inputMods.includes("image");
+      }
+      if (Array.isArray(item.supported_parameters)) {
+        const params = new Set(item.supported_parameters);
+        if (params.has("tools") || params.has("tool_choice")) opencode.tool_call = true;
+        if (params.has("reasoning") || params.has("include_reasoning")) opencode.reasoning = true;
+      }
+      if (Object.keys(opencode).length) meta.opencode = opencode;
+      if (Object.keys(meta).length) modelMeta[id] = meta;
+    }
     const models = [
       ...new Set(
         items
@@ -421,7 +445,7 @@ export function quotaModelSettings(file, { fetcher = fetch } = {}) {
           ),
       ),
     ].slice(0, 200);
-    return { models };
+    return { models, modelMeta };
   }
   async function probeOpenCodeFreeModels(_data, audit = async () => {}) {
     let payload;
