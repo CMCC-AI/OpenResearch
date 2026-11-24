@@ -44,8 +44,9 @@ for (const prefix of ['', '/mobilesci']) {
       await expect(page).toHaveURL(url => url.pathname === `${prefix}/projects` && url.searchParams.get('project') === project.id);
       await expect(page.getByRole('heading', { name: '我们应该研究什么？' })).toHaveCount(0);
       await page.goto(`${prefix}/projects`);
-      const devtools = page.getByRole('button', { name: 'Close tanstack query devtools', exact: true });
-      if (await devtools.isVisible()) await devtools.click();
+      // 开发构建里 Query devtools 默认展开，可能在页面加载后才挂载并盖住侧栏按钮；
+      // 它的出现时机不可控，直接隐藏，避免验收点击一直等不到可点击目标。
+      await page.addStyleTag({ content: '.tsqd-parent-container{display:none!important}' });
       await page.locator('.product-sidebar').getByRole('button', { name: '新对话 · Handoff fixture', exact: true }).click();
       await expect(page).toHaveURL(url => url.pathname === `${prefix}/projects` && url.searchParams.get('project') === project.id);
       const input = page.locator('#research-objective');
