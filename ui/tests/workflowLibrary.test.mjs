@@ -21,7 +21,7 @@ function nodes(tree) {
   if (typeof tree.type === "function") return nodes(tree.type(tree.props));
   return [tree, ...React.Children.toArray(tree.props.children).flatMap(nodes)];
 }
-function harness({ choices = library, error = null, confirmAnswer = true, generated = null } = {}) {
+function harness({ choices = library, error = null } = {}) {
   let cursor = 0;
   const slots = [], calls = [], exported = {};
   // 与 React 一致：setter 既接受值也接受函数式更新。
@@ -29,21 +29,19 @@ function harness({ choices = library, error = null, confirmAnswer = true, genera
   new Function("require", "exports", code)(name => {
     if (name === "react") return { ...React, useState: state };
     if (name === "lucide-react") return new Proxy({}, { get: (_, icon) => (props) => React.createElement("i", { "data-icon": String(icon), ...props }) });
-    if (name === "../locale") return { useLocale: () => "zh-CN" };
     if (name === "./CapabilityTile") return { CapabilityTile: "CapabilityTile" };
     if (name === "./WorkflowSearch") return searchBoxExports;
-    if (name === "./model") return { searchWorkflows, generatedToDraftInput };
+    if (name === "./model") return { searchWorkflows };
     if (name === "@tanstack/react-query") return { useQuery: () => ({ data: choices, isPending: false, error, refetch() {} }) };
     if (name === "../queries/client") return { workspaceKey: (...parts) => parts.join(":"), queryClient: { invalidateQueries() {} } };
     if (name === "../components/ui") return { Button: "Button", IconButton: "IconButton", Spinner: "Spinner", showAlert: (...args) => calls.push(["alert", ...args]) };
     if (name === "../api") return {
       timeAgo: () => "刚刚",
       deleteWorkflow: async (id) => { calls.push(["delete", id]); return { ok: true }; },
-      generateWorkflowDraft: async (body) => { calls.push(["generate", body]); if (generated instanceof Error) throw generated; return generated; },
     };
     return require(name);
   }, exported);
-  const render = () => { cursor = 0; return nodes(exported.WorkflowLibrary({ onEdit: (...args) => calls.push(["edit", ...args]), onGeneratedDraft: (...args) => calls.push(["generated", ...args]) })); };
+  const render = () => { cursor = 0; return nodes(exported.WorkflowLibrary({ onEdit: (...args) => calls.push(["edit", ...args]) })); };
   return { render, calls };
 }
 const cardButtons = tree => tree.filter(node => node.type === "button" && React.Children.toArray(node.props.children).some(child => child?.type === "strong"));
@@ -193,51 +191,10 @@ test("generatedToDraftInput fills a complete draft with layered positions and no
   assert.equal(generatedToDraftInput({ name: "  ", tasks: [] }).name, "未命名工作流");
 });
 
-// ---- AI 排流程：库页入口 ----
+// ---- AI 排流程：库页不再放入口 ----
 
-const generateButton = tree => tree.find(node => node.type === "Button" && JSON.stringify(node.props.children).includes("AI 排流程"));
-const findLabelled = (tree, label) => tree.find(node => node.props?.role === "dialog" && node.props["aria-label"] === label);
-
-test("the library offers an AI entry and keeps its prompt closed until asked", () => {
+test("the library stays a list: the AI entry belongs to the canvas page", () => {
   const tree = harness().render();
-  const entry = generateButton(tree);
-  assert.ok(entry, "缺少 AI 排流程入口");
-  assert.equal(entry.props["aria-expanded"], false);
-  assert.equal(findLabelled(tree, "AI 排流程"), undefined);
-});
-
-test("the AI prompt opens, sends the sentence with the UI locale, and hands the laid-out draft to the editor", async () => {
-  const generated = { name: "综述流水线", tasks: chain("search", "read", "write") };
-  const h = harness({ generated });
-  generateButton(h.render()).props.onClick();
-  assert.ok(findLabelled(h.render(), "AI 排流程"), "弹层没有打开");
-  // 每一步都从最新一次渲染的树上取节点：输入会触发重渲染，旧快照上的按钮状态已过期。
-  const submit = () => nodes(findLabelled(h.render(), "AI 排流程")).find(node => node.type === "Button" && JSON.stringify(node.props.children).includes("生成流程"));
-  const textbox = () => nodes(findLabelled(h.render(), "AI 排流程")).find(node => node.type === "textarea");
-  // 一句话为空时不能提交。
-  assert.equal(submit().props.disabled, true);
-  textbox().props.onChange({ target: { value: "先检索再精读最后成稿" } });
-  assert.equal(textbox().props.value, "先检索再精读最后成稿");
-  assert.equal(submit().props.disabled, false);
-  submit().props.onClick();
-  await settle();
-  assert.deepEqual(h.calls.filter(call => call[0] === "generate"), [["generate", { intent: "先检索再精读最后成稿", locale: "zh-CN" }]]);
-  const handed = h.calls.find(call => call[0] === "generated");
-  assert.ok(handed, "生成稿没有交给编辑器");
-  assert.equal(handed[1].name, "综述流水线");
-  // 坐标已按依赖分层排好：三步链自上而下走。
-  assert.deepEqual(handed[1].positions, { search: { x: 0, y: 0 }, read: { x: 0, y: 300 }, write: { x: 0, y: 600 } });
-  // 生成稿没有被当成「新建空白工作流」。
-  assert.ok(!h.calls.some(call => call[0] === "edit"));
-});
-
-test("a failed generation reports the reason and keeps the user on the library", async () => {
-  const h = harness({ generated: new Error("没有可用的对话引擎") });
-  generateButton(h.render()).props.onClick();
-  const submit = () => nodes(findLabelled(h.render(), "AI 排流程")).find(node => node.type === "Button" && JSON.stringify(node.props.children).includes("生成流程"));
-  nodes(findLabelled(h.render(), "AI 排流程")).find(node => node.type === "textarea").props.onChange({ target: { value: "来一条流程" } });
-  submit().props.onClick();
-  await settle();
-  assert.deepEqual(h.calls.filter(call => call[0] === "alert"), [["alert", "没有可用的对话引擎", "error"]]);
-  assert.ok(!h.calls.some(call => call[0] === "generated" || call[0] === "edit"));
+  assert.equal(tree.find(node => node.type === "Button" && JSON.stringify(node.props.children).includes("AI 排流程")), undefined);
+  assert.equal(tree.find(node => node.props?.role === "dialog" && node.props["aria-label"] === "AI 排流程"), undefined);
 });

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Blocks, Bot, Plug, MessagesSquare, Trash2, Workflow } from "lucide-react";
 import { createWorkflow, deleteWorkflow, getWorkflow, listMcpServers, listWorkflowAgents, listWorkflowSkills, listWorkflows, saveWorkflow } from "../api";
@@ -6,10 +7,12 @@ import { queryClient, workspaceKey } from "../queries/client";
 import { listProjectsQuery } from "../queries/projects";
 import { Button, showAlert, Spinner } from "../components/ui";
 import { AgentLibrary } from "./AgentLibrary";
+import { AiWorkflowPrompt } from "./AiWorkflowPrompt";
 import { SkillsLibrary } from "./SkillsLibrary";
 import { McpLibrary } from "./McpLibrary";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { WorkflowLibrary } from "./WorkflowLibrary";
+import { WorkflowNameSlot } from "./nameSlot";
 import { createAutosave } from "./autosave";
 import { stagePendingWorkflowUse } from "./pendingUse";
 import { createBlankDraft, DEFAULT_WORKFLOW_NAME, migrateDraftLayout, validateWorkflowDraft, type WorkflowDraft, type WorkflowDraftInput } from "./model";
@@ -35,24 +38,14 @@ type SaveState = "idle" | "saving" | "saved" | "error";
 export function WorkflowStudio({ projectId, sessionId = null, onOpenSession, onOpenChats }: { projectId?: string; sessionId?: string | null; onOpenSession: (sessionId: string, projectId: string) => void; onOpenChats?: () => void }) {
   // undefined=工作流库总览，null=新建，字符串=编辑库里这条；项目与全局共用同一个库。
   const [draftId, setDraftId] = useState<string | null | undefined>(undefined);
-  // AI 排流程的生成稿：带着它进编辑器当起点。库页在进入编辑器时卸载，
-  // 所以种子挂在这里而不是库组件上。
-  const [seed, setSeed] = useState<WorkflowDraftInput | null>(null);
-  // 每次生成都递增：新建态的 draftId 恒为 null，靠它让「再生成一次」也能重挂载编辑器。
-  const [seedVersion, setSeedVersion] = useState(0);
-  if (draftId === undefined) return <WorkflowLibrary
-    onEdit={(draftId) => { setSeed(null); setDraftId(draftId); }}
-    onGeneratedDraft={(draft) => { setSeed(draft); setSeedVersion((version) => version + 1); setDraftId(null); }}
-  />;
-  return <WorkflowEditor key={draftId ?? `new-${seedVersion}`} projectId={projectId} sessionId={sessionId} draftId={draftId} seed={seed} onOpenSession={onOpenSession} onOpenChats={onOpenChats} onBack={() => setDraftId(undefined)} />;
+  if (draftId === undefined) return <WorkflowLibrary onEdit={(id) => setDraftId(id)} />;
+  return <WorkflowEditor key={draftId ?? "new"} projectId={projectId} sessionId={sessionId} draftId={draftId} onOpenSession={onOpenSession} onOpenChats={onOpenChats} onBack={() => setDraftId(undefined)} />;
 }
 
-function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, seed = null, onOpenSession, onOpenChats, onBack }: {
+function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, onOpenSession, onOpenChats, onBack }: {
   projectId?: string;
   sessionId?: string | null;
   draftId: string | null;
-  /** 进编辑器时的起点草稿（AI 生成稿）；没有则从空白画布开始。 */
-  seed?: WorkflowDraftInput | null;
   onOpenSession: (sessionId: string, projectId: string) => void;
   onOpenChats?: () => void;
   onBack?: () => void;
@@ -70,8 +63,10 @@ function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, 
   const libraryQuery = useQuery({ queryKey: workspaceKey("workflowList"), queryFn: ({ signal }) => listWorkflows(signal) });
   // 项目列表常开：技能生效范围的绑定勾选在项目工作区内也要可用。
   const projectsQuery = useQuery({ ...listProjectsQuery() });
-  // AI 生成稿自带分层坐标，直接当起点；它和空白画布一样要等用户动过才落库。
-  const [draft, setDraft] = useState<WorkflowDraftInput>(() => seed ?? createBlankDraft());
+  // AI 生成稿整份换掉画布；生成算一次编辑，照常走自动保存。
+  const [draft, setDraft] = useState<WorkflowDraftInput>(() => createBlankDraft());
+  // 重挂载画布用：换掉整份流程后按新坐标重新自适应视野，而不是停在旧画布的缩放与位置。
+  const [canvasVersion, setCanvasVersion] = useState(0);
   const [hydrated, setHydrated] = useState(id === null);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -81,6 +76,10 @@ function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, 
   const tools = toolsQuery.data ?? [];
   const skills = skillsQuery.data ?? [];
   const projects = projectsQuery.data ?? [];
+  // 改名输入框放在全局页头的「科研首页 / 工作流」后面：受控状态仍归编辑器，
+  // 槽位由 App 提供；单独渲染编辑器（槽位不存在）时留在工具栏里。
+  const nameSlot = useContext(WorkflowNameSlot);
+  const nameInput = <input aria-label="工作流名称" value={draft.name} maxLength={200} placeholder={DEFAULT_WORKFLOW_NAME} onChange={(event) => change({ ...draft, name: event.target.value })} className="h-8 w-56 min-w-0 max-w-full rounded-md border border-transparent bg-transparent px-1.5 text-sm font-medium text-text transition-colors hover:border-border focus:border-border focus:bg-background focus:outline-none" />
 
   // 自动保存按最新渲染状态取值：定时器闭包里只留 ref，避免拿到旧草稿。
   const dirtyRef = useRef(dirty);
@@ -109,6 +108,15 @@ function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, 
     setDirty(true);
     setErrors([]);
     ensureSaver().schedule();
+  }
+
+  // 生成会整份替换画布：已有内容先让用户确认，名字只在空白画布或默认名下才跟随生成稿。
+  function applyGenerated(generated: WorkflowDraftInput): boolean {
+    if (draft.tasks.length > 0 && !window.confirm("生成后会替换画布上现有内容，继续？")) return false;
+    const keepName = draft.tasks.length > 0 && Boolean(draft.name.trim()) && draft.name !== DEFAULT_WORKFLOW_NAME;
+    setCanvasVersion((version) => version + 1);
+    change(keepName ? { ...generated, name: draft.name } : generated);
+    return true;
   }
 
   async function persist(): Promise<WorkflowDraft> {
@@ -225,7 +233,8 @@ function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, 
           <Button variant="ghost" active={tab === "workflow"} aria-pressed={tab === "workflow"} onClick={() => setTab("workflow")}><Workflow size={15} />工作流</Button>
         </div>
         {tab === "workflow" && <>
-          <input aria-label="工作流名称" value={draft.name} maxLength={200} placeholder={DEFAULT_WORKFLOW_NAME} onChange={(event) => change({ ...draft, name: event.target.value })} className="h-8 min-w-0 w-44 rounded-md border border-transparent bg-transparent px-2 text-sm font-medium text-text transition-colors hover:border-border focus:border-border focus:bg-background focus:outline-none" />
+          {!nameSlot && nameInput}
+          <AiWorkflowPrompt disabled={!hydrated} onGenerated={applyGenerated} />
           <div className="ms-auto flex flex-wrap items-center gap-2">
             {id && <Button disabled={busy} onClick={() => void remove()}><Trash2 size={14} />删除</Button>}
             <span role="status" className="text-xs text-subtext">{saveState === "saving" ? "保存中…" : saveState === "error" ? "保存失败" : saveState === "saved" ? "已自动保存" : ""}</span>
@@ -236,8 +245,9 @@ function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, 
       </header>
       {agentsQuery.isPending || toolsQuery.isPending || skillsQuery.isPending || !hydrated ? <div role="status" className="flex flex-1 items-center justify-center gap-2 text-sm text-subtext"><Spinner />正在加载工作流资源…</div> : agentsQuery.error || toolsQuery.error || skillsQuery.error || draftQuery.error ? <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-sm text-accent-red"><p>{(agentsQuery.error ?? toolsQuery.error ?? skillsQuery.error ?? draftQuery.error) instanceof Error ? String((agentsQuery.error ?? toolsQuery.error ?? skillsQuery.error ?? draftQuery.error) as Error) : "资源读取失败"}</p><Button onClick={() => { void agentsQuery.refetch(); void toolsQuery.refetch(); void skillsQuery.refetch(); void draftQuery.refetch(); void libraryQuery.refetch(); }}>重试</Button></div> : tab === "agents" ? <AgentLibrary agents={agents} mcpServers={tools} userSkills={skills.filter((skill) => skill.source === "user")} onChanged={() => agentsQuery.refetch()} /> : tab === "skills" ? <SkillsLibrary skills={skills} agents={agents} projects={projects} projectId={projectId} sessionId={sessionId} onOpenSession={onOpenSession} onOpenChats={onOpenChats} onChanged={() => skillsQuery.refetch()} /> : tab === "tools" ? <McpLibrary /> : <div className="flex min-h-0 flex-1 flex-col">
         {errors.length > 0 && <div role="alert" className="shrink-0 border-b border-accent-red bg-background px-4 py-2 text-sm text-accent-red"><strong>使用前需要处理：</strong><ul className="mb-0 mt-1 ps-5">{errors.slice(0, 8).map((error) => <li key={error}>{error}</li>)}</ul>{errors.length > 8 && <p className="mb-0 mt-1">另有 {errors.length - 8} 项问题。</p>}</div>}
-        <WorkflowCanvas draft={draft} agents={agents} onChange={change} />
+        <WorkflowCanvas key={canvasVersion} draft={draft} agents={agents} onChange={change} />
       </div>}
+      {nameSlot && createPortal(<><span aria-hidden="true" className="shrink-0">/</span>{nameInput}</>, nameSlot)}
     </div>
   </>;
 }

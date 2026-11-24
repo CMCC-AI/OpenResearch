@@ -1,48 +1,25 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Plus, Sparkles, Trash2, Workflow } from "lucide-react";
-import { deleteWorkflow, generateWorkflowDraft, listWorkflows, timeAgo } from "../api";
+import { Plus, Trash2, Workflow } from "lucide-react";
+import { deleteWorkflow, listWorkflows, timeAgo } from "../api";
 import { queryClient, workspaceKey } from "../queries/client";
 import { Button, IconButton, showAlert, Spinner } from "../components/ui";
-import { useLocale } from "../locale";
 import { CapabilityTile } from "./CapabilityTile";
 import { WorkflowSearchBox } from "./WorkflowSearch";
-import { generatedToDraftInput, searchWorkflows, type WorkflowDraft, type WorkflowDraftInput } from "./model";
+import { searchWorkflows, type WorkflowDraft } from "./model";
 
-export function WorkflowLibrary({ onEdit, onGeneratedDraft }: {
+export function WorkflowLibrary({ onEdit }: {
   onEdit: (draftId: string | null) => void;
-  /** AI 排流程生成成功：带上排好版坐标的整份草稿进编辑器。 */
-  onGeneratedDraft?: (draft: WorkflowDraftInput) => void;
 }) {
   const drafts = useQuery({ queryKey: workspaceKey("workflowList"), queryFn: ({ signal }) => listWorkflows(signal) });
   const [search, setSearch] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [generateOpen, setGenerateOpen] = useState(false);
-  const [intent, setIntent] = useState("");
-  const [generating, setGenerating] = useState(false);
-  const locale = useLocale();
   // 库对全部项目共享：projectId 只记录创建来源，这里仅作展示，不限制查看与编辑。
   const all = drafts.data ?? [];
   const matched = searchWorkflows(all, search).map((draft) => ({ draft, source: draft.projectId === "" ? "全局工作流" : "项目工作流", experts: new Set(draft.tasks.map((task) => task.role)).size }));
 
   function invalidateLibrary() {
     void queryClient.invalidateQueries({ queryKey: workspaceKey("workflowList") });
-  }
-
-  async function generate() {
-    const request = intent.trim();
-    if (!request || generating) return;
-    setGenerating(true);
-    try {
-      const generated = await generateWorkflowDraft({ intent: request, locale });
-      onGeneratedDraft?.(generatedToDraftInput(generated));
-      // 正常会随进编辑器一起卸载；没接生成回调时也要收起弹层。
-      setGenerateOpen(false);
-    } catch (error) {
-      showAlert(error instanceof Error ? error.message : String(error), "error");
-    } finally {
-      setGenerating(false);
-    }
   }
 
   async function removeDraft(draft: WorkflowDraft) {
@@ -66,23 +43,7 @@ export function WorkflowLibrary({ onEdit, onGeneratedDraft }: {
           <h1 className="m-0 flex items-center gap-2 text-xl font-medium"><Workflow size={22} />我的工作流</h1>
           <p className="mb-0 mt-2 text-sm text-subtext">这里汇集可复用的研究方法：点击卡片查看或编辑，之后在聊天中让 AI 按流程执行。</p>
         </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <div className="relative" onKeyDown={(event) => { if (event.key === "Escape" && generateOpen) { event.stopPropagation(); setGenerateOpen(false); } }}>
-            <Button variant="ghost" aria-expanded={generateOpen} aria-haspopup="dialog" onClick={() => setGenerateOpen((value) => !value)}><Sparkles size={14} />AI 排流程</Button>
-            {generateOpen && <div role="dialog" aria-label="AI 排流程" className="absolute end-0 top-full z-50 mt-2 flex w-80 flex-col gap-2 rounded-md border border-border bg-background p-3 shadow-dropdown">
-              <strong className="text-sm font-normal">用一句话描述这条流程</strong>
-              <p className="m-0 text-xs text-subtext">比如：先检索文献，再筛选和精读，最后综合成一份综述报告。生成后会进画布，你可以随意调整。</p>
-              <textarea className="min-h-20 resize-y rounded-md border border-border bg-background p-2.5 text-sm text-text outline-none focus:border-text" value={intent} placeholder="这条流程要完成什么？" onChange={(event) => setIntent(event.target.value)} />
-              <div className="flex items-center justify-between gap-2">
-                <Button size="small" variant="ghost" onClick={() => setGenerateOpen(false)}>关闭</Button>
-                <Button size="small" variant="primary" disabled={!intent.trim() || generating} onClick={() => void generate()}>
-                  {generating ? <span className="flex items-center gap-2"><Spinner />正在排版…</span> : "生成流程"}
-                </Button>
-              </div>
-            </div>}
-          </div>
-          <Button variant="primary" onClick={() => onEdit(null)}><Plus size={14} />新建工作流</Button>
-        </div>
+        <Button variant="primary" onClick={() => onEdit(null)}><Plus size={14} />新建工作流</Button>
       </header>
       {drafts.isPending ? <p role="status" className="flex items-center gap-2 text-sm text-subtext"><Spinner />正在读取工作流库…</p> : drafts.error ? <div role="alert" className="flex flex-col items-start gap-3 text-sm text-accent-red">
         <p className="m-0">工作流读取失败：{drafts.error.message}</p>

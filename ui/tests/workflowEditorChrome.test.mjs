@@ -15,13 +15,13 @@ const validDraft = {
 function nodes(tree) { return React.isValidElement(tree) ? [tree, ...React.Children.toArray(tree.props.children).flatMap(nodes)] : []; }
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-function harness({ projectId, sessionId = null } = {}) {
+function harness({ projectId, sessionId = null, nameSlot = null } = {}) {
   let cursor = 0;
   const slots = [], calls = [], exported = {};
   const state = (initial) => {
     const index = cursor++;
     if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
-    return [slots[index], (next) => { slots[index] = next; }];
+    return [slots[index], (next) => { slots[index] = typeof next === "function" ? next(slots[index]) : next; }];
   };
   const ref = (initial) => {
     const index = cursor++;
@@ -30,7 +30,8 @@ function harness({ projectId, sessionId = null } = {}) {
   };
   const query = (data = []) => ({ data, isPending: false, error: null, refetch() {} });
   new Function("require", "exports", code)(name => {
-    if (name === "react") return { ...React, useState: state, useRef: ref, useEffect: () => {} };
+    if (name === "react") return { ...React, useState: state, useRef: ref, useEffect: () => {}, useContext: () => nameSlot };
+    if (name === "react-dom") return { createPortal: (children, target) => React.createElement("portal", { "data-target": target }, children) };
     if (name === "@tanstack/react-query") return { useQuery: (options) => {
       const key = options.queryKey.join(":");
       if (key.startsWith("workflowAgents")) return query(agents);
@@ -41,10 +42,12 @@ function harness({ projectId, sessionId = null } = {}) {
     if (name === "../components/ui") return { Button: "Button", Spinner: "Spinner", showAlert: (...args) => calls.push(["alert", ...args]) };
     if (name === "./model") return model;
     if (name === "./AgentLibrary") return { AgentLibrary: "AgentLibrary" };
+    if (name === "./AiWorkflowPrompt") return { AiWorkflowPrompt: "AiWorkflowPrompt" };
     if (name === "./SkillsLibrary") return { SkillsLibrary: "SkillsLibrary" };
     if (name === "./McpLibrary") return { McpLibrary: "McpLibrary" };
     if (name === "./WorkflowCanvas") return { WorkflowCanvas: "WorkflowCanvas" };
     if (name === "./WorkflowLibrary") return { WorkflowLibrary: "WorkflowLibrary" };
+    if (name === "./nameSlot") return { WorkflowNameSlot: {} };
     if (name === "./autosave") return { createAutosave: () => ({
       schedule: () => calls.push(["schedule"]),
       cancel: () => calls.push(["cancel"]),
@@ -110,6 +113,27 @@ test("renaming schedules the autosave and going back flushes it", async () => {
   assert.ok(render().some(node => node.type === "WorkflowLibrary"));
 });
 
+test("the name moves into the page-header slot when the shell provides one", () => {
+  const slot = { id: "page-header" };
+  const h = harness({ nameSlot: slot });
+  const { render } = h.openEditor(null);
+  const nameInputs = (tree) => (Array.isArray(tree) ? tree.flatMap(nodes) : nodes(tree)).filter(node => node.type === "input" && node.props["aria-label"] === "工作流名称");
+  const tree = render();
+  // 名称投进页头槽位，工具栏不再重复一份。
+  const portal = tree.find(node => node.type === "portal");
+  assert.ok(portal, "名称没有投到页头槽位");
+  assert.deepEqual(portal.props["data-target"], slot);
+  const portalInputs = nameInputs(portal);
+  assert.equal(portalInputs.length, 1);
+  assert.equal(portalInputs[0].props.value, "未命名工作流");
+  const toolbar = tree.find(node => node.type === "header");
+  assert.equal(nameInputs(toolbar).length, 0);
+  // 仍走同一套受控改名：输入触发自动保存，新名字回写到投出去的输入框。
+  portalInputs[0].props.onChange({ target: { value: "通路梳理" } });
+  assert.deepEqual(h.calls, [["schedule"]]);
+  assert.equal(nameInputs(render().find(node => node.type === "portal"))[0].props.value, "通路梳理");
+});
+
 test("submitting a global workflow stages pending use and heads to the chats page", async () => {
   const h = harness();
   const { render } = h.openEditor(null);
@@ -137,4 +161,44 @@ test("invalid drafts block submission with the error list instead of saving", as
   await settle();
   assert.deepEqual(h.calls, []);
   assert.ok(render().some(node => node.props.role === "alert" && JSON.stringify(node.props.children).includes("至少需要一个 Agent 任务")));
+});
+
+// ---- AI 排流程：入口在编排页，生成稿直接落到画布 ----
+
+const generated = model.generatedToDraftInput({
+  name: "综述流水线",
+  tasks: ["search", "read", "write"].map((id, index) => ({ id, role: "as-experiment-designer", brief: "b", dependsOn: index ? [["search", "read", "write"][index - 1]] : [], outputs: [`${id}.md`] })),
+});
+const promptOf = (render) => render().find(node => node.type === "AiWorkflowPrompt");
+const canvasDraft = (render) => render().find(node => node.type === "WorkflowCanvas").props.draft;
+
+test("the canvas page hosts the AI prompt and lands a generated flow on the blank canvas", () => {
+  const h = harness();
+  const { render } = h.openEditor(null);
+  assert.ok(promptOf(render), "编排页缺少 AI 排流程入口");
+  assert.equal(promptOf(render).props.disabled, false);
+  assert.equal(promptOf(render).props.onGenerated(generated), true);
+  // 生成算一次编辑：排上自动保存，草稿整份换成生成稿。
+  assert.deepEqual(h.calls, [["schedule"]]);
+  assert.equal(canvasDraft(render).name, "综述流水线");
+  assert.deepEqual(canvasDraft(render).tasks.map(task => task.id), ["search", "read", "write"]);
+});
+
+test("generating over an existing flow asks first and keeps the workflow's own name", () => {
+  globalThis.window = { confirm: () => false };
+  const h = harness();
+  const { render } = h.openEditor(null);
+  render().find(node => node.type === "WorkflowCanvas").props.onChange({ ...validDraft, name: "我的流程" });
+  assert.equal(promptOf(render).props.onGenerated(generated), false);
+  // 拒绝替换：画布保持原样，不触发新的自动保存。
+  assert.equal(canvasDraft(render).name, "我的流程");
+  assert.deepEqual(canvasDraft(render).tasks.map(task => task.id), ["t1"]);
+  assert.deepEqual(h.calls, [["schedule"]]);
+  globalThis.window.confirm = () => true;
+  assert.equal(promptOf(render).props.onGenerated(generated), true);
+  // 同意替换：任务换成生成稿，但工作流已有的名字不被顺手改掉。
+  assert.equal(canvasDraft(render).name, "我的流程");
+  assert.deepEqual(canvasDraft(render).tasks.map(task => task.id), ["search", "read", "write"]);
+  assert.deepEqual(h.calls, [["schedule"], ["schedule"]]);
+  delete globalThis.window;
 });

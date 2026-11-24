@@ -859,7 +859,7 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
             : <p className="m-0 px-2 py-1.5 text-subtext">系统约束线，不可删除</p>}
         </div>;
       })()}
-      {!draft.tasks.length && <div className="pointer-events-none absolute inset-x-3 top-14 text-center text-sm text-subtext">从左侧把专家拖到画布上，加入第一个专家。</div>}
+      {!draft.tasks.length && <div className="pointer-events-none absolute inset-x-3 top-14 text-center text-sm text-subtext">从左侧把专家拖到画布上，加入第一个专家；也可以点上方「AI 排流程」，用一句话生成整条流程。</div>}
       <Button variant="default" size="small" className="absolute end-3 top-3" aria-expanded={helpOpen} onClick={() => setHelpOpen((open) => !open)}><CircleHelp size={14} />工作流说明</Button>
       {helpOpen && <WorkflowHelp onClose={() => setHelpOpen(false)} />}
       {error && <div role="alert" className="absolute inset-x-3 bottom-3 rounded-md border border-accent-red bg-background px-3 py-2 text-sm text-accent-red">{error}</div>}

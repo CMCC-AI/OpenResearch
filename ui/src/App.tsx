@@ -113,6 +113,7 @@ import { ResearchPanel } from "./components/ResearchPanel";
 const MaterialWorkspace = lazy(() => import("./components/MaterialWorkspace"));
 const WorkflowStudio = lazy(() => import("./workflow/WorkflowStudio").then(module => ({ default: module.WorkflowStudio })));
 const WorkflowPane = lazy(() => import("./workflow/WorkflowPane").then(module => ({ default: module.WorkflowPane })));
+import { WorkflowNameSlot } from "./workflow/nameSlot";
 
 import { WorkspaceTools } from "./components/WorkspaceTools";
 const ProjectTerminal = lazy(() => import("./components/ProjectTerminal").then(module => ({ default: module.ProjectTerminal })));
@@ -281,6 +282,8 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
   const searchSession = new URLSearchParams(location.searchStr).get("session");
   const destination = readOnly?.native ? { kind: "task" as const, projectId, sessionId: searchSession || readOnly.initialSessionId } : parseDestination(location.pathname);
   const mainView = destination?.kind === "skills" ? "skills" : destination?.kind === "workflows" ? "workflows" : destination?.kind === "settings" ? destination.section ?? "settings" : "chat";
+  // 工作流编辑器把改名输入框投进全局页头；槽位只在工作流视图里挂载。
+  const [workflowNameSlot, setWorkflowNameSlot] = useState<HTMLElement | null>(null);
   const rememberedSessionRef = useRef<string | null>(null);
   const rememberedProjectRef = useRef(projectId);
   if (rememberedProjectRef.current !== projectId) {
@@ -1818,7 +1821,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
       {runtime.kind === "local" && <UpdateBanner status={updateStatus} />}
       {workspaceError && <div role="alert" className="flex items-center gap-2 px-4 mac-titlebar:ps-20 win-titlebar:pe-36 py-2 text-subtext"><span>{workspaceError}</span><Button onClick={retryWorkspace}>{m.app_retry()}</Button></div>}
       <div className={`app-body workspace-body relative grid flex-1 min-h-0 grid-rows-[4rem_minmax(0,1fr)] [&>.product-sidebar]:row-span-2 [&>.product-sidebar]:row-start-1 [&>.chat-pane]:row-start-2 [&>.right-pane]:row-start-2 ${railOpen ? readOnly ? "grid-cols-[auto_minmax(0,1fr)_auto]" : "grid-cols-[17.5rem_minmax(0,1fr)_auto]" : "grid-cols-[minmax(0,1fr)_auto]"} ${workspaceCardVisible ? "workspace-card-visible" : ""}`}>
-        <div className="workspace-global-header min-w-0" style={{ gridColumn: railOpen ? "2 / -1" : "1 / -1", gridRow: 1 }}><ProductHeader actions={!workspaceCardVisible ? workspaceTools : undefined} title={<nav aria-label="当前位置" className="flex min-w-0 items-center gap-2"><Link to="/projects" className="shrink-0 text-subtext no-underline hover:text-primary">科研首页</Link><span aria-hidden="true">/</span>{mainView !== "workflows" && <>{readOnly ? <Link to="/cases" className="truncate text-subtext no-underline hover:text-primary">精选案例 · {activeProject.name}</Link> : <Link to="/projects/$projectId" params={{ projectId }} className="truncate text-subtext no-underline hover:text-primary">{activeProject.name}</Link>}<span aria-hidden="true">/</span></>}<span className="shrink-0 text-text">{mainView === "workflows" ? "工作流" : mainView === "chat" ? "研究工作区" : mainView === "skills" ? "自定义能力" : "项目设置"}</span></nav>} /></div>
+        <div className="workspace-global-header min-w-0" style={{ gridColumn: railOpen ? "2 / -1" : "1 / -1", gridRow: 1 }}><ProductHeader actions={!workspaceCardVisible ? workspaceTools : undefined} title={<div className="flex min-w-0 items-center gap-2"><nav aria-label="当前位置" className="flex min-w-0 items-center gap-2"><Link to="/projects" className="shrink-0 text-subtext no-underline hover:text-primary">科研首页</Link><span aria-hidden="true">/</span>{mainView !== "workflows" && <>{readOnly ? <Link to="/cases" className="truncate text-subtext no-underline hover:text-primary">精选案例 · {activeProject.name}</Link> : <Link to="/projects/$projectId" params={{ projectId }} className="truncate text-subtext no-underline hover:text-primary">{activeProject.name}</Link>}<span aria-hidden="true">/</span></>}<span className="shrink-0 text-text">{mainView === "workflows" ? "工作流" : mainView === "chat" ? "研究工作区" : mainView === "skills" ? "自定义能力" : "项目设置"}</span></nav>{mainView === "workflows" && <span ref={setWorkflowNameSlot} className="flex min-w-0 flex-1 items-center gap-2" />}</div>} /></div>
         {projectId && (
           <ChatPanel
             projectId={projectId}
@@ -1856,7 +1859,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             onPreferredAutonomyChange={persistPreferredAutonomy}
           >
             {mainView === "workflows" ? (
-              <Suspense fallback={<div role="status" className="flex h-full items-center justify-center"><Spinner /></div>}><WorkflowStudio projectId={projectId} sessionId={researchSessionId} onOpenSession={(id) => onActiveSessionChange(id === "new" ? null : id)} /></Suspense>
+              <Suspense fallback={<div role="status" className="flex h-full items-center justify-center"><Spinner /></div>}><WorkflowNameSlot.Provider value={workflowNameSlot}><WorkflowStudio projectId={projectId} sessionId={researchSessionId} onOpenSession={(id) => onActiveSessionChange(id === "new" ? null : id)} /></WorkflowNameSlot.Provider></Suspense>
             ) : mainView === "skills" ? (
               <SkillsTab />
             ) : mainView !== "chat" ? (
