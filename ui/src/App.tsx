@@ -109,7 +109,7 @@ import {
   type ChatMessage,
   type UiState,
 } from "./api";
-import { ResearchPanel } from "./components/ResearchPanel";
+const ResearchPanel = lazy(() => import("./components/ResearchPanel").then(module => ({ default: module.ResearchPanel })));
 const MaterialWorkspace = lazy(() => import("./components/MaterialWorkspace"));
 const WorkflowStudio = lazy(() => import("./workflow/WorkflowStudio").then(module => ({ default: module.WorkflowStudio })));
 const WorkflowPane = lazy(() => import("./workflow/WorkflowPane").then(module => ({ default: module.WorkflowPane })));
@@ -1965,7 +1965,7 @@ export default function App({ runtime, projectId, pane }: { runtime: RuntimeInfo
             ) : rightTab === "materials" ? (
               <TabBody><Suspense fallback={<p role="status" className="p-4 text-sm text-subtext">正在打开材料…</p>}><MaterialWorkspace key={`${activeProject.id}:${activeSessionId}:${materialTarget?.nonce ?? 0}`} sessionId={activeSessionId} requestedId={materialTarget?.session === activeSessionId ? materialTarget.id : undefined} /></Suspense></TabBody>
             ) : rightTab === "research" ? (
-              <TabBody><ResearchPanel key={researchSessionId ?? "preview"} placement="pane" sessionId={researchSessionId} disabled={false} onOpenSession={(id) => onActiveSessionChange(id, { preservePane: true })} /></TabBody>
+              <TabBody><Suspense fallback={<p role="status" className="p-4 text-sm text-subtext">正在打开研究确认…</p>}><ResearchPanel key={researchSessionId ?? "preview"} placement="pane" sessionId={researchSessionId} disabled={false} onOpenSession={(id) => onActiveSessionChange(id, { preservePane: true })} /></Suspense></TabBody>
             ) : rightTab === "workflow" ? (
               <TabBody><Suspense fallback={<p role="status" className="p-4 text-sm text-subtext">正在打开工作流…</p>}><WorkflowPane key={researchSessionId ?? "preview"} sessionId={researchSessionId} onOpenSession={(id) => onActiveSessionChange(id, { preservePane: true })} onOpenStudio={() => selectMainView("workflows")} /></Suspense></TabBody>
             ) : rightTab === "artifacts" ? (

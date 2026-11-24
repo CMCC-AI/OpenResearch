@@ -128,7 +128,10 @@ export function quotaModelSettings(file, { fetcher = fetch } = {}) {
         ? state.document.opencodeFreeModels
         : [],
       ...(Array.isArray(state.document.availableOpenCodeFreeModels)
-        ? { availableOpenCodeFreeModels: state.document.availableOpenCodeFreeModels }
+        ? {
+            availableOpenCodeFreeModels:
+              state.document.availableOpenCodeFreeModels,
+          }
         : {}),
       models: state.document.models.map((model) => ({
         ...Object.fromEntries(
@@ -435,7 +438,10 @@ export function quotaModelSettings(file, { fetcher = fetch } = {}) {
       if (error instanceof HttpError) throw error;
       if (["TimeoutError", "AbortError"].includes(error?.name))
         throw new HttpError(504, "探测 OpenCode 官方模型超时，请稍后重试");
-      throw new HttpError(502, "获取 OpenCode 官方模型目录失败，请检查网络连接");
+      throw new HttpError(
+        502,
+        "获取 OpenCode 官方模型目录失败，请检查网络连接",
+      );
     }
     const rawModels = payload?.opencode?.models;
     check(

@@ -344,9 +344,16 @@ test("quota settings allow connecting a first provider from an empty catalog bef
     });
     assert.deepEqual(state.opencodeFreeModels, ["big-pickle", "beam-free"]);
 
-    const { loadQuotaDocument, publicModelConfig } = await import("../src/model-gateway.mjs");
+    const { loadQuotaDocument, publicModelConfig } = await import(
+      "../src/model-gateway.mjs"
+    );
     const doc = await loadQuotaDocument(file);
-    const publicCfg = publicModelConfig(doc.models, "", "runner-secret", doc.opencodeFreeModels);
+    const publicCfg = publicModelConfig(
+      doc.models,
+      "",
+      "runner-secret",
+      doc.opencodeFreeModels,
+    );
     assert.deepEqual(publicCfg.enabled_providers, ["deepseek", "opencode"]);
     assert.deepEqual(publicCfg.provider.opencode, {
       whitelist: ["big-pickle", "beam-free"],

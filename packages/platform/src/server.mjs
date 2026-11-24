@@ -605,11 +605,11 @@ export async function createPlatform(
                 : "opencode.config.update",
           config.tokenQuota.enabled
             ? settings.id ||
-              settings.providerId ||
-              (settings.action === "setOpenCodeFreeModels" ||
-              settings.action === "probeOpenCodeFreeModels"
-                ? "opencode"
-                : undefined)
+                settings.providerId ||
+                (settings.action === "setOpenCodeFreeModels" ||
+                settings.action === "probeOpenCodeFreeModels"
+                  ? "opencode"
+                  : undefined)
             : settings.providerId,
         );
       });
