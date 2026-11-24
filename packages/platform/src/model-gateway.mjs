@@ -536,7 +536,12 @@ export function modelGateway({
           redirect: "error",
           headers,
           body: JSON.stringify(payload),
-          signal: AbortSignal.any([abort.signal, AbortSignal.timeout(180000)]),
+          signal: AbortSignal.any([
+            abort.signal,
+            AbortSignal.timeout(
+              Number(process.env.MODEL_GATEWAY_TIMEOUT_MS) || 960000,
+            ),
+          ]),
         },
       ).catch(async (error) => {
         // These errors prove that no upstream connection was established.
