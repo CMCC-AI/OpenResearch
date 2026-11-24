@@ -626,9 +626,9 @@ export function validateWorkflowDraft(draft: WorkflowDraftInput, agents: Workflo
       if (task.route || task.forEach || task.waitStep || task.routeBranch) errors.push(`${label} 是人工任务，不支持分流、逐项、等待或分支配置`);
     } else if (task.kind === "experiment") {
       // 实验节点的规则：无专家、声明运行产物；契约绑定与 G2/G3 授权沿用运行流程。
-      if (task.role) errors.push(`${label} 是实验节点，不选择专家：运行由引擎按已批准的契约提交`);
-      if (!task.outputs.length || task.outputs.length > 30) errors.push(`${label} 需要 1–30 个产物路径：运行结束后按它们验收`);
-      if (task.requiresApproval) errors.push(`${label} 是实验节点，不需要完成后确认：G2/G3 批准即授权运行`);
+      if (task.role) errors.push(`${label} 是实验节点，不选择专家：实验由系统直接运行`);
+      if (!task.outputs.length || task.outputs.length > 30) errors.push(`${label} 需要 1–30 个产物路径：跑完后逐个检查是否生成`);
+      if (task.requiresApproval) errors.push(`${label} 是实验节点，不需要完成后确认：开跑前你已确认过，跑完不再停一次`);
       if (task.gateDownstream || (task.maxRework ?? 0) > 0) errors.push(`${label} 是实验节点，不支持结论把关或返工`);
       if (task.route || task.forEach || task.waitStep || task.routeBranch) errors.push(`${label} 是实验节点，不支持分流、逐项、等待或分支配置`);
     } else if (task.kind === "wait") {

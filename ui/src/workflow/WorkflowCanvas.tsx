@@ -219,7 +219,7 @@ function ExperimentNodeCard({ data, selected }: NodeProps<ExperimentNode>) {
     state={data.state}
     footer={<TaskNodeMeta output={<><FileText size={12} aria-hidden="true" />{data.outputCount} 个产物</>} dependencyCount={data.dependencyCount} />}
   >
-    <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">绑定契约并获 G2/G3 批准后自动运行，按声明产物验收</p>
+    <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">你确认后系统自动开跑，跑完检查产物文件</p>
   </TaskNodeCard>;
 }
 
@@ -757,6 +757,10 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
     <aside className="max-h-80 min-w-0 overflow-y-auto border-b border-border p-3 xl:max-h-none xl:min-h-0 xl:border-b-0 xl:border-e">
       <h2 className="m-0 mb-1 text-base font-normal">节点库</h2>
       <p className="mt-0 text-sm leading-5 text-subtext">把专家和系统环节拖进画布组合任务；点击条目查看说明。</p>
+      <section aria-label="阶段分组" className="mb-4">
+        <h3 className="mb-1 text-sm font-normal text-subtext">阶段分组</h3>
+        <button type="button" title="画布放不下时，用分组框把节点圈成几个阶段，只作展示，不影响执行" className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-start text-sm hover:bg-surface" onClick={addFrame}><Frame size={15} className="shrink-0 text-subtext" />添加阶段分组<Plus size={14} className="ms-auto shrink-0 text-subtext" /></button>
+      </section>
       <section aria-label="交付" className="mb-4">
         <h3 className="mb-1 text-sm font-normal text-subtext">交付</h3>
         <button type="button" draggable title="拖拽「研究交付」到画布放置；点击查看说明" onDragStart={dragSystem(systemNodeIds.output)} aria-pressed={selected === systemNodeIds.output} className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-start text-sm hover:bg-surface" onClick={() => selectSystem(systemNodeIds.output)}><PackageCheck size={15} className="shrink-0 text-subtext" />研究交付<span className="ms-auto text-xs text-subtext">系统</span></button>
@@ -786,7 +790,7 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
       </section>
       <section aria-label="实验" className="mb-4">
         <h3 className="mb-1 text-sm font-normal text-subtext">实验</h3>
-        <Tooltip content="提交后用 orx research prepare-run 绑定运行契约；批准 G2/G3 后引擎自动运行并按声明产物验收" interactive className="w-full">
+        <Tooltip content="系统直接跑实验，不派专家；开跑前先请你在聊天里确认，同意后自动运行，跑完检查产物文件是否齐全" interactive className="w-full">
           <div draggable onDragStart={(event) => { event.dataTransfer.setData(EXPERIMENT_MIME, "experiment"); event.dataTransfer.effectAllowed = "copy"; }} className="flex min-h-11 w-full cursor-grab items-center gap-2 rounded-md border border-transparent px-2 text-start hover:border-border hover:bg-surface active:cursor-grabbing">
             <FlaskConical size={15} className="shrink-0 text-subtext" aria-hidden="true" />
             <strong className="min-w-0 flex-1 truncate text-sm font-normal text-text">实验节点</strong>
@@ -801,10 +805,6 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
             <strong className="min-w-0 flex-1 truncate text-sm font-normal text-text">等你完成的一项</strong>
           </div>
         </Tooltip>
-      </section>
-      <section aria-label="阶段分组" className="mb-4">
-        <h3 className="mb-1 text-sm font-normal text-subtext">阶段分组</h3>
-        <button type="button" title="画布放不下时，用分组框把节点圈成几个阶段，只作展示，不影响执行" className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-start text-sm hover:bg-surface" onClick={addFrame}><Frame size={15} className="shrink-0 text-subtext" />添加阶段分组<Plus size={14} className="ms-auto shrink-0 text-subtext" /></button>
       </section>
       <section aria-label="专家任务">
       <h3 className="mb-1 text-sm font-normal text-subtext">专家任务</h3>
@@ -932,10 +932,10 @@ export function WorkflowCanvas({ draft, agents, onChange }: {
         </select></label>
         <p className="m-0 rounded-md border border-border bg-surface p-3 text-xs leading-5 text-subtext">首批为串行执行：一项完成并验收后自动开始下一项。成功项的产物会聚合起来，供下游任务读取与核验。</p>
       </div> : selectedTask?.kind === "experiment" ? <div className="flex flex-col gap-3">
-        <div className="flex items-start justify-between gap-2"><div><h2 className="m-0 text-base font-normal">{selectedTask.brief || "实验节点"}</h2><p className="mb-0 mt-1 text-sm text-subtext">G2/G3 批准后自动运行，无专家会话</p></div><Button size="small" variant="danger" aria-label="删除实验节点" onClick={() => deleteTask(selectedTask.id)}><Trash2 size={14} /></Button></div>
+        <div className="flex items-start justify-between gap-2"><div><h2 className="m-0 text-base font-normal">{selectedTask.brief || "实验节点"}</h2><p className="mb-0 mt-1 text-sm text-subtext">不派专家，由系统直接运行实验</p></div><Button size="small" variant="danger" aria-label="删除实验节点" onClick={() => deleteTask(selectedTask.id)}><Trash2 size={14} /></Button></div>
         <label className="flex flex-col gap-1.5 text-sm">名称<input className="h-8 rounded-md border border-border bg-background px-2 text-sm text-text" value={selectedTask.brief} maxLength={120} onChange={(event) => updateTask(selectedTask.id, { brief: event.target.value })} /></label>
-        <label className="flex flex-col gap-1.5 text-sm">声明产物（每行一个，运行结束后按它们验收）<textarea className="min-h-20 resize-y rounded-md border border-border bg-background p-2.5 font-mono text-sm text-text outline-none focus:border-text" value={selectedTask.outputs.join("\n")} maxLength={2000} onChange={(event) => updateTask(selectedTask.id, { outputs: event.target.value.split("\n") })} /></label>
-        <p className="m-0 rounded-md border border-border bg-surface p-3 text-xs leading-5 text-subtext">提交后先用 <code>orx research prepare-run {selectedTask.id} &lt;实验ID&gt;</code> 绑定运行契约并申请 G2/G3；批准后引擎自动提交运行，运行结束按声明产物验收。运行记录在任务详情里可见。</p>
+        <label className="flex flex-col gap-1.5 text-sm">声明产物（每行一个，跑完后逐个检查是否生成）<textarea className="min-h-20 resize-y rounded-md border border-border bg-background p-2.5 font-mono text-sm text-text outline-none focus:border-text" value={selectedTask.outputs.join("\n")} maxLength={2000} onChange={(event) => updateTask(selectedTask.id, { outputs: event.target.value.split("\n") })} /></label>
+        <p className="m-0 rounded-md border border-border bg-surface p-3 text-xs leading-5 text-subtext">前置任务完成后，AI 会把要运行的代码版本、命令和算力整理好，请你在聊天里确认；同意后系统自动开跑。跑完逐个检查上面列的产物文件：运行失败、文件缺失或为空，都算这一步失败，后面的任务不会开始。运行记录在任务详情里可见。</p>
       </div> : selectedTask?.kind === "wait" ? <div className="flex flex-col gap-3">
         <div className="flex items-start justify-between gap-2"><div><h2 className="m-0 text-base font-normal">{selectedTask.brief || "事件等待"}</h2><p className="mb-0 mt-1 text-sm text-subtext">等文件出现再继续，超时转失败等你处理</p></div><Button size="small" variant="danger" aria-label="删除等待节点" onClick={() => deleteTask(selectedTask.id)}><Trash2 size={14} /></Button></div>
         <label className="flex flex-col gap-1.5 text-sm">名称<input className="h-8 rounded-md border border-border bg-background px-2 text-sm text-text" value={selectedTask.brief} maxLength={120} onChange={(event) => updateTask(selectedTask.id, { brief: event.target.value })} /></label>

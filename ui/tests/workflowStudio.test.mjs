@@ -271,7 +271,7 @@ test("experiment nodes declare outputs and refuse approval overlays", () => {
   const noOutputs = { ...draft, tasks: draft.tasks.map((task) => task.kind === "experiment" ? { ...task, outputs: [] } : task) };
   assert.ok(validateWorkflowDraft(noOutputs, agentsFor(noOutputs)).some((message) => message.includes("1–30 个产物路径")));
   const withApproval = { ...draft, tasks: draft.tasks.map((task) => task.kind === "experiment" ? { ...task, requiresApproval: true } : task) };
-  assert.ok(validateWorkflowDraft(withApproval, agentsFor(withApproval)).some((message) => message.includes("G2/G3 批准即授权")));
+  assert.ok(validateWorkflowDraft(withApproval, agentsFor(withApproval)).some((message) => message.includes("开跑前你已确认过")));
 });
 
 test("wait nodes need a safe source path and bounded timeout", () => {
