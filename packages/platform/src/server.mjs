@@ -704,6 +704,14 @@ export async function createPlatform(
             : settings.providerId,
         );
       });
+      if (
+        config.tokenQuota.enabled &&
+        !["probeModels", "probeOpenCodeFreeModels"].includes(settings.action)
+      ) {
+        for (const tunnel of tunnels.values()) {
+          tunnel.notify({ type: "sync-model-config" });
+        }
+      }
       return json(res, saved);
     }
     await accounts.admin(req, res, path, s);
@@ -1658,6 +1666,9 @@ export async function createPlatform(
         wss.handleUpgrade(req, socket, head, (ws) => {
           const tunnel = new Tunnel(ws);
           tunnels.set(runner.workspace_id, tunnel);
+          if (config.tokenQuota.enabled) {
+            tunnel.notify({ type: "sync-model-config" });
+          }
           ws.on("pong", () => {
             ws.alive = true;
           });

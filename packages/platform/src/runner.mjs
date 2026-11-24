@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { acquireRunnerLock } from "./runner-lock.mjs";
+import { prepareQuotaExecutor } from "./quota-executor-config.mjs";
 import { resolve } from "node:path";
 import { WebSocket } from "ws";
 import { check, permitted } from "./security.mjs";
@@ -61,12 +62,52 @@ async function responseChunk(
   });
 }
 
+export function createModelConfigSyncer({
+  home,
+  base,
+  secret,
+  upstream,
+  prepare = prepareQuotaExecutor,
+  fetcher = fetch,
+}) {
+  let running = false;
+  let pending = false;
+  return async function sync() {
+    if (running) {
+      pending = true;
+      return;
+    }
+    running = true;
+    try {
+      do {
+        pending = false;
+        try {
+          await prepare({ home, base, secret });
+          await fetcher(
+            new URL("/api/harnesses?refresh=1&harness=opencode", upstream),
+            { signal: AbortSignal.timeout(15000) },
+          ).catch(() => {});
+          console.log("Synced quota model config");
+        } catch (error) {
+          console.error(
+            "Model config sync failed",
+            error?.code || error?.name || "error",
+          );
+        }
+      } while (pending);
+    } finally {
+      running = false;
+    }
+  };
+}
+
 // No public listener: this connector only reaches a fixed local OpenResearch instance.
 export function connectRunner({
   platform,
   connect = platform,
   credential,
   upstream,
+  syncModelConfig,
 }) {
   const publicOrigin = new URL(platform);
   const remote = new URL("/_platform/runner", connect);
@@ -111,6 +152,10 @@ export function connectRunner({
     let msg;
     try {
       msg = JSON.parse(data.toString());
+      if (msg.type === "sync-model-config") {
+        void syncModelConfig?.();
+        return;
+      }
       check(typeof msg.id === "string");
       if (msg.type === "cancel") return cancel(msg.id);
       if (msg.type === "http-ack") {
@@ -281,9 +326,24 @@ async function main() {
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
+  const syncModelConfig =
+    process.env.TOKEN_QUOTAS_ENABLED === "true" && process.env.HOME
+      ? createModelConfigSyncer({
+          home: process.env.HOME,
+          base: connect,
+          secret: credential,
+          upstream,
+        })
+      : undefined;
   let failures = 0;
   while (!stopping) {
-    socket = connectRunner({ platform, connect, credential, upstream });
+    socket = connectRunner({
+      platform,
+      connect,
+      credential,
+      upstream,
+      syncModelConfig,
+    });
     socket.on("open", () => {
       failures = 0;
       console.log("Executor connected");
