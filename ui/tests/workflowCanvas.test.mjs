@@ -121,17 +121,19 @@ test("a blank draft keeps the pipeline library visible while the canvas stays em
   assert.deepEqual(flow.edges, []);
   const labels = () => h.render().map(node => JSON.stringify(node.props.children ?? "")).join("\n");
   let text = labels();
-  assert.ok(text.includes("研究交付") && text.includes("G1 · 研究范围确认") && text.includes("G4 · 交付确认"));
+  assert.ok(text.includes("阶段分组") && text.includes("G1 · 研究范围确认") && text.includes("G4 · 交付确认"));
+  // 研究交付是运行时结果出口，不再是可拖入的节点库条目。
+  assert.ok(!text.includes("研究交付"));
   assert.ok(text.includes("从左侧把专家拖到画布上，加入第一个专家"));
   assert.ok(text.includes("专家任务"));
   // 已下线的画布连线提示不再出现。
   assert.ok(!text.includes("点选实线按 Delete 删除"));
   assert.ok(!text.includes("约束线自动生成"));
   // 空画布上从节点库选中固定系统节点：画布无节点可高亮，属性面板仍给出静态说明。
-  h.render().find(node => node.type === "button" && JSON.stringify(node.props.children).includes("研究交付")).props.onClick();
+  h.render().find(node => node.type === "button" && JSON.stringify(node.props.children).includes("G1 · 研究范围确认")).props.onClick();
   text = labels();
   assert.ok(text.includes("系统环节 · 运行时执行"));
-  assert.ok(text.includes("交付确认后在当前对话查看研究成果"));
+  assert.ok(text.includes("主理人批准当前计划后启动专家任务"));
 });
 
 test("agent entries are drag sources; dropping on the canvas adds the dragged agent", () => {
