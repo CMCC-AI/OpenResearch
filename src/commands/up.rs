@@ -521,6 +521,10 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
             "/api/workflow/agents/{id}",
             axum::routing::put(workflow::update_agent).delete(workflow::delete_agent),
         )
+        .route(
+            "/api/workflow/agents/generate",
+            post(workflow::generate_agent_draft),
+        )
         .route("/api/workflow/skills", get(workflow::skills))
         .route(
             "/api/mcp/servers",

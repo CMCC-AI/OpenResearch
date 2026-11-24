@@ -143,6 +143,28 @@ function emitDataDirMove(ev: DataDirMoveEvent) {
   dataDirMoveListeners.forEach((fn) => fn(ev));
 }
 
+// AI 生成专家草稿的阶段事件：生成要等一两分钟，右侧过程清单按它推进，
+// 每个阶段都对应后端真实动作（整理清单 → 选引擎 → 模型撰写 → 校验草稿）。
+export interface AgentDraftProgressEvent {
+  /** 发起生成时的请求标识：只有匹配的标签页推进自己的清单。 */
+  requestId: string;
+  stage: "inventory" | "engine" | "writing" | "reviewing";
+}
+
+type AgentDraftProgressListener = (ev: AgentDraftProgressEvent) => void;
+const agentDraftProgressListeners = new Set<AgentDraftProgressListener>();
+
+export function onAgentDraftProgress(fn: AgentDraftProgressListener): () => void {
+  agentDraftProgressListeners.add(fn);
+  return () => {
+    agentDraftProgressListeners.delete(fn);
+  };
+}
+
+function emitAgentDraftProgress(ev: AgentDraftProgressEvent) {
+  agentDraftProgressListeners.forEach((fn) => fn(ev));
+}
+
 // Overleaf live-sync events fan out the same way: the .tex tab that opened the
 // channel is the one that reloads on a pull or shows the connection state.
 export type OverleafEvent =
@@ -393,6 +415,10 @@ export function useOrxEventStream(handlers: OrxEventHandlers) {
       es.addEventListener("datadir.move.error", (e) => {
         const d = parse<{ error: string }>(e as MessageEvent);
         if (d) emitDataDirMove({ type: "error", error: d.error });
+      });
+      es.addEventListener("agentDraft.progress", (e) => {
+        const d = parse<{ requestId?: string; stage?: string }>(e as MessageEvent);
+        if (d?.requestId && d.stage) emitAgentDraftProgress({ requestId: d.requestId, stage: d.stage as AgentDraftProgressEvent["stage"] });
       });
       es.addEventListener("update.status", (e) => {
         const d = parse<UpdateStatus>(e as MessageEvent);

@@ -19,6 +19,7 @@ const mocks = {
     createWorkflowAgent: async (input) => { calls.push(["createWorkflowAgent", input]); return { id: "agent-new", version: 1, builtIn: false, ...input }; },
     updateWorkflowAgent: async (id, input) => { calls.push(["updateWorkflowAgent", id, input]); return { id, version: 2, builtIn: false, ...input }; },
     deleteWorkflowAgent: async () => ({ ok: true }),
+    generateWorkflowAgentDraft: async (body) => { calls.push(["generateWorkflowAgentDraft", body]); return { name: "文献计量分析专家", description: "跑文献计量分析。", prompt: "你是文献计量专家。", mcpServers: [], userSkills: [] }; },
     listMcpServers: async () => servers,
     importMcpConfig: async (text) => { calls.push(["importMcpConfig", text]); return { created: 1, updated: 1, names: ["codegraph", "papers"], errors: [] }; },
     updateMcpServer: async (id, input) => { calls.push(["updateMcpServer", id, input]); return { id, ...input }; },
@@ -34,8 +35,12 @@ const mocks = {
     Badge: ({ children }) => React.createElement("span", { "data-badge": Array.isArray(children) ? children.join("") : String(children) }, children),
     Button: ({ children, ...props }) => React.createElement("button", props, children),
     Input: (props) => React.createElement("input", props),
+    Spinner: (props) => React.createElement("span", { "data-spinner": "true", ...props }),
     showAlert: () => {},
   },
+  "../locale": { useLocale: () => "zh-CN" },
+  "../events": { onAgentDraftProgress: () => () => {} },
+  "../clientTurnId": { createClientTurnId: () => "ct_test-request" },
   "../components/SkillsTab": { fileToBase64: async () => "ZmFrZQ==" },
   "./conversation": { skillConversationRequest: () => "draft", stageComposerHandoff: () => {} },
   "../composerStash": { EMPTY_COMPOSER_STASH: { draft: "", attachments: [], annotations: [] }, stageComposerDraft: () => {} },
@@ -169,4 +174,54 @@ test("custom agents attach MCP servers; the create form lists every server as a 
   assert.match(withSkills, /未勾选的技能不生效/);
   const noSkills = renderToStaticMarkup(React.createElement(exported.AgentLibrary, { agents, mcpServers: servers, userSkills: [], onChanged: async () => {} }));
   assert.match(noSkills, /还没有上传技能/);
+});
+
+test("AI 帮我建 entry offers one-sentence agent drafting", () => {
+  const exported = loadComponent("../src/workflow/AgentLibrary.tsx");
+  const agents = [
+    { id: "as-asset-auditor", name: "科研资产盘点专家", description: "", prompt: "", version: 0, builtIn: true, createdAt: 0, updatedAt: 0, mcpServers: [], skills: [] },
+  ];
+  const html = renderToStaticMarkup(React.createElement(exported.AgentLibrary, { agents, mcpServers: servers, onChanged: async () => {} }));
+  assert.match(html, /新建 Agent/);
+  assert.match(html, /AI 帮我建/);
+  // 弹层默认收起：一句话输入与生成提示不随列表常驻渲染。
+  assert.doesNotMatch(html, /用一句话描述这个专家/);
+  assert.doesNotMatch(html, /生成草稿/);
+});
+
+test("AgentDraftProgress walks real backend stages and times the writing step", () => {
+  const { AgentDraftProgress } = loadComponent("../src/workflow/AgentLibrary.tsx");
+  const html = renderToStaticMarkup(React.createElement(AgentDraftProgress, { stage: "writing", startedAt: 0, now: 37000 }));
+  // 四个阶段全部可见，标题与说明讲清“生成后填进表单”。
+  assert.match(html, /正在创建这个专家/);
+  assert.match(html, /整理可用的专家、工具和技能/);
+  assert.match(html, /启动生成引擎/);
+  assert.match(html, /AI 正在撰写专家设定/);
+  assert.match(html, /检查并整理草稿/);
+  assert.match(html, /自动填进这份表单/);
+  // 撰写中就地计时；非撰写阶段不显示等待秒数。
+  assert.match(html, /已等待 37 秒/);
+  const early = renderToStaticMarkup(React.createElement(AgentDraftProgress, { stage: "inventory", startedAt: 0, now: 8000 }));
+  assert.doesNotMatch(early, /已等待/);
+});
+
+test("agent draft typing reveal walks name → description → prompt by characters", () => {
+  const { agentDraftTypingValue, agentDraftTypingTotal } = loadComponent("../src/workflow/AgentLibrary.tsx");
+  const target = { name: "文献员", description: "跑计量", prompt: "你是文献计量专家。", mcpServers: [], userSkills: [] };
+  assert.equal(agentDraftTypingTotal(target), 15);
+  // 依次接力：名称展示完才轮到能力说明，最后是提示词。
+  assert.equal(agentDraftTypingValue(target, "name", 1), "文");
+  assert.equal(agentDraftTypingValue(target, "name", 2), "文献");
+  assert.equal(agentDraftTypingValue(target, "name", 3), "文献员");
+  assert.equal(agentDraftTypingValue(target, "description", 3), "");
+  assert.equal(agentDraftTypingValue(target, "description", 4), "跑");
+  assert.equal(agentDraftTypingValue(target, "prompt", 6), "");
+  assert.equal(agentDraftTypingValue(target, "prompt", 7), "你");
+  assert.equal(agentDraftTypingValue(target, "prompt", 13), "你是文献计量专");
+  // 超出总量不会多吐字。
+  assert.equal(agentDraftTypingValue(target, "prompt", 99), "你是文献计量专家。");
+  // 代理对不被拆散：表情字符要么不出现，要么完整出现。
+  const emoji = { name: "📊员", description: "", prompt: "", mcpServers: [], userSkills: [] };
+  const half = agentDraftTypingValue(emoji, "name", 1);
+  assert.ok(half === "" || half === "📊");
 });

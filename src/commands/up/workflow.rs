@@ -172,6 +172,46 @@ pub(super) struct DraftGenerationRequest {
     pub intent: String,
     #[serde(default)]
     pub locale: String,
+    /// 前端生成的请求标识：阶段事件原样回传，多标签页只推进自己的过程清单。
+    #[serde(default)]
+    pub request_id: String,
+}
+
+/// 一句话生成自定义 Agent 草稿：一次 headless 模型调用（约 180s 预算），
+/// 产出直接可进创建接口的 AgentInput；引用只来自本机库存，内置提示词不出库。
+/// 等待期借 `/api/events` 广播 `agentDraft.progress` 阶段事件（datadir.move 同款
+/// 管道），前端右侧按真实动作推进过程清单。
+pub(super) async fn generate_agent_draft(
+    State(state): State<AppState>,
+    Json(req): Json<DraftGenerationRequest>,
+) -> ApiResult {
+    let request_id = req.request_id.trim().to_string();
+    let (intent, locale) = draft_intent(req)?;
+    let chat = state.chat.clone();
+    let progress = move |stage: local::agent_draft::DraftStage| {
+        chat.emit_event(
+            "agentDraft.progress",
+            json!({ "requestId": request_id, "stage": stage.as_str() }),
+        );
+    };
+    let inventories =
+        tokio::task::spawn_blocking(move || local::agent_draft::inventories(&Store::open()?))
+            .await
+            .map_err(|e| ApiError::from(anyhow!("agent draft task failed: {e}")))?
+            .map_err(ApiError::from)?;
+    progress(local::agent_draft::DraftStage::Inventory);
+    let agent = local::agent_draft::generate(&intent, &locale, &inventories, progress)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(json!({
+        "agent": {
+            "name": agent.name,
+            "description": agent.description,
+            "prompt": agent.prompt,
+            "mcpServers": agent.mcp_servers,
+            "userSkills": agent.user_skills,
+        }
+    })))
 }
 
 /// 一句话生成整张工作流草稿：同样一次 headless 模型调用；产出只含 agent 任务，

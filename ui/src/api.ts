@@ -2411,6 +2411,10 @@ export const updateWorkflowAgent = (id: string, input: import("./workflow/model"
   put<{ agent: import("./workflow/model").WorkflowAgent }>(`/api/workflow/agents/${encodeURIComponent(id)}`, input).then((result) => result.agent);
 export const deleteWorkflowAgent = (id: string) =>
   writeResponse(`/api/workflow/agents/${encodeURIComponent(id)}`, { method: "DELETE" }).then((response) => json<{ ok: boolean }>(response));
+/** Slow: one headless model call over the local agent/tool inventories (~180s budget).
+ *  等待期借 /api/events 的 agentDraft.progress 阶段事件展示真实进度；requestId 让发起页只推进自己的过程清单。 */
+export const generateWorkflowAgentDraft = (body: { intent: string; locale: string; requestId?: string }) =>
+  post<{ agent: import("./workflow/model").WorkflowAgentInput }>("/api/workflow/agents/generate", body).then((result) => result.agent);
 // MCP 服务登记与能力库技能视图，与 Agents 平行的工作流资源。
 export const listMcpServers = (signal?: AbortSignal) =>
   get<{ servers: import("./workflow/model").McpServer[] }>("/api/mcp/servers", signal).then((result) => result.servers);
