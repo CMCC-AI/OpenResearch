@@ -53,6 +53,13 @@ export interface CatalogProvider {
   models: CatalogModelPreset[];
 }
 
+export interface DiscoveredModelMeta {
+  name?: string;
+  contextTokens?: number;
+  maxOutputTokens?: number;
+  opencode?: Record<string, unknown>;
+}
+
 export interface SessionProviderState {
   id: string;
   name: string;
@@ -60,6 +67,7 @@ export interface SessionProviderState {
   apiKey: string;
   hasApiKey: boolean;
   discoveredModels: string[];
+  discoveredMeta?: Record<string, DiscoveredModelMeta>;
 }
 
 export interface ResolvedProvider {
@@ -208,9 +216,14 @@ export function formatTokenCount(tokens: number): string {
 export function capabilityLabels(opencode?: Record<string, unknown>): string[] {
   if (!opencode) return [];
   const labels: string[] = [];
-  if (opencode.tool_call) labels.push("工具");
+  const mods = (opencode.modalities as { input?: unknown } | undefined)?.input;
+  if (opencode.attachment || (Array.isArray(mods) && mods.includes("image"))) {
+    labels.push("识图多模态");
+  } else if (opencode.attachment === false || (Array.isArray(mods) && mods.length > 0)) {
+    labels.push("纯文本");
+  }
   if (opencode.reasoning) labels.push("思考");
-  if (opencode.attachment) labels.push("多模态");
+  if (opencode.tool_call) labels.push("工具");
   return labels;
 }
 
@@ -316,20 +329,21 @@ export function resolveConnectedProviders(
       const trimmed = modelId.trim();
       if (!trimmed || seenModelIds.has(trimmed)) continue;
       seenModelIds.add(trimmed);
+      const meta = session?.discoveredMeta?.[trimmed];
       models.push({
         key: `${id}::${trimmed}`,
         providerId: id,
         model: trimmed,
-        name: trimmed,
+        name: meta?.name || trimmed,
         baseUrl,
-        contextTokens: DEFAULT_CONTEXT_TOKENS,
-        maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+        contextTokens: meta?.contextTokens || DEFAULT_CONTEXT_TOKENS,
+        maxOutputTokens: meta?.maxOutputTokens || DEFAULT_MAX_OUTPUT_TOKENS,
         outputParameter: "max_tokens",
-        opencode: { tool_call: true },
+        opencode: meta?.opencode || { tool_call: true },
         enabled: false,
         isDefault: false,
         source: "discovered",
-        needsLimitConfirmation: true,
+        needsLimitConfirmation: !meta?.contextTokens,
       });
     }
 

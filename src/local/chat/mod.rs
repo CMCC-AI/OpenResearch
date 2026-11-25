@@ -3026,7 +3026,7 @@ impl TurnGuard {
         let store = self.store.take();
         let drain_queued_on_release = self.drain_queued_on_release;
         Some(tokio::spawn(async move {
-            let (removed, drain_queued) = {
+            let drain_queued = {
                 let _cleanup = host.cleanup_lock(&session_id).lock_owned().await;
                 let owns_slot = matches!(host.turns.lock().await.get(&session_id), Some(TurnState::Reserved { reservation_id: current, .. }) if current == &reservation_id);
                 let store = if let Some(store) = store {
@@ -3073,6 +3073,11 @@ impl TurnGuard {
                         .is_some_and(|queue| !queue.is_empty());
                 if drain_queued {
                     turns.insert(session_id.clone(), TurnState::Draining);
+                    // Publish busy before unlocking so a successor turn cannot overtake it.
+                    host.emit(
+                        "chat.busy",
+                        json!({ "sessionId": &session_id, "busy": true }),
+                    );
                 } else {
                     let release = host.release_finished_turn_with_store(
                         &mut turns,
@@ -3087,16 +3092,10 @@ impl TurnGuard {
                     let _ = release.await;
                     return;
                 }
-                (true, drain_queued)
+                drain_queued
             };
-            if removed {
-                host.emit(
-                    "chat.busy",
-                    json!({ "sessionId": &session_id, "busy": drain_queued }),
-                );
-                if drain_queued {
-                    host.drain_queue(&session_id).await;
-                }
+            if drain_queued {
+                host.drain_queue(&session_id).await;
             }
         }))
     }
@@ -3708,7 +3707,6 @@ impl ChatHost {
                 return;
             }
             turns.remove(&session_id);
-            drop(turns);
             if let Some(session) = session {
                 host.emit(
                     "chat.session",
@@ -3719,6 +3717,7 @@ impl ChatHost {
                 "chat.busy",
                 json!({ "sessionId": session_id, "busy": false }),
             );
+            drop(turns);
         })
     }
 
@@ -6591,7 +6590,7 @@ impl ChatHost {
             .await
             .ok()
             .flatten();
-        let (reserved_queue, release) = {
+        let release = {
             let refreshed = self
                 .refresh_persisted_queue_async_with_store(session_id, Store::open)
                 .await
@@ -6623,7 +6622,17 @@ impl ChatHost {
                     .is_some_and(|queue| !queue.is_empty());
             if reserved_queue {
                 turns.insert(session_id.to_string(), TurnState::Draining);
-                (true, None)
+                if let Some(session) = session {
+                    self.emit(
+                        "chat.session",
+                        json!({ "session": session_json(&session, true) }),
+                    );
+                }
+                self.emit(
+                    "chat.busy",
+                    json!({ "sessionId": session_id, "busy": true }),
+                );
+                None
             } else {
                 let release = self.release_finished_turn_with_store(
                     &mut turns,
@@ -6631,23 +6640,12 @@ impl ChatHost {
                     session.take(),
                     Store::open,
                 );
-                (false, Some(release))
+                Some(release)
             }
         };
         if let Some(release) = release {
             let _ = release.await;
-            return;
         }
-        if let Some(session) = session {
-            self.emit(
-                "chat.session",
-                json!({ "session": session_json(&session, reserved_queue) }),
-            );
-        }
-        self.emit(
-            "chat.busy",
-            json!({ "sessionId": session_id, "busy": reserved_queue }),
-        );
     }
 
     async fn finish_interruption(self: &Arc<Self>, session_id: &str) {

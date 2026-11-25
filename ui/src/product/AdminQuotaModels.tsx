@@ -27,6 +27,7 @@ import {
   QUOTA_PROVIDERS,
   resolveConnectedProviders,
   resolveOpenCodeFreeModels,
+  type DiscoveredModelMeta,
   type QuotaModel,
   type QuotaModels,
   type ResolvedProvider,
@@ -271,6 +272,7 @@ export function AdminQuotaModels({ settings, base }: { settings: QuotaModels; ba
     clearFeedback();
     try {
       let discoveredModels: string[] = [];
+      let discoveredMeta: Record<string, DiscoveredModelMeta> = {};
 
       try {
         const result = await caseWrite<QuotaModels | { models?: string[] }>(base, "admin/opencode", {
@@ -292,7 +294,7 @@ export function AdminQuotaModels({ settings, base }: { settings: QuotaModels; ba
       }
 
       try {
-        const probed = await caseWrite<{ models?: string[] }>(base, "admin/opencode", {
+        const probed = await caseWrite<{ models?: string[]; modelMeta?: Record<string, DiscoveredModelMeta> }>(base, "admin/opencode", {
           action: "probeModels",
           providerId: id,
           baseUrl,
@@ -300,6 +302,9 @@ export function AdminQuotaModels({ settings, base }: { settings: QuotaModels; ba
         });
         if (Array.isArray(probed?.models)) {
           discoveredModels = probed.models;
+        }
+        if (probed?.modelMeta && typeof probed.modelMeta === "object") {
+          discoveredMeta = probed.modelMeta;
         }
       } catch {
         // Optional probe endpoint; built-in catalog or manual model ID still works.
@@ -314,6 +319,7 @@ export function AdminQuotaModels({ settings, base }: { settings: QuotaModels; ba
           apiKey: apiKey || prev[id]?.apiKey || "",
           hasApiKey: Boolean(apiKey || connectDraft.hasExistingKey || prev[id]?.hasApiKey),
           discoveredModels: discoveredModels.length > 0 ? discoveredModels : (prev[id]?.discoveredModels || []),
+          discoveredMeta: Object.keys(discoveredMeta).length > 0 ? discoveredMeta : (prev[id]?.discoveredMeta || {}),
         },
       }));
       setExpandedProviders((prev) => ({ ...prev, [id]: true }));
@@ -335,13 +341,14 @@ export function AdminQuotaModels({ settings, base }: { settings: QuotaModels; ba
     setBusy(true);
     clearFeedback();
     try {
-      const probed = await caseWrite<{ models?: string[] }>(base, "admin/opencode", {
+      const probed = await caseWrite<{ models?: string[]; modelMeta?: Record<string, DiscoveredModelMeta> }>(base, "admin/opencode", {
         action: "probeModels",
         providerId: provider.id,
         baseUrl: provider.baseUrl,
         apiKey: provider.sessionApiKey,
       });
       const list = Array.isArray(probed?.models) ? probed.models : [];
+      const meta = probed?.modelMeta && typeof probed.modelMeta === "object" ? probed.modelMeta : {};
       setSessionProviders((prev) => ({
         ...prev,
         [provider.id]: {
@@ -351,6 +358,7 @@ export function AdminQuotaModels({ settings, base }: { settings: QuotaModels; ba
           apiKey: provider.sessionApiKey,
           hasApiKey: provider.hasApiKey,
           discoveredModels: list,
+          discoveredMeta: Object.keys(meta).length > 0 ? meta : (prev[provider.id]?.discoveredMeta || {}),
         },
       }));
       setExpandedProviders((prev) => ({ ...prev, [provider.id]: true }));

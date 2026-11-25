@@ -31,6 +31,7 @@ use crate::{RemoteHostArgs, RemoteHostCommand};
 pub(crate) const CONTROL_PROTOCOL: u32 = 1;
 pub(crate) const HOST_MARKER: &str = "ORX_REMOTE_HOST=";
 pub(crate) const ATTACHED_MARKER: &str = "ORX_REMOTE_ATTACHED=1";
+pub(crate) const HOST_NOT_RESPONDING: &str = "The persistent OpenResearch host is not responding.";
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 const START_TIMEOUT: Duration = Duration::from_secs(60);
@@ -473,7 +474,8 @@ async fn stop_preview(chat: &ChatHost, auth: &RemoteAuth) -> StopPreview {
         active_turn_count: chat.busy_sessions().await.len(),
         queued_message_count: chat.queued_count(),
         pending_permission_count: chat.pending_permission_count(),
-        active_run_count: Store::open()
+        // Read-only: opening for writing queues behind every chat writer, past the control timeout.
+        active_run_count: Store::open_read_only(crate::store::data_dir())
             .and_then(|store| store.count_active_runs())
             .unwrap_or(0),
         attachment_count: auth.attachment_count(),
@@ -502,7 +504,7 @@ pub(crate) async fn run(args: RemoteHostArgs) -> Result<()> {
 #[cfg(unix)]
 async fn ensure(expected_instance: Option<String>) -> Result<()> {
     let data_dir = canonical_data_dir()?;
-    match live_descriptor(&data_dir).await {
+    match live_descriptor(&data_dir).await? {
         LiveHost::Running(descriptor) => {
             verify_expected(&descriptor, expected_instance.as_deref())?;
             return print_descriptor(&descriptor);
@@ -524,7 +526,7 @@ async fn ensure(expected_instance: Option<String>) -> Result<()> {
 
     let mut start_lock = open_lock(&shared_path(&data_dir, "start.lock")?)?;
     let _start_guard = start_lock.write()?;
-    match live_descriptor(&data_dir).await {
+    match live_descriptor(&data_dir).await? {
         LiveHost::Running(descriptor) => return print_descriptor(&descriptor),
         LiveHost::Stopping(_) => wait_for_server_lock_free(&data_dir).await?,
         LiveHost::Missing => ensure_server_lock_free(&data_dir)?,
@@ -532,7 +534,7 @@ async fn ensure(expected_instance: Option<String>) -> Result<()> {
     let (mut child, log_path) = spawn_detached_host(&data_dir)?;
     let started = tokio::time::timeout(START_TIMEOUT, async {
         loop {
-            if let LiveHost::Running(descriptor) = live_descriptor(&data_dir).await {
+            if let Ok(LiveHost::Running(descriptor)) = live_descriptor(&data_dir).await {
                 return Ok(descriptor);
             }
             if let Some(status) = child.try_wait()? {
@@ -632,19 +634,28 @@ enum LiveHost {
     Missing,
 }
 
+/// A host that holds the lock but answers too slowly is an error: it is neither gone nor
+/// another dashboard.
 #[cfg(unix)]
-async fn live_descriptor(data_dir: &Path) -> LiveHost {
-    let Ok(response) = control_exchange(data_dir, &ControlRequest::Status).await else {
-        return LiveHost::Missing;
+async fn live_descriptor(data_dir: &Path) -> Result<LiveHost> {
+    live_descriptor_within(data_dir, CONTROL_TIMEOUT).await
+}
+
+#[cfg(unix)]
+async fn live_descriptor_within(data_dir: &Path, timeout: Duration) -> Result<LiveHost> {
+    let response = match control_exchange_within(data_dir, &ControlRequest::Status, timeout).await {
+        Ok(response) => Ok(response),
+        Err(error) if error.is::<tokio::time::error::Elapsed>() => Err(error),
+        Err(_) => return Ok(LiveHost::Missing),
     };
     if !server_lock_is_held(data_dir).unwrap_or(false) {
-        return LiveHost::Missing;
+        return Ok(LiveHost::Missing);
     }
-    match response {
+    Ok(match response? {
         ControlResponse::Status { descriptor, .. } => LiveHost::Running(descriptor),
         ControlResponse::Stopping { descriptor } => LiveHost::Stopping(descriptor),
         _ => LiveHost::Missing,
-    }
+    })
 }
 
 #[cfg(unix)]
@@ -675,7 +686,16 @@ async fn wait_for_server_lock_free(data_dir: &Path) -> Result<()> {
 
 #[cfg(unix)]
 async fn control_exchange(data_dir: &Path, request: &ControlRequest) -> Result<ControlResponse> {
-    tokio::time::timeout(CONTROL_TIMEOUT, async {
+    control_exchange_within(data_dir, request, CONTROL_TIMEOUT).await
+}
+
+#[cfg(unix)]
+async fn control_exchange_within(
+    data_dir: &Path,
+    request: &ControlRequest,
+    timeout: Duration,
+) -> Result<ControlResponse> {
+    tokio::time::timeout(timeout, async {
         let mut stream = UnixStream::connect(control_socket_path(data_dir)?).await?;
         write_request(&mut stream, request).await?;
         let mut reader = BufReader::new(stream);
@@ -683,7 +703,10 @@ async fn control_exchange(data_dir: &Path, request: &ControlRequest) -> Result<C
         Ok::<_, crate::error::Error>(serde_json::from_str(&line)?)
     })
     .await
-    .map_err(|_| anyhow!("Timed out contacting the persistent OpenResearch host."))?
+    .map_err(|elapsed| {
+        crate::error::Error::new(elapsed)
+            .context(format!("{HOST_NOT_RESPONDING} Try again in a moment."))
+    })?
 }
 
 #[cfg(unix)]
@@ -1091,5 +1114,24 @@ mod tests {
             error.to_string(),
             "Remote-host control message was too large."
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_silent_host_holding_the_lock_is_not_responding_not_missing() {
+        let root = crate::local::git::TemporaryDirectory::new("orx-silent-host").unwrap();
+        let data_dir = root.path().join("data");
+        std::fs::create_dir(&data_dir).unwrap();
+        let mut lock = open_lock(&shared_path(&data_dir, "lock").unwrap()).unwrap();
+        let _held = lock.try_write().unwrap();
+        let socket = control_socket_path(&data_dir).unwrap();
+        let _silent = UnixListener::bind(&socket).unwrap();
+
+        let error = match live_descriptor_within(&data_dir, Duration::from_millis(20)).await {
+            Err(error) => error,
+            Ok(_) => panic!("a silent host read as running or missing"),
+        };
+        std::fs::remove_file(&socket).unwrap();
+        assert!(error.to_string().contains("not responding"), "{error}");
     }
 }

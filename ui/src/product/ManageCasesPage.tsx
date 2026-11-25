@@ -1,14 +1,31 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { listProjects, listChatSessions, fmtBytes } from "../api";
+import { listProjects, listChatSessions, fmtBytes, type ArtifactEntry } from "../api";
 import { Button } from "../components/ui";
 import { useAuthSession } from "./AuthSession";
 import { useCasesBase } from "./FeaturedCases";
 import { CaseArtifactPicker } from "./CaseArtifactPicker";
 import { listCaseArtifacts, selectedCaseArtifacts, artifactSelectionSummary } from "./caseArtifacts";
 import { addProjectToCases } from "./addProjectToCases";
-import { caseRequest, caseWrite, type FeaturedCase } from "./featuredCasesApi";
+import { CASE_COVER_PRESETS, resolveCaseCoverSrc } from "./caseCovers";
+import { caseRequest, caseWrite, uploadCaseCover, type FeaturedCase } from "./featuredCasesApi";
+
+const CASE_CATEGORY_PRESETS = ["科研实践", "文献综述", "实验复现", "数据分析", "课题构思"];
+const IMAGE_ARTIFACT_RE = /\.(png|jpe?g|webp|svg)$/i;
+
+function collectImageArtifacts(entries: ArtifactEntry[] = []): ArtifactEntry[] {
+  const result: ArtifactEntry[] = [];
+  for (const entry of entries) {
+    if (entry.isDir) result.push(...collectImageArtifacts(entry.children));
+    else if (IMAGE_ARTIFACT_RE.test(entry.name)) result.push(entry);
+  }
+  return result;
+}
+
+function defaultCaseSummary(title: string) {
+  return title ? `围绕「${title}」的完整研究过程与公开成果记录。` : "";
+}
 
 export function ManageCasesPage({ initialProject = "" }: { initialProject?: string }) {
   const base = useCasesBase();
@@ -17,6 +34,21 @@ export function ManageCasesPage({ initialProject = "" }: { initialProject?: stri
   const [projectId, setProjectId] = useState(initialProject);
   const [sessionId, setSessionId] = useState("");
   const [artifactPaths, setArtifactPaths] = useState<string[]>([]);
+  const [caseTitle, setCaseTitle] = useState("");
+  const [caseSummary, setCaseSummary] = useState("");
+  const [caseCategory, setCaseCategory] = useState("科研实践");
+  const [caseCover, setCaseCover] = useState<string | null>(null);
+  const [coverArtifactPath, setCoverArtifactPath] = useState<string | null>(null);
+  const [coverFile, setCoverFile] = useState<File | null>(null);
+  const [editing, setEditing] = useState<{
+    id: string;
+    revision: number;
+    title: string;
+    summary: string;
+    category: string;
+    cover: string | null;
+    coverFile: File | null;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
@@ -51,8 +83,17 @@ export function ManageCasesPage({ initialProject = "" }: { initialProject?: stri
   }
 
   function add(project: { id: string; name: string }, existingId?: string, sourceSessionId?: string, paths: string[] = artifactPaths) {
-    return action(() => addProjectToCases(base, project, setProgress, existingId, sourceSessionId, paths), "已加入案例集，用户可以查看所选范围的对话和文件。");
+    const meta = {
+      title: caseTitle.trim(),
+      summary: caseSummary.trim(),
+      category: caseCategory.trim() || "科研实践",
+      ...(coverFile ? {} : coverArtifactPath ? { coverArtifactPath } : { cover: caseCover }),
+      ...(coverFile ? { coverFile } : {}),
+    };
+    return action(() => addProjectToCases(base, project, setProgress, existingId, sourceSessionId, paths, meta), "已加入案例集，用户可以查看所选范围的对话和文件。");
   }
+
+  const imageArtifacts = artifactSelection.data ? collectImageArtifacts(artifactSelection.data.entries) : [];
 
   const selectedProject = projects.data?.find((row) => row.id === projectId);
   const mainSessions = sessions.data?.filter((session) => !session.parentSessionId && !session.sideParentSessionId);
@@ -129,6 +170,12 @@ export function ManageCasesPage({ initialProject = "" }: { initialProject?: stri
                     setProjectId(event.target.value);
                     setSessionId("");
                     setArtifactPaths([]);
+                    setCaseTitle("");
+                    setCaseSummary("");
+                    setCaseCategory("科研实践");
+                    setCaseCover(null);
+                    setCoverArtifactPath(null);
+                    setCoverFile(null);
                   }}
                   className="h-9 rounded-md border border-border bg-background px-2.5 text-sm text-text"
                 >
@@ -149,8 +196,29 @@ export function ManageCasesPage({ initialProject = "" }: { initialProject?: stri
                     value={sessionId}
                     disabled={busy || !sessions.isSuccess}
                     onChange={(event) => {
-                      setSessionId(event.target.value);
+                      const nextSessionId = event.target.value;
+                      setSessionId(nextSessionId);
                       setArtifactPaths([]);
+                      const matchedSession = mainSessions?.find((session) => session.id === nextSessionId);
+                      const matchedExisting =
+                        cases.data?.cases.find((item) => item.source_project_id === projectId && (item.source_session_id || "") === nextSessionId && item.status === "published") ??
+                        cases.data?.cases.find((item) => item.source_project_id === projectId && (item.source_session_id || "") === nextSessionId);
+                      if (nextSessionId) {
+                        const fallbackTitle = matchedSession?.title || selectedProject.name || "";
+                        setCaseTitle(matchedExisting?.title || fallbackTitle);
+                        setCaseSummary(matchedExisting?.summary || defaultCaseSummary(fallbackTitle));
+                        setCaseCategory(matchedExisting?.category || "科研实践");
+                        setCaseCover(matchedExisting?.cover ?? null);
+                        setCoverArtifactPath(null);
+                        setCoverFile(null);
+                      } else {
+                        setCaseTitle("");
+                        setCaseSummary("");
+                        setCaseCategory("科研实践");
+                        setCaseCover(null);
+                        setCoverArtifactPath(null);
+                        setCoverFile(null);
+                      }
                     }}
                     className="h-9 rounded-md border border-border bg-background px-2.5 text-sm text-text"
                   >
@@ -166,6 +234,166 @@ export function ManageCasesPage({ initialProject = "" }: { initialProject?: stri
                 </label>
               )}
             </div>
+
+            {selectedProject && sessionId && (
+              <div className="flex flex-col gap-3 rounded-xl border border-border-variant bg-surface/50 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-text">展示信息（可自定义）</span>
+                  <span className="text-xs text-subtext">
+                    {existing?.status === "published" ? "该对话已发布，可在下方列表点击「编辑信息」修改展示内容。" : "将直接展示在精选案例卡片上，支持后续随时修改。"}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
+                  <label className="flex flex-col gap-1.5 text-xs font-medium text-text">
+                    案例标题
+                    <input
+                      type="text"
+                      required
+                      maxLength={200}
+                      value={caseTitle}
+                      disabled={busy || existing?.status === "published"}
+                      onChange={(event) => setCaseTitle(event.target.value)}
+                      placeholder="输入向用户展示的案例标题"
+                      className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal text-text focus:border-primary focus:outline-none disabled:opacity-60"
+                    />
+                  </label>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="flex flex-col gap-1.5 text-xs font-medium text-text">
+                      研究分类
+                      <input
+                        type="text"
+                        required
+                        maxLength={80}
+                        value={caseCategory}
+                        disabled={busy || existing?.status === "published"}
+                        onChange={(event) => setCaseCategory(event.target.value)}
+                        placeholder="如：科研实践、文献综述、实验复现"
+                        className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal text-text focus:border-primary focus:outline-none disabled:opacity-60"
+                      />
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {CASE_CATEGORY_PRESETS.map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          disabled={busy || existing?.status === "published"}
+                          onClick={() => setCaseCategory(preset)}
+                          className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${
+                            caseCategory.trim() === preset
+                              ? "border-primary bg-primary-subtle font-medium text-primary"
+                              : "border-border-variant bg-background text-subtext hover:border-border hover:text-text"
+                          } disabled:opacity-50`}
+                        >
+                          {preset}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <label className="flex flex-col gap-1.5 text-xs font-medium text-text">
+                  <span className="flex items-center justify-between gap-2">
+                    <span>案例简介</span>
+                    <span className="font-normal tabular-nums text-muted">{caseSummary.length} / 4000</span>
+                  </span>
+                  <textarea
+                    rows={3}
+                    required
+                    maxLength={4000}
+                    value={caseSummary}
+                    disabled={busy || existing?.status === "published"}
+                    onChange={(event) => setCaseSummary(event.target.value)}
+                    placeholder="简要介绍研究背景、方法路径与主要成果，帮助其他研究者快速了解案例价值"
+                    className="rounded-md border border-border bg-background px-3 py-2 text-sm font-normal text-text focus:border-primary focus:outline-none disabled:opacity-60"
+                  />
+                </label>
+                <div className="flex flex-col gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-text">封面图（可选，默认按分类自动匹配）</span>
+                    <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary-subtle">
+                      <span>{coverFile ? `已选：${coverFile.name}` : "上传本地封面"}</span>
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                        disabled={busy || existing?.status === "published"}
+                        onChange={(event) => {
+                          const file = event.target.files?.[0] ?? null;
+                          if (file) {
+                            setCoverFile(file);
+                            setCoverArtifactPath(null);
+                            setCaseCover(null);
+                          }
+                        }}
+                        className="sr-only"
+                      />
+                    </label>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={busy || existing?.status === "published"}
+                      onClick={() => {
+                        setCaseCover(null);
+                        setCoverArtifactPath(null);
+                        setCoverFile(null);
+                      }}
+                      className={`flex h-16 w-24 flex-col items-center justify-center rounded-lg border text-xs transition-colors ${
+                        caseCover === null && !coverArtifactPath && !coverFile
+                          ? "border-primary bg-primary-subtle font-medium text-primary"
+                          : "border-border-variant bg-background text-subtext hover:border-border hover:text-text"
+                      } disabled:opacity-50`}
+                    >
+                      <span>自动匹配</span>
+                    </button>
+                    {CASE_COVER_PRESETS.map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        disabled={busy || existing?.status === "published"}
+                        onClick={() => {
+                          setCaseCover(preset.id);
+                          setCoverArtifactPath(null);
+                          setCoverFile(null);
+                        }}
+                        className={`group relative h-16 w-24 overflow-hidden rounded-lg border transition-colors ${
+                          caseCover === preset.id && !coverArtifactPath && !coverFile
+                            ? "border-primary ring-2 ring-primary/30"
+                            : "border-border-variant hover:border-border"
+                        } disabled:opacity-50`}
+                      >
+                        <img src={preset.src} alt={preset.label} className="block h-full w-full object-cover" />
+                        <span className="absolute inset-x-0 bottom-0 bg-background/85 px-1 py-0.5 text-center text-xs text-text">
+                          {preset.label}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                  {imageArtifacts.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      <span className="text-xs text-subtext">从所选成果图片选取：</span>
+                      {imageArtifacts.slice(0, 8).map((entry) => (
+                        <button
+                          key={entry.path}
+                          type="button"
+                          disabled={busy || existing?.status === "published"}
+                          onClick={() => {
+                            setCoverArtifactPath(entry.path);
+                            setCoverFile(null);
+                            setCaseCover(null);
+                          }}
+                          className={`max-w-48 truncate rounded-full border px-2.5 py-0.5 text-xs transition-colors ${
+                            coverArtifactPath === entry.path
+                              ? "border-primary bg-primary-subtle font-medium text-primary"
+                              : "border-border-variant bg-background text-subtext hover:border-border hover:text-text"
+                          }`}
+                        >
+                          {entry.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {selectedProject && sessions.isPending && (
               <p role="status" className="m-0 text-xs text-subtext">
@@ -304,94 +532,302 @@ export function ManageCasesPage({ initialProject = "" }: { initialProject?: stri
             {visibleCases.map((item) => {
               const sourceProject = projects.data?.find((row) => row.id === item.source_project_id);
               const isPublished = item.status === "published";
+              const isEditing = editing?.id === item.id;
               return (
                 <article
                   key={item.id}
-                  className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border bg-background p-4 shadow-xs transition-colors hover:border-border-strong"
+                  className="flex flex-col gap-3 rounded-xl border border-border bg-background p-4 shadow-xs transition-colors hover:border-border-strong"
                 >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="m-0 text-base font-medium text-text">{item.title}</h3>
-                      <span
-                        className={`inline-flex items-center rounded-full border px-2 py-px text-xs ${
-                          isPublished
-                            ? "border-accent-green bg-accent-green-subtle text-accent-green"
-                            : "border-accent-amber bg-accent-amber-subtle text-accent-amber"
-                        }`}
-                      >
-                        {isPublished ? "已加入案例集" : "未发布的案例副本"}
-                      </span>
-                      <span className="inline-flex items-center rounded-full bg-surface px-2 py-px text-xs text-subtext">
-                        {item.source_session_id ? `单个对话 · ${sourceProject?.name || "原项目"}` : "整个项目"}
-                      </span>
-                    </div>
-                    {projects.isSuccess && !sourceProject && (
-                      <p className="mb-0 mt-1.5 text-xs text-subtext">
-                        当前工作空间未找到原项目，可能已删除或位于其他工作空间。已保存的案例副本仍可查看和管理。
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Link
-                      to="/cases/$caseId"
-                      params={{ caseId: item.id }}
-                      search={item.status === "draft" ? { preview: true } : {}}
-                      className="inline-flex h-7 items-center gap-1 rounded-sm border border-border-variant bg-surface/60 px-2.5 text-xs font-medium text-primary no-underline transition-colors hover:bg-primary-subtle"
-                    >
-                      查看案例副本
-                    </Link>
-
-                    {item.status === "draft" && (
-                      <>
-                        {sourceProject && canAccessResearch && (
-                          <Button
-                            size="small"
-                            disabled={busy}
-                            onClick={() => {
-                              setProjectId(sourceProject.id);
-                              setSessionId(item.source_session_id || "");
-                              setArtifactPaths([]);
-                              setProgress("请在上方选择主对话和要公开的成果，再加入案例集。");
-                            }}
-                          >
-                            {item.source_session_id ? "选择成果并更新" : "创建对话案例"}
-                          </Button>
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="m-0 text-base font-medium text-text">{item.title}</h3>
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2 py-px text-xs ${
+                            isPublished
+                              ? "border-accent-green bg-accent-green-subtle text-accent-green"
+                              : "border-accent-amber bg-accent-amber-subtle text-accent-amber"
+                          }`}
+                        >
+                          {isPublished ? "已加入案例集" : "未发布的案例副本"}
+                        </span>
+                        {item.category && (
+                          <span className="inline-flex items-center rounded-full bg-primary-subtle px-2 py-px text-xs text-primary">
+                            {item.category}
+                          </span>
                         )}
-                        <Button
-                          size="small"
-                          variant="primary"
-                          disabled={busy}
-                          onClick={() => setConfirmation({ item, kind: "publish" })}
-                        >
-                          发布已保存副本
-                        </Button>
-                        <Button
-                          size="small"
-                          variant="danger"
-                          disabled={busy}
-                          onClick={() => setConfirmation({ item, kind: "delete" })}
-                        >
-                          删除草稿
-                        </Button>
-                      </>
-                    )}
+                        <span className="inline-flex items-center rounded-full bg-surface px-2 py-px text-xs text-subtext">
+                          {item.source_session_id ? `单个对话 · ${sourceProject?.name || "原项目"}` : "整个项目"}
+                        </span>
+                      </div>
+                      {item.summary && (
+                        <p className="mb-0 mt-1.5 line-clamp-2 text-xs text-subtext">{item.summary}</p>
+                      )}
+                      {projects.isSuccess && !sourceProject && (
+                        <p className="mb-0 mt-1.5 text-xs text-subtext">
+                          当前工作空间未找到原项目，可能已删除或位于其他工作空间。已保存的案例副本仍可查看和管理。
+                        </p>
+                      )}
+                    </div>
 
-                    {isPublished && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Link
+                        to="/cases/$caseId"
+                        params={{ caseId: item.id }}
+                        search={item.status === "draft" ? { preview: true } : {}}
+                        className="inline-flex h-7 items-center gap-1 rounded-sm border border-border-variant bg-surface/60 px-2.5 text-xs font-medium text-primary no-underline transition-colors hover:bg-primary-subtle"
+                      >
+                        查看案例副本
+                      </Link>
+
                       <Button
                         size="small"
                         disabled={busy}
-                        onClick={() =>
-                          void action(
-                            () => caseWrite(base, `admin/cases/${item.id}/unpublish`, { revision: item.revision }),
-                            "已从案例集移除，原项目仍保留。",
-                          )
-                        }
+                        onClick={() => {
+                          setConfirmation(null);
+                          setEditing(
+                            isEditing
+                              ? null
+                              : {
+                                  id: item.id,
+                                  revision: item.revision,
+                                  title: item.title || "",
+                                  summary: item.summary || "",
+                                  category: item.category || "科研实践",
+                                  cover: item.cover ?? null,
+                                  coverFile: null,
+                                },
+                          );
+                        }}
                       >
-                        移出案例集
+                        {isEditing ? "收起编辑" : "编辑信息"}
                       </Button>
-                    )}
+
+                      {item.status === "draft" && (
+                        <>
+                          {sourceProject && canAccessResearch && (
+                            <Button
+                              size="small"
+                              disabled={busy}
+                              onClick={() => {
+                                setProjectId(sourceProject.id);
+                                setSessionId(item.source_session_id || "");
+                                setArtifactPaths([]);
+                                setCaseTitle(item.title || "");
+                                setCaseSummary(item.summary || "");
+                                setCaseCategory(item.category || "科研实践");
+                                setCaseCover(item.cover ?? null);
+                                setCoverArtifactPath(null);
+                                setCoverFile(null);
+                                setProgress("请在上方选择主对话和要公开的成果，再加入案例集。");
+                              }}
+                            >
+                              {item.source_session_id ? "选择成果并更新" : "创建对话案例"}
+                            </Button>
+                          )}
+                          <Button
+                            size="small"
+                            variant="primary"
+                            disabled={busy}
+                            onClick={() => {
+                              setEditing(null);
+                              setConfirmation({ item, kind: "publish" });
+                            }}
+                          >
+                            发布已保存副本
+                          </Button>
+                          <Button
+                            size="small"
+                            variant="danger"
+                            disabled={busy}
+                            onClick={() => {
+                              setEditing(null);
+                              setConfirmation({ item, kind: "delete" });
+                            }}
+                          >
+                            删除草稿
+                          </Button>
+                        </>
+                      )}
+
+                      {isPublished && (
+                        <Button
+                          size="small"
+                          disabled={busy}
+                          onClick={() => {
+                            setEditing(null);
+                            void action(
+                              () => caseWrite(base, `admin/cases/${item.id}/unpublish`, { revision: item.revision }),
+                              "已从案例集移除，原项目仍保留。",
+                            );
+                          }}
+                        >
+                          移出案例集
+                        </Button>
+                      )}
+                    </div>
                   </div>
+
+                  {isEditing && editing && (
+                    <div className="flex flex-col gap-3 rounded-lg border border-border-variant bg-surface/50 p-4">
+                      <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
+                        <label className="flex flex-col gap-1.5 text-xs font-medium text-text">
+                          案例标题
+                          <input
+                            type="text"
+                            maxLength={200}
+                            value={editing.title}
+                            disabled={busy}
+                            onChange={(event) => setEditing({ ...editing, title: event.target.value })}
+                            placeholder="输入案例标题"
+                            className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal text-text focus:border-primary focus:outline-none"
+                          />
+                        </label>
+                        <div className="flex flex-col gap-1.5">
+                          <label className="flex flex-col gap-1.5 text-xs font-medium text-text">
+                            研究分类
+                            <input
+                              type="text"
+                              maxLength={80}
+                              value={editing.category}
+                              disabled={busy}
+                              onChange={(event) => setEditing({ ...editing, category: event.target.value })}
+                              placeholder="如：科研实践、文献综述"
+                              className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal text-text focus:border-primary focus:outline-none"
+                            />
+                          </label>
+                          <div className="flex flex-wrap gap-1.5">
+                            {CASE_CATEGORY_PRESETS.map((preset) => (
+                              <button
+                                key={preset}
+                                type="button"
+                                disabled={busy}
+                                onClick={() => setEditing({ ...editing, category: preset })}
+                                className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${
+                                  editing.category.trim() === preset
+                                    ? "border-primary bg-primary-subtle font-medium text-primary"
+                                    : "border-border-variant bg-background text-subtext hover:border-border hover:text-text"
+                                }`}
+                              >
+                                {preset}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                      <label className="flex flex-col gap-1.5 text-xs font-medium text-text">
+                        <span className="flex items-center justify-between gap-2">
+                          <span>案例简介</span>
+                          <span className="font-normal tabular-nums text-muted">{editing.summary.length} / 4000</span>
+                        </span>
+                        <textarea
+                          rows={3}
+                          maxLength={4000}
+                          value={editing.summary}
+                          disabled={busy}
+                          onChange={(event) => setEditing({ ...editing, summary: event.target.value })}
+                          placeholder="简要介绍研究背景、方法与成果"
+                          className="rounded-md border border-border bg-background px-3 py-2 text-sm font-normal text-text focus:border-primary focus:outline-none"
+                        />
+                      </label>
+                      <div className="flex flex-col gap-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-xs font-medium text-text">
+                            封面图
+                            {editing.cover?.startsWith("asset:") && !editing.coverFile ? "（当前为自定义/成果图片）" : ""}
+                          </span>
+                          <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary-subtle">
+                            <span>{editing.coverFile ? `已选：${editing.coverFile.name}` : "上传新封面"}</span>
+                            <input
+                              type="file"
+                              accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                              disabled={busy}
+                              onChange={(event) => {
+                                const file = event.target.files?.[0] ?? null;
+                                if (file) setEditing({ ...editing, coverFile: file });
+                              }}
+                              className="sr-only"
+                            />
+                          </label>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => setEditing({ ...editing, cover: null, coverFile: null })}
+                            className={`flex h-14 w-22 items-center justify-center rounded-lg border text-xs transition-colors ${
+                              editing.cover === null && !editing.coverFile
+                                ? "border-primary bg-primary-subtle font-medium text-primary"
+                                : "border-border-variant bg-background text-subtext hover:border-border hover:text-text"
+                            }`}
+                          >
+                            自动匹配
+                          </button>
+                          {CASE_COVER_PRESETS.map((preset) => (
+                            <button
+                              key={preset.id}
+                              type="button"
+                              disabled={busy}
+                              onClick={() => setEditing({ ...editing, cover: preset.id, coverFile: null })}
+                              className={`relative h-14 w-22 overflow-hidden rounded-lg border transition-colors ${
+                                editing.cover === preset.id && !editing.coverFile
+                                  ? "border-primary ring-2 ring-primary/30"
+                                  : "border-border-variant hover:border-border"
+                              }`}
+                            >
+                              <img src={preset.src} alt={preset.label} className="block h-full w-full object-cover" />
+                              <span className="absolute inset-x-0 bottom-0 bg-background/85 px-1 py-0.5 text-center text-xs text-text">
+                                {preset.label}
+                              </span>
+                            </button>
+                          ))}
+                          {editing.cover?.startsWith("asset:") && !editing.coverFile && (
+                            <div className="relative h-14 w-22 overflow-hidden rounded-lg border border-primary ring-2 ring-primary/30">
+                              <img
+                                src={resolveCaseCoverSrc(base, { id: editing.id, cover: editing.cover, category: editing.category, title: editing.title }, 0, true)}
+                                alt="当前封面"
+                                className="block h-full w-full object-cover"
+                              />
+                              <span className="absolute inset-x-0 bottom-0 bg-background/85 px-1 py-0.5 text-center text-xs text-primary">
+                                当前图片
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        <Button size="small" disabled={busy} onClick={() => setEditing(null)}>
+                          取消
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="primary"
+                          disabled={busy || !editing.title.trim() || !editing.summary.trim() || !editing.category.trim()}
+                          onClick={() =>
+                            void action(async () => {
+                              let nextCover = editing.cover;
+                              let nextRevision = editing.revision;
+                              if (editing.coverFile) {
+                                const uploaded = await uploadCaseCover(base, editing.id, editing.coverFile, nextRevision);
+                                nextCover = uploaded.cover;
+                                nextRevision += 1;
+                              }
+                              await caseWrite(base, `admin/cases/${editing.id}/meta`, {
+                                revision: nextRevision,
+                                title: editing.title.trim(),
+                                summary: editing.summary.trim(),
+                                category: editing.category.trim() || "科研实践",
+                                cover: nextCover,
+                              });
+                              setEditing(null);
+                            }, "已更新案例标题与描述信息。")
+                          }
+                        >
+                          保存修改
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </article>
               );
             })}

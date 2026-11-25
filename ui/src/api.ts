@@ -1662,10 +1662,24 @@ export interface HarnessModel {
   imageInput?: boolean;
 }
 
+const MODEL_DISPLAY_ALIASES: Record<string, string> = {
+  jt236b: "jiutian-236b",
+};
+
+function resolveModelDisplayAlias(id: string, displayName?: string): string | undefined {
+  const leaf = (id.split("/").pop() ?? id).trim().toLowerCase();
+  if (MODEL_DISPLAY_ALIASES[leaf]) return MODEL_DISPLAY_ALIASES[leaf];
+  const normalizedName = displayName?.trim().toLowerCase();
+  if (normalizedName && MODEL_DISPLAY_ALIASES[normalizedName]) return MODEL_DISPLAY_ALIASES[normalizedName];
+  return undefined;
+}
+
 /** Display label for a harness model: the catalog's own name when it has one,
  * else prettified from the id. */
 export function harnessModelLabel(model: HarnessModel): string {
-  if (!model.id.startsWith("orx-local-")) return model.displayName ?? modelLabel(model.id);
+  if (!model.id.startsWith("orx-local-")) {
+    return resolveModelDisplayAlias(model.id, model.displayName) ?? model.displayName ?? modelLabel(model.id);
+  }
   const provider = model.displayName?.split(" · ").slice(1).join(" · ").replace(/ \(local\)$/, "");
   const endpoint = provider === "OpenAI-compatible server" || provider === "Custom endpoint" || provider === "Custom Endpoint"
     ? m.local_models_custom_endpoint()
@@ -1943,6 +1957,8 @@ export const deleteUserSkill = (name: string) =>
 
 /** "openai/gpt-5.5" → "GPT 5.5", "anthropic/claude-opus-4-8" → "Opus 4.8". */
 export function modelLabel(id: string): string {
+  const aliased = resolveModelDisplayAlias(id);
+  if (aliased) return aliased;
   const last = (id.split("/").pop() ?? id).replace(/^~/, "").replace(/^claude-/, "");
   const words: string[] = [];
   const nums: string[] = [];

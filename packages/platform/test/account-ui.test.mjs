@@ -184,3 +184,19 @@ test("shared-origin workspace login pre-wakes personal space before redirecting"
   assert.ok(b.calls.includes("/api/platform/personal-space"));
   assert.deepEqual(b.redirects, ["http://localhost:4791/projects"]);
 });
+
+test("login and registration render autofill attributes and interactive research stages", () => {
+  const b = browser();
+  b.ui.authentication("login");
+  const loginHtml = b.node("#app").innerHTML;
+  assert.match(loginHtml, /autocomplete="username"/);
+  assert.match(loginHtml, /spellcheck="false"/);
+  assert.match(loginHtml, /autocomplete="current-password"/);
+  assert.match(loginHtml, /data-stage-tab="0"/);
+  assert.match(loginHtml, /多源学术检索与深度精读/);
+
+  b.ui.authentication("register");
+  const registerHtml = b.node("#app").innerHTML;
+  assert.match(registerHtml, /autocomplete="name"/);
+  assert.match(registerHtml, /autocomplete="new-password"/);
+});

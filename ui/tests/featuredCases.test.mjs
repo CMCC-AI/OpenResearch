@@ -36,6 +36,7 @@ function components(rows=[detail],admin=false,queryResult=null,progressSnapshot=
     getQueryData: () => ({ cases: cachedList }),
     prefetchQuery: async () => {},
   };
+  const caseCovers = load("../src/product/caseCovers.ts", {});
   return load("../src/product/FeaturedCases.tsx",{
     "@tanstack/react-query":{isCancelledError:()=>false,useQuery:()=>queryResult??({data:{cases:rows},isPending:false,isFetching:false,error:null,refetch:async()=>{}})},
     "@tanstack/react-router":{Link:({to,params,children,...props})=>React.createElement("a",{...props,href:params?`/cases/${params.caseId}`:to},children),useNavigate:()=>async()=>{}},
@@ -44,6 +45,7 @@ function components(rows=[detail],admin=false,queryResult=null,progressSnapshot=
     "./AuthSession":{useAuthSession:()=>({accountUrl:"http://localhost:5300",user:{id:"reader",isAdmin:admin}})},
     "./CloudWorkspace":{isCloudWorkspace:()=>false},
     "./ProductNav":{PlatformFrame:({children})=>children},
+    "./caseCovers": caseCovers,
     "../components/ui":{Button:({children,...props})=>React.createElement("button",props,children),Spinner:()=>React.createElement("span",{"data-spinner":"true"})},
     "../components/ProgressBar":{ProgressBar:({value,max,label,caption})=>React.createElement("div",{"data-progressbar":"true","data-value":value,"data-max":max},label,caption)},
     "../queries/client":{queryClient:clientStub},
@@ -183,4 +185,43 @@ test("legacy cases route administrators to explicit conversation and output sele
   assert.ok(html.includes("选择对话和公开成果"));
   assert.ok(html.includes('href="/admin/cases"'));
   assert.equal(html.includes("从原项目同步完整历史与文件"), false);
+});
+
+test("full-page cases view renders category filters, search, badges, and avoids repeating identical title summaries", () => {
+  const duplicateSummaryCase = {
+    id: "case-dup",
+    title: "缺失数据条件下的建筑电力负荷预测",
+    summary: "缺失数据条件下的建筑电力负荷预测",
+    category: "实验复现",
+    status: "published",
+    revision: 1,
+    published_at: "2026-06-15T10:00:00Z",
+  };
+  const reviewCase = {
+    id: "case-rev",
+    title: "多模态学习综述",
+    summary: "梳理视觉编码与统一自回归框架进展",
+    category: "文献综述",
+    status: "published",
+    revision: 1,
+  };
+  const { ResearchCases } = components([duplicateSummaryCase, reviewCase], false);
+  const html = renderToStaticMarkup(React.createElement(ResearchCases, { fullPage: true }));
+  assert.ok(html.includes("共 2 个公开案例"));
+  assert.ok(html.includes('aria-label="按分类筛选案例"'));
+  assert.ok(html.includes('aria-label="搜索精选案例"'));
+  assert.ok(html.includes("实验复现"));
+  assert.ok(html.includes("文献综述"));
+  assert.ok(html.includes("查看完整研究对话、推理过程与公开成果文件"));
+  assert.ok(html.includes("2026-06-15"));
+  assert.equal(html.split("缺失数据条件下的建筑电力负荷预测").length - 1, 1);
+
+  const assetCoverCase = {
+    ...reviewCase,
+    id: "case-asset",
+    cover: `asset:cover-${"a".repeat(64)}.png`,
+  };
+  const assetView = components([assetCoverCase], false);
+  const assetHtml = renderToStaticMarkup(React.createElement(assetView.ResearchCases, { fullPage: true }));
+  assert.ok(assetHtml.includes(`/api/platform/cases/case-asset/assets?name=cover-${"a".repeat(64)}.png`));
 });

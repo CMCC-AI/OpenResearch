@@ -166,6 +166,27 @@ export function runtimeConfig(workspace, env) {
         : []),
       `ORX_DEEP_LITERATURE_URL=${env.ORX_DEEP_LITERATURE_URL || "http://host.docker.internal:3000"}`,
       `ORX_DEEP_LITERATURE_WEB_URL=${env.ORX_DEEP_LITERATURE_WEB_URL || "http://localhost:3000"}`,
+      ...(env.MANAGED_HTTP_PROXY
+        ? [
+            `HTTP_PROXY=${env.MANAGED_HTTP_PROXY}`,
+            `http_proxy=${env.MANAGED_HTTP_PROXY}`,
+          ]
+        : []),
+      ...(env.MANAGED_HTTPS_PROXY
+        ? [
+            `HTTPS_PROXY=${env.MANAGED_HTTPS_PROXY}`,
+            `https_proxy=${env.MANAGED_HTTPS_PROXY}`,
+          ]
+        : []),
+      ...(env.MANAGED_NO_PROXY
+        ? [
+            `NO_PROXY=${env.MANAGED_NO_PROXY}`,
+            `no_proxy=${env.MANAGED_NO_PROXY}`,
+          ]
+        : []),
+      ...(env.MANAGED_HTTP_PROXY || env.MANAGED_HTTPS_PROXY
+        ? ["NODE_USE_ENV_PROXY=1"]
+        : []),
     ],
     HostConfig: {
       Binds: [

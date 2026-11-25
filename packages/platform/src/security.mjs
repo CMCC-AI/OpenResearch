@@ -75,10 +75,51 @@ export function cookie(req, name) {
       ?.slice(name.length + 1) || ""
   );
 }
+export const DEFAULT_SESSION_IDLE_TTL = 7 * 24 * 60 * 60;
+export const DEFAULT_SESSION_ABSOLUTE_TTL = 30 * 24 * 60 * 60;
 export const cookieName = (secure) =>
   secure ? "__Host-orx_session" : "orx_session";
-export function sessionCookie(value, secure, maxAge = 43200) {
+export function sessionCookie(
+  value,
+  secure,
+  maxAge = DEFAULT_SESSION_IDLE_TTL,
+) {
   return `${cookieName(secure)}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
+}
+export function sessionRenewal(
+  row,
+  idleTtlSeconds = DEFAULT_SESSION_IDLE_TTL,
+  absoluteTtlSeconds = DEFAULT_SESSION_ABSOLUTE_TTL,
+) {
+  const nowMs = new Date(row.db_now ?? Date.now()).getTime();
+  const idleMs = idleTtlSeconds * 1000;
+  const absMs = absoluteTtlSeconds * 1000;
+  const ownCapMs = row.max_expires_at
+    ? new Date(row.max_expires_at).getTime()
+    : new Date(row.created_at).getTime() + absMs;
+  const parentCapMs = row.parent_hash
+    ? row.parent_max_expires_at
+      ? new Date(row.parent_max_expires_at).getTime()
+      : new Date(row.parent_created_at).getTime() + absMs
+    : Infinity;
+  const capMs = Math.min(ownCapMs, parentCapMs);
+  const expiresMs = new Date(row.expires_at).getTime();
+  const remainingMs = expiresMs - nowMs;
+  const parentExpiresMs = row.parent_hash
+    ? new Date(row.parent_expires_at).getTime()
+    : Infinity;
+  const parentRemainingMs = parentExpiresMs - nowMs;
+  const renew = remainingMs < idleMs / 2 && capMs > expiresMs;
+  const renewParent =
+    !!row.parent_hash &&
+    parentRemainingMs < idleMs / 2 &&
+    parentCapMs > parentExpiresMs;
+  if (!renew && !renewParent) {
+    return { renew: false, renewParent: false, nextMaxAge: 0 };
+  }
+  const nextExpiresMs = Math.min(capMs, nowMs + idleMs);
+  const nextMaxAge = Math.max(1, Math.floor((nextExpiresMs - nowMs) / 1000));
+  return { renew, renewParent, nextMaxAge };
 }
 export function workspaceOrigin(config, workspace) {
   return `${config.origin.protocol}//${workspace}.${config.origin.host}`;

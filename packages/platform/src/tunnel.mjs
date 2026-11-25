@@ -98,6 +98,15 @@ export class Tunnel {
       }
     }
   }
+  notify(message) {
+    if (this.ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      send(this.ws, message);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   async http(req, res, session, authorize) {
     check(
       this.reading < 8 && this.pending.size < 64,
