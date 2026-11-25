@@ -177,7 +177,7 @@ test("invalid drafts block submission with the error list instead of saving", as
   render().find(node => node.type === "Button" && JSON.stringify(node.props.children).includes("在对话中使用")).props.onClick();
   await settle();
   assert.deepEqual(h.calls, []);
-  assert.ok(render().some(node => node.props.role === "alert" && JSON.stringify(node.props.children).includes("至少需要一个 Agent 任务")));
+  assert.ok(render().some(node => node.props.role === "alert" && JSON.stringify(node.props.children).includes("画布上还没有任务")));
 });
 
 // ---- AI 排流程：入口在编排页，确认在开始前，生成稿由编排 hook 交回落盘 ----

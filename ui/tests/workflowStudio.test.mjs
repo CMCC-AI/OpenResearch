@@ -109,14 +109,14 @@ test("input bindings and rework limits are validated against direct dependencies
   write.inputs = ["outline/outline.md"];
   assert.deepEqual(validateWorkflowDraft(draft, agentsFor(draft)), []);
   write.inputs = ["synthesis/themes.md"];
-  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((error) => error.includes("review-writing 的输入 synthesis/themes.md 必须来自直接前置任务的产物")));
+  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((error) => error.includes("synthesis/themes.md 不是直接前置任务的产物")));
   write.inputs = [];
   const review = draft.tasks.find((task) => task.id === "independent-review");
   review.gateDownstream = false;
-  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((error) => error.includes("设置了返工上限，需要同时开启结论把关")));
+  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((error) => error.includes("设了自动返工") && error.includes("结论把关")));
   review.gateDownstream = true;
   review.maxRework = 4;
-  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((error) => error.includes("返工上限需为 0–3 的整数")));
+  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((error) => error.includes("返工上限要在 0–3 之间")));
 });
 
 // —— 条件分流、汇合与阶段分组（批次一）——
@@ -156,13 +156,13 @@ test("route drafts refuse to save without both branches or a gated source", () =
   const draft = routedDraft();
   // 拆掉「不成立」分支：两条分支都必须有后续任务。
   const missingElse = removeWorkflowTask(draft, "task-4");
-  assert.ok(validateWorkflowDraft(missingElse, agentsFor(missingElse)).some((message) => message.includes("两条分支")));
+  assert.ok(validateWorkflowDraft(missingElse, agentsFor(missingElse)).some((message) => message.includes("两条出路")));
   // 来源任务没开结论把关：分流没有可读取的结论。
   const ungated = { ...draft, tasks: draft.tasks.map((task) => task.id === "task-2" ? { ...task, gateDownstream: false } : task) };
   assert.ok(validateWorkflowDraft(ungated, agentsFor(ungated)).some((message) => message.includes("结论把关")));
   // 来源产物不属于任何前置任务：先连线再选结论。
   const foreign = { ...draft, tasks: draft.tasks.map((task) => task.kind === "route" ? { ...task, route: { on: "verdict", source: "other.md", verdictIs: "pass" } } : task) };
-  assert.ok(validateWorkflowDraft(foreign, agentsFor(foreign)).some((message) => message.includes("条件来源")));
+  assert.ok(validateWorkflowDraft(foreign, agentsFor(foreign)).some((message) => message.includes("结论还没有来源")));
   // 分流节点不产出文件。
   const withOutputs = { ...draft, tasks: draft.tasks.map((task) => task.kind === "route" ? { ...task, outputs: ["route.md"] } : task) };
   assert.ok(validateWorkflowDraft(withOutputs, agentsFor(withOutputs)).some((message) => message.includes("不产出文件")));
@@ -191,7 +191,7 @@ test("join-any strategy needs at least two incoming connections", () => {
   draft = addAgentTask(draft, gateAgent);
   draft = addAgentTask(draft, fixAgent);
   draft = { ...draft, tasks: draft.tasks.map((task) => task.id === "task-2" ? { ...task, dependsOn: ["task-1"], waitFor: "any" } : task) };
-  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((message) => message.includes("至少两条前置")));
+  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((message) => message.includes("只连了一个前置")));
   draft = { ...draft, tasks: draft.tasks.map((task) => task.id === "task-2" ? { ...task, dependsOn: ["task-1"], waitFor: undefined } : task) };
   assert.deepEqual(validateWorkflowDraft(draft, agentsFor(draft)), []);
 });
@@ -206,7 +206,7 @@ test("stage frames save, rename and enforce the cap", () => {
   for (let index = 2; index <= 13; index += 1) {
     draft = addWorkflowFrame(draft, { id: `stage-${index}`, title: `阶段 ${index}`, x: 0, y: 0, width: 480, height: 360 });
   }
-  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((message) => message.includes("12 个阶段分组")));
+  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((message) => message.includes("阶段分组最多 12 个")));
   draft = removeWorkflowFrame(draft, "stage-13");
   assert.deepEqual(validateWorkflowDraft(draft, agentsFor(draft)), []);
   draft = removeWorkflowFrame(draft, "stage-12");
@@ -241,11 +241,11 @@ test("foreach nodes validate list source, item template and failure policy", () 
   // 模板路径越界。
   const escaping = foreachDraft("papers.md");
   escaping.tasks.find((task) => task.kind === "foreach").forEach.itemOutput = "../readings/{item}.md";
-  assert.ok(validateWorkflowDraft(escaping, agentsFor(escaping)).some((message) => message.includes("越界")));
+  assert.ok(validateWorkflowDraft(escaping, agentsFor(escaping)).some((message) => message.includes("相对路径")));
   // 逐项任务不产出文件。
   const withOutputs = foreachDraft("papers.md");
   withOutputs.tasks.find((task) => task.kind === "foreach").outputs = ["all.md"];
-  assert.ok(validateWorkflowDraft(withOutputs, agentsFor(withOutputs)).some((message) => message.includes("不直接声明产物")));
+  assert.ok(validateWorkflowDraft(withOutputs, agentsFor(withOutputs)).some((message) => message.includes("不直接写产物")));
 });
 
 test("human nodes require exactly one output and refuse approval overlays", () => {
@@ -255,9 +255,9 @@ test("human nodes require exactly one output and refuse approval overlays", () =
   assert.equal(human.outputs.length, 1);
   assert.deepEqual(validateWorkflowDraft(draft, agentsFor(draft)), []);
   const twoOutputs = { ...draft, tasks: draft.tasks.map((task) => task.kind === "human" ? { ...task, outputs: ["a.md", "b.md"] } : task) };
-  assert.ok(validateWorkflowDraft(twoOutputs, agentsFor(twoOutputs)).some((message) => message.includes("恰好一个产物")));
+  assert.ok(validateWorkflowDraft(twoOutputs, agentsFor(twoOutputs)).some((message) => message.includes("只能填一个路径")));
   const withApproval = { ...draft, tasks: draft.tasks.map((task) => task.kind === "human" ? { ...task, requiresApproval: true } : task) };
-  assert.ok(validateWorkflowDraft(withApproval, agentsFor(withApproval)).some((message) => message.includes("不需要完成后确认")));
+  assert.ok(validateWorkflowDraft(withApproval, agentsFor(withApproval)).some((message) => message.includes("提交就算完成")));
 });
 
 // —— 实验节点 experiment 与事件等待 wait（批次三）——
@@ -271,7 +271,7 @@ test("experiment nodes declare outputs and refuse approval overlays", () => {
   const noOutputs = { ...draft, tasks: draft.tasks.map((task) => task.kind === "experiment" ? { ...task, outputs: [] } : task) };
   assert.ok(validateWorkflowDraft(noOutputs, agentsFor(noOutputs)).some((message) => message.includes("1–30 个产物路径")));
   const withApproval = { ...draft, tasks: draft.tasks.map((task) => task.kind === "experiment" ? { ...task, requiresApproval: true } : task) };
-  assert.ok(validateWorkflowDraft(withApproval, agentsFor(withApproval)).some((message) => message.includes("开跑前你已确认过")));
+  assert.ok(validateWorkflowDraft(withApproval, agentsFor(withApproval)).some((message) => message.includes("开跑前你已经确认过一次")));
 });
 
 test("wait nodes need a safe source path and bounded timeout", () => {
@@ -279,9 +279,9 @@ test("wait nodes need a safe source path and bounded timeout", () => {
   draft = addWaitTask(draft);
   const wait = draft.tasks.at(-1);
   // 新建节点还没有等待路径：保存前必须补上。
-  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((message) => message.includes("缺少等待路径")));
+  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((message) => message.includes("还没填要等哪个文件")));
   wait.waitStep.source = "../escape.md";
-  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((message) => message.includes("越界")));
+  assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((message) => message.includes("相对路径")));
   wait.waitStep.source = "handoff/ready.md";
   wait.waitStep.timeoutMinutes = 25 * 60;
   assert.ok(validateWorkflowDraft(draft, agentsFor(draft)).some((message) => message.includes("0–1440 分钟")));

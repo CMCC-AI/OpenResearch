@@ -631,144 +631,145 @@ export function reconnectWorkflowTasks(
 
 export function validateWorkflowDraft(draft: WorkflowDraftInput, agents: WorkflowAgent[]): string[] {
   const errors: string[] = [];
-  // 报错要能和画布对上：节点卡片展示「专家名 + 任务 ID」，这里用同样的写法指代节点。
+  // 报错要能和画布对上：卡片上显示的就是节点名（专家名或自起的名称），这里只用名字指代节点。
+  // 内部 ID 不进报错——画布上看不到它，写出来只会增加阅读负担。
   const taskLabel = (task: WorkflowTask) => {
-    if (task.kind === "route") return `${task.brief || "条件分流"}（${task.id}）`;
-    if (task.kind === "foreach") return `${task.brief || "逐项处理"}（${task.id}）`;
-    if (task.kind === "human") return `${task.brief || "人工任务"}（${task.id}）`;
-    if (task.kind === "experiment") return `${task.brief || "实验节点"}（${task.id}）`;
-    if (task.kind === "wait") return `${task.brief || "事件等待"}（${task.id}）`;
+    if (task.kind === "route") return `「${task.brief.trim() || "条件分流"}」`;
+    if (task.kind === "foreach") return `「${task.brief.trim() || "逐项处理"}」`;
+    if (task.kind === "human") return `「${task.brief.trim() || "人工任务"}」`;
+    if (task.kind === "experiment") return `「${task.brief.trim() || "实验节点"}」`;
+    if (task.kind === "wait") return `「${task.brief.trim() || "事件等待"}」`;
     const name = agents.find((agent) => agent.id === task.role)?.name;
-    return name && name !== task.role ? `${name}（${task.id}）` : task.id;
+    return `「${name?.trim() || task.role || task.id}」`;
   };
   const routeById = new Map(draft.tasks.filter((task) => task.kind === "route").map((task) => [task.id, task]));
-  if (!draft.tasks.length) errors.push("至少需要一个 Agent 任务");
-  if (draft.tasks.length > 40) errors.push("工作流最多包含 40 个任务");
+  if (!draft.tasks.length) errors.push("画布上还没有任务：从左侧拖一个专家进来，或点「AI 排流程」用一句话生成。");
+  if (draft.tasks.length > 40) errors.push("任务太多了：一个工作流最多 40 个任务，先合并或删掉一些。");
   const ids = new Set(draft.tasks.map((task) => task.id));
-  if (ids.size !== draft.tasks.length) errors.push("任务 ID 重复");
+  if (ids.size !== draft.tasks.length) errors.push("有两个任务的内部编号重复：删掉其中一个，再加回来。");
   const knownAgents = new Set(agents.map((agent) => agent.id));
   const outputs = new Set<string>();
   for (const task of draft.tasks) {
     const label = taskLabel(task);
-    if (!task.id || task.id.length > 80 || !/^[A-Za-z0-9_-]+$/.test(task.id)) errors.push(`任务 ID 无效：${task.id || "（空）"}`);
+    if (!task.id || task.id.length > 80 || !/^[A-Za-z0-9_-]+$/.test(task.id)) errors.push(`任务的内部编号无效（当前：${task.id || "空"}）：只能用字母、数字、下划线和短横线，最多 80 个字符。`);
     const isRoute = task.kind === "route";
     if (isRoute) {
       // 分流节点的规则：不选专家、不产出文件、必须有前置和条件，两条分支都要有后续。
-      if (task.role) errors.push(`${label} 是分流节点，不选择专家`);
-      if (task.outputs.length) errors.push(`${label} 是分流节点，不产出文件`);
-      if (!task.brief.trim()) errors.push(`${label} 缺少名称说明`);
-      if (!task.dependsOn.length) errors.push(`${label} 还没有前置任务：先从上游连一条线进来`);
+      if (task.role) errors.push(`${label}是分流节点，只负责走哪条路，不用选专家：删掉这个节点，重新拖一个「条件分流」。`);
+      if (task.outputs.length) errors.push(`${label}是分流节点，不产出文件：删掉这个节点，重新拖一个「条件分流」。`);
+      if (!task.brief.trim()) errors.push(`${label}还没起名：在右侧「名称」里写一个，方便在画布上认出它。`);
       const route = task.route;
+      // 判断依据要读前置结论时，下面「结论还没有来源」已经说了怎么连线，这里不再重复。
+      if (!task.dependsOn.length && route?.on !== "verdict") errors.push(`${label}还没有前置任务：先从上游连一条线进来。`);
       if (!route) {
-        errors.push(`${label} 缺少分流条件`);
+        errors.push(`${label}还没设置判断依据：在右侧「判断依据」里选一项。`);
       } else if (route.on === "verdict") {
-        if (route.verdictIs !== "pass" && route.verdictIs !== "blocked") errors.push(`${label} 的结论条件只允许「通过」或「有问题」`);
+        if (route.verdictIs !== "pass" && route.verdictIs !== "blocked") errors.push(`${label}的成立条件只能是「通过」或「有问题」：在右侧重新选一次。`);
         const owner = draft.tasks.find((candidate) => candidate.outputs.includes(route.source ?? ""));
-        if (!route.source || !owner) errors.push(`${label} 的条件来源不是任何前置任务的产物：先连线，再选择要读取的结论`);
+        if (!route.source || !owner) errors.push(`${label}要读的结论还没有来源：先把它连到会给出结论的任务，再在右侧「读取哪个结论」里选。`);
         else {
-          if (!task.dependsOn.includes(owner.id)) errors.push(`${label} 的条件来源必须来自直接前置任务的产物`);
-          if (!owner.gateDownstream) errors.push(`产物 ${route.source} 所在任务未开启结论把关，分流没有可读取的结论`);
+          if (!task.dependsOn.includes(owner.id)) errors.push(`${label}只能读直接相连任务的结论：先把它和${taskLabel(owner)}连起来。`);
+          if (!owner.gateDownstream) errors.push(`${label}想读${taskLabel(owner)}的结论，但那个任务没开「结论把关」：先给它打开，或换一处结论来源。`);
         }
       } else if (route.on === "failure") {
-        if (route.source || route.verdictIs) errors.push(`${label} 的「上游失败」条件不需要选择来源产物或结论值`);
+        if (route.source || route.verdictIs) errors.push(`${label}按「上游任务失败」判断，不用再选读哪个结论：这两项清空即可。`);
       } else {
-        errors.push(`${label} 的条件类型无效`);
+        errors.push(`${label}的判断依据无效：在右侧「判断依据」里重新选。`);
       }
-      if (route && route.defaultBranch && route.defaultBranch !== ROUTE_THEN && route.defaultBranch !== ROUTE_ELSE) errors.push(`${label} 的兜底分支无效`);
-      if (task.forEach) errors.push(`${label} 是分流节点，不能配置逐项处理`);
-      if (task.waitStep) errors.push(`${label} 是分流节点，不能配置事件等待`);
+      if (route && route.defaultBranch && route.defaultBranch !== ROUTE_THEN && route.defaultBranch !== ROUTE_ELSE) errors.push(`${label}的兜底分支无效：在右侧「上游拿不到结论时走哪条」里重新选。`);
+      if (task.forEach) errors.push(`${label}是分流节点，用不到逐项处理：删掉这个节点，重新拖一个「条件分流」。`);
+      if (task.waitStep) errors.push(`${label}是分流节点，用不到事件等待：删掉这个节点，重新拖一个「条件分流」。`);
     } else if (task.kind === "foreach") {
       // 逐项任务的规则：不选专家、不产出文件，列表来源来自直接前置，模板必须含 {item}。
-      if (task.role) errors.push(`${label} 是逐项任务，不选择专家`);
-      if (task.outputs.length) errors.push(`${label} 是逐项任务，不直接声明产物：逐项产物由模板按项展开`);
-      if (!task.brief.trim()) errors.push(`${label} 缺少名称说明`);
-      if (!task.dependsOn.length) errors.push(`${label} 还没有前置任务：先从上游连一条线进来`);
-      if (task.route) errors.push(`${label} 是逐项任务，不能配置分流条件`);
-      if (task.routeBranch) errors.push(`${label} 是逐项任务，不设置分支标记`);
-      if (task.waitStep) errors.push(`${label} 是逐项任务，不能配置事件等待`);
+      if (task.role) errors.push(`${label}是逐项任务，会按清单一项一项执行，不用选专家：删掉这个节点，重新拖一个「逐项处理」。`);
+      if (task.outputs.length) errors.push(`${label}是逐项任务，不直接写产物：每一项的文件按右侧「逐项产物模板」生成。`);
+      if (!task.brief.trim()) errors.push(`${label}还没起名：在右侧「名称」里写一个，方便在画布上认出它。`);
+      // 清单来源必须来自直接前置：下面的来源检查会一并说明怎么连线，这里不重复提示「没有前置任务」。
+      if (task.route) errors.push(`${label}是逐项任务，用不到分流条件：删掉这个节点，重新拖一个「逐项处理」。`);
+      if (task.routeBranch) errors.push(`${label}是逐项任务，不用标「成立 / 不成立」：删掉这个节点，重新拖一个「逐项处理」。`);
+      if (task.waitStep) errors.push(`${label}是逐项任务，用不到事件等待：删掉这个节点，重新拖一个「逐项处理」。`);
       const forEach = task.forEach;
       if (!forEach) {
-        errors.push(`${label} 缺少逐项处理定义`);
+        errors.push(`${label}缺少逐项设置：删掉这个节点，重新拖一个「逐项处理」。`);
       } else {
         const owner = draft.tasks.find((candidate) => candidate.outputs.includes(forEach.source));
-        if (!forEach.source || !owner) errors.push(`${label} 的列表来源不是任何前置任务的产物：先连线，再选择要逐项处理的清单`);
+        if (!forEach.source || !owner) errors.push(`${label}还不知道按哪份清单逐项执行：先把它连到会产出清单的任务，再在右侧「列表来源」里选那份清单。`);
         else {
-          if (!task.dependsOn.includes(owner.id)) errors.push(`${label} 的列表来源必须来自直接前置任务的产物`);
+          if (!task.dependsOn.includes(owner.id)) errors.push(`${label}选的清单不在它的前置任务里：先把它和${taskLabel(owner)}连起来，或在「列表来源」里换一份。`);
         }
-        if (!forEach.itemOutput.includes("{item}")) errors.push(`${label} 的产物模板必须包含 {item} 占位`);
-        else if (forEach.itemOutput.replace("{item}", "x").startsWith("/") || forEach.itemOutput.replace("{item}", "x").includes("..")) errors.push(`${label} 的产物模板路径越界`);
-        if (!forEach.itemBrief?.trim()) errors.push(`${label} 缺少逐项简报`);
-        if (forEach.onFailure && forEach.onFailure !== "pause" && forEach.onFailure !== "skip") errors.push(`${label} 的失败策略无效`);
+        if (!forEach.itemOutput.includes("{item}")) errors.push(`${label}的逐项产物模板里没有 {item}：每一项都会写到同一个文件，把 {item} 放回路径里，比如 readings/{item}.md。`);
+        else if (forEach.itemOutput.replace("{item}", "x").startsWith("/") || forEach.itemOutput.replace("{item}", "x").includes("..")) errors.push(`${label}的逐项产物模板要用研究目录里的相对路径：不能以 / 开头，也不能带 ..。`);
+        if (!forEach.itemBrief?.trim()) errors.push(`${label}还没写逐项简报：每一项要做什么，写在右侧「逐项简报」里。`);
+        if (forEach.onFailure && forEach.onFailure !== "pause" && forEach.onFailure !== "skip") errors.push(`${label}的「某项失败时」只有两个选择：暂停等你处理，或跳过这一项。`);
       }
       if (task.requiresApproval || task.gateDownstream || (task.maxRework ?? 0) > 0) {
-        errors.push(`${label} 是逐项任务，不支持完成后确认、结论把关或返工`);
+        errors.push(`${label}是逐项任务，没有「完成后确认 / 结论把关 / 返工」：删掉这个节点，重新拖一个「逐项处理」。`);
       }
-      if (task.waitStep) errors.push(`${label} 是逐项任务，不能配置事件等待`);
     } else if (task.kind === "human") {
       // 人工任务的规则：用户亲自完成，提交即验收，不叠加确认或把关。
-      if (task.role) errors.push(`${label} 是人工任务，不选择专家`);
-      if (task.outputs.length !== 1) errors.push(`${label} 需要恰好一个产物路径：你的提交会写入它`);
-      if (task.requiresApproval) errors.push(`${label} 是人工任务，不需要完成后确认：你的提交本身就是产出`);
-      if (task.gateDownstream || (task.maxRework ?? 0) > 0) errors.push(`${label} 是人工任务，不支持结论把关或返工`);
-      if (task.route || task.forEach || task.waitStep || task.routeBranch) errors.push(`${label} 是人工任务，不支持分流、逐项、等待或分支配置`);
+      if (task.role) errors.push(`${label}是人工任务，由你亲自完成，不用选专家：删掉这个节点，重新拖一个「人工任务」。`);
+      if (task.outputs.length !== 1) errors.push(`${label}的「产出文件」只能填一个路径：你提交的内容会写进这个文件。`);
+      if (task.requiresApproval) errors.push(`${label}是人工任务，提交就算完成，不用再设「完成后确认」：这处设置要去掉（删掉节点重新拖一个即可）。`);
+      if (task.gateDownstream || (task.maxRework ?? 0) > 0) errors.push(`${label}是人工任务，不支持「结论把关」或「返工」：删掉这个节点，重新拖一个「人工任务」。`);
+      if (task.route || task.forEach || task.waitStep || task.routeBranch) errors.push(`${label}是人工任务，用不到分流、逐项、等待或分支：删掉这个节点，重新拖一个「人工任务」。`);
     } else if (task.kind === "experiment") {
       // 实验节点的规则：无专家、声明运行产物；契约绑定与 G2/G3 授权沿用运行流程。
-      if (task.role) errors.push(`${label} 是实验节点，不选择专家：实验由系统直接运行`);
-      if (!task.outputs.length || task.outputs.length > 30) errors.push(`${label} 需要 1–30 个产物路径：跑完后逐个检查是否生成`);
-      if (task.requiresApproval) errors.push(`${label} 是实验节点，不需要完成后确认：开跑前你已确认过，跑完不再停一次`);
-      if (task.gateDownstream || (task.maxRework ?? 0) > 0) errors.push(`${label} 是实验节点，不支持结论把关或返工`);
-      if (task.route || task.forEach || task.waitStep || task.routeBranch) errors.push(`${label} 是实验节点，不支持分流、逐项、等待或分支配置`);
+      if (task.role) errors.push(`${label}是实验节点，由系统直接运行，不用选专家：删掉这个节点，重新拖一个「实验节点」。`);
+      if (!task.outputs.length || task.outputs.length > 30) errors.push(`${label}需要声明 1–30 个产物路径（每行一个）：跑完后系统逐个检查是否生成。`);
+      if (task.requiresApproval) errors.push(`${label}是实验节点，开跑前你已经确认过一次，跑完不再停：这处「完成后确认」要去掉（删掉节点重新拖一个即可）。`);
+      if (task.gateDownstream || (task.maxRework ?? 0) > 0) errors.push(`${label}是实验节点，不支持「结论把关」或「返工」：删掉这个节点，重新拖一个「实验节点」。`);
+      if (task.route || task.forEach || task.waitStep || task.routeBranch) errors.push(`${label}是实验节点，用不到分流、逐项、等待或分支：删掉这个节点，重新拖一个「实验节点」。`);
     } else if (task.kind === "wait") {
       // 等待节点的规则：等研究目录下路径出现，超时转失败等待研究负责人。
-      if (task.role) errors.push(`${label} 是等待节点，不选择专家`);
-      if (task.outputs.length) errors.push(`${label} 是等待节点，不产出文件`);
-      if (task.requiresApproval || task.gateDownstream || (task.maxRework ?? 0) > 0) errors.push(`${label} 是等待节点，不支持完成后确认、结论把关或返工`);
-      if (task.route || task.forEach || task.routeBranch) errors.push(`${label} 是等待节点，不支持分流、逐项或分支配置`);
+      if (task.role) errors.push(`${label}是等待节点，只负责等文件出现，不用选专家：删掉这个节点，重新拖一个「事件等待」。`);
+      if (task.outputs.length) errors.push(`${label}是等待节点，不产出文件：删掉这个节点，重新拖一个「事件等待」。`);
+      if (task.requiresApproval || task.gateDownstream || (task.maxRework ?? 0) > 0) errors.push(`${label}是等待节点，不支持「完成后确认 / 结论把关 / 返工」：删掉这个节点，重新拖一个「事件等待」。`);
+      if (task.route || task.forEach || task.routeBranch) errors.push(`${label}是等待节点，用不到分流、逐项或分支：删掉这个节点，重新拖一个「事件等待」。`);
       const waitStep = task.waitStep;
       if (!waitStep) {
-        errors.push(`${label} 缺少等待定义`);
+        errors.push(`${label}缺少等待设置：删掉这个节点，重新拖一个「事件等待」。`);
       } else {
-        if (!waitStep.source) errors.push(`${label} 缺少等待路径：先填要等待出现的文件`);
-        if (waitStep.source && (waitStep.source.startsWith("/") || waitStep.source.includes(".."))) errors.push(`${label} 的等待路径越界`);
+        if (!waitStep.source) errors.push(`${label}还没填要等哪个文件：在右侧「等待出现的文件」里填上路径，文件一出现就继续。`);
+        if (waitStep.source && (waitStep.source.startsWith("/") || waitStep.source.includes(".."))) errors.push(`${label}的等待路径要用研究目录里的相对路径：不能以 / 开头，也不能带 ..。`);
         const timeout = waitStep.timeoutMinutes ?? 0;
-        if (!Number.isInteger(timeout) || timeout < 0 || timeout > 24 * 60) errors.push(`${label} 的超时需为 0–1440 分钟（0 表示不限时）`);
+        if (!Number.isInteger(timeout) || timeout < 0 || timeout > 24 * 60) errors.push(`${label}的超时要在 0–1440 分钟之间（0 表示一直等）。`);
       }
     } else {
-      if (!knownAgents.has(task.role)) errors.push(`${label} 选择了不存在的专家：${task.role}`);
-      if (!task.brief.trim()) errors.push(`${label} 缺少任务简报`);
-      if (!task.outputs.length) errors.push(`${label} 至少需要一个产物路径`);
-      if (task.route) errors.push(`${label} 不是分流节点，不能配置分流条件`);
-      if (task.forEach) errors.push(`${label} 不是逐项任务，不能配置逐项处理`);
-      if (task.waitStep) errors.push(`${label} 不是等待节点，不能配置事件等待`);
+      if (!knownAgents.has(task.role)) errors.push(`${label}选的专家已经不在了：在右侧「Agent」里换一位。`);
+      if (!task.brief.trim()) errors.push(`${label}还没写任务简报：在右侧「任务简报」里写清楚要它做什么。`);
+      if (!task.outputs.length) errors.push(`${label}还没写产物：在右侧「声明产物」里写上它会生成的文件路径。`);
+      if (task.route) errors.push(`${label}不是分流节点，用不到分流条件：这处设置要去掉（删掉节点重新拖一个即可）。`);
+      if (task.forEach) errors.push(`${label}不是逐项任务，用不到逐项处理：这处设置要去掉（删掉节点重新拖一个即可）。`);
+      if (task.waitStep) errors.push(`${label}不是等待节点，用不到事件等待：这处设置要去掉（删掉节点重新拖一个即可）。`);
     }
     for (const output of task.outputs) {
-      if (!output || output.startsWith("/") || output.includes("..") || output.includes("\\") || output.includes(":")) errors.push(`${label} 的产物路径无效：${output || "（空）"}`);
-      if (outputs.has(output)) errors.push(`产物路径重复：${output}`);
+      if (!output || output.startsWith("/") || output.includes("..") || output.includes("\\") || output.includes(":")) errors.push(`${label}的产物路径无效（${output || "空"}）：要填研究目录里的相对路径，不能以 / 开头，也不能带 .. \\ :。`);
+      if (outputs.has(output)) errors.push(`有两个任务要把结果写进同一个文件（${output}）：改掉其中一个路径。`);
       outputs.add(output);
     }
-    for (const dependency of task.dependsOn) if (!ids.has(dependency)) errors.push(`${label} 依赖了已删除或不存在的前置任务：${dependency}`);
+    for (const dependency of task.dependsOn) if (!ids.has(dependency)) errors.push(`${label}连着一个已经不存在的任务（${dependency}）：重新连一条线，或删掉这条线。`);
     if (task.routeBranch && task.routeBranch !== ROUTE_THEN && task.routeBranch !== ROUTE_ELSE) {
-      errors.push(`${label} 的分支标记无效`);
+      errors.push(`${label}的「成立 / 不成立」标记无效：在右侧重新选一个。`);
     }
     if (task.routeBranch && !task.dependsOn.some((dependency) => routeById.has(dependency))) {
-      errors.push(`${label} 标记了分支，但它的前置里没有分流节点`);
+      errors.push(`${label}标了「成立 / 不成立」，但它的前置里没有分流节点：先连一个分流节点，或去掉这个标记。`);
     }
     const waitFor = task.waitFor;
-    if (waitFor && waitFor !== "all" && waitFor !== "any") errors.push(`${label} 的汇合策略无效`);
-    if (waitFor === "any" && task.dependsOn.length < 2) errors.push(`${label} 的汇合策略「任一完成」需要至少两条前置连线`);
+    if (waitFor && waitFor !== "all" && waitFor !== "any") errors.push(`${label}的汇合方式无效：在右侧「汇合方式」里重新选。`);
+    if (waitFor === "any" && task.dependsOn.length < 2) errors.push(`${label}选了「任一前置完成即继续」，但只连了一个前置：再连一个，或改回「等全部前置完成」。`);
     const depOutputs = new Set(task.dependsOn.flatMap((dependency) => draft.tasks.find((t) => t.id === dependency)?.outputs ?? []));
     const seenInputs = new Set<string>();
     for (const input of task.inputs ?? []) {
-      if (!depOutputs.has(input)) errors.push(`${label} 的输入 ${input} 必须来自直接前置任务的产物（先连线，再勾选）`);
-      if (seenInputs.has(input)) errors.push(`${label} 的输入重复：${input}`);
+      if (!depOutputs.has(input)) errors.push(`${label}的输入 ${input} 不是直接前置任务的产物：先把它连到产出这个文件的任务，再回来勾选。`);
+      if (seenInputs.has(input)) errors.push(`${label}重复勾了同一个输入：${input}。`);
       seenInputs.add(input);
     }
     const maxRework = task.maxRework ?? 0;
-    if (!Number.isInteger(maxRework) || maxRework < 0 || maxRework > MAX_REWORK) errors.push(`${label} 的返工上限需为 0–${MAX_REWORK} 的整数`);
-    if (maxRework > 0 && !task.gateDownstream) errors.push(`${label} 设置了返工上限，需要同时开启结论把关`);
-    if (task.gateDownstream && !task.dependsOn.length) errors.push(`${label} 开启了结论把关，但没有任何前置任务：从上游连一条线进来，或关闭结论把关`);
+    if (!Number.isInteger(maxRework) || maxRework < 0 || maxRework > MAX_REWORK) errors.push(`${label}的返工上限要在 0–${MAX_REWORK} 之间：在右侧「结论有问题时自动返工」里重新选。`);
+    if (maxRework > 0 && !task.gateDownstream) errors.push(`${label}设了自动返工，但没开「结论把关」：返工由结论触发，先打开结论把关。`);
+    if (task.gateDownstream && !task.dependsOn.length) errors.push(`${label}开了「结论把关」，但前面没有任务可把关：先连一个前置任务进来，或关掉结论把关。`);
     if (isRoute && (task.requiresApproval || task.gateDownstream || (task.maxRework ?? 0) > 0)) {
-      errors.push(`${label} 是分流节点，不支持完成后确认、结论把关或返工`);
+      errors.push(`${label}是分流节点，不支持「完成后确认 / 结论把关 / 返工」：删掉这个节点，重新拖一个「条件分流」。`);
     }
   }
   // 分支拓扑：每个分流节点的两条分支都要有后续任务，「不成立」即默认出口，必须显式存在。
@@ -776,13 +777,13 @@ export function validateWorkflowDraft(draft: WorkflowDraftInput, agents: Workflo
     const children = draft.tasks.filter((task) => task.dependsOn.includes(route.id));
     const hasThen = children.some((child) => child.routeBranch === ROUTE_THEN);
     const hasElse = children.some((child) => child.routeBranch === ROUTE_ELSE);
-    if (children.some((child) => !child.routeBranch)) errors.push(`${taskLabel(route)} 有后续任务还没标记走「成立」还是「不成立」分支`);
-    if (!children.length || !hasThen || !hasElse) errors.push(`${taskLabel(route)} 需要「成立」和「不成立」两条分支都有后续任务`);
+    if (children.some((child) => !child.routeBranch)) errors.push(`${taskLabel(route)}后面的任务还没定走「成立」还是「不成立」：选中那个任务，在右侧选一条分支。`);
+    if (!children.length || !hasThen || !hasElse) errors.push(`${taskLabel(route)}要有两条出路：「成立」和「不成立」各连一个后续任务。`);
   }
   const visiting = new Set<string>();
   const visited = new Set<string>();
   const visit = (id: string) => {
-    if (visiting.has(id)) { errors.push(`任务依赖存在循环：${id}`); return; }
+    if (visiting.has(id)) { errors.push("任务的连线绕成了圈：删掉多余的一条线，让流程只往一个方向走。"); return; }
     if (visited.has(id)) return;
     visiting.add(id);
     draft.tasks.find((task) => task.id === id)?.dependsOn.forEach(visit);
@@ -791,10 +792,10 @@ export function validateWorkflowDraft(draft: WorkflowDraftInput, agents: Workflo
   };
   draft.tasks.forEach((task) => visit(task.id));
   // 阶段分组框只占画布空间，与后端约定同一套上限。
-  if ((draft.frames?.length ?? 0) > 12) errors.push("工作流最多包含 12 个阶段分组");
+  if ((draft.frames?.length ?? 0) > 12) errors.push("阶段分组最多 12 个：先合并或删掉一些。");
   for (const frame of draft.frames ?? []) {
-    if (!frame.title.trim() || frame.title.length > 60) errors.push(`阶段分组「${frame.title || frame.id}」的名称需要为 1–60 个字符`);
-    if (!Number.isFinite(frame.width) || !Number.isFinite(frame.height) || frame.width < 160 || frame.height < 120 || frame.width > 6000 || frame.height > 6000) errors.push(`阶段分组「${frame.title}」的尺寸无效`);
+    if (!frame.title.trim() || frame.title.length > 60) errors.push(`阶段分组的名称要 1–60 个字符（当前：${frame.title || frame.id}）。`);
+    if (!Number.isFinite(frame.width) || !Number.isFinite(frame.height) || frame.width < 160 || frame.height < 120 || frame.width > 6000 || frame.height > 6000) errors.push(`阶段分组「${frame.title}」的尺寸超出了画布范围：拖动右下角把它调小。`);
   }
   // 画布草稿按自定义编排提交：专家与依赖由研究负责人自由组合，不做预设名册检查。
   // W1–W4 预设契约只约束聊天里 AI 自动路由登记的计划。

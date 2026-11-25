@@ -254,21 +254,21 @@ export const workflowNodeTypes = { agent: AgentNodeCard, system: SystemNodeCard,
 const nodeTypes = workflowNodeTypes;
 
 export function routeConditionText(task: WorkflowTask): string {
-  if (!task.route) return "尚未设置分流条件";
+  if (!task.route) return "还没设置判断依据";
   if (task.route.on === "failure") return "任一直接前置执行失败即走「成立」分支";
   return `前置结论为「${task.route.verdictIs === "blocked" ? "有问题" : "通过"}」时走「成立」分支`;
 }
 
 export function waitConditionText(task: WorkflowTask): string {
   const waitStep = task.waitStep;
-  if (!waitStep?.source) return "尚未设置等待路径";
+  if (!waitStep?.source) return "还没填要等哪个文件";
   const timeout = waitStep.timeoutMinutes ? `超时 ${waitStep.timeoutMinutes} 分钟转失败` : "不限时等待";
   return `等待「${waitStep.source}」出现 · ${timeout}`;
 }
 
 export function foreachConditionText(task: WorkflowTask): string {
   const forEach = task.forEach;
-  if (!forEach?.source) return "尚未选择列表来源：先连线，再选要逐项处理的清单";
+  if (!forEach?.source) return "还没选清单：先连线，再在右侧选「列表来源」";
   const policy = forEach.onFailure === "skip" ? "某项失败时跳过继续" : "某项失败时暂停等待研究负责人";
   return `按「${forEach.source}」的清单逐项执行 · ${policy}`;
 }
