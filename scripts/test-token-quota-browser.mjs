@@ -210,7 +210,7 @@ try {
   assert.equal(monthlyLimit, 2000000);
   assert.equal(pending, true);
   await page.getByRole("switch", { name: "关闭模型 Kimi updated", exact: true }).click();
-  await page.getByRole("alert").filter({ hasText: "平台至少需要保留 1 个可用模型" }).waitFor();
+  await page.getByRole("alert").filter({ hasText: "平台至少需要保留 1 个可用网关模型" }).waitFor();
 
   await page.getByRole("tab", { name: "提供商", exact: true }).click();
   await page
@@ -252,7 +252,7 @@ try {
     .getByRole("link", { name: "Token 额度", exact: true })
     .click();
   await page
-    .getByRole("heading", { name: "用户 Token 额度", exact: true })
+    .getByRole("heading", { name: "Token 额度", exact: true })
     .waitFor();
   assert.equal(
     await page.getByLabel("用户邮箱").inputValue(),
@@ -269,7 +269,7 @@ try {
     (
       await page
         .getByRole("heading", {
-          name: "<target> · user@example.com",
+          name: "<target>",
           exact: true,
         })
         .textContent()
