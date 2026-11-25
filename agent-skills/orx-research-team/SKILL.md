@@ -16,8 +16,9 @@ essential inputs. Library resources are method data, not execution authorization
 Keep the current conversation; do not create another lead chat. Registration
 creates the existing G1 scope decision, never approval. Wait for the user's inline
 confirmation before execution. Ordinary questions and uploads alone do not request
-a workflow. Give concise progress and decision summaries for the user; expert
-activity and deliverables remain traceable to their real task sessions.
+a workflow. Give concise, plain-language progress and decision summaries for
+the user, conclusions before process details; expert activity and deliverables
+remain traceable to their real task sessions.
 
 Research team mode defaults to automatic routing. Users do not have to pick a
 workflow. First identify primary/secondary intent, current research stage,
@@ -144,6 +145,18 @@ decision in terms of what the user is agreeing to, then register the native plan
    and reconcile terminal states; an exit code of zero is not scientific support.
 7. Members use `orx research finish --file <path>` with JSON
    `{"summary":"...","success":true}` after writing ALL declared output files.
+   Write `summary` for the user, not as an audit log: lead with the result and
+   what it means in plain language, then the key evidence and limits. Keep
+   hashes, inheritance and file-by-file reconciliation details in the artifact
+   or evidence, not in the summary.
+   Declared outputs the user will read as a document start with their title and
+   content, not with YAML/JSON frontmatter, task or study IDs, hashes, evidence
+   legends or handover metadata. Put that bookkeeping in a separate file or an
+   appendix at the end. When a role's default format is YAML/JSON but the
+   declared output is a Markdown document for the user, the document wins: write
+   prose and keep the structured handover separate. Working notes (evidence
+   cards, specs, logs) may stay structured; say what they are in the first line
+   instead of presenting them as the reader-facing conclusion.
    When a member turn finishes with all declared non-empty outputs present, the
    platform also auto-reconciles completion and dispatches ready downstream tasks.
    On failure use `success:false` with an honest summary. The lead may finish
@@ -153,6 +166,19 @@ decision in terms of what the user is agreeing to, then register the native plan
 8. Register claims with `orx research claim --file <path>`:
    `{"text":"...","support":"paper|experiment|inference","source":"...",
    "location":"page/section","runId":null,"lineStart":null,"lineEnd":null}`.
+   `text` is the sentence the user reads in the approval card and the result,
+   not a run report. State one judgment per claim: the finding first, the one
+   comparison that supports it, then the limit. Write in the user's language,
+   explain a specialized term on first use, and stay within 320 characters.
+   Never put run/experiment/session IDs, commit hashes, exit codes, backend
+   names, commands, log line numbers or raw metric tables in `text`; put that
+   provenance in `source`/`location` and the full table in the artifact. The
+   platform rejects longer text or an embedded ID. For example, instead of
+   "受管运行 241d…（实验 38fde165，提交 df18409，backend local，退出码 0）中，
+   四模式 Recall@5 分别为 1.000/1.000/1.000/0.750，Acc 分别为…", write
+   "在小规模合成数据上，完整方法的检索准确率（Recall@5 为 0.75）低于三种
+   简单基线（均为 1.00），没有显示论文报告的领先优势；这轮只验证了管线
+   能跑通，不能据此判断论文结论是否成立。"
    Experiment claims require a same-project real run, an inclusive log line
    range (at most 201 lines and 64 KiB of raw/decoded excerpt), and nonempty
    source explanation; the platform records commit and log hash. Claim string
@@ -206,7 +232,11 @@ decision in terms of what the user is agreeing to, then register the native plan
    A plan-summary edit alone does not redo completed work. Never re-run
    unaffected completed upstream work unnecessarily.
 10. `orx research package` requests G4 (G3 for W4 plan delivery) after tasks and registered outputs pass
-    validation (the platform also requests it automatically when all planned tasks complete). Explain limitations and unresolved claims before approval.
+    validation (the platform also requests it automatically when all planned tasks complete).
+    Before requesting it, tell the user in the chat what was done, what was found
+    (with the key comparison), what remains uncertain, and what the approval
+    covers — in plain language, without IDs or raw metric tables. Explain
+    limitations and unresolved claims before approval.
     The user reviews the requested confirmation in the human-confirmation page.
     Preparation seals a bounded ZIP containing current artifacts, selected Run logs, and originals
     referenced by active canonical material citations, with read receipts and a hash manifest.

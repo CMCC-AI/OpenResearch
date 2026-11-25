@@ -7,6 +7,49 @@ use super::*;
 
 pub(super) const MAX_CLAIM_INPUT_BYTES: usize = 64 * 1024;
 pub(super) const MAX_EXCERPT_BYTES: usize = 64 * 1024;
+/// Claim text is the conclusion a human reads before approving delivery;
+/// internal bookkeeping and raw metric dumps belong in the evidence fields.
+pub(super) const MAX_CLAIM_TEXT_CHARS: usize = 320;
+
+/// Reject run-report prose that would force readers to decode the platform's
+/// own identifiers. Error text tells the lead how to rewrite the claim.
+fn validate_human_readable_claim(text: &str) -> Result<()> {
+    if text.trim().chars().count() > MAX_CLAIM_TEXT_CHARS {
+        return Err(anyhow!(
+            "结论正文面向用户，最多 {MAX_CLAIM_TEXT_CHARS} 字：一条结论只写一个判断，先写发现，再写关键对比和局限；原始指标与运行细节请放进来源说明或产物文件"
+        ));
+    }
+    if contains_uuid(text) {
+        return Err(anyhow!(
+            "结论正文不要包含运行、实验或会话编号；请把这些内部标识写进来源说明（source），正文只写用户能直接看懂的判断"
+        ));
+    }
+    Ok(())
+}
+
+/// Detect the 8-4-4-4-12 hex shape used by run, experiment and session IDs.
+fn contains_uuid(text: &str) -> bool {
+    const GROUPS: [usize; 5] = [8, 4, 4, 4, 12];
+    let bytes = text.as_bytes();
+    (0..bytes.len()).any(|start| {
+        let mut index = start;
+        for (group, len) in GROUPS.into_iter().enumerate() {
+            if group > 0 {
+                if bytes.get(index) != Some(&b'-') {
+                    return false;
+                }
+                index += 1;
+            }
+            for _ in 0..len {
+                match bytes.get(index) {
+                    Some(byte) if byte.is_ascii_hexdigit() => index += 1,
+                    _ => return false,
+                }
+            }
+        }
+        true
+    })
+}
 
 pub(super) struct PreparedClaim {
     study_id: String,
@@ -158,6 +201,7 @@ impl Store {
         {
             return Err(anyhow!("结论需要文本、来源及明确的证据类型"));
         }
+        validate_human_readable_claim(&input.text)?;
         let study = self.research_study(id)?;
         study.ensure_active()?;
         let mut claim = EvidenceClaim {

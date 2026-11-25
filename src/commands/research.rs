@@ -48,6 +48,7 @@ pub enum ResearchCommand {
         #[arg(long)]
         file: String,
     },
+    /// Register one user-readable conclusion with verifiable evidence.
     Claim {
         #[arg(long)]
         file: String,

@@ -294,3 +294,34 @@ fn evidence_capture_rejects_mutating_log_and_oversized_inputs_without_writes() {
         before
     );
 }
+
+#[test]
+fn claim_text_must_read_as_a_conclusion_not_a_run_report() {
+    let (_dir, store, study, input) = evidence_fixture();
+    let count = |store: &Store, study: &Study| store.research_study(&study.id).unwrap().claims.len();
+
+    let mut run_report = input.clone();
+    run_report.text =
+        "受管运行 241d9348-9836-4cc4-a9ed-e0e9ab021d89 中，四模式 Recall@5 分别为 1.000/1.000/1.000/0.750。"
+            .into();
+    let error = store
+        .research_add_claim(&study.id, run_report)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("内部标识"), "{error}");
+    assert_eq!(count(&store, &study), 0);
+
+    let mut too_long = input.clone();
+    too_long.text = "结".repeat(evidence::MAX_CLAIM_TEXT_CHARS + 1);
+    let error = store
+        .research_add_claim(&study.id, too_long)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("最多 320 字"), "{error}");
+    assert_eq!(count(&store, &study), 0);
+
+    let mut boundary = input;
+    boundary.text = "结".repeat(evidence::MAX_CLAIM_TEXT_CHARS);
+    store.research_add_claim(&study.id, boundary).unwrap();
+    assert_eq!(count(&store, &study), 1);
+}
