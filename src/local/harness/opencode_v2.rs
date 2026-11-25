@@ -1563,16 +1563,29 @@ async fn stream_generation(
             }
             // 一次性生成没有人可以点卡片：任何待批准的请求一律拒绝，别让等待卡住。
             None if kind.starts_with("permission.") => {
+                let mut rejected = false;
                 if let Ok(pending) = get(endpoint, &format!("{path}/permission")).await {
                     for request in pending["data"].as_array().into_iter().flatten() {
                         if let Some(id) = request["id"].as_str() {
-                            let _ = reply_permission(
+                            rejected |= reply_permission(
                                 endpoint,
                                 &format!("{path}/permission/{id}/reply"),
                                 "reject",
                             )
-                            .await;
+                            .await
+                            .is_ok();
                         }
+                    }
+                }
+                // 列表拉取失败或为空时兜底，避免等待卡到超时。
+                if !rejected {
+                    if let Some(id) = data["id"].as_str() {
+                        let _ = reply_permission(
+                            endpoint,
+                            &format!("{path}/permission/{id}/reply"),
+                            "reject",
+                        )
+                        .await;
                     }
                 }
             }
