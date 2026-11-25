@@ -70,7 +70,8 @@ test("inline artifact readers verify accepted bytes and reject a later mutable f
   const artifact = { path: "writing/review.md", sha256: await sha256Hex(new TextEncoder().encode(file.content)), bytes: file.content.length };
   study.plans[0].tasks[0].artifacts = [artifact];
   const html = app.render(study);
-  assert.match(html, /文件指纹/);
+  assert.doesNotMatch(html, /文件指纹/);
+  assert.doesNotMatch(html, new RegExp(artifact.sha256));
   assert.doesNotMatch(html, /验收 SHA-256/);
   const reader = app.readers.find(item => item.queryKey.includes(artifact.sha256));
   assert.ok(reader);
@@ -137,17 +138,19 @@ test("a delivered study surfaces its final results open while mid-chain artifact
   study.decisions.push({ id: "g4", gate: "G4", version: 1, status: "approved", scopeHash: "delivery" });
   const html = app.render(study);
   assert.match(html, /aria-label="研究成果"/);
-  assert.match(html, /Final packaged conclusion/);
   assert.match(html, /Accepted report/);
   assert.match(html, /data-outcome-conclusion/);
   assert.match(html, /成果清单/);
   assert.match(html, /研究结论/);
   assert.match(html, /研究过程/);
-  assert.match(html, /专家工作摘要/);
+  // 各专家的摘要留在执行过程的步骤行里，结果卡片不再重复铺开。
+  assert.doesNotMatch(html, /Final packaged conclusion/);
+  assert.doesNotMatch(html, /专家工作摘要/);
   // 已确认交付的正文与下载都从封存归档取，不读工作区。
   assert.match(html, /\/delivery\/study\/package\/manifest\.md\?archive=archive/);
-  // 指纹只藏在「文件指纹」里，不再作为验收噪声顶在文件开头。
+  // 指纹不进入界面，正文读取时仍按验收版本校验。
   assert.doesNotMatch(html, /验收 SHA-256/);
+  assert.doesNotMatch(html, new RegExp(hash));
   assert.doesNotMatch(html, /evidence\/papers\.md/);
   assert.doesNotMatch(html, /复制报告全文/);
 });

@@ -5,7 +5,7 @@ import { artifactUrl, deliveryArtifactUrl, getArtifactFileText, getDeliveryArtif
 import { queryClient, workspaceKey } from "../queries/client";
 import { useChatState } from "../queries/chatStore";
 import { activePath } from "../transcriptTree";
-import { currentDecisions, expertRoles, researchArtifactLabel, researchAttention, researchDeliveryArchive, researchDuration, researchFileSize, researchOutcome, researchPackageUrl, researchProcessSummary, researchProgress, researchReviewSummary, researchTaskStatus, researchWorkflowMode, resolveArtifactLinkPath, workflowTone, type ResearchMetrics, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
+import { claimSupportLabel, currentDecisions, expertRoles, researchArtifactLabel, researchAttention, researchDeliveryArchive, researchDisplayContent, researchDuration, researchFileSize, researchOutcome, researchPackageUrl, researchProcessSummary, researchProgress, researchReviewSummary, researchTaskStatus, researchWorkflowMode, resolveArtifactLinkPath, type ResearchMetrics, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
 import { sha256Hex } from "../product/sha256";
 import type { TabOpenIntent } from "../tabPreview";
 import { Button, Spinner } from "./ui";
@@ -22,6 +22,16 @@ function StateIcon({ state }: { state: WorkflowState }) {
   const Icon = state === "completed" ? CheckCircle2 : state === "running" ? CircleDot : state === "blocked" ? ShieldCheck : Circle;
   return <Icon size={16} className={`shrink-0 ${state === "running" ? "animate-pulse motion-reduce:animate-none" : ""}`} aria-hidden="true" />;
 }
+
+/** 行本身保持中性，只用图标颜色提示任务状态，避免整张卡片被状态色淹没。 */
+const stateTextTone: Record<WorkflowState, string> = {
+  completed: "text-accent-green",
+  running: "text-primary",
+  blocked: "text-accent-amber",
+  waiting: "text-subtext",
+  optional: "text-muted",
+  stopped: "text-subtext",
+};
 
 /** Reads original, persisted child messages; SSE updates the existing query cache.
  * `live` marks a task the plan still calls running, so its last call keeps its
@@ -45,7 +55,8 @@ function useArtifactText(projectId: string, studyId: string, artifact: ResearchT
         : await getArtifactFileText(projectId, `research/${studyId}/${artifact.path}`, signal);
       if (!file) throw new Error(delivery ? "已确认交付中找不到该文件。" : "产物文件不存在，请检查执行记录。");
       if (!file.binary && !file.truncated && await sha256Hex(new TextEncoder().encode(file.content)) !== artifact.sha256) throw new Error("产物内容已变化，与本次验收版本不一致。");
-      return file;
+      // 交接用的 YAML frontmatter 不进入阅读视图；哈希仍按原文校验，下载也保留原文。
+      return file.binary ? file : { ...file, content: researchDisplayContent(file.content) };
     },
     staleTime: Infinity,
   });
@@ -100,33 +111,30 @@ function taskDisplayName(task: ResearchTask): string {
   return task.role || task.id;
 }
 
-/** 产物卡片：以研究里的角色命名文件，路径和指纹放在次要位置，默认不打扰阅读。 */
+/** 产物卡片：以研究里的角色命名文件，路径和大小放在次要位置，默认不打扰阅读。 */
 function ResearchArtifact({ projectId, studyId, artifact, paths, onOpenArtifactFile, defaultOpen = false, label, deliverable = true, delivery }: { projectId: string; studyId: string; artifact: ResearchTask["artifacts"][number]; paths: Set<string>; onOpenArtifactFile?: (path: string, intent: TabOpenIntent) => void; defaultOpen?: boolean; label?: string; deliverable?: boolean; delivery?: DeliverySource }) {
   const [open, setOpen] = useState(defaultOpen);
   const readOnly = useReadOnlyWorkspace();
   const path = `research/${studyId}/${artifact.path}`;
   const query = useArtifactText(projectId, studyId, artifact, open, delivery);
-  const verified = Boolean(query.data && !query.data.binary && !query.data.truncated);
   const meta = [artifact.path, researchFileSize(artifact.bytes)].filter(Boolean).join(" · ");
-  return <details open={open} onToggle={event => setOpen(event.currentTarget.open)} data-artifact-path={artifact.path} className="min-w-0 rounded-md border border-border bg-background">
-    <summary className="flex cursor-pointer flex-wrap items-baseline gap-x-2 gap-y-0.5 px-3 py-2">
-      <FileText size={14} className="shrink-0 self-center text-subtext" aria-hidden="true" />
-      <span className="text-sm text-text">{label ?? researchArtifactLabel(artifact.path)}</span>
-      {!deliverable && <span className="rounded bg-surface px-1.5 py-0.5 text-xs text-subtext">过程记录</span>}
-      <span className="min-w-0 break-all text-xs text-subtext">{meta}</span>
-      <ChevronDown size={14} className={`ms-auto shrink-0 self-center text-subtext transition-transform ${open ? "" : "-rotate-90"}`} aria-hidden="true" />
+  return <details open={open} onToggle={event => setOpen(event.currentTarget.open)} data-artifact-path={artifact.path} className="group min-w-0">
+    <summary className="flex cursor-pointer list-none items-center gap-2.5 py-2 [&::-webkit-details-marker]:hidden">
+      <span className="grid size-7 shrink-0 place-items-center rounded-md bg-surface text-subtext"><FileText size={14} aria-hidden="true" /></span>
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-sm text-text">{label ?? researchArtifactLabel(artifact.path)}</span>
+          {!deliverable && <span className="shrink-0 rounded bg-surface px-1.5 py-0.5 text-xs text-subtext">过程记录</span>}
+        </span>
+        <span className="mt-0.5 block truncate text-xs text-subtext">{meta}</span>
+      </span>
+      <ChevronDown size={14} className={`shrink-0 text-subtext transition-transform ${open ? "" : "-rotate-90"}`} aria-hidden="true" />
     </summary>
-    <div className="flex flex-col gap-2 border-t border-border px-3 py-2">
-      <ArtifactBody projectId={projectId} studyId={studyId} artifact={artifact} paths={paths} query={query} contentClassName="max-h-96 overflow-y-auto" onOpenArtifactFile={onOpenArtifactFile} delivery={delivery} />
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-        {onOpenArtifactFile && !delivery && <button type="button" className="text-primary" onClick={() => onOpenArtifactFile(`artifacts/${path}`, "preview")}>在文件中打开</button>}
-        {!readOnly && <a className="text-primary" href={delivery ? deliveryArtifactUrl(delivery.studyId, artifact.path, delivery.archive) : artifactUrl(projectId, path)} download>下载{delivery ? "已确认版本" : "源文件"}</a>}
-        <details className="min-w-0">
-          <summary className="cursor-pointer text-subtext">文件指纹</summary>
-          <p className="mt-1 text-xs text-subtext">{delivery ? "用来确认读取的文件与已确认交付完全一致。" : "用来确认打开的文件与验收版本完全一致，日常阅读无需关注。"}</p>
-          <code className="mt-1 block break-all font-mono text-xs text-subtext">{artifact.sha256}</code>
-          {verified && <p className="mt-1 text-xs text-accent-green">已核对：内容与验收版本一致。</p>}
-        </details>
+    <div className="flex flex-col gap-2 pb-3 ps-9">
+      <ArtifactBody projectId={projectId} studyId={studyId} artifact={artifact} paths={paths} query={query} contentClassName="max-h-96 overflow-y-auto rounded-lg bg-surface p-3" onOpenArtifactFile={onOpenArtifactFile} delivery={delivery} />
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+        {onOpenArtifactFile && !delivery && <button type="button" className="text-primary hover:underline" onClick={() => onOpenArtifactFile(`artifacts/${path}`, "preview")}>在文件中打开</button>}
+        {!readOnly && <a className="text-primary hover:underline" href={delivery ? deliveryArtifactUrl(delivery.studyId, artifact.path, delivery.archive) : artifactUrl(projectId, path)} download>下载{delivery ? "已确认版本" : "源文件"}</a>}
       </div>
     </div>
   </details>;
@@ -162,27 +170,25 @@ function ConclusionCard({ projectId, study, file, paths, onOpenArtifactFile, del
 function ClaimsConclusion({ study }: { study: ResearchStudy }) {
   const [showAll, setShowAll] = useState(false);
   const claims = showAll ? study.claims : study.claims.slice(0, 3);
-  const support = (claim: ResearchStudy["claims"][number]) => claim.support === "experiment" ? "有实验证据" : claim.support === "paper" ? "有论文原文依据" : "推测性结论";
   return <div className="flex flex-col gap-2">
     <ul className="m-0 flex list-none flex-col gap-2 p-0" data-outcome-claims>
       {claims.map((claim) => <li key={claim.id} className="min-w-0">
         <p className="m-0 text-sm text-text">{claim.text}</p>
-        <p className="m-0 break-words text-xs text-subtext">{support(claim)} · {claim.source}{claim.location ? ` · ${claim.location}` : ""}</p>
+        <p className="m-0 break-words text-xs text-subtext">{claimSupportLabel(claim.support)} · {claim.source}{claim.location ? ` · ${claim.location}` : ""}</p>
       </li>)}
     </ul>
     {study.claims.length > 3 && <button type="button" className="self-start text-xs text-primary" onClick={() => setShowAll(value => !value)}>{showAll ? "收起" : `查看全部 ${study.claims.length} 条结论`}</button>}
   </div>;
 }
 
-/** 交付确认后的研究结果：先结论，再过程可信度，最后才是文件和原始摘要。 */
+/** 交付确认后的研究结果：先结论，再过程可信度，最后才是其他文件；各专家的摘要留在执行过程里。 */
 function ResearchOutcome({ projectId, study, metrics, onOpenArtifactFile }: { projectId: string; study: ResearchStudy; metrics?: ResearchMetrics | null; onOpenArtifactFile?: (path: string, intent: TabOpenIntent) => void }) {
   const [filesOpen, setFilesOpen] = useState(false);
   const outcome = researchOutcome(study);
   const archive = researchDeliveryArchive(study);
   const delivery: DeliverySource = archive ? { studyId: study.id, archive } : null;
-  const summaries = outcome.tasks.filter((task) => task.state === "completed" && task.summary);
   const leaves = outcome.tasks.filter((task) => task.state === "completed" && (task.summary || task.artifacts.length) && !outcome.tasks.some((candidate) => candidate.dependsOn.includes(task.id)));
-  const conclusionTask = leaves[0] ?? summaries[0] ?? null;
+  const conclusionTask = leaves[0] ?? outcome.tasks.find((task) => task.state === "completed" && task.summary) ?? null;
   const paths = new Set(outcome.tasks.flatMap((task) => task.artifacts.map((artifact) => artifact.path)));
   const otherFiles = outcome.files.filter((file) => file !== outcome.conclusion);
   const otherDeliverables = outcome.deliverables.filter((file) => file !== outcome.conclusion);
@@ -199,48 +205,41 @@ function ResearchOutcome({ projectId, study, metrics, onOpenArtifactFile }: { pr
   const review = researchReviewSummary(study);
   const title = researchWorkflowMode(study) === "proposal" ? "实验方案 · 已确认" : "研究成果 · 已确认";
   if (!study.claims.length && !outcome.conclusion && !conclusionTask?.summary) return null;
-  return <section aria-label="研究成果" className="flex min-w-0 flex-col gap-3 rounded-lg border border-accent-green bg-accent-green-subtle p-3">
-    <div className="flex flex-wrap items-center gap-2">
-      <CheckCircle2 size={16} className="shrink-0 text-accent-green" aria-hidden="true" />
-      <strong className="text-sm">{title}</strong>
-      <span className="ms-auto text-xs text-subtext">{facts}</span>
+  return <section aria-label="研究成果" className="flex min-w-0 flex-col gap-4 rounded-xl border border-border-variant bg-background p-4">
+    <div className="flex flex-wrap items-center gap-2.5">
+      <span className="grid size-7 shrink-0 place-items-center rounded-full bg-accent-green-subtle text-accent-green"><CheckCircle2 size={15} aria-hidden="true" /></span>
+      <strong className="text-sm font-semibold text-text">{title}</strong>
+      <span className="w-full text-xs text-subtext sm:ms-auto sm:w-auto">{facts}</span>
     </div>
-    <div className="flex min-w-0 flex-col gap-4 rounded-md border border-border bg-background p-3">
-      <div className="flex min-w-0 flex-col gap-2">
-        <h3 className="m-0 text-xs font-medium text-subtext">研究结论</h3>
-        {study.claims.length ? <ClaimsConclusion study={study} />
-          : outcome.conclusion ? <ConclusionCard projectId={projectId} study={study} file={outcome.conclusion} paths={paths} onOpenArtifactFile={onOpenArtifactFile} delivery={delivery} />
-            : <div className="flex min-w-0 flex-col gap-1"><strong className="text-sm">{taskDisplayName(conclusionTask!)}</strong><div className="min-w-0 text-sm text-text"><Md text={conclusionTask!.summary ?? ""} /></div></div>}
-      </div>
-      {(process || review) && <div className="flex min-w-0 flex-col gap-1 border-t border-border pt-3">
-        <h3 className="m-0 text-xs font-medium text-subtext">研究过程</h3>
-        {process && <p className="m-0 break-words text-sm text-text">{process}</p>}
-        {review && <p className="m-0 text-xs text-subtext">{review}</p>}
-      </div>}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border pt-3 text-xs">
-        {otherFiles.length > 0 && <button type="button" className="text-primary" aria-expanded={filesOpen} onClick={() => setFilesOpen(value => !value)}>其他文件（{otherFiles.length}）</button>}
-        {summaries.length > 0 && <details className="min-w-0">
-          <summary className="cursor-pointer text-primary">专家工作摘要（{summaries.length}）</summary>
-          <div className="mt-2 flex flex-col gap-2">
-            {summaries.map((task) => <div key={task.id} className="min-w-0 rounded border border-border p-2">
-              <strong className="text-xs">{taskDisplayName(task)}</strong>
-              <div className="mt-1 text-sm text-text"><Md text={task.summary ?? ""} /></div>
-            </div>)}
-          </div>
-        </details>}
-        {outcome.tasks.length > 0 && <button type="button" className="ms-auto text-subtext" onClick={() => document.querySelector("[data-research-task-list]")?.scrollIntoView({ block: "start", behavior: "smooth" })}>查看完整执行过程 ↓</button>}
-      </div>
-      {filesOpen && <div className="flex min-w-0 flex-col gap-3 border-t border-border pt-3">
-        {otherDeliverables.length > 0 && <div className="flex min-w-0 flex-col gap-2">
-          <h4 className="m-0 text-xs font-medium text-subtext">交付文件</h4>
+    <div className="flex min-w-0 flex-col gap-2">
+      <h3 className="m-0 text-xs font-medium text-subtext">研究结论</h3>
+      {study.claims.length ? <ClaimsConclusion study={study} />
+        : outcome.conclusion ? <ConclusionCard projectId={projectId} study={study} file={outcome.conclusion} paths={paths} onOpenArtifactFile={onOpenArtifactFile} delivery={delivery} />
+          : <div className="flex min-w-0 flex-col gap-1"><strong className="text-sm">{taskDisplayName(conclusionTask!)}</strong><div className="min-w-0 text-sm leading-relaxed text-text"><Md text={conclusionTask!.summary ?? ""} /></div></div>}
+    </div>
+    {(process || review) && <div className="flex min-w-0 flex-col gap-1.5 border-t border-border-variant pt-4">
+      <h3 className="m-0 text-xs font-medium text-subtext">研究过程</h3>
+      {process && <p className="m-0 break-words text-sm leading-relaxed text-text">{process}</p>}
+      {review && <p className="m-0 text-xs text-subtext">{review}</p>}
+    </div>}
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border-variant pt-3 text-xs">
+      {otherFiles.length > 0 && <button type="button" className="text-primary hover:underline" aria-expanded={filesOpen} onClick={() => setFilesOpen(value => !value)}>其他文件（{otherFiles.length}）</button>}
+      {outcome.tasks.length > 0 && <button type="button" className="ms-auto text-subtext hover:text-text" onClick={() => document.querySelector("[data-research-task-list]")?.scrollIntoView({ block: "start", behavior: "smooth" })}>查看完整执行过程 ↓</button>}
+    </div>
+    {filesOpen && <div className="flex min-w-0 flex-col gap-4 border-t border-border-variant pt-3">
+      {otherDeliverables.length > 0 && <div className="flex min-w-0 flex-col gap-1">
+        <h4 className="m-0 text-xs font-medium text-subtext">交付文件</h4>
+        <div className="flex min-w-0 flex-col divide-y divide-border-variant">
           {otherDeliverables.map((file) => <ResearchArtifact key={`${file.task.id}:${file.artifact.path}:${file.artifact.sha256}`} projectId={projectId} studyId={study.id} artifact={file.artifact} label={file.label} paths={paths} onOpenArtifactFile={onOpenArtifactFile} delivery={delivery} />)}
-        </div>}
-        {outcome.reviews.length > 0 && <div className="flex min-w-0 flex-col gap-2">
-          <h4 className="m-0 text-xs font-medium text-subtext">复核与过程记录</h4>
-          {outcome.reviews.map((file) => <ResearchArtifact key={`${file.task.id}:${file.artifact.path}:${file.artifact.sha256}`} projectId={projectId} studyId={study.id} artifact={file.artifact} label={file.label} deliverable={false} paths={paths} onOpenArtifactFile={onOpenArtifactFile} delivery={delivery} />)}
-        </div>}
+        </div>
       </div>}
-    </div>
+      {outcome.reviews.length > 0 && <div className="flex min-w-0 flex-col gap-1">
+        <h4 className="m-0 text-xs font-medium text-subtext">复核与过程记录</h4>
+        <div className="flex min-w-0 flex-col divide-y divide-border-variant">
+          {outcome.reviews.map((file) => <ResearchArtifact key={`${file.task.id}:${file.artifact.path}:${file.artifact.sha256}`} projectId={projectId} studyId={study.id} artifact={file.artifact} label={file.label} deliverable={false} paths={paths} onOpenArtifactFile={onOpenArtifactFile} delivery={delivery} />)}
+        </div>
+      </div>}
+    </div>}
   </section>;
 }
 
@@ -282,15 +281,19 @@ function TaskRow({ projectId, study, task, version, renderMessage, onOpenArtifac
   const paths = new Set(study.plans.find(plan => plan.version === version)?.tasks.flatMap(item => item.artifacts.map(file => file.path)) ?? []);
   const counters = `${(task.reworkCount ?? 0) > 0 ? ` · 触发返工 ${task.reworkCount} 轮` : ""}${(task.attempts ?? 0) > 0 ? ` · 重试 ${task.attempts} 次` : ""}`;
   const header = <>
-    <StateIcon state={status.state} />
-    <strong className="min-w-0 truncate text-sm font-medium">{name}</strong>
-    <span className="ms-auto flex shrink-0 items-center gap-1.5 text-xs" role="status">{status.label}{counters}<ChevronDown size={14} className={`transition-transform ${open ? "" : "-rotate-90"}`} aria-hidden="true" /></span>
+    <span className={`shrink-0 ${stateTextTone[status.state]}`}><StateIcon state={status.state} /></span>
+    <span className="min-w-0 flex-1">
+      <strong className="block break-words text-sm font-medium text-text">{name}</strong>
+      <span className="mt-0.5 flex items-center gap-1.5 text-xs text-subtext sm:hidden" role="status">{status.label}{counters}</span>
+    </span>
+    <span className="ms-auto hidden shrink-0 items-center gap-1.5 text-xs text-subtext sm:flex" role="status">{status.label}{counters}</span>
+    <ChevronDown size={14} className={`shrink-0 text-subtext transition-transform ${open ? "" : "-rotate-90"}`} aria-hidden="true" />
   </>;
-  return <li data-research-task-id={task.id} aria-label={`专家任务 · ${name}`} className={`min-w-0 rounded-lg border ${workflowTone[status.state]}`}>
-    {canExpand ? <button type="button" aria-expanded={open} onClick={() => setExpanded(value => !value)} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-start focus-visible:outline-2 focus-visible:outline-primary">{header}</button> : <div className="flex w-full items-center gap-2 px-3 py-2">{header}</div>}
-    {open && <div className="flex flex-col gap-3 border-t border-border px-3 py-3">
+  return <li data-research-task-id={task.id} aria-label={`专家任务 · ${name}`} className="min-w-0">
+    {canExpand ? <button type="button" aria-expanded={open} onClick={() => setExpanded(value => !value)} className="flex w-full items-center gap-2.5 px-3 py-2.5 text-start transition-colors hover:bg-surface focus-visible:outline-2 focus-visible:outline-primary">{header}</button> : <div className="flex w-full items-center gap-2.5 px-3 py-2.5">{header}</div>}
+    {open && <div className="flex flex-col gap-3 border-t border-border-variant px-3 py-3">
       <div className="flex min-w-0 items-start gap-3">
-        <p className="m-0 min-w-0 flex-1 whitespace-pre-wrap text-sm text-subtext">{task.brief}</p>
+        <p className="m-0 min-w-0 flex-1 whitespace-pre-wrap text-sm leading-relaxed text-subtext">{task.brief}</p>
         {runningLive && task.sessionId && !readOnly && <Button size="small" variant="ghost" disabled={cancelling} className="shrink-0" onClick={() => {
           setCancelling(true); setCancelError(null);
           void interruptChat(task.sessionId!).catch(error => { setCancelError(error instanceof Error ? error.message : String(error)); }).finally(() => { setCancelling(false); void queryClient.invalidateQueries({ queryKey: workspaceKey("researchStudy", study.sessionId) }); });
@@ -299,17 +302,19 @@ function TaskRow({ projectId, study, task, version, renderMessage, onOpenArtifac
       {humanAwaiting && !readOnly && <HumanSubmitForm study={study} task={task} />}
       {cancelError && <p role="alert" className="m-0 text-sm text-accent-red">停止失败：{cancelError}</p>}
       {task.verdict?.status === "blocked" && <p role="status" className="m-0 text-sm text-accent-amber">需处理：{task.verdict.reasons.join("；")}</p>}
-      {task.summary && <div className="flex min-w-0 flex-col gap-1 rounded-md border border-border bg-background p-3"><span className="text-xs text-subtext">专家工作摘要</span><div className="min-w-0 text-sm text-text"><Md text={task.summary} /></div></div>}
+      {task.summary && <div className="flex min-w-0 flex-col gap-1 rounded-lg bg-surface p-3"><span className="text-xs text-subtext">专家工作摘要</span><div className="min-w-0 text-sm leading-relaxed text-text"><Md text={task.summary} /></div></div>}
       {current && task.kind === "human" && task.state === "completed" && delivery && study.status === "active" && <p className="m-0 text-xs text-subtext">交付已确认；如需修改这一步，请在主对话让研究负责人按受影响任务修订计划（forceRerun）。</p>}
       {canReopen && <div className="flex flex-col gap-2">
-        {confirmReopen ? <div className="flex flex-wrap items-center gap-2 rounded-md border border-accent-amber bg-surface p-2 text-xs">
+        {confirmReopen ? <div className="flex flex-wrap items-center gap-2 rounded-lg bg-accent-amber-subtle p-2.5 text-xs">
           <span className="min-w-0 flex-1">修改后，这一步的下游任务和当前交付确认都会失效，需要重新提交并确认。</span>
           <Button size="small" disabled={reopening} onClick={() => void actReopen()}>{reopening ? "撤回中…" : "确认修改"}</Button>
           <Button size="small" variant="ghost" disabled={reopening} onClick={() => setConfirmReopen(false)}>取消</Button>
         </div> : <Button size="small" variant="ghost" className="self-start" onClick={() => setConfirmReopen(true)}>修改这一步</Button>}
         {reopenError && <p role="alert" className="m-0 text-xs text-accent-red">撤回失败：{reopenError}</p>}
       </div>}
-      {task.artifacts.map(artifact => <ResearchArtifact key={artifact.sha256 + artifact.path} projectId={projectId} studyId={study.id} artifact={artifact} label={researchArtifactLabel(artifact.path)} paths={paths} onOpenArtifactFile={onOpenArtifactFile} delivery={delivery} />)}
+      {task.artifacts.length > 0 && <div className="flex min-w-0 flex-col divide-y divide-border-variant">
+        {task.artifacts.map(artifact => <ResearchArtifact key={artifact.sha256 + artifact.path} projectId={projectId} studyId={study.id} artifact={artifact} label={researchArtifactLabel(artifact.path)} paths={paths} onOpenArtifactFile={onOpenArtifactFile} delivery={delivery} />)}
+      </div>}
       {task.sessionId && (runningLive ? <ExpertTranscript projectId={projectId} sessionId={task.sessionId} renderMessage={renderMessage} live /> : <details open={processOpen} onToggle={event => setProcessOpen(event.currentTarget.open)}><summary className="cursor-pointer text-xs text-subtext">执行记录</summary>{processOpen && <div className="mt-2"><ExpertTranscript projectId={projectId} sessionId={task.sessionId} renderMessage={renderMessage} /></div>}</details>)}
     </div>}
   </li>;
@@ -326,22 +331,25 @@ export function ResearchConversation({ projectId, study, metrics, renderMessage,
   // 计划还没开始时，每个任务都显示同一条「等待确认」：折成一行摘要，展开才看名单。
   const notStarted = tasks.length > 0 && tasks.every(task => task.state === "pending" && !task.sessionId && !(task.reworkCount ?? 0));
   const sharedStatus = notStarted ? [...new Set(tasks.map((task) => researchTaskStatus(study, task).label))] : [];
-  const taskList = <ol className="flex flex-col gap-2" data-research-task-list>{tasks.map(task => <TaskRow key={`${plan!.version}:${task.id}:${task.sessionId ?? "pending"}`} projectId={projectId} study={study} task={task} version={plan!.version} renderMessage={renderMessage} onOpenArtifactFile={onOpenArtifactFile} delivery={delivery} />)}</ol>;
-  return <section aria-label="对话中的工作流" className="flex min-w-0 flex-col gap-4 rounded-lg border border-border p-4" onClickCapture={event => { if (event.target instanceof Element && event.target.closest("summary")) onInspect?.(); }}>
-    <div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-sm">{plan?.workflowSource?.name ?? "科研工作流"}{plan ? ` · 计划 v${plan.version}` : ""}</strong><span role="status" className="text-xs text-subtext">{researchAttention(study)}</span></div>
-    {progress.total > 0 && !notStarted && <div className="flex items-center gap-3"><div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-surface" role="progressbar" aria-label="研究步骤完成情况" aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progress.completed}><div className="h-full rounded-full bg-primary" style={{ width: `${progress.completed / progress.total * 100}%` }} /></div><span className="shrink-0 text-xs text-subtext">{progress.completed}/{progress.total} 个步骤已结束</span></div>}
+  const taskList = <ol className="m-0 flex list-none flex-col divide-y divide-border-variant p-0" data-research-task-list>{tasks.map(task => <TaskRow key={`${plan!.version}:${task.id}:${task.sessionId ?? "pending"}`} projectId={projectId} study={study} task={task} version={plan!.version} renderMessage={renderMessage} onOpenArtifactFile={onOpenArtifactFile} delivery={delivery} />)}</ol>;
+  return <section aria-label="对话中的工作流" className="flex min-w-0 flex-col gap-4 rounded-xl border border-border-variant bg-surface p-4" onClickCapture={event => { if (event.target instanceof Element && event.target.closest("summary")) onInspect?.(); }}>
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <strong className="text-sm font-semibold text-text">{plan?.workflowSource?.name ?? "科研工作流"}{plan && study.plans.length > 1 ? ` · 计划 v${plan.version}` : ""}</strong>
+      <span role="status" className="rounded-full bg-background px-2 py-0.5 text-xs text-subtext">{researchAttention(study)}</span>
+    </div>
+    {progress.total > 0 && !notStarted && <div className="flex items-center gap-3"><div className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-background" role="progressbar" aria-label="研究步骤完成情况" aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progress.completed}><div className="h-full rounded-full bg-primary" style={{ width: `${progress.completed / progress.total * 100}%` }} /></div><span className="shrink-0 text-xs text-subtext">{progress.completed}/{progress.total} 个步骤已结束</span></div>}
     {delivered && <ResearchOutcome projectId={projectId} study={study} metrics={metrics} onOpenArtifactFile={onOpenArtifactFile} />}
     <ResearchPanel placement="conversation" sessionId={study.sessionId} disabled={false} />
     {tasks.length ? (notStarted
-      ? <details className="group min-w-0 rounded-lg border border-border bg-surface">
-        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm text-subtext [&::-webkit-details-marker]:hidden">
+      ? <details className="group min-w-0 overflow-hidden rounded-lg border border-border-variant bg-background">
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-sm text-subtext [&::-webkit-details-marker]:hidden">
           <Circle size={16} className="shrink-0" aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate">{tasks.length} 个步骤{sharedStatus.length === 1 ? ` · ${sharedStatus[0]}` : " · 尚未开始"}</span>
           <ChevronDown size={14} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
         </summary>
-        <div className="border-t border-border p-3">{taskList}</div>
+        <div className="border-t border-border-variant">{taskList}</div>
       </details>
-      : taskList) : plan && <p role="status" className="m-0 text-sm text-subtext">{currentDecisions(study).some(decision => decision.gate === "G1" && decision.status === "approved") ? "范围已确认，等待就绪专家开始。" : "请先确认本次研究范围，专家随后按依赖执行。"}</p>}
-    {study.plans.length > 1 && <details open={historyOpen} onToggle={event => setHistoryOpen(event.currentTarget.open)}><summary className="cursor-pointer text-sm text-subtext">历史计划（{study.plans.length - 1}）</summary>{historyOpen && <div className="mt-3 flex flex-col gap-3">{study.plans.slice(0, -1).map(previous => <details key={previous.version}><summary className="cursor-pointer text-xs text-subtext">计划 v{previous.version}</summary><ol className="mt-2 flex flex-col gap-2">{previous.tasks.map(task => <TaskRow key={`${previous.version}:${task.id}:${task.sessionId ?? "pending"}`} projectId={projectId} study={study} task={task} version={previous.version} renderMessage={renderMessage} onOpenArtifactFile={onOpenArtifactFile} delivery={null} />)}</ol></details>)}</div>}</details>}
+      : <div className="overflow-hidden rounded-lg border border-border-variant bg-background">{taskList}</div>) : plan && <p role="status" className="m-0 text-sm text-subtext">{currentDecisions(study).some(decision => decision.gate === "G1" && decision.status === "approved") ? "范围已确认，等待就绪专家开始。" : "请先确认本次研究范围，专家随后按依赖执行。"}</p>}
+    {study.plans.length > 1 && <details open={historyOpen} onToggle={event => setHistoryOpen(event.currentTarget.open)}><summary className="cursor-pointer text-sm text-subtext">历史计划（{study.plans.length - 1}）</summary>{historyOpen && <div className="mt-3 flex flex-col gap-3">{study.plans.slice(0, -1).map(previous => <details key={previous.version}><summary className="cursor-pointer text-xs text-subtext">计划 v{previous.version}</summary><div className="mt-2 overflow-hidden rounded-lg border border-border-variant bg-background"><ol className="m-0 flex list-none flex-col divide-y divide-border-variant p-0">{previous.tasks.map(task => <TaskRow key={`${previous.version}:${task.id}:${task.sessionId ?? "pending"}`} projectId={projectId} study={study} task={task} version={previous.version} renderMessage={renderMessage} onOpenArtifactFile={onOpenArtifactFile} delivery={null} />)}</ol></div></details>)}</div>}</details>}
   </section>;
 }

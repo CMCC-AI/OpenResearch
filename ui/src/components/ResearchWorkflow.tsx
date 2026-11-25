@@ -52,7 +52,7 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
   const plan = study.plans.at(-1);
   // 通用计划模板对用户没有信息量；有结构化任务时用步骤、人数和控制点代替整段模板句。
   const templatePlan = isTemplatePlanSummary(plan?.summary) && tasks.length > 0;
-  const planOutline = templatePlan ? researchScopeSentence(tasks, "G1") : "";
+  const planOutline = templatePlan ? researchScopeSentence(tasks) : "";
   const planControls = templatePlan ? researchScopeControls(tasks) : "";
   const progress = researchProgress(study);
   const coverage = consultationCoverage(study);

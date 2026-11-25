@@ -27,6 +27,7 @@ function setup({ status = "active", readOnly = false, failure = null, disabled =
     workspaceKey: (...values) => values,
     useQuery: () => ({ data: { study, runs: [] }, isPending: false, error: null, refetch: async () => { refetches++; } }),
     Button: ({ children, size: _size, ...props }) => { buttons.push({ ...props, children }); return React.createElement("button", props, children); },
+    CheckCircle2: () => null, ChevronDown: () => null, CircleDot: () => null, XCircle: () => null,
     ResearchTeamDagDialog: ({ confirmationContent }) => React.createElement("div", null, confirmationContent),
     ResearchModulePreview: () => null,
     endResearchStudy: async (...args) => { calls.push(args); if (failure) throw new Error(failure); },
@@ -86,7 +87,10 @@ test("approval scope reads as a task plan instead of raw JSON", () => {
   assert.match(app.html, /研究目标：验证绑定工作流后的会话标题/);
   assert.match(app.html, /将执行 2 个步骤，都由你亲自完成，预计产出 2 份文件。/);
   assert.doesNotMatch(app.html, /2 个专家任务|各任务按依赖顺序登记产物/);
-  assert.match(app.html, /未附加研究材料 · 计划 v1/);
+  assert.doesNotMatch(app.html, /未附加研究材料|计划 v\d/);
+  // 只在真的附加了材料时提一句，方便核对输入范围。
+  const withMaterials = setup({ decisions: [{ id: "g1", gate: "G1", version: 7, status: "pending", scope: JSON.stringify({ ...scope, materialIds: ["m1", "m2"] }), scopeHash: "g1hash", reason: null }] });
+  assert.match(withMaterials.html, /2 份研究材料/);
   assert.match(app.html, /查看任务安排（2）/);
   assert.match(app.html, /第 1 步/);
   assert.match(app.html, /人工任务/);
@@ -109,7 +113,7 @@ test("the conversation card stays out of the way when nothing needs a decision",
   assert.match(pending.html, /研究范围与目标/);
 });
 
-test("delivery confirmation lists the actual files and sizes before approval", () => {
+test("delivery confirmation shows registered conclusions and the actual files, not the task schedule", () => {
   const scope = {
     plan: {
       summary: "",
@@ -123,12 +127,24 @@ test("delivery confirmation lists the actual files and sizes before approval", (
         artifacts: [{ path: "notes/points.md", sha256: "a".repeat(64), bytes: 3 }],
       }],
     },
-    claims: [],
+    claims: [
+      { id: "c1", text: "该方法在 3 个基线上均优于对照。", support: "experiment", source: "runs/exp-1", location: "表 2" },
+      { id: "c2", text: "跨领域迁移仍有待验证。", support: "guess", source: "研究负责人" },
+    ],
     runs: [],
   };
   const app = setup({ decisions: [{ id: "g4", gate: "G4", version: 7, status: "pending", scope: JSON.stringify(scope), scopeHash: "g4hash", reason: null }] });
+  // 批准绑定的是结论：先看到登记过的结论及其证据强度，再决定是否批准。
+  assert.match(app.html, /研究结论（2）/);
+  assert.match(app.html, /该方法在 3 个基线上均优于对照。/);
+  assert.match(app.html, /有实验证据 · runs\/exp-1 · 表 2/);
+  assert.match(app.html, /推测性结论 · 研究负责人/);
   // 批准前就能看到实际交付物；3 字节的占位文件不再藏在任务摘要后面。
   assert.match(app.html, /交付文件（1 份 · 3 B）/);
   assert.match(app.html, /notes\/points\.md/);
-  assert.match(app.html, /aaaaaaaaaaaaaaaa…/);
+  assert.doesNotMatch(app.html, /aaaaaaaaaaaaaaaa/);
+  // 步骤安排属于计划阶段和执行过程，交付确认不重复一遍。
+  assert.doesNotMatch(app.html, /查看任务安排/);
+  assert.doesNotMatch(app.html, /本次交付覆盖/);
+  assert.doesNotMatch(app.html, /列出三条观察/);
 });

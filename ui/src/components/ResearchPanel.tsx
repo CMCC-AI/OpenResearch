@@ -3,11 +3,11 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getResearchStudy, decideResearchGate } from "../api";
 import { workspaceKey } from "../queries/client";
-import { currentDecisions, deliveryGate, expertRoles, isTemplatePlanSummary, researchFileSize, researchScopeControls, researchScopeSentence, researchProgress, researchModes, presetWorkflowModes, researchWorkflowMode, researchAttention, researchWorkflow, gateNames, type ResearchDecision, type ResearchMode, type ResearchScopeTask } from "../research";
+import { claimSupportLabel, currentDecisions, deliveryGate, expertRoles, isTemplatePlanSummary, researchFileSize, researchScopeControls, researchScopeSentence, researchProgress, researchModes, presetWorkflowModes, researchWorkflowMode, researchAttention, researchWorkflow, gateNames, type ResearchDecision, type ResearchMode, type ResearchScopeTask } from "../research";
 import { Button } from "./ui/Button";
 import { IconButton, MenuItem } from "./ui";
 import { ResearchStateErrorDialog } from "./ResearchOverviewDialog";
-import { Users, Workflow, ArrowRight } from "lucide-react";
+import { Users, Workflow, ArrowRight, CheckCircle2, ChevronDown, CircleDot, XCircle } from "lucide-react";
 import { ResearchModulePreview } from "./ResearchModulePreview";
 import { ResearchTeamDagDialog } from "./ResearchTeamDag";
 import { EndResearchControl } from "./EndResearchControl";
@@ -37,7 +37,7 @@ export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSess
   const activeStages = study ? researchWorkflow(study).filter((stage) => ["running", "blocked"].includes(stage.state)) : [];
   // 确认卡用任务/专家名代替内部任务号；分流等无角色节点按类型兜底。
   const taskNames = new Map((plan?.tasks ?? []).map((task) => [task.id, task.agent?.name ?? expertRoles[task.role] ?? (task.kind === "human" ? "人工任务" : task.id)]));
-  const renderDecision = (decision: ResearchDecision) => <GateCard key={decision.id} decision={decision} taskNames={taskNames} readOnly={Boolean(readOnly)} disabled={working || study?.status === "stopped"} onDecide={(accepted, reason) => act(async () => {
+  const renderDecision = (decision: ResearchDecision) => <GateCard key={decision.id} decision={decision} taskNames={taskNames} deliveryGateName={study ? deliveryGate(researchWorkflowMode(study)) : "G4"} readOnly={Boolean(readOnly)} disabled={working || study?.status === "stopped"} onDecide={(accepted, reason) => act(async () => {
     if (!study) return;
     const result = await decideResearchGate(study.id, decision.id, decision.scopeHash, accepted, reason);
     if (result.resumeError) throw new Error(`决策已保存，但会话未恢复：${result.resumeError}。请在主对话中发送消息继续推进。`);
@@ -100,13 +100,14 @@ export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSess
   </section>;
 }
 
-function GateCard({ decision, taskNames, disabled, onDecide, readOnly = false }: { readOnly?: boolean; decision: ResearchDecision; taskNames: Map<string, string>; disabled: boolean; onDecide: (approved: boolean, reason: string) => Promise<void> }) {
+function GateCard({ decision, taskNames, deliveryGateName, disabled, onDecide, readOnly = false }: { readOnly?: boolean; decision: ResearchDecision; taskNames: Map<string, string>; deliveryGateName: string; disabled: boolean; onDecide: (approved: boolean, reason: string) => Promise<void> }) {
   const [reason, setReason] = useState("");
   const scopeKindNames: Record<string, string> = { human: "人工任务", route: "条件分流", foreach: "逐项处理", experiment: "实验执行", wait: "等待事件" };
   let scope: {
     summary?: string; command?: string; revision?: string;
     options?: { backend?: string; flavor?: string; host?: string; timeout?: string };
     plan?: { summary?: string; materialIds?: string[]; tasks?: ResearchScopeTask[]; version?: number };
+    claims?: { id?: string; text?: string; support?: string; source?: string; location?: string }[];
     taskId?: string; artifacts?: { path: string; sha256: string }[];
     objective?: string; materialIds?: string[]; version?: number;
     tasks?: ResearchScopeTask[];
@@ -120,59 +121,80 @@ function GateCard({ decision, taskNames, disabled, onDecide, readOnly = false }:
   const stepNumbers = new Map(scopeTasks.map((task, index) => [task.id, index + 1]));
   const scopeTaskName = (task: ResearchScopeTask) => taskNames.get(task.id) ?? (task.role ? expertRoles[task.role] ?? task.role : scopeKindNames[task.kind ?? ""] ?? task.id);
   const materialIds = Array.isArray(scope.materialIds) ? scope.materialIds : Array.isArray(scope.plan?.materialIds) ? scope.plan.materialIds : null;
-  const version = typeof scope.version === "number" ? scope.version : typeof scope.plan?.version === "number" ? scope.plan.version : null;
-  const scopeMeta = [
-    materialIds ? (materialIds.length ? `${materialIds.length} 份研究材料` : "未附加研究材料") : null,
-    version ? `计划 v${version}` : null,
-  ].filter(Boolean).join(" · ");
+  // 没有材料就不写这一行；计划版本是内部簿记，不占用户的注意力。
+  const scopeMeta = materialIds?.length ? `${materialIds.length} 份研究材料` : null;
   const planSummary = scope.summary ?? scope.plan?.summary;
   const showPlanSummary = Boolean(planSummary) && !(scopeTasks.length > 0 && isTemplatePlanSummary(planSummary));
-  const planSentence = researchScopeSentence(scopeTasks, decision.gate);
-  const planControls = decision.gate === "G4" ? "" : researchScopeControls(scopeTasks);
-  return <section className={`rounded border p-3 ${decision.status === "pending" ? "border-primary bg-primary-subtle" : "border-border"}`} aria-label={gateLabel}>
-    <strong>{gateLabel} · {decision.status === "approved" ? "已批准" : decision.status === "rejected" ? "已拒绝" : "等待确认"}</strong>
-    {scope.objective && scope.objective !== scope.summary && <p className="m-0 pt-1 text-xs text-subtext">研究目标：{scope.objective}</p>}
-    {showPlanSummary && <p className="whitespace-pre-wrap py-1">{planSummary}</p>}
-    {planSentence && <p className="m-0 whitespace-pre-wrap py-1">{planSentence}</p>}
-    {planControls && <p className="m-0 text-xs text-subtext">{planControls}</p>}
-    {scopeMeta && <p className="m-0 pt-1 text-xs text-subtext">{scopeMeta}</p>}
-    {taskApproval && scope.artifacts?.length ? <p className="text-xs text-subtext break-all">已验收产物：{scope.artifacts.map((artifact) => artifact.path).join("、")}</p> : null}
-    {scope.command && <><p>执行位置：{scope.options?.backend} {scope.options?.host} {scope.options?.flavor} {scope.options?.timeout}</p><pre className="whitespace-pre-wrap break-all text-xs">{scope.command}</pre><p className="text-xs text-subtext break-all">代码版本：{scope.revision}</p></>}
-    {taskApproval && <p className="text-subtext">该任务已通过产物验收；批准后它的下游任务才会开始。拒绝则下游保持暂停，需修订计划后重新执行。</p>}
-    {decision.gate === "G3" && !scope.command && <p className="text-subtext">确认实验方案的假设、指标、基线、预算与停止条件；此项确认不授权运行实验。</p>}
-    {decision.gate === "G4" && <p className="text-subtext">确认本次研究成果的结论、证据与局限。此操作生成批准记录，公开发布需另行操作。</p>}
-    {scopeTasks.length > 0 && <details className="mt-2">
-      <summary className="cursor-pointer text-subtext">查看任务安排（{scopeTasks.length}）</summary>
-      <div className="mt-2 flex flex-col gap-2 text-sm">
-        <ol className="m-0 flex list-none flex-col gap-2 p-0">
-          {scopeTasks.map((task, index) => <li key={task.id} className="min-w-0 rounded border border-border bg-background p-2">
-            <p className="m-0"><span className="text-subtext">第 {index + 1} 步 · </span>{scopeTaskName(task)}</p>
-            {task.brief && <p className="m-0 mt-1 whitespace-pre-wrap">{task.brief}</p>}
-            {task.outputs?.length ? <p className="m-0 mt-1 break-all text-xs text-subtext">产物：{task.outputs.join("、")}</p> : null}
-            {task.dependsOn?.length ? <p className="m-0 mt-1 text-xs text-subtext">接在{task.dependsOn.map((id) => stepNumbers.has(id) ? `第 ${stepNumbers.get(id)} 步` : id).join("、")}之后</p> : null}
-          </li>)}
-        </ol>
-      </div>
+  // 交付确认批的是结论与产物；步骤安排是计划阶段的事，执行过程在主对话里回看。
+  const deliveryDecision = decision.gate === deliveryGateName && Boolean(scope.plan);
+  const scopeClaims = deliveryDecision && Array.isArray(scope.claims) ? scope.claims.filter((claim) => claim.text) : [];
+  const planSentence = deliveryDecision ? "" : researchScopeSentence(scopeTasks);
+  const planControls = deliveryDecision ? "" : researchScopeControls(scopeTasks);
+  const status = decision.status === "approved"
+    ? { label: "已批准", icon: CheckCircle2, tone: "bg-accent-green-subtle text-accent-green" }
+    : decision.status === "rejected"
+      ? { label: "已拒绝", icon: XCircle, tone: "bg-accent-red-subtle text-accent-red" }
+      : { label: "等待确认", icon: CircleDot, tone: "bg-accent-amber-subtle text-accent-amber" };
+  const StatusIcon = status.icon;
+  return <section className={`flex flex-col gap-3 rounded-xl border p-4 ${decision.status === "pending" ? "border-border bg-background" : "border-border-variant bg-surface"}`} aria-label={gateLabel}>
+    <div className="flex flex-wrap items-center gap-2">
+      <strong className="min-w-0 text-sm font-semibold text-text">{gateLabel}</strong>
+      <span className={`ms-auto inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs ${status.tone}`}><StatusIcon size={12} aria-hidden="true" />{status.label}</span>
+    </div>
+    <div className="flex min-w-0 flex-col gap-2">
+      {scope.objective && scope.objective !== scope.summary && <p className="m-0 text-xs text-subtext">研究目标：{scope.objective}</p>}
+      {showPlanSummary && <p className="m-0 whitespace-pre-wrap text-sm leading-relaxed text-text">{planSummary}</p>}
+      {planSentence && <p className="m-0 whitespace-pre-wrap text-sm leading-relaxed text-text">{planSentence}</p>}
+      {planControls && <p className="m-0 text-xs text-subtext">{planControls}</p>}
+      {scopeMeta && <p className="m-0 text-xs text-subtext">{scopeMeta}</p>}
+    </div>
+    {scopeClaims.length > 0 && <div className="flex min-w-0 flex-col gap-2" data-delivery-claims>
+      <h3 className="m-0 text-xs font-medium text-subtext">研究结论（{scopeClaims.length}）</h3>
+      <ul className="m-0 flex list-none flex-col gap-2 p-0">
+        {scopeClaims.map((claim, index) => <li key={claim.id ?? index} className="min-w-0">
+          <p className="m-0 text-sm leading-relaxed text-text">{claim.text}</p>
+          <p className="m-0 break-words text-xs text-subtext">{claimSupportLabel(claim.support ?? "")}{claim.source ? ` · ${claim.source}` : ""}{claim.location ? ` · ${claim.location}` : ""}</p>
+        </li>)}
+      </ul>
+    </div>}
+    {taskApproval && scope.artifacts?.length ? <p className="m-0 break-all text-xs text-subtext">已验收产物：{scope.artifacts.map((artifact) => artifact.path).join("、")}</p> : null}
+    {scope.command && <div className="flex min-w-0 flex-col gap-1 text-xs">
+      <p className="m-0 text-subtext">执行位置：{scope.options?.backend} {scope.options?.host} {scope.options?.flavor} {scope.options?.timeout}</p>
+      <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-surface p-2 font-mono text-xs text-text">{scope.command}</pre>
+      <p className="m-0 break-all text-subtext">代码版本：{scope.revision}</p>
+    </div>}
+    {taskApproval && <p className="m-0 text-xs leading-relaxed text-subtext">该任务已通过产物验收；批准后它的下游任务才会开始。拒绝则下游保持暂停，需修订计划后重新执行。</p>}
+    {decision.gate === "G3" && !scope.command && <p className="m-0 text-xs leading-relaxed text-subtext">确认实验方案的假设、指标、基线、预算与停止条件；此项确认不授权运行实验。</p>}
+    {decision.gate === "G4" && <p className="m-0 text-xs leading-relaxed text-subtext">确认本次研究成果的结论、证据与局限。此操作生成批准记录，公开发布需另行操作。</p>}
+    {!deliveryDecision && scopeTasks.length > 0 && <details className="group rounded-lg bg-surface px-3 py-2">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-sm text-subtext [&::-webkit-details-marker]:hidden">查看任务安排（{scopeTasks.length}）<ChevronDown size={14} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" /></summary>
+      <ol className="m-0 mt-2 flex list-none flex-col divide-y divide-border-variant p-0">
+        {scopeTasks.map((task, index) => <li key={task.id} className="min-w-0 py-3 first:pt-2 last:pb-0">
+          <p className="m-0 text-sm"><span className="text-subtext">第 {index + 1} 步 · </span><span className="font-medium text-text">{scopeTaskName(task)}</span></p>
+          {task.brief && <p className="m-0 mt-1 whitespace-pre-wrap text-sm leading-relaxed text-subtext">{task.brief}</p>}
+          {task.outputs?.length ? <p className="m-0 mt-1 break-all text-xs text-subtext">产物：{task.outputs.join("、")}</p> : null}
+          {task.dependsOn?.length ? <p className="m-0 mt-1 text-xs text-subtext">接在{task.dependsOn.map((id) => stepNumbers.has(id) ? `第 ${stepNumbers.get(id)} 步` : id).join("、")}之后</p> : null}
+        </li>)}
+      </ol>
     </details>}
     {(() => {
       const artifacts = scopeTasks.flatMap((task) => task.artifacts ?? []);
       if (!artifacts.length) return null;
       const total = artifacts.reduce((sum, artifact) => sum + (artifact.bytes ?? 0), 0);
-      return <details className="mt-2" data-delivery-artifacts>
-        <summary className="cursor-pointer text-subtext">交付文件（{artifacts.length} 份 · {researchFileSize(total)}）</summary>
-        <ul className="m-0 mt-2 flex list-none flex-col gap-1 p-0 text-xs">
-          {artifacts.map((artifact) => <li key={`${artifact.path}:${artifact.sha256 ?? ""}`} className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-            <span className="min-w-0 break-all">{artifact.path}</span>
+      return <details data-delivery-artifacts className="group rounded-lg bg-surface px-3 py-2">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 text-sm text-subtext [&::-webkit-details-marker]:hidden">交付文件（{artifacts.length} 份 · {researchFileSize(total)}）<ChevronDown size={14} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" /></summary>
+        <ul className="m-0 mt-2 flex list-none flex-col divide-y divide-border-variant p-0 text-xs">
+          {artifacts.map((artifact) => <li key={`${artifact.path}:${artifact.sha256 ?? ""}`} className="flex min-w-0 flex-wrap items-baseline gap-x-2 py-1.5 first:pt-1">
+            <span className="min-w-0 break-all text-text">{artifact.path}</span>
             {artifact.bytes != null && <span className="text-subtext">{researchFileSize(artifact.bytes)}</span>}
-            {artifact.sha256 && <code className="min-w-0 break-all text-subtext">{artifact.sha256.slice(0, 16)}…</code>}
           </li>)}
         </ul>
       </details>;
     })()}
-    {decision.status === "pending" && !readOnly ? <div className="flex flex-wrap gap-2 mt-2">
-      <input aria-label={`${gateLabel} 决策说明`} placeholder="说明或调整意见（可选）" value={reason} onChange={(e) => setReason(e.target.value)} className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1" />
-      <Button size="small" disabled={disabled} onClick={() => void onDecide(true, reason)}>批准当前版本</Button>
-      <Button size="small" disabled={disabled} onClick={() => void onDecide(false, reason)}>拒绝并反馈</Button>
-    </div> : decision.reason && <p>{decision.reason}</p>}
+    {decision.status === "pending" && !readOnly ? <div className="flex flex-wrap items-center gap-2 pt-1">
+      <input aria-label={`${gateLabel} 决策说明`} placeholder="说明或调整意见（可选）" value={reason} onChange={(e) => setReason(e.target.value)} className="h-9 min-w-40 flex-1 rounded-lg border border-border-variant bg-background px-3 text-sm" />
+      <Button size="small" variant="primary" disabled={disabled} onClick={() => void onDecide(true, reason)}>批准当前版本</Button>
+      <Button size="small" variant="ghost" disabled={disabled} onClick={() => void onDecide(false, reason)}>拒绝并反馈</Button>
+    </div> : decision.reason && <p className="m-0 text-xs text-subtext">{decision.reason}</p>}
   </section>;
 }

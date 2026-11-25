@@ -165,7 +165,7 @@ test("CMCC capability panorama includes all 20 experts without inventing executi
   assert.ok(researchTeamEdges.every(([source, target]) => layout.get(source) < layout.get(target)));
 });
 
-const { researchArtifactLabel, researchOutcome, researchProcessSummary, researchReviewSummary } = await import("../src/research.ts");
+const { researchArtifactLabel, researchDisplayContent, researchOutcome, researchProcessSummary, researchReviewSummary } = await import("../src/research.ts");
 test("outcome leads with the research conclusion instead of the gate report", () => {
   const file = (path, bytes = 500) => ({ path, sha256: "x", bytes });
   const draft = { ...task("draft", "as-experiment-designer"), state: "completed", summary: "写了一句结论", artifacts: [file("draft/one-liner.md", 1200)] };
@@ -200,6 +200,26 @@ test("the written report outranks the package index for the conclusion slot", ()
   const outcome = researchOutcome(study([writer, curator]));
   assert.equal(outcome.conclusion.artifact.path, "writing/review.md");
   assert.equal(outcome.conclusion.label, "研究正文");
+});
+test("artifact previews drop handover frontmatter but keep the document", () => {
+  const raw = "---\n文稿类型: 组会汇报幻灯片\n章节完成度:\n  开场: 完成\n---\n\n# 标题\n\n正文\n";
+  assert.equal(researchDisplayContent(raw), "\n# 标题\n\n正文\n");
+  assert.equal(researchDisplayContent("# 标题\n\n正文"), "# 标题\n\n正文");
+  assert.equal(researchDisplayContent("---\n---\n正文"), "---\n---\n正文");
+});
+test("workflow artifacts are labelled by what they are for", () => {
+  assert.equal(researchArtifactLabel("genealogy-scan/landmark-papers.md"), "领域论文清单");
+  assert.equal(researchArtifactLabel("paper-deepread/evidence-cards.md"), "论文证据卡");
+  assert.equal(researchArtifactLabel("groupmeeting-report/slides.md"), "幻灯片内容");
+  assert.equal(researchArtifactLabel("package-archive/research-package.md"), "研究包归档");
+});
+test("workflow notes and the package archive do not outrank the reader-facing report", () => {
+  const evidence = { ...task("deepread", "as-paper-evidence-analyst", ["scan"]), state: "completed", artifacts: [{ path: "paper-deepread/evidence-cards.md", sha256: "x", bytes: 78876 }] };
+  const slides = { ...task("slides", "as-evidence-writer", ["deepread"]), state: "completed", artifacts: [{ path: "groupmeeting-report/slides.md", sha256: "x", bytes: 33646 }] };
+  const archive = { ...task("archive", "as-research-package-curator", ["slides"]), state: "completed", artifacts: [{ path: "package-archive/research-package.md", sha256: "x", bytes: 64561 }] };
+  const outcome = researchOutcome(study([evidence, slides, archive]));
+  assert.equal(outcome.conclusion.artifact.path, "groupmeeting-report/slides.md");
+  assert.equal(outcome.conclusion.label, "幻灯片内容");
 });
 test("panorama overlays current plan and does not hide repeated role tasks or failures", () => {
   const done = task("main", "as-experiment-operator", [], "completed");
@@ -324,12 +344,10 @@ test("approval scope summaries count people, branches and outputs instead of tem
     { id: "pass", role: "as-research-synthesizer", outputs: ["pass/result.md"] },
     { id: "fallback", role: "as-research-synthesizer", outputs: ["fallback/result.md"] },
   ];
-  assert.equal(researchScopeSentence(tasks, "G1"), "将执行 5 个步骤：3 位专家参与，预计最多 4 份文件。");
+  assert.equal(researchScopeSentence(tasks), "将执行 5 个步骤：3 位专家参与，预计最多 4 份文件。");
   assert.equal(researchScopeControls(tasks), "含 1 处条件分流 · 1 项结论把关（最多返工 1 轮）");
-  assert.equal(researchScopeSentence([], "G1"), "");
-  assert.equal(researchScopeSentence([{ id: "collect", kind: "human", outputs: ["notes/points.md"] }], "G1"), "将执行 1 个步骤，都由你亲自完成，预计产出 1 份文件。");
-  // G4 按已登记产物计数，不把未走分支的声明产物算进去。
-  assert.equal(researchScopeSentence([{ id: "package", artifacts: [{ path: "a.md" }, { path: "b.md" }] }], "G4"), "本次交付覆盖 1 个步骤，产出 2 份文件。");
+  assert.equal(researchScopeSentence([]), "");
+  assert.equal(researchScopeSentence([{ id: "collect", kind: "human", outputs: ["notes/points.md"] }]), "将执行 1 个步骤，都由你亲自完成，预计产出 1 份文件。");
   assert.equal(researchScopeOutline(tasks).outputs.length, 4);
   assert.equal(isTemplatePlanSummary("围绕目标「x」，按「y」流程执行 1 个专家任务，各任务按依赖顺序登记产物。"), true);
   assert.equal(isTemplatePlanSummary("这是研究负责人写的真实研究边界与停止条件。"), false);

@@ -152,8 +152,12 @@ export const expertRoles: Record<string, string> = {
 /** 成果文件按内容角色分类：正文优先，审计、复核类文件归入过程记录。 */
 const reviewArtifactPath = /(^|\/)(review|verdict|audit|check|gate|pass|fallback|rework)(\/|\.|$)/i;
 const contentDirPath = /(^|\/)(writing|draft|synthesis|evidence|discovery|outline|strategy|package)\//i;
-const reportArtifactPath = /(report|final|summary|conclusion|abstract|one[-_ ]?liner|result|deliverable|报告|结论|摘要)/i;
-const indexArtifactPath = /(^|\/)(manifest|index|inventory)\.[^.]+$/i;
+const reportArtifactPath = /(report|final|summary|conclusion|abstract|one[-_ ]?liner|result|deliverable|slides?|speech|deck|talk|报告|结论|摘要|幻灯片|演讲稿)/i;
+const indexArtifactPath = /(^|\/)(manifest|index|inventory|archive|package-archive|research[-_ ]?package)(\.[^.]+$|\/)/i;
+/** 工作底稿不是结论：原始证据、扫描清单、规格和运行日志只降低权重，仍可从文件列表打开。 */
+const workingNotePath = /(^|\/)(evidence|evidence-cards|landmark-papers|domain-evolution|reproduction-spec|run-log|run-guide|genealogy-scan|paper-deepread|repro-code|repro-run|spec|scan)\b/i;
+/** 真正写给读者看的正文位置。 */
+const readerFacingPath = /(^|\/)(writing|slides?|speech|deck|talk)(\/|\.|$)/i;
 const reviewRoles = new Set(["as-independent-reviewer", "as-quality-citation-auditor"]);
 /** 写作、汇总、归档类角色更可能产出最终交付；复核类角色产出过程记录。 */
 const deliverableRoleWeight: Record<string, number> = {
@@ -172,6 +176,25 @@ const deliverableRoleWeight: Record<string, number> = {
   "as-quality-citation-auditor": -15,
 };
 const artifactLabels: [RegExp, string][] = [
+  [/(^|\/)landmark-papers\.[^.]+$/i, "领域论文清单"],
+  [/(^|\/)domain-evolution\.[^.]+$/i, "领域演进图谱"],
+  [/(^|\/)evidence-cards\.[^.]+$/i, "论文证据卡"],
+  [/(^|\/)reproduction-spec\.[^.]+$/i, "复现规格"],
+  [/(^|\/)repro-code\.[^.]+$/i, "复现代码说明"],
+  [/(^|\/)run-guide\.[^.]+$/i, "复现运行指南"],
+  [/(^|\/)run-log\.[^.]+$/i, "运行日志"],
+  [/(^|\/)results-summary\.[^.]+$/i, "结果摘要"],
+  [/(^|\/)slides?\.[^.]+$/i, "幻灯片内容"],
+  [/(^|\/)speech\.[^.]+$/i, "演讲稿"],
+  [/(^|\/)research-package\.[^.]+$/i, "研究包归档"],
+  [/(^|\/)audit-report\.[^.]+$/i, "引用审计报告"],
+  [/(^|\/)review-report\.[^.]+$/i, "独立审查报告"],
+  [/(^|\/)package-archive\//i, "研究包归档"],
+  [/(^|\/)genealogy-scan\//i, "领域谱系材料"],
+  [/(^|\/)paper-deepread\//i, "论文深读材料"],
+  [/(^|\/)repro-code\//i, "复现代码"],
+  [/(^|\/)repro-run\//i, "复现运行记录"],
+  [/(^|\/)groupmeeting-report\//i, "组会汇报"],
   [/(^|\/)one[-_ ]?liner\.[^.]+$/i, "一句话结论"],
   [/(^|\/)review\/verdict\.[^.]+$/i, "复核意见"],
   [/(^|\/)pass\/[^/]+\.[^.]+$/i, "通过报告"],
@@ -198,6 +221,11 @@ export function researchArtifactLabel(path: string): string {
   for (const [pattern, label] of artifactLabels) if (pattern.test(path)) return label;
   const name = path.split("/").at(-1) ?? path;
   return name.replace(/\.[^.\\/]+$/, "") || path;
+}
+/** 结论正文只展示内容：隐藏文档开头用于交接的 YAML frontmatter；下载与校验仍用原文。 */
+export function researchDisplayContent(content: string): string {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content);
+  return match && match[1].includes(":") ? content.slice(match[0].length) : content;
 }
 export function researchFileSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "";
@@ -233,7 +261,9 @@ export function researchOutcome(study: ResearchStudy): ResearchOutcome {
     const leaf = !tasks.some((candidate) => candidate.dependsOn.includes(task.id));
     const score = (deliverableRoleWeight[task.role] ?? 0)
       + (reportArtifactPath.test(artifact.path) ? 20 : 0)
+      + (readerFacingPath.test(artifact.path) ? 15 : 0)
       - (indexArtifactPath.test(artifact.path) ? 25 : 0)
+      - (workingNotePath.test(artifact.path) ? 35 : 0)
       - (process ? 60 : 0)
       + (leaf ? 15 : 0)
       + Math.min(10, Math.floor(artifact.bytes / 2048));
@@ -285,6 +315,11 @@ export function researchReviewSummary(study: ResearchStudy): string {
   return `${counts.verdict === "pass" ? "已通过独立复核" : "已完成独立复核"}${rework}。`;
 }
 
+/** 结论的证据支撑类型：界面只说人话，不暴露 support 编码。 */
+export function claimSupportLabel(support: string): string {
+  return support === "experiment" ? "有实验证据" : support === "paper" ? "有论文原文依据" : "推测性结论";
+}
+
 export interface ResearchScopeTask {
   id: string; brief?: string; kind?: string; role?: string;
   outputs?: string[]; dependsOn?: string[];
@@ -310,14 +345,11 @@ export function researchScopeOutline(tasks: ResearchScopeTask[]): ResearchScopeO
     outputs: [...new Set(artifacts.length ? artifacts : declared)],
   };
 }
-/** G1 说明接下来做什么，G4 说明交付覆盖什么；两者都不再重复计划模板。 */
-export function researchScopeSentence(tasks: ResearchScopeTask[], gate: string): string {
+/** 范围确认时说明接下来做什么；交付确认不比步骤数，由结论和产物说话。 */
+export function researchScopeSentence(tasks: ResearchScopeTask[]): string {
   const outline = researchScopeOutline(tasks);
   if (!outline.steps) return "";
-  const files = outline.outputs.length
-    ? gate === "G4" ? `，产出 ${outline.outputs.length} 份文件` : `${outline.routeSteps ? "，预计最多" : "，预计产出"} ${outline.outputs.length} 份文件`
-    : "";
-  if (gate === "G4") return `本次交付覆盖 ${outline.steps} 个步骤${files}。`;
+  const files = outline.outputs.length ? `${outline.routeSteps ? "，预计最多" : "，预计产出"} ${outline.outputs.length} 份文件` : "";
   if (outline.humanSteps === outline.steps) return `将执行 ${outline.steps} 个步骤，都由你亲自完成${files}。`;
   const people = [
     outline.expertCount ? `${outline.expertCount} 位专家参与` : null,
