@@ -98,7 +98,7 @@ fn generation_prompt(intent: &str, locale: &str, agents: &[Pick]) -> String {
          \"name\" and every task \"brief\", control nodes included) MUST be written in the \
          language with IETF tag \"{locale}\" — the same language as the request above. Do not \
          answer them in English just because these instructions are in English. Only \"id\", \
-         \"role\", \"kind\", \"branch\" and \"outputs\" stay in ASCII.\n\n\
+         \"role\", \"kind\", \"branch\", \"reads\" and \"outputs\" stay in ASCII.\n\n\
          Rules:\n\
          - \"name\": a short title for this workflow, at most 30 characters, in the language \
          with IETF tag \"{locale}\" (for example a literature review is \"文献综述流程\").\n\
@@ -111,14 +111,17 @@ fn generation_prompt(intent: &str, locale: &str, agents: &[Pick]) -> String {
          this request: what the step reads, what it does, what it produces. Generic step \
          descriptions that would fit any workflow are wrong. For a human task the brief is \
          what the researcher sees, so write it as an instruction.\n\
-         - \"dependsOn\": ids of the tasks whose outputs this step directly reads; [] when it \
-         starts the flow. If a step verifies or quotes a specific file, list the task that \
-         produces that file even when it is already an ancestor — only direct prerequisites \
-         can be bound as inputs. The graph must stay acyclic; every task should be reachable \
-         from a start.\n\
+         - \"dependsOn\": ids of the tasks that must finish before this step (ordering); [] when \
+         it starts the flow. The graph must stay acyclic; every task should be reachable from a \
+         start.\n\
+         - \"reads\": the exact upstream output paths this step directly reads, copied from the \
+         producing task's \"outputs\" (for example \"task-1/papers.md\"); [] when it reads no \
+         upstream file. List every file the brief names, even when the producer is already an \
+         ancestor — only direct prerequisites can be bound as inputs. The runtime adds each \
+         producer to \"dependsOn\" automatically.\n\
          - \"outputs\": one or two relative file paths starting with the task id, like \
          \"{{id}}/result.md\"; unique across the whole workflow; no leading \"/\", no \"..\".\n\
-         - Do NOT write \"inputs\": they are bound to the direct prerequisites automatically.\n\
+         - Do NOT write \"inputs\": they are derived from \"reads\" and the direct prerequisites.\n\
          - Ordering: discovery and analysis steps come first; synthesis, writing, review, \
          audit, and packaging steps come last.\n\
          - Review chain: \"as-independent-reviewer\" needs at least one prerequisite outside \
@@ -177,6 +180,9 @@ struct RawTask {
     role: String,
     brief: String,
     depends_on: Vec<String>,
+    /// 这一步直接读取的上游产物路径（从上游任务的 outputs 原样复制）。
+    /// 产出它的任务会被自动补成直接前置：只有直接前置的产物才能绑定为任务输入。
+    reads: Vec<String>,
     outputs: Vec<String>,
     /// 空或 "agent" 为专家任务；"human" / "foreach" / "route" 为控制节点。
     kind: String,
@@ -391,40 +397,41 @@ fn parse_draft(raw: &str, agents: &[Pick]) -> Result<(String, Vec<TaskSpec>)> {
     }
 
     // 控制节点的清单/结论来源若指向某个任务的产物，就把产出它的任务补成直接前置。
-    let source_owner: Vec<Option<usize>> = {
-        let owner_of_output: HashMap<&str, usize> = tasks
-            .iter()
-            .enumerate()
-            .flat_map(|(index, task)| {
-                task.outputs
-                    .iter()
-                    .map(move |output| (output.as_str(), index))
-            })
-            .collect();
-        raw.tasks
-            .iter()
-            .map(|raw_task| {
-                let source = match raw_task.kind.trim().to_ascii_lowercase().as_str() {
-                    "foreach" => raw_task
-                        .for_each
-                        .as_ref()
-                        .map(|spec| spec.source.trim())
-                        .unwrap_or(""),
-                    "route" => raw_task
-                        .route
-                        .as_ref()
-                        .map(|spec| spec.source.trim())
-                        .unwrap_or(""),
-                    _ => "",
-                };
-                if source.is_empty() {
-                    None
-                } else {
-                    owner_of_output.get(source).copied()
-                }
-            })
-            .collect()
-    };
+    // 专家任务的 reads 同理：说明里点名要读的文件，产出它的任务必须是直接前置，
+    // 否则运行时不会把文件绑定成输入（间接祖先只保证顺序，不转交文件）。
+    let owner_of_output: HashMap<String, usize> = tasks
+        .iter()
+        .enumerate()
+        .flat_map(|(index, task)| {
+            task.outputs
+                .iter()
+                .map(move |output| (output.clone(), index))
+        })
+        .collect();
+    let source_owner: Vec<Option<usize>> = raw
+        .tasks
+        .iter()
+        .map(|raw_task| {
+            let source = match raw_task.kind.trim().to_ascii_lowercase().as_str() {
+                "foreach" => raw_task
+                    .for_each
+                    .as_ref()
+                    .map(|spec| spec.source.trim())
+                    .unwrap_or(""),
+                "route" => raw_task
+                    .route
+                    .as_ref()
+                    .map(|spec| spec.source.trim())
+                    .unwrap_or(""),
+                _ => "",
+            };
+            if source.is_empty() {
+                None
+            } else {
+                owner_of_output.get(source).copied()
+            }
+        })
+        .collect();
 
     // 依赖改写：优先按原始 id 解析，退而按改名后的 id（模型直接写了规范 id 时），
     // 丢悬空与自引用，去重保序；以下标表示。
@@ -432,6 +439,52 @@ fn parse_draft(raw: &str, agents: &[Pick]) -> Result<(String, Vec<TaskSpec>)> {
         .iter()
         .enumerate()
         .map(|(index, task)| (task.id.as_str(), index))
+        .collect();
+    // reads 里的路径先精确匹配产物，再按唯一文件名兜底；模型误写任务 id 时读该任务的全部产物。
+    let read_owners: Vec<Vec<usize>> = raw
+        .tasks
+        .iter()
+        .enumerate()
+        .map(|(index, raw_task)| {
+            let mut owners = Vec::new();
+            for read in &raw_task.reads {
+                let read = read.trim();
+                if read.is_empty() {
+                    continue;
+                }
+                let basename_owner = || {
+                    let base = read.rsplit('/').next().unwrap_or(read);
+                    let mut found = None;
+                    let mut count = 0usize;
+                    for (candidate, task) in tasks.iter().enumerate() {
+                        if task
+                            .outputs
+                            .iter()
+                            .any(|output| output.rsplit('/').next() == Some(base))
+                        {
+                            found = Some(candidate);
+                            count += 1;
+                        }
+                    }
+                    if count == 1 {
+                        found
+                    } else {
+                        None
+                    }
+                };
+                let owner = owner_of_output
+                    .get(read)
+                    .copied()
+                    .or_else(basename_owner)
+                    .or_else(|| new_index_of.get(read).copied());
+                if let Some(owner) = owner {
+                    if owner != index && !owners.contains(&owner) {
+                        owners.push(owner);
+                    }
+                }
+            }
+            owners
+        })
         .collect();
     let mut deps: Vec<Vec<usize>> = vec![Vec::new(); tasks.len()];
     for (index, raw_task) in raw.tasks.iter().enumerate() {
@@ -446,6 +499,12 @@ fn parse_draft(raw: &str, agents: &[Pick]) -> Result<(String, Vec<TaskSpec>)> {
         }
         // 清单/结论来源不在前置里时补上，随后统一破环。
         if let Some(owner) = source_owner[index] {
+            if owner != index && !deps[index].contains(&owner) {
+                deps[index].push(owner);
+            }
+        }
+        // 直接读取的产物，其生产者必须进前置，否则输入绑定不到。
+        for &owner in &read_owners[index] {
             if owner != index && !deps[index].contains(&owner) {
                 deps[index].push(owner);
             }
@@ -919,6 +978,36 @@ mod tests {
     }
 
     #[test]
+    fn reads_add_the_producing_task_as_a_direct_prerequisite() {
+        // 说明里点名要读某个祖先的产物时，只连顺序前置是不够的：
+        // 运行时只把直接前置的产物绑定成输入，所以生产者必须补成直接前置。
+        let raw = r#"{"name":"n","tasks":[
+            {"id":"scan","role":"as-literature-researcher","brief":"检索","outputs":["scan/papers.md"]},
+            {"id":"read","role":"as-research-synthesizer","brief":"深读","dependsOn":["scan"],"outputs":["read/cards.md"]},
+            {"id":"run","role":"as-experiment-operator","brief":"复现","dependsOn":["read"],"outputs":["run/log.md"]},
+            {"id":"write","role":"as-research-synthesizer","brief":"写作","dependsOn":["run"],
+             "reads":["read/cards.md","run/log.md"],"outputs":["write/slides.md"]}]}"#;
+        let (_, tasks) = parse_draft(raw, &agents()).unwrap();
+        let write = tasks.iter().find(|task| task.id == "write").unwrap();
+        assert!(write.depends_on.contains(&"read".to_string()));
+        assert!(write.depends_on.contains(&"run".to_string()));
+        // 输入由直接前置的产物补齐：证据卡和运行日志都能绑定。
+        assert!(write.inputs.contains(&"read/cards.md".to_string()));
+        assert!(write.inputs.contains(&"run/log.md".to_string()));
+    }
+
+    #[test]
+    fn reads_resolve_a_unique_output_basename() {
+        let raw = r#"{"name":"n","tasks":[
+            {"id":"scan","role":"as-literature-researcher","brief":"检索","outputs":["scan/papers.md"]},
+            {"id":"read","role":"as-research-synthesizer","brief":"深读","dependsOn":["scan"],"outputs":["read/cards.md"]},
+            {"id":"write","role":"as-research-synthesizer","brief":"写作","dependsOn":["read"],"reads":["cards.md"],"outputs":["write/slides.md"]}]}"#;
+        let (_, tasks) = parse_draft(raw, &agents()).unwrap();
+        let write = tasks.iter().find(|task| task.id == "write").unwrap();
+        assert!(write.depends_on.contains(&"read".to_string()));
+    }
+
+    #[test]
     fn invalid_ids_are_renamed_and_refs_follow() {
         let raw = r#"{"name":"n","tasks":[
             {"id":"任务 1","role":"as-literature-researcher","brief":"b","outputs":["o1"]},
@@ -1062,6 +1151,7 @@ mod tests {
         assert!(prompt.contains("acyclic"));
         assert!(prompt.contains("foreach"));
         assert!(prompt.contains("kind"));
+        assert!(prompt.contains("\"reads\""));
     }
 
     /// 一张包含逐项、人工、分流和审查链的生成稿：机械契约（来源、模板、分支标记、
