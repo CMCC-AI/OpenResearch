@@ -10,8 +10,10 @@ use crate::store::Store;
 /// One reasoning round trip over a long output. Both generators write more
 /// than a title or a handful of prompts, and reasoning models take their time:
 /// on GLM-5.3 a short flow already costs ~110s, and a broad intent (survey plus
-/// reproduction) goes past three minutes, so the old 180s cut real drafts off.
-pub const GENERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// reproduction) routinely spent the full 300s without emitting JSON. The
+/// canvas now streams the reasoning tail, so a longer ceiling is watchable
+/// instead of silent; 180s cut real drafts off and 300s did too.
+pub const GENERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(420);
 /// The user's one-sentence intent, as accepted from the API.
 pub const INTENT_CHARS: usize = 2000;
 
@@ -118,6 +120,17 @@ pub(crate) fn clip(text: &str, chars: usize) -> String {
         .to_string()
 }
 
+/// 思考流给界面看的那一小段：压成一行，只保留最新 `chars` 个字符。
+/// 生成期模型可能先想几分钟，界面只需要“它还在动”，不搬运整段思维链。
+pub(crate) fn reasoning_tail(text: &str, chars: usize) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let count = flat.chars().count();
+    if count <= chars {
+        return flat;
+    }
+    flat.chars().skip(count - chars).collect()
+}
+
 /// The built-in roles as picks: id plus the first two lines of the role
 /// prompt (its title and one-line summary). The prompt body itself is tuned
 /// by the core team and never leaves the process.
@@ -175,6 +188,14 @@ mod tests {
         assert_eq!(clip("ab \n", 10), "ab");
         // 按字符而不是字节截断：三个汉字不会被切成半个。
         assert_eq!(clip("文献计量", 3), "文献计");
+    }
+
+    #[test]
+    fn reasoning_tail_keeps_the_newest_text_on_one_line() {
+        assert_eq!(reasoning_tail(" 先想\n  再排\t流程 ", 40), "先想 再排 流程");
+        assert_eq!(reasoning_tail("先把论文分成三类再排", 5), "成三类再排");
+        // 空思考不产生可见行。
+        assert_eq!(reasoning_tail(" \n\t ", 10), "");
     }
 
     #[test]

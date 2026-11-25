@@ -558,12 +558,19 @@ pub struct OneShot<'a> {
     pub timeout: Duration,
 }
 
+/// A one-shot progress callback: receives the text accumulated so far.
+pub type OneShotTextFn = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Optional hooks for a one-shot that can report progress while it runs.
 #[derive(Clone)]
 pub struct OneShotSink {
     /// Receives the reply accumulated so far (not just the newest chunk), so a
     /// consumer never has to reassemble it.
-    pub on_text: Arc<dyn Fn(&str) + Send + Sync>,
+    pub on_text: OneShotTextFn,
+    /// Receives the reasoning text accumulated so far, for harnesses that
+    /// stream it separately (OpenCode). `None` when the caller only wants the
+    /// reply; reasoning never becomes part of the returned text.
+    pub on_reasoning: Option<OneShotTextFn>,
     /// Cancelled when the caller goes away; the harness stops its child early.
     pub cancel: Option<CancellationToken>,
 }

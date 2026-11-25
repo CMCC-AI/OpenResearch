@@ -207,6 +207,29 @@ test("parsePartialTasks yields only complete task objects and tolerates truncati
   assert.deepEqual(parsePartialTasks(`{"tasks":[{"id":"a","role":"r","brief":"b"},{"id":"a","role":"r","brief":"b"}]}`).map(item => item.id), ["a"]);
 });
 
+test("parsePartialTasks keeps control nodes so they preview with their own shape", () => {
+  const text = `{"tasks":[
+    {"id":"read","kind":"foreach","brief":"逐篇精读","dependsOn":["scan"],
+     "forEach":{"source":"scan/papers.md","itemBrief":"精读 {item}","itemOutput":"read/{item}.md"}},
+    {"id":"pick","kind":"human","brief":"挑复现目标","dependsOn":["read"],"outputs":["pick/choice.md"]},
+    {"id":"fork","kind":"route","brief":"结果分流","dependsOn":["run"],
+     "route":{"on":"verdict","source":"run/out.md","verdictIs":"pass"}},
+    {"id":"ok","role":"as-writer","brief":"成功","dependsOn":["fork"],"branch":"then","outputs":["ok/r.md"]},
+    {"id":"broken","brief":"既没有角色也没有节点类型"}
+  ]}`;
+  const tasks = parsePartialTasks(text);
+  assert.deepEqual(tasks.map(item => item.id), ["read", "pick", "fork", "ok"]);
+  // 控制节点没有专家角色，但要保留 kind 与各自的配置供画布预览。
+  assert.deepEqual(tasks[0].role, "");
+  assert.equal(tasks[0].kind, "foreach");
+  assert.equal(tasks[0].forEach.source, "scan/papers.md");
+  assert.equal(tasks[1].kind, "human");
+  assert.equal(tasks[2].kind, "route");
+  assert.equal(tasks[2].route.source, "run/out.md");
+  // 专家任务的分支标记也要带出来，画布才画得出「成立」边。
+  assert.equal(tasks[3].routeBranch, "then");
+});
+
 // ---- AI 排流程：库页不再放入口 ----
 
 test("the library stays a list: the AI entry belongs to the canvas page", () => {

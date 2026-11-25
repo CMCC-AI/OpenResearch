@@ -66,6 +66,7 @@ function harness({ projectId, sessionId = null, nameSlot = null } = {}) {
           running: false,
           stage: "inventory",
           elapsed: 0,
+          thinking: "",
           previewTasks: [],
           start: (intent) => calls.push(["start", intent]),
           stop: () => calls.push(["stop"]),

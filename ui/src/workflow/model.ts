@@ -248,7 +248,7 @@ export function migrateDraftLayout(draft: WorkflowDraftInput): WorkflowDraftInpu
   return { ...draft, positions: gridPositions(draft.tasks), viewport: null };
 }
 
-/** AI 排流程的返回：名称加一条任务链。后端只保证结构与专家引用合法，不带画布坐标。 */
+/** AI 排流程的返回：名称加一组节点（专家任务 + 可选的人工/逐项/分流节点）。后端只保证结构与引用合法，不带画布坐标。 */
 export interface GeneratedWorkflowDraft {
   name: string;
   tasks: WorkflowTask[];
@@ -316,7 +316,7 @@ export function layeredPositions(tasks: WorkflowTask[]): Record<string, FlowPoin
 }
 
 /**
- * AI 生成的任务链 → 可直接进编辑器的完整草稿。坐标按依赖分层补齐；名称用模型给的，
+ * AI 生成的任务组 → 可直接进编辑器的完整草稿。坐标按依赖分层补齐；名称用模型给的，
  * 空则落回默认名；目标与摘要是提交运行时才收集的内容，这里保持为空。
  */
 export function generatedToDraftInput(generated: GeneratedWorkflowDraft): WorkflowDraftInput {
@@ -335,7 +335,7 @@ export function generatedToDraftInput(generated: GeneratedWorkflowDraft): Workfl
 /**
  * 从流式回复的累计文本里取出已经写完的任务。模型一次输出一个 JSON 对象，
  * 任务在 "tasks" 数组里按顺序到达：只收花括号配平的完整对象，尾部没写完的
- * 留到下一次；缺 id/role/brief 的跳过。最终仍以后端的结构校验结果为准。
+ * 留到下一次；缺 id/brief 的跳过（控制节点没有 role，按 kind 保留）。最终仍以后端的结构校验结果为准。
  */
 export function parsePartialTasks(text: string): WorkflowTask[] {
   const key = text.indexOf('"tasks"');
@@ -379,6 +379,8 @@ export function parsePartialTasks(text: string): WorkflowTask[] {
   return tasks;
 }
 
+const STREAMED_CONTROL_KINDS = new Set(["route", "foreach", "human", "experiment", "wait"]);
+
 function parseStreamedTask(raw: string): WorkflowTask | null {
   let value: Partial<WorkflowTask>;
   try {
@@ -387,16 +389,33 @@ function parseStreamedTask(raw: string): WorkflowTask | null {
     return null;
   }
   if (typeof value.id !== "string" || !value.id.trim()) return null;
-  if (typeof value.role !== "string" || !value.role.trim()) return null;
+  // 控制节点没有专家角色，但同样要在流式预览里出现；专家任务仍要求角色。
+  const kind = typeof value.kind === "string" && STREAMED_CONTROL_KINDS.has(value.kind)
+    ? value.kind as WorkflowTask["kind"]
+    : undefined;
+  if (!kind && (typeof value.role !== "string" || !value.role.trim())) return null;
   if (typeof value.brief !== "string") return null;
   const strings = (input: unknown) =>
     Array.isArray(input) ? input.filter((item): item is string => typeof item === "string") : [];
+  const object = (input: unknown) => input && typeof input === "object" && !Array.isArray(input) ? input : null;
+  // 流式 JSON 里分支用模型协议的 "branch"；草稿字段叫 routeBranch。
+  const rawBranch = (value as { branch?: unknown }).branch;
+  const branch = value.routeBranch === "then" || value.routeBranch === "else"
+    ? value.routeBranch
+    : rawBranch === "then" || rawBranch === "else" ? rawBranch : undefined;
   return {
     id: value.id.trim(),
-    role: value.role.trim(),
+    role: kind ? "" : (value.role as string).trim(),
     brief: value.brief,
     dependsOn: strings(value.dependsOn),
     outputs: strings(value.outputs),
+    ...(kind ? { kind } : {}),
+    ...(object(value.route) ? { route: value.route } : {}),
+    ...(object(value.forEach) ? { forEach: value.forEach } : {}),
+    ...(branch ? { routeBranch: branch } : {}),
+    ...(value.requiresApproval === true ? { requiresApproval: true } : {}),
+    ...(value.gateDownstream === true ? { gateDownstream: true } : {}),
+    ...(object(value.waitStep) ? { waitStep: value.waitStep } : {}),
   };
 }
 

@@ -1,12 +1,14 @@
 //! One-shot drafts for whole workflows: the researcher describes the flow in
-//! one sentence, a headless harness child writes a workflow name plus a chain
-//! of expert tasks (id / role / brief / dependsOn / outputs) as a single JSON
-//! object. Only agent tasks in v1 — control nodes (route / foreach / wait)
-//! carry dense structural contracts a small model routinely violates, so they
-//! stay hand-edited for now. Roles must exist locally; the output is sanitized
-//! into an acyclic graph that passes `validate_route_rules`, so the draft can
-//! be saved and later submitted without surprises. No cache: every draft
-//! starts from what the user just typed.
+//! one sentence, a headless harness child writes a workflow name plus a DAG of
+//! expert tasks and control nodes, and the sanitizer turns that into a draft
+//! the editor can save and submit. The model only writes the semantic half —
+//! which step repeats per item, where a person must decide, where a run may
+//! fail and what the fallback is. The mechanical half (list sidecar, verdict
+//! gate, branch markers, input bindings, review gates) is derived here so a
+//! small model cannot get the dense contracts wrong. Roles must exist locally;
+//! the result passes `validate_route_rules` and the plan validator, so a
+//! generated draft never fails at submission. No cache: every draft starts
+//! from what the user just typed.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -18,11 +20,16 @@ use super::draft_support::{
 };
 use super::harness::{OneShot, OneShotQuality, OneShotSink};
 use crate::error::{anyhow, Result};
-use crate::store::research::{validate_route_rules, TaskSpec};
+use crate::store::research::{
+    validate_plan_with_roles, validate_route_rules, ForEachSpec, PlanInput, RouteSpec, TaskSpec,
+};
 use crate::store::Store;
 
-/// 生成上限比校验上限（40）紧：小模型任务越多质量越差，超出的直接拒绝。
-const MAX_TASKS: usize = 12;
+/// 生成上限比校验上限（40）紧：小模型节点越多质量越差，超出的直接拒绝。
+/// 控制节点（人工/逐项/分流）也占名额。
+const MAX_TASKS: usize = 14;
+/// 自动绑定输入的条数上限：超过就把最靠前的几条留给专家按需自查。
+const MAX_INPUTS: usize = 8;
 const NAME_CHARS: usize = 120;
 const BRIEF_CHARS: usize = 4000;
 const OUTPUTS_PER_TASK: usize = 4;
@@ -31,6 +38,8 @@ const ID_CHARS: usize = 80;
 const ROLE_REVIEWER: &str = "as-independent-reviewer";
 const ROLE_AUDITOR: &str = "as-quality-citation-auditor";
 const ROLE_CURATOR: &str = "as-research-package-curator";
+/// 实验执行任务不支持结论把关：分流只能改用「上游失败」谓词。
+const ROLE_EXPERIMENT_OPERATOR: &str = "as-experiment-operator";
 const REVIEW_CHAIN_ROLES: [&str; 3] = [ROLE_REVIEWER, ROLE_AUDITOR, ROLE_CURATOR];
 
 const SYSTEM_PROMPT: &str = "You design reusable research workflows for MobileSci, an AI for \
@@ -79,7 +88,6 @@ pub async fn generate(
     })
     .await?;
     let (name, tasks) = parse_draft(&raw, agents)?;
-    validate_route_rules(&tasks).map_err(|e| anyhow!("{e}"))?;
     Ok(GeneratedWorkflow { name, tasks })
 }
 
@@ -87,29 +95,60 @@ fn generation_prompt(intent: &str, locale: &str, agents: &[Pick]) -> String {
     let mut out = format!(
         "Design ONE reusable research workflow of expert tasks for this request:\n{intent}\n\n\
          LANGUAGE — read this first: every piece of text a person will read (the workflow \
-         \"name\" and every task \"brief\") MUST be written in the language with IETF tag \
-         \"{locale}\" — the same language as the request above. Do not answer them in English \
-         just because these instructions are in English. Only \"id\", \"role\", and \"outputs\" \
-         stay in ASCII.\n\n\
+         \"name\" and every task \"brief\", control nodes included) MUST be written in the \
+         language with IETF tag \"{locale}\" — the same language as the request above. Do not \
+         answer them in English just because these instructions are in English. Only \"id\", \
+         \"role\", \"kind\", \"branch\" and \"outputs\" stay in ASCII.\n\n\
          Rules:\n\
          - \"name\": a short title for this workflow, at most 30 characters, in the language \
          with IETF tag \"{locale}\" (for example a literature review is \"文献综述流程\").\n\
-         - \"tasks\": 3 to 8 expert steps, each {{\"id\",\"role\",\"brief\",\"dependsOn\",\"outputs\"}}.\n\
+         - \"tasks\": 3 to 10 expert steps plus the control nodes described below; at most 14 \
+         nodes in total. Prefer the smallest structure that covers the real risks.\n\
          - \"id\": short and stable, ASCII letters/digits/underscores/hyphens only (like \"task-1\").\n\
-         - \"role\": the expert doing this step, picked ONLY from the role list below.\n\
+         - \"role\": the expert doing this step, picked ONLY from the role list below. Control \
+         nodes have no role.\n\
          - \"brief\": 2-4 sentences in the language with IETF tag \"{locale}\", specific to \
          this request: what the step reads, what it does, what it produces. Generic step \
-         descriptions that would fit any workflow are wrong.\n\
-         - \"dependsOn\": ids of the tasks whose outputs this step reads; [] when it starts \
-         the flow. The graph must stay acyclic; every task should be reachable from a start.\n\
+         descriptions that would fit any workflow are wrong. For a human task the brief is \
+         what the researcher sees, so write it as an instruction.\n\
+         - \"dependsOn\": ids of the tasks whose outputs this step directly reads; [] when it \
+         starts the flow. If a step verifies or quotes a specific file, list the task that \
+         produces that file even when it is already an ancestor — only direct prerequisites \
+         can be bound as inputs. The graph must stay acyclic; every task should be reachable \
+         from a start.\n\
          - \"outputs\": one or two relative file paths starting with the task id, like \
          \"{{id}}/result.md\"; unique across the whole workflow; no leading \"/\", no \"..\".\n\
+         - Do NOT write \"inputs\": they are bound to the direct prerequisites automatically.\n\
          - Ordering: discovery and analysis steps come first; synthesis, writing, review, \
          audit, and packaging steps come last.\n\
          - Review chain: \"as-independent-reviewer\" needs at least one prerequisite outside \
          the reviewer/auditor/curator trio; \"as-quality-citation-auditor\" must come after \
          \"as-independent-reviewer\"; \"as-research-package-curator\" must come after \
-         \"as-quality-citation-auditor\" (directly or transitively).\n\
+         \"as-quality-citation-auditor\" (directly or transitively).\n\n\
+         CONTROL NODES — use one only when the pattern clearly applies:\n\
+         - A step reads a list of 5-20 similar items and repeats the same work per item (for \
+         example reading every shortlisted paper): emit ONE node with \"kind\":\"foreach\" \
+         instead of one expert reading them all. No \"role\", no \"outputs\", but a short \
+         \"brief\" as the node name. Add \
+         \"forEach\":{{\"source\":\"<the list artifact, an output of the direct prerequisite>\",\
+         \"itemBrief\":\"2-4 sentences with {{item}} for the current item\",\
+         \"itemOutput\":\"<id>/{{item}}.md\"}}. The runtime asks the upstream task to write the \
+         \"<source>.items.json\" list automatically. At most one such node.\n\
+         - A decision only the researcher can make (which papers to reproduce, which scheme to \
+         adopt) and the rest of the flow depends on it: emit \"kind\":\"human\" with no \
+         \"role\", a short \"brief\" and exactly one \"outputs\" path. Put it right BEFORE the \
+         expensive or irreversible work it governs, never at the end. At most two.\n\
+         - A step may fail and the flow has a meaningful fallback (a failed reproduction is \
+         still reported): emit \"kind\":\"route\" with no \"role\"/\"outputs\", a short \
+         \"brief\", and \
+         \"route\":{{\"source\":\"<an output of the direct prerequisite>\",\"verdictIs\":\"pass\"}}. \
+         Give it exactly two downstream tasks, one with \"branch\":\"then\" and one with \
+         \"branch\":\"else\"; both branches must lead onward and may merge into a later task \
+         that lists both in \"dependsOn\". The runtime enables the verdict gate on the source \
+         task automatically. At most two.\n\
+         - \"approve\":true on an expert task adds a short confirmation checkpoint after it. \
+         Prefer it over a human task when nobody has to produce content, only to approve.\n\
+         - Do not add control nodes the request does not need; no empty forks.\n\
          - Reply with a single JSON object with keys \"name\" and \"tasks\", and nothing else.\n\n\
          ## Available agent roles (pick \"role\" only from this list)\n"
     );
@@ -139,23 +178,41 @@ struct RawTask {
     brief: String,
     depends_on: Vec<String>,
     outputs: Vec<String>,
+    /// 空或 "agent" 为专家任务；"human" / "foreach" / "route" 为控制节点。
+    kind: String,
+    /// 分流节点的子任务标记："then" 或 "else"。
+    branch: String,
+    /// 专家任务完成后停一次等主理人确认。
+    approve: bool,
+    for_each: Option<RawForEach>,
+    route: Option<RawRoute>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct RawForEach {
+    source: String,
+    item_output: String,
+    item_brief: String,
+    on_failure: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct RawRoute {
+    source: String,
+    verdict_is: String,
 }
 
 /// 模型输出 → 合法 DAG。容忍代码围栏与前后杂文；逐层消毒：
 /// 非法 id 改名（引用跟随）、清单外专家与空简报整稿拒绝、产物路径兜底与全局去重、
 /// 悬空/自引用依赖丢弃、增量破环，最后按审查链祖先规则把关。
 fn parse_draft(raw: &str, agents: &[Pick]) -> Result<(String, Vec<TaskSpec>)> {
-    let Some(start) = raw.find('{') else {
+    // 只认第一段能反序列化的完整对象：模型偶尔把整份草稿输出两遍，或先说一段
+    // 不完整的草稿再重来。取“首尾花括号”会把两段 JSON 拼在一起而解析失败。
+    let Some(raw) = parse_first_workflow(raw) else {
         return Err(anyhow!("模型没有返回有效的工作流草稿；请重试或换个说法"));
     };
-    let Some(end) = raw.rfind('}') else {
-        return Err(anyhow!("模型没有返回有效的工作流草稿；请重试或换个说法"));
-    };
-    if end <= start {
-        return Err(anyhow!("模型没有返回有效的工作流草稿；请重试或换个说法"));
-    }
-    let raw: RawWorkflow = serde_json::from_str(&raw[start..=end])
-        .map_err(|_| anyhow!("模型没有返回有效的工作流草稿；请重试或换个说法"))?;
     let name = clip(raw.name.trim(), NAME_CHARS);
     if name.is_empty() {
         return Err(anyhow!("模型没有给出工作流名称；请重试或换个说法"));
@@ -209,33 +266,14 @@ fn parse_draft(raw: &str, agents: &[Pick]) -> Result<(String, Vec<TaskSpec>)> {
     let mut seen_outputs: HashSet<String> = HashSet::new();
     for (index, raw_task) in raw.tasks.iter().enumerate() {
         let id = ids[index].clone();
-        let role = raw_task.role.trim();
-        if role.is_empty() || !roles.contains(role) {
-            return Err(anyhow!(
-                "任务「{id}」引用了清单之外的专家「{}」；请重试或换个说法",
-                raw_task.role.trim()
-            ));
-        }
         let brief = clip(raw_task.brief.trim(), BRIEF_CHARS);
-        if brief.is_empty() {
-            return Err(anyhow!("任务「{id}」缺少工作说明；请重试或换个说法"));
-        }
-        let mut outputs: Vec<String> = raw_task
-            .outputs
-            .iter()
-            .filter_map(|output| safe_relative(output))
-            .map(|output| unique_output(&output, &mut seen_outputs))
-            .take(OUTPUTS_PER_TASK)
-            .collect();
-        if outputs.is_empty() {
-            outputs = vec![unique_output(&format!("{id}/result.md"), &mut seen_outputs)];
-        }
-        tasks.push(TaskSpec {
-            id,
-            role: role.to_string(),
-            brief,
+        let kind = raw_task.kind.trim().to_ascii_lowercase();
+        let mut spec = TaskSpec {
+            id: id.clone(),
+            role: String::new(),
+            brief: brief.clone(),
             depends_on: Vec::new(),
-            outputs,
+            outputs: Vec::new(),
             force_rerun: false,
             inputs: Vec::new(),
             requires_approval: false,
@@ -247,8 +285,146 @@ fn parse_draft(raw: &str, agents: &[Pick]) -> Result<(String, Vec<TaskSpec>)> {
             wait_for: String::new(),
             for_each: None,
             wait_step: None,
-        });
+        };
+        match kind.as_str() {
+            "" | "agent" => {
+                if brief.is_empty() {
+                    return Err(anyhow!("任务「{id}」缺少工作说明；请重试或换个说法"));
+                }
+                let role = raw_task.role.trim();
+                if role.is_empty() || !roles.contains(role) {
+                    return Err(anyhow!(
+                        "任务「{id}」引用了清单之外的专家「{}」；请重试或换个说法",
+                        raw_task.role.trim()
+                    ));
+                }
+                spec.role = role.to_string();
+                spec.outputs = raw_task
+                    .outputs
+                    .iter()
+                    .filter_map(|output| safe_relative(output))
+                    .map(|output| unique_output(&output, &mut seen_outputs))
+                    .take(OUTPUTS_PER_TASK)
+                    .collect();
+                if spec.outputs.is_empty() {
+                    spec.outputs =
+                        vec![unique_output(&format!("{id}/result.md"), &mut seen_outputs)];
+                }
+                spec.requires_approval = raw_task.approve;
+            }
+            "human" => {
+                // 人工任务由主理人亲自完成：提交即产出，不选专家、不叠加确认。
+                if brief.is_empty() {
+                    return Err(anyhow!(
+                        "人工任务「{id}」缺少给主理人的说明；请重试或换个说法"
+                    ));
+                }
+                spec.kind = "human".into();
+                let output = raw_task
+                    .outputs
+                    .iter()
+                    .filter_map(|output| safe_relative(output))
+                    .next()
+                    .map(|output| unique_output(&output, &mut seen_outputs))
+                    .unwrap_or_else(|| {
+                        unique_output(&format!("{id}/decision.md"), &mut seen_outputs)
+                    });
+                spec.outputs = vec![output];
+            }
+            "foreach" => {
+                // 逐项任务不选专家、不声明产物：清单来源与产物模板由系统补齐。
+                // 节点名（brief）模型常只写逐项简报，缺省用固定名，画布上仍可辨认。
+                spec.kind = "foreach".into();
+                if spec.brief.is_empty() {
+                    spec.brief = "逐项处理".into();
+                }
+                let raw_for_each = raw_task.for_each.clone().unwrap_or_default();
+                let item_brief = clip(raw_for_each.item_brief.trim(), BRIEF_CHARS);
+                let item_brief = if item_brief.is_empty() {
+                    if brief.is_empty() {
+                        "完成本项：{item}".to_string()
+                    } else {
+                        format!("{brief}（本次处理：{{item}}）")
+                    }
+                } else {
+                    item_brief
+                };
+                let item_output = safe_relative(&raw_for_each.item_output)
+                    .filter(|path| path.contains("{item}"))
+                    .unwrap_or_else(|| format!("{id}/{{item}}.md"));
+                spec.for_each = Some(ForEachSpec {
+                    source: String::new(),
+                    item_output,
+                    item_brief,
+                    on_failure: if raw_for_each.on_failure.trim() == "skip" {
+                        "skip".into()
+                    } else {
+                        "pause".into()
+                    },
+                });
+            }
+            "route" => {
+                // 分流节点不选专家、不产出文件：条件来源与把关由系统补齐。
+                spec.kind = "route".into();
+                if spec.brief.is_empty() {
+                    spec.brief = "条件分流".into();
+                }
+                let raw_route = raw_task.route.clone().unwrap_or_default();
+                let verdict_is = match raw_route.verdict_is.trim() {
+                    "blocked" => "blocked",
+                    _ => "pass",
+                };
+                spec.route = Some(RouteSpec {
+                    on: "verdict".into(),
+                    source: String::new(),
+                    verdict_is: verdict_is.into(),
+                    default_branch: "else".into(),
+                });
+            }
+            other => {
+                return Err(anyhow!(
+                    "任务「{id}」用了暂不支持自动生成的节点类型「{other}」；复现实验和事件等待请在画布上手动添加"
+                ));
+            }
+        }
+        tasks.push(spec);
     }
+
+    // 控制节点的清单/结论来源若指向某个任务的产物，就把产出它的任务补成直接前置。
+    let source_owner: Vec<Option<usize>> = {
+        let owner_of_output: HashMap<&str, usize> = tasks
+            .iter()
+            .enumerate()
+            .flat_map(|(index, task)| {
+                task.outputs
+                    .iter()
+                    .map(move |output| (output.as_str(), index))
+            })
+            .collect();
+        raw.tasks
+            .iter()
+            .map(|raw_task| {
+                let source = match raw_task.kind.trim().to_ascii_lowercase().as_str() {
+                    "foreach" => raw_task
+                        .for_each
+                        .as_ref()
+                        .map(|spec| spec.source.trim())
+                        .unwrap_or(""),
+                    "route" => raw_task
+                        .route
+                        .as_ref()
+                        .map(|spec| spec.source.trim())
+                        .unwrap_or(""),
+                    _ => "",
+                };
+                if source.is_empty() {
+                    None
+                } else {
+                    owner_of_output.get(source).copied()
+                }
+            })
+            .collect()
+    };
 
     // 依赖改写：优先按原始 id 解析，退而按改名后的 id（模型直接写了规范 id 时），
     // 丢悬空与自引用，去重保序；以下标表示。
@@ -268,6 +444,12 @@ fn parse_draft(raw: &str, agents: &[Pick]) -> Result<(String, Vec<TaskSpec>)> {
                 deps[index].push(target);
             }
         }
+        // 清单/结论来源不在前置里时补上，随后统一破环。
+        if let Some(owner) = source_owner[index] {
+            if owner != index && !deps[index].contains(&owner) {
+                deps[index].push(owner);
+            }
+        }
     }
     // 增量破环：按数组顺序接受依赖边，会成环的边直接丢弃，保证产出可校验的 DAG。
     let mut downstream: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); tasks.len()];
@@ -281,8 +463,322 @@ fn parse_draft(raw: &str, agents: &[Pick]) -> Result<(String, Vec<TaskSpec>)> {
         }
     }
 
+    // 补齐控制节点的来源：显式指定的优先，否则取第一个产出了文件的直接前置。
+    // 分流的结论来源必须是专家任务，才能读它旁边的 verdict 文件。
+    let mut failure_route_ids: HashSet<String> = HashSet::new();
+    for index in 0..tasks.len() {
+        let is_foreach = tasks[index].kind == "foreach";
+        let is_route = tasks[index].kind == "route";
+        if !is_foreach && !is_route {
+            continue;
+        }
+        let requested = if is_foreach {
+            raw.tasks[index]
+                .for_each
+                .as_ref()
+                .map(|spec| spec.source.trim())
+                .unwrap_or("")
+        } else {
+            raw.tasks[index]
+                .route
+                .as_ref()
+                .map(|spec| spec.source.trim())
+                .unwrap_or("")
+        };
+        let Some(source) = resolve_control_source(&tasks, index, requested, is_route) else {
+            return Err(anyhow!(
+                "节点「{}」缺少可用的来源：从产出清单或结论的上游连一条线进来；请重试或手动调整",
+                tasks[index].id
+            ));
+        };
+        if is_foreach {
+            if let Some(spec) = tasks[index].for_each.as_mut() {
+                spec.source = source;
+            }
+        } else {
+            let owner = tasks
+                .iter()
+                .position(|task| task.outputs.iter().any(|output| output == &source));
+            let owner_is_experiment =
+                owner.is_some_and(|owner| tasks[owner].role == ROLE_EXPERIMENT_OPERATOR);
+            let route_id = tasks[index].id.clone();
+            if let Some(spec) = tasks[index].route.as_mut() {
+                if owner_is_experiment {
+                    // 实验执行任务不支持结论把关；“跑成功/跑失败”本身就是可判定的谓词。
+                    spec.on = "failure".into();
+                    spec.source.clear();
+                    spec.verdict_is.clear();
+                    failure_route_ids.insert(route_id);
+                } else {
+                    spec.source = source.clone();
+                }
+            }
+            if !owner_is_experiment {
+                if let Some(owner) = owner {
+                    tasks[owner].gate_downstream = true;
+                }
+            }
+        }
+    }
+
+    // 分支标记：挂在哪个分流节点下就记哪个；只有一个标记时按另一侧补齐。
+    for index in 0..tasks.len() {
+        // 分流节点自身不挂分支；模型偶尔会把标记写错位置，忽略即可。
+        if tasks[index].kind == "route" {
+            continue;
+        }
+        let branch = raw.tasks[index].branch.trim();
+        if branch.is_empty() {
+            continue;
+        }
+        if branch != "then" && branch != "else" {
+            return Err(anyhow!(
+                "任务「{}」的分支标记无效：{branch}",
+                tasks[index].id
+            ));
+        }
+        let routes: Vec<usize> = tasks[index]
+            .depends_on
+            .iter()
+            .filter_map(|dep| {
+                tasks
+                    .iter()
+                    .position(|task| &task.id == dep && task.kind == "route")
+            })
+            .collect();
+        match routes.len() {
+            1 => tasks[index].route_branch = branch.to_string(),
+            0 => {
+                return Err(anyhow!(
+                    "任务「{}」标记了分支，但前置里没有分流节点；请重试或手动调整",
+                    tasks[index].id
+                ))
+            }
+            _ => {
+                return Err(anyhow!(
+                    "任务「{}」同时挂在多个分流节点下，无法判断分支；请重试或手动调整",
+                    tasks[index].id
+                ))
+            }
+        }
+    }
+    let route_children: Vec<Vec<usize>> = tasks
+        .iter()
+        .filter(|task| task.kind == "route")
+        .map(|route| {
+            tasks
+                .iter()
+                .enumerate()
+                .filter(|(_, child)| child.depends_on.iter().any(|dep| dep == &route.id))
+                .map(|(index, _)| index)
+                .collect()
+        })
+        .collect();
+    for children in route_children {
+        if children.len() != 2 {
+            continue;
+        }
+        let first = tasks[children[0]].route_branch.clone();
+        let second = tasks[children[1]].route_branch.clone();
+        match (first.as_str(), second.as_str()) {
+            ("then", "") => tasks[children[1]].route_branch = "else".into(),
+            ("else", "") => tasks[children[1]].route_branch = "then".into(),
+            ("", "then") => tasks[children[0]].route_branch = "else".into(),
+            ("", "else") => tasks[children[0]].route_branch = "then".into(),
+            _ => {}
+        }
+    }
+
+    // 「上游失败」谓词的成立分支是失败路径：把模型按「结论=通过」写的 then/else 对调，
+    // 成功分支仍走成功、失败分支仍走失败。
+    let mut swap_branches: Vec<usize> = Vec::new();
+    for task in &tasks {
+        if !failure_route_ids.contains(&task.id) {
+            continue;
+        }
+        swap_branches.extend(
+            tasks
+                .iter()
+                .enumerate()
+                .filter(|(_, child)| child.depends_on.contains(&task.id))
+                .map(|(child_index, _)| child_index),
+        );
+    }
+    swap_branches.sort_unstable();
+    swap_branches.dedup();
+    for index in swap_branches {
+        tasks[index].route_branch = match tasks[index].route_branch.as_str() {
+            "then" => "else".into(),
+            "else" => "then".into(),
+            _ => String::new(),
+        };
+    }
+
+    // 分支任务还要直接连回分流节点的前置：分支里要读的运行结果/证据只有作为
+    // 直接前置才能绑定输入，否则只剩一个不产出文件的分流节点可连。
+    for index in 0..tasks.len() {
+        if tasks[index].route_branch.is_empty() {
+            continue;
+        }
+        let route_deps: Vec<String> = tasks[index]
+            .depends_on
+            .iter()
+            .filter_map(|dep| {
+                tasks
+                    .iter()
+                    .find(|task| &task.id == dep && task.kind == "route")
+            })
+            .flat_map(|route| route.depends_on.clone())
+            .collect();
+        for dep in route_deps {
+            if dep != tasks[index].id && !tasks[index].depends_on.contains(&dep) {
+                tasks[index].depends_on.push(dep);
+            }
+        }
+    }
+
+    // 输入绑定由系统补齐：直接前置产出的文件全部登记，派发时注入并核对哈希。
+    // 控制节点保持 inputs 为空（分流/逐项由自身契约携带来源）。
+    let dep_outputs: HashMap<String, Vec<String>> = tasks
+        .iter()
+        .map(|task| (task.id.clone(), task.outputs.clone()))
+        .collect();
+    for task in &mut tasks {
+        if !matches!(task.kind.as_str(), "" | "agent") {
+            continue;
+        }
+        let mut inputs: Vec<String> = Vec::new();
+        for dep in &task.depends_on {
+            for output in dep_outputs.get(dep).into_iter().flatten() {
+                if !inputs.iter().any(|existing| existing == output) {
+                    inputs.push(output.clone());
+                }
+            }
+        }
+        inputs.truncate(MAX_INPUTS);
+        task.inputs = inputs;
+    }
+
+    // 审查链沿用内置文献综述模板的控制：审稿阻塞自动返工上游（最多 2 轮），
+    // 审计阻塞暂停下游交给主理人。生成稿不再出现“审出问题却没人改”。
+    for task in &mut tasks {
+        if !matches!(task.kind.as_str(), "" | "agent")
+            || task.depends_on.is_empty()
+            || task.outputs.is_empty()
+        {
+            continue;
+        }
+        match task.role.as_str() {
+            ROLE_REVIEWER => {
+                task.gate_downstream = true;
+                task.max_rework = 2;
+            }
+            ROLE_AUDITOR => task.gate_downstream = true,
+            _ => {}
+        }
+    }
+
     check_review_chain(&tasks)?;
+    validate_route_rules(&tasks).map_err(|e| anyhow!("生成的流程还不能直接使用：{e}"))?;
+    let plan = PlanInput {
+        workflow: None,
+        summary: "AI 生成的流程草稿".into(),
+        tasks: tasks.clone(),
+    };
+    // 与“在对话中使用”走同一条提交路径：保存成方法后由主理人显式选用，
+    // 因此按 explicit_method 校验（自定义编排不强制三人审查链）。
+    validate_plan_with_roles(&plan, "team", true, |role| {
+        if roles.contains(role) {
+            Ok(())
+        } else {
+            Err(anyhow!("清单之外的专家：{role}"))
+        }
+    })
+    .map_err(|e| anyhow!("生成的流程还不能直接使用：{e}"))?;
     Ok((name, tasks))
+}
+
+/// 控制节点的来源解析：显式指定的产物必须来自直接前置；否则取第一个有产物的前置。
+/// `agent_only` 用于分流——结论文件只能由专家任务产出。
+fn resolve_control_source(
+    tasks: &[TaskSpec],
+    index: usize,
+    requested: &str,
+    agent_only: bool,
+) -> Option<String> {
+    let candidate = |task: &TaskSpec| {
+        !task.outputs.is_empty() && (!agent_only || matches!(task.kind.as_str(), "" | "agent"))
+    };
+    if !requested.is_empty() {
+        let owned_by_dependency = tasks[index].depends_on.iter().any(|dep| {
+            tasks.iter().any(|task| {
+                &task.id == dep
+                    && candidate(task)
+                    && task.outputs.iter().any(|output| output == requested)
+            })
+        });
+        if owned_by_dependency {
+            return Some(requested.to_string());
+        }
+    }
+    tasks[index].depends_on.iter().find_map(|dep| {
+        tasks
+            .iter()
+            .find(|task| &task.id == dep && candidate(task))
+            .map(|task| task.outputs[0].clone())
+    })
+}
+
+/// 依次尝试文本里的完整花括号对象，返回第一份有名字、有任务的草稿。
+/// 从每个 `{` 起点重试，前半段被截断或只是一份空壳时也能落到后一份完整草稿。
+fn parse_first_workflow(text: &str) -> Option<RawWorkflow> {
+    let mut offset = 0;
+    while let Some(relative) = text[offset..].find('{') {
+        let start = offset + relative;
+        offset = start + 1;
+        let Some(object) = first_json_object(&text[start..]) else {
+            continue;
+        };
+        let Ok(workflow) = serde_json::from_str::<RawWorkflow>(object) else {
+            continue;
+        };
+        if !workflow.name.trim().is_empty() && !workflow.tasks.is_empty() {
+            return Some(workflow);
+        }
+    }
+    None
+}
+
+/// 取第一段花括号配平的 JSON 对象，忽略其后的重复对象或说明文字。
+fn first_json_object(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, ch) in text[start..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(&text[start..start + offset + ch.len_utf8()]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// `from` 能否沿 downstream 边到达 `target`（不含空步；自环因此也被拦下）。
@@ -401,6 +897,7 @@ mod tests {
         vec![
             agent("as-literature-researcher"),
             agent("as-research-synthesizer"),
+            agent("as-experiment-operator"),
             agent("as-independent-reviewer"),
             agent("as-quality-citation-auditor"),
             agent("as-research-package-curator"),
@@ -485,7 +982,7 @@ mod tests {
 
     #[test]
     fn too_many_tasks_is_rejected() {
-        let tasks: Vec<String> = (0..13)
+        let tasks: Vec<String> = (0..15)
             .map(|n| {
                 format!(
                     r#"{{"id":"t{n}","role":"as-literature-researcher","brief":"b","outputs":["t{n}/o.md"]}}"#
@@ -563,5 +1060,176 @@ mod tests {
         assert!(prompt.contains("as-literature-researcher"));
         assert!(prompt.contains("as-independent-reviewer"));
         assert!(prompt.contains("acyclic"));
+        assert!(prompt.contains("foreach"));
+        assert!(prompt.contains("kind"));
+    }
+
+    /// 一张包含逐项、人工、分流和审查链的生成稿：机械契约（来源、模板、分支标记、
+    /// 把关、输入绑定）都应该由代码补齐，模型只写语义。
+    fn control_fixture() -> &'static str {
+        r#"{"name":"复现流程","tasks":[
+            {"id":"scan","role":"as-literature-researcher","brief":"梳理候选论文","outputs":["scan/papers.md"]},
+            {"id":"read","kind":"foreach","brief":"逐篇精读","dependsOn":["scan"],
+             "forEach":{"source":"scan/papers.md","itemBrief":"精读 {item} 并写证据卡","itemOutput":"read/{item}.md"}},
+            {"id":"pick","kind":"human","brief":"挑选要复现的 1-3 篇","dependsOn":["read"]},
+            {"id":"run","role":"as-research-synthesizer","brief":"执行复现","dependsOn":["pick"],"outputs":["run/result.md"],"approve":true},
+            {"id":"fork","kind":"route","brief":"复现结果分流","dependsOn":["run"],"route":{"verdictIs":"pass"}},
+            {"id":"ok","role":"as-research-synthesizer","brief":"结果对比","dependsOn":["fork"],"branch":"then","outputs":["ok/report.md"]},
+            {"id":"fail","role":"as-research-synthesizer","brief":"失败分析","dependsOn":["fork"],"outputs":["fail/analysis.md"]},
+            {"id":"review","role":"as-independent-reviewer","brief":"审稿","dependsOn":["ok","fail"],"outputs":["review/report.md"]},
+            {"id":"audit","role":"as-quality-citation-auditor","brief":"审计","dependsOn":["review"],"outputs":["audit/report.md"]},
+            {"id":"package","role":"as-research-package-curator","brief":"归档","dependsOn":["audit"],"outputs":["package/manifest.md"]}
+        ]}"#
+    }
+
+    #[test]
+    fn control_nodes_are_synthesized_and_hardened() {
+        let (_, tasks) = parse_draft(control_fixture(), &agents()).unwrap();
+        let task = |id: &str| tasks.iter().find(|task| task.id == id).unwrap();
+
+        // 逐项：不选专家、不声明产物；来源与模板落位。
+        let read = task("read");
+        assert_eq!(read.kind, "foreach");
+        assert!(read.role.is_empty());
+        assert!(read.outputs.is_empty());
+        let for_each = read.for_each.as_ref().unwrap();
+        assert_eq!(for_each.source, "scan/papers.md");
+        assert_eq!(for_each.item_output, "read/{item}.md");
+        assert_eq!(for_each.item_brief, "精读 {item} 并写证据卡");
+
+        // 人工：缺省产物路径；不选专家。
+        let pick = task("pick");
+        assert_eq!(pick.kind, "human");
+        assert!(pick.role.is_empty());
+        assert_eq!(pick.outputs, vec!["pick/decision.md"]);
+
+        // 专家任务上的 approve 变成 G5 检查点。
+        assert!(task("run").requires_approval);
+
+        // 分流：来源缺省取前置首个产物，并自动给来源任务开结论把关。
+        let fork = task("fork");
+        assert_eq!(fork.kind, "route");
+        assert_eq!(fork.route.as_ref().unwrap().source, "run/result.md");
+        assert_eq!(fork.route.as_ref().unwrap().default_branch, "else");
+        assert!(task("run").gate_downstream);
+
+        // 分支标记缺一个时按另一侧补齐；分支任务直接连回分流的前置。
+        assert_eq!(task("ok").route_branch, "then");
+        assert_eq!(task("fail").route_branch, "else");
+        assert_eq!(task("ok").depends_on, vec!["fork", "run"]);
+        assert_eq!(task("fail").depends_on, vec!["fork", "run"]);
+
+        // 审查链控制与内置文献综述模板一致。
+        assert!(task("review").gate_downstream);
+        assert_eq!(task("review").max_rework, 2);
+        assert!(task("audit").gate_downstream);
+
+        // 输入绑定：专家任务绑定直接前置产物；控制节点不绑定。
+        assert!(task("scan").inputs.is_empty());
+        assert!(read.inputs.is_empty());
+        assert!(pick.inputs.is_empty());
+        assert_eq!(task("run").inputs, vec!["pick/decision.md"]);
+        assert!(fork.inputs.is_empty());
+        assert_eq!(task("ok").inputs, vec!["run/result.md"]);
+        assert_eq!(
+            task("review").inputs,
+            vec!["ok/report.md", "fail/analysis.md"]
+        );
+        assert_eq!(task("package").inputs, vec!["audit/report.md"]);
+
+        // 整份草稿能直接提交。
+        assert!(validate_route_rules(&tasks).is_ok());
+    }
+
+    #[test]
+    fn route_with_one_branch_is_rejected() {
+        let raw = r#"{"name":"n","tasks":[
+            {"id":"run","role":"as-research-synthesizer","brief":"跑","outputs":["run/result.md"]},
+            {"id":"fork","kind":"route","brief":"分流","dependsOn":["run"],"route":{"verdictIs":"pass"}},
+            {"id":"ok","role":"as-research-synthesizer","brief":"成功","dependsOn":["fork"],"branch":"then","outputs":["ok/report.md"]}
+        ]}"#;
+        let error = parse_draft(raw, &agents()).unwrap_err().to_string();
+        assert!(error.contains("两条分支"), "{error}");
+    }
+
+    #[test]
+    fn unsupported_control_kind_is_rejected_with_guidance() {
+        let raw = r#"{"name":"n","tasks":[
+            {"id":"run","kind":"experiment","brief":"跑实验","outputs":["run/result.md"]}
+        ]}"#;
+        let error = parse_draft(raw, &agents()).unwrap_err().to_string();
+        assert!(error.contains("暂不支持自动生成"));
+        assert!(error.contains("手动添加"));
+    }
+
+    #[test]
+    fn a_route_on_an_experiment_step_uses_the_failure_predicate_instead() {
+        // 实机生成时模型把复现执行者（as-experiment-operator）当作结论来源；
+        // 该角色不支持结论把关，系统改用「上游失败」并把分支对调。
+        let raw = r#"{"name":"n","tasks":[
+            {"id":"run","role":"as-experiment-operator","brief":"跑复现","outputs":["run/report.md"]},
+            {"id":"fork","kind":"route","brief":"复现结果分流","dependsOn":["run"],
+             "route":{"source":"run/report.md","verdictIs":"pass"}},
+            {"id":"ok","role":"as-research-synthesizer","brief":"成功对照","dependsOn":["fork"],"branch":"then","outputs":["ok/report.md"]},
+            {"id":"gap","role":"as-research-synthesizer","brief":"失败差距","dependsOn":["fork"],"branch":"else","outputs":["gap/report.md"]}
+        ]}"#;
+        let (_, tasks) = parse_draft(raw, &agents()).unwrap();
+        let task = |id: &str| tasks.iter().find(|task| task.id == id).unwrap();
+        let route = task("fork").route.as_ref().unwrap();
+        assert_eq!(route.on, "failure");
+        assert!(route.source.is_empty());
+        assert!(route.verdict_is.is_empty());
+        assert!(!task("run").gate_downstream);
+        // then = 上游失败，所以原来的成功分支改走 else。
+        assert_eq!(task("ok").route_branch, "else");
+        assert_eq!(task("gap").route_branch, "then");
+        assert!(validate_route_rules(&tasks).is_ok());
+    }
+
+    #[test]
+    fn duplicate_json_takes_the_first_complete_object() {
+        // 实机生成时模型把整份草稿输出过两遍；取首尾花括号会拼成非法 JSON。
+        let raw = "```json\n{\"name\":\"n\",\"tasks\":[{\"id\":\"a\",\"role\":\"as-literature-researcher\",\"brief\":\"b\",\"outputs\":[\"o-a\"]}]}\n```\n说明\n```json\n{\"name\":\"重复\",\"tasks\":[]}\n```";
+        let (name, tasks) = parse_draft(raw, &agents()).unwrap();
+        assert_eq!(name, "n");
+        assert_eq!(tasks.len(), 1);
+    }
+
+    #[test]
+    fn first_json_object_ignores_braces_inside_strings() {
+        assert_eq!(
+            first_json_object(r#"前言 {"a":"} x","b":{"c":1}} 后 {"d":2}"#),
+            Some(r#"{"a":"} x","b":{"c":1}}"#)
+        );
+    }
+
+    #[test]
+    fn a_truncated_first_draft_falls_through_to_the_next() {
+        let raw = r#"{"name":"坏的","tasks":[{"id":"a","role":"as-literature-researcher","brief":"b"
+{"name":"好的","tasks":[{"id":"a","role":"as-literature-researcher","brief":"b","outputs":["o-a"]}]}"#;
+        let (name, tasks) = parse_draft(raw, &agents()).unwrap();
+        assert_eq!(name, "好的");
+        assert_eq!(tasks.len(), 1);
+
+        // 空壳草稿（有名字没任务）同样跳过，而不是拿它去报“没有任务”。
+        let raw = r#"{"name":"空壳","tasks":[]} {"name":"好的","tasks":[{"id":"a","role":"as-literature-researcher","brief":"b","outputs":["o-a"]}]}"#;
+        let (name, tasks) = parse_draft(raw, &agents()).unwrap();
+        assert_eq!(name, "好的");
+        assert_eq!(tasks.len(), 1);
+    }
+
+    #[test]
+    fn missing_control_brief_falls_back_to_a_node_name() {
+        let raw = r#"{"name":"n","tasks":[
+            {"id":"scan","role":"as-literature-researcher","brief":"检索","outputs":["scan/papers.md"]},
+            {"id":"read","kind":"foreach","dependsOn":["scan"],
+             "forEach":{"source":"scan/papers.md","itemBrief":"精读 {item}","itemOutput":"read/{item}.md"}}
+        ]}"#;
+        let (_, tasks) = parse_draft(raw, &agents()).unwrap();
+        assert_eq!(tasks[1].brief, "逐项处理");
+        assert_eq!(
+            tasks[1].for_each.as_ref().unwrap().item_brief,
+            "精读 {item}"
+        );
     }
 }

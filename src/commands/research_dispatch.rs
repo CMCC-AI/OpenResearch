@@ -138,6 +138,7 @@ pub(crate) fn task_dispatch_prompt(
     let mut inputs_note = String::new();
     if !entry.spec.inputs.is_empty() {
         let mut lines = Vec::new();
+        let mut skipped = Vec::new();
         for path in &entry.spec.inputs {
             let artifact = study
                 .plan()?
@@ -151,13 +152,23 @@ pub(crate) fn task_dispatch_prompt(
                     artifact.path,
                     &artifact.sha256[..artifact.sha256.len().min(12)]
                 )),
-                None => lines.push(format!("- {path}（上游尚未登记产物哈希）")),
+                // 汇合任务的输入可能挂在被跳过的分流分支上：不当作必须读取，
+                // 单独说明一句，免得专家去找一个本次根本不存在的文件。
+                None => skipped.push(path.as_str()),
             }
         }
-        inputs_note = format!(
-            "\n必须读取的上游输入产物（研究根目录相对路径，验收会核对未被改动）：\n{}",
-            lines.join("\n")
-        );
+        if !lines.is_empty() {
+            inputs_note = format!(
+                "\n必须读取的上游输入产物（研究根目录相对路径，验收会核对未被改动）：\n{}",
+                lines.join("\n")
+            );
+        }
+        if !skipped.is_empty() {
+            inputs_note.push_str(&format!(
+                "\n以下输入本次未产出（对应分支可能已被跳过），可忽略：{}",
+                skipped.join("、")
+            ));
+        }
     }
     let verdict_note = if entry.spec.gate_downstream {
         let sidecar = crate::store::research::verdict_path_for(&entry.spec.outputs[0]);

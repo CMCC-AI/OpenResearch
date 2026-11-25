@@ -209,6 +209,27 @@ function emitWorkflowDraftDelta(ev: WorkflowDraftDeltaEvent) {
   workflowDraftDeltaListeners.forEach((fn) => fn(ev));
 }
 
+// 生成中的思考尾段：模型先想很久才吐 JSON，画布把最新一小段思考显示在状态条下，
+// 让等待有可看的动静。只保留尾部，不做持久化；正文一开始后端就发空串清掉。
+export interface WorkflowDraftReasoningEvent {
+  requestId: string;
+  text: string;
+}
+
+type WorkflowDraftReasoningListener = (ev: WorkflowDraftReasoningEvent) => void;
+const workflowDraftReasoningListeners = new Set<WorkflowDraftReasoningListener>();
+
+export function onWorkflowDraftReasoning(fn: WorkflowDraftReasoningListener): () => void {
+  workflowDraftReasoningListeners.add(fn);
+  return () => {
+    workflowDraftReasoningListeners.delete(fn);
+  };
+}
+
+function emitWorkflowDraftReasoning(ev: WorkflowDraftReasoningEvent) {
+  workflowDraftReasoningListeners.forEach((fn) => fn(ev));
+}
+
 // Overleaf live-sync events fan out the same way: the .tex tab that opened the
 // channel is the one that reloads on a pull or shows the connection state.
 export type OverleafEvent =
@@ -471,6 +492,10 @@ export function useOrxEventStream(handlers: OrxEventHandlers) {
       es.addEventListener("workflowDraft.delta", (e) => {
         const d = parse<{ requestId?: string; text?: string }>(e as MessageEvent);
         if (d?.requestId && typeof d.text === "string") emitWorkflowDraftDelta({ requestId: d.requestId, text: d.text });
+      });
+      es.addEventListener("workflowDraft.reasoning", (e) => {
+        const d = parse<{ requestId?: string; text?: string }>(e as MessageEvent);
+        if (d?.requestId && typeof d.text === "string") emitWorkflowDraftReasoning({ requestId: d.requestId, text: d.text });
       });
       es.addEventListener("update.status", (e) => {
         const d = parse<UpdateStatus>(e as MessageEvent);

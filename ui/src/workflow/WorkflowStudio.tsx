@@ -267,13 +267,16 @@ function WorkflowEditor({ projectId, sessionId = null, draftId: initialDraftId, 
       {agentsQuery.isPending || toolsQuery.isPending || skillsQuery.isPending || !hydrated ? <div role="status" className="flex flex-1 items-center justify-center gap-2 text-sm text-subtext"><Spinner />正在加载工作流资源…</div> : agentsQuery.error || toolsQuery.error || skillsQuery.error || draftQuery.error ? <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-sm text-accent-red"><p>{(agentsQuery.error ?? toolsQuery.error ?? skillsQuery.error ?? draftQuery.error) instanceof Error ? String((agentsQuery.error ?? toolsQuery.error ?? skillsQuery.error ?? draftQuery.error) as Error) : "资源读取失败"}</p><Button onClick={() => { void agentsQuery.refetch(); void toolsQuery.refetch(); void skillsQuery.refetch(); void draftQuery.refetch(); void libraryQuery.refetch(); }}>重试</Button></div> : tab === "agents" ? <AgentLibrary agents={agents} mcpServers={tools} userSkills={skills.filter((skill) => skill.source === "user")} onChanged={() => agentsQuery.refetch()} /> : tab === "skills" ? <SkillsLibrary skills={skills} agents={agents} projects={projects} projectId={projectId} sessionId={sessionId} onOpenSession={onOpenSession} onOpenChats={onOpenChats} onChanged={() => skillsQuery.refetch()} /> : tab === "tools" ? <McpLibrary /> : <div className="relative flex min-h-0 flex-1 flex-col">
         {errors.length > 0 && <div role="alert" className="shrink-0 border-b border-accent-red bg-background px-4 py-2 text-sm text-accent-red"><strong>使用前需要处理：</strong><ul className="mb-0 mt-1 ps-5">{errors.slice(0, 8).map((error) => <li key={error}>{error}</li>)}</ul>{errors.length > 8 && <p className="mb-0 mt-1">另有 {errors.length - 8} 项问题。</p>}</div>}
         <WorkflowCanvas key={canvasVersion} draft={previewDraft ?? draft} agents={agents} onChange={previewDraft ? () => {} : change} preview={Boolean(previewDraft)} />
-        {generation.running && <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center px-4">
+        {generation.running && <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex flex-col items-center gap-1 px-4">
           <div role="status" aria-label="正在编排流程" className="pointer-events-auto flex flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-full border border-border bg-background px-4 py-2 text-sm shadow-dropdown">
             <span className="flex items-center gap-2"><Spinner />{generationStage.label}</span>
             <span className="text-xs text-subtext">已等待 {generation.elapsed} 秒</span>
             {generation.previewTasks.length > 0 && <span className="text-xs text-subtext">已生成 {generation.previewTasks.length} 个节点</span>}
             <Button size="small" variant="ghost" onClick={generation.stop}>停止生成</Button>
           </div>
+          {generation.thinking && <div className="flex max-w-[min(36rem,80vw)] justify-end overflow-hidden rounded-full border border-border bg-background/90 px-3 py-1 shadow-sm">
+            <span aria-hidden="true" className="whitespace-nowrap text-xs text-subtext">{generation.thinking}</span>
+          </div>}
         </div>}
       </div>}
       {nameSlot && createPortal(<><span aria-hidden="true" className="shrink-0">/</span>{nameInput}</>, nameSlot)}

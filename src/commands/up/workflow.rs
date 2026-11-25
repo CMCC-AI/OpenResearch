@@ -7,6 +7,9 @@ use crate::workflow::{AgentDefinition, AgentInput, WorkflowDraftInput};
 
 /// 生成中的正文快照节流间隔：足够让画布逐步长出节点，又不至于塞满事件总线。
 const DELTA_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
+/// 思考尾段的节流间隔与长度：只是让等待有动静，不搬运整段思维链。
+const REASONING_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+const REASONING_TAIL_CHARS: usize = 160;
 
 /// 随 handler future 一起丢弃：客户端断开时取消还在跑的生成。
 struct CancelOnDrop(CancellationToken);
@@ -258,7 +261,15 @@ pub(super) async fn generate_workflow_draft(
             let (chat, request_id) = (chat.clone(), request_id.clone());
             // 正文快照按 ~150ms 节流：事件总线只有 16 个槽位，逐 token 发会丢事件。
             let last = std::sync::Arc::new(std::sync::Mutex::new(None::<Instant>));
+            // 正文一开始就清掉思考行；只清一次，别跟着每个快照重发空串。
+            let cleared = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             move |text: &str| {
+                if !cleared.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    chat.emit_event(
+                        "workflowDraft.reasoning",
+                        json!({ "requestId": request_id, "text": "" }),
+                    );
+                }
                 let mut last = last.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 if last.is_some_and(|at| at.elapsed() < DELTA_INTERVAL) {
                     return;
@@ -270,6 +281,25 @@ pub(super) async fn generate_workflow_draft(
                 );
             }
         }),
+        on_reasoning: Some(std::sync::Arc::new({
+            let (chat, request_id) = (chat.clone(), request_id.clone());
+            // 只发尾部片段：前端展示的是最新一小段，整段思维链不进事件总线。
+            let last = std::sync::Arc::new(std::sync::Mutex::new(None::<Instant>));
+            move |text: &str| {
+                let mut last = last.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if last.is_some_and(|at| at.elapsed() < REASONING_INTERVAL) {
+                    return;
+                }
+                *last = Some(Instant::now());
+                chat.emit_event(
+                    "workflowDraft.reasoning",
+                    json!({
+                        "requestId": request_id,
+                        "text": local::draft_support::reasoning_tail(text, REASONING_TAIL_CHARS),
+                    }),
+                );
+            }
+        })),
         cancel: Some(cancel.clone()),
     };
     let agents =

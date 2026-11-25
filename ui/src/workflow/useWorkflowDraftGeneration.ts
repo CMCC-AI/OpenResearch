@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { generateWorkflowDraft } from "../api";
 import { createClientTurnId } from "../clientTurnId";
-import { onWorkflowDraftDelta, onWorkflowDraftProgress, type WorkflowDraftStage } from "../events";
+import { onWorkflowDraftDelta, onWorkflowDraftProgress, onWorkflowDraftReasoning, type WorkflowDraftStage } from "../events";
 import { useLocale } from "../locale";
 import {
   generatedToDraftInput,
@@ -25,6 +25,8 @@ export interface WorkflowDraftGeneration {
   stage: WorkflowDraftStage;
   /** 已等待秒数，生成期间每秒刷新。 */
   elapsed: number;
+  /** 模型最新一小段思考（尾部，已压成一行）；为空时不显示。 */
+  thinking: string;
   /** 流式到达、已能解析出完整字段的任务；为空时画布保持原样。 */
   previewTasks: WorkflowTask[];
   start: (intent: string) => void;
@@ -40,6 +42,7 @@ export function useWorkflowDraftGeneration(options: {
   const [stage, setStage] = useState<WorkflowDraftStage>("inventory");
   const [startedAt, setStartedAt] = useState(0);
   const [elapsed, setElapsed] = useState(0);
+  const [thinking, setThinking] = useState("");
   const [previewTasks, setPreviewTasks] = useState<WorkflowTask[]>([]);
   // 当前请求标识与取消句柄：新请求会顶掉旧请求，迟到的结果一律忽略。
   const requestRef = useRef<string | null>(null);
@@ -69,12 +72,19 @@ export function useWorkflowDraftGeneration(options: {
     setStage("inventory");
     setStartedAt(Date.now());
     setElapsed(0);
+    setThinking("");
     setPreviewTasks([]);
     setRunning(true);
 
     const active = (id: string) => requestRef.current === id;
     const unsubscribeProgress = onWorkflowDraftProgress((event) => {
-      if (active(event.requestId)) setStage(event.stage);
+      if (!active(event.requestId)) return;
+      setStage(event.stage);
+      // 校验阶段不再有思考输出；正文开始后后端也会发空串，这里兜底。
+      if (event.stage === "reviewing") setThinking("");
+    });
+    const unsubscribeReasoning = onWorkflowDraftReasoning((event) => {
+      if (active(event.requestId)) setThinking(event.text);
     });
     // 同一帧内的多个快照只解析最后一个：每次都是按累计文本重算，丢中间态没有影响。
     let pending: string | null = null;
@@ -104,16 +114,18 @@ export function useWorkflowDraftGeneration(options: {
       .finally(() => {
         if (requestRef.current !== requestId) return;
         unsubscribeProgress();
+        unsubscribeReasoning();
         unsubscribeDelta();
         if (frame) window.cancelAnimationFrame(frame);
         requestRef.current = null;
         abortRef.current = null;
         setRunning(false);
+        setThinking("");
         setPreviewTasks([]);
       });
   }, [locale]);
 
   const stop = useCallback(() => abortRef.current?.abort(), []);
 
-  return { running, stage, elapsed, previewTasks, start, stop };
+  return { running, stage, elapsed, thinking, previewTasks, start, stop };
 }

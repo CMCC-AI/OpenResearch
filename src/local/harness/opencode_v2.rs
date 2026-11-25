@@ -1530,6 +1530,7 @@ async fn stream_generation(
 
     let mut steps: Vec<Value> = Vec::new();
     let mut text = String::new();
+    let mut reasoning = String::new();
     let mut failure: Option<String> = None;
     let mut cancel = sink.cancel.clone();
     loop {
@@ -1544,9 +1545,17 @@ async fn stream_generation(
         let data = &event["data"];
         match fold(&mut steps, &native_id, &event) {
             // Reasoning has its own deltas; only the answer text is the reply.
+            // Reasoning is forwarded separately so the caller can show liveness,
+            // and never folded into the returned text.
             Some(Folded::Text { delta, .. }) if kind == "session.text.delta" => {
                 text.push_str(delta);
                 (sink.on_text)(&text);
+            }
+            Some(Folded::Text { delta, .. }) if kind == "session.reasoning.delta" => {
+                reasoning.push_str(delta);
+                if let Some(on_reasoning) = &sink.on_reasoning {
+                    on_reasoning(&reasoning);
+                }
             }
             None if data["sessionID"].as_str() == Some(native_id.as_str())
                 && matches!(
