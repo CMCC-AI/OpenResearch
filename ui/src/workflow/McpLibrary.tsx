@@ -101,7 +101,7 @@ export function McpLibrary() {
   return <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)]">
     <aside className="min-h-0 overflow-y-auto border-b border-border p-3 lg:border-b-0 lg:border-e">
       <Button className="mb-3 w-full" variant="primary" onClick={() => setSelectedId(null)}><Plus size={15} />添加服务</Button>
-      {servers.length === 0 && <p className="m-0 rounded-md border border-border bg-surface p-3 text-xs leading-relaxed text-subtext">还没有登记 MCP 服务。从服务文档复制 mcpServers 配置粘贴到右侧即可，也可以在对话里让 AI 提议（你确认后才会登记）。</p>}
+      {servers.length === 0 && <p className="m-0 text-xs leading-relaxed text-subtext">还没有登记 MCP 服务。从服务文档复制 mcpServers 配置粘贴到右侧即可，也可以在对话里让 AI 提议（你确认后才会登记）。</p>}
       <div className="flex flex-col gap-1" aria-label="MCP 服务列表">
         {servers.map((server) => <button key={server.id} type="button" aria-pressed={selectedId === server.id} onClick={() => setSelectedId(server.id)} className={`flex min-w-0 items-center gap-2 rounded-md border px-2.5 py-2 text-start ${selectedId === server.id ? "border-primary bg-surface" : "border-transparent hover:bg-surface"}`}>
           <CapabilityTile kind="mcp" name={server.name} hint={server.transport} />
@@ -115,7 +115,7 @@ export function McpLibrary() {
         <div><h2 className="m-0 text-lg font-normal">{selected.name}</h2><p className="mb-0 mt-1 text-sm text-subtext">{selected.description || "暂无说明"}</p></div>
         <section className="flex flex-col gap-1.5 text-sm" aria-label="服务配置">
           <h3 className="m-0 text-sm font-normal">配置</h3>
-          <ul className="m-0 flex list-disc flex-col gap-1 rounded-md border border-border bg-background p-3 ps-8 leading-relaxed text-text">
+          <ul className="m-0 flex list-disc flex-col gap-1 ps-8 leading-relaxed text-text">
             <li>类型：{selected.transport === "stdio" ? "本地命令（stdio）" : "远程服务（HTTP）"}</li>
             {selected.transport === "stdio"
               ? <li className="break-all">命令：<code className="font-mono text-xs">{[selected.command, ...selected.args].join(" ")}</code></li>
@@ -133,7 +133,7 @@ export function McpLibrary() {
       </div> : <div className="mx-auto flex max-w-3xl flex-col gap-4">
         <div><h2 className="m-0 text-lg font-normal">添加 MCP 服务</h2><p className="mb-0 mt-1 text-sm text-subtext">从服务文档复制 mcpServers 配置粘贴到下面，保存即完成登记（同名服务自动覆盖更新）。挂到自定义专家上后，该专家工作时自动启用这些服务。</p></div>
         <textarea className="min-h-48 w-full resize-y rounded-md border border-border bg-background p-3 font-mono text-xs leading-relaxed text-text outline-none focus:border-text" value={pasteText} placeholder={'{"mcpServers": {"filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]}}}'} onChange={(event) => setPasteText(event.target.value)} />
-        {pasteResult && <p role="status" className="m-0 rounded-md border border-border bg-surface p-3 text-sm leading-relaxed text-text">{pasteResult}</p>}
+        {pasteResult && <p role="status" className="m-0 text-sm leading-relaxed text-text">{pasteResult}</p>}
         <div className="flex items-center gap-2">
           <Button variant="primary" disabled={importing || !pasteText.trim()} onClick={() => void importPaste()}>导入并保存</Button>
           <span className="text-xs text-subtext">支持 Claude Code / Cursor 的 mcpServers JSON 与 Codex 的 TOML；环境变量值只存本机</span>

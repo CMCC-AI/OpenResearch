@@ -27,7 +27,7 @@ export function AgentDraftProgress({ stage, startedAt, now }: { stage: string; s
       <h2 className="m-0 text-lg font-normal">正在创建这个专家</h2>
       <p className="mb-0 mt-1 text-sm text-subtext">生成通常要一两分钟。完成后草稿会自动填进这份表单，你确认或修改后再保存。</p>
     </div>
-    <ol className="m-0 flex list-none flex-col gap-2.5 rounded-md border border-border bg-background p-4 text-sm">
+    <ol className="m-0 flex list-none flex-col gap-2.5 text-sm">
       {DRAFT_STAGES.map((step, index) => {
         const state = index < current ? "done" : index === current ? "running" : "pending";
         return <li key={step.key} className={`flex items-center gap-2 ${state === "pending" ? "text-subtext" : "text-text"}`}>
@@ -272,18 +272,18 @@ export function AgentLibrary({ agents, mcpServers = [], userSkills = [], onChang
           <CapabilityTile kind="agent" name={`${selected.name} ${selected.id}`} size="md" />
           <div className="min-w-0"><h2 className="m-0 text-lg font-normal">{selected.name}</h2><p className="mb-0 mt-1 text-sm text-subtext">{selected.id}</p></div>
         </div>
-        <p className="m-0 rounded-md border border-border bg-surface p-4 text-sm text-subtext">这是现有专家团的内置角色，可直接加入工作流。角色配置保持只读；提示词由团队统一调优维护，不对外展示，确保历史计划按原规范执行。</p>
+        <p className="m-0 text-sm leading-relaxed text-subtext">这是现有专家团的内置角色，可直接加入工作流。角色配置保持只读；提示词由团队统一调优维护，不对外展示，确保历史计划按原规范执行。</p>
         <section className="flex flex-col gap-1.5 text-sm" aria-label="能力说明">
           <h3 className="m-0 text-sm font-normal">能力说明</h3>
-          <p className="m-0 whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 leading-relaxed text-text">{selected.description || "暂无能力说明"}</p>
+          <p className="m-0 whitespace-pre-wrap break-words leading-relaxed text-text">{selected.description || "暂无能力说明"}</p>
         </section>
         {selected.toolPermissions && <section className="flex flex-col gap-1.5 text-sm" aria-label="工具与执行权限">
           <h3 className="m-0 text-sm font-normal">工具与执行权限</h3>
-          <ul className="m-0 flex list-disc flex-col gap-2 rounded-md border border-border bg-background p-3 ps-8 leading-relaxed text-text">{selected.toolPermissions.map((permission) => <li key={permission}>{permission}</li>)}</ul>
+          <ul className="m-0 flex list-disc flex-col gap-2 ps-8 leading-relaxed text-text">{selected.toolPermissions.map((permission) => <li key={permission}>{permission}</li>)}</ul>
         </section>}
         {selected.skills && <section className="flex flex-col gap-1.5 text-sm" aria-label="内置 Skills">
           <h3 className="m-0 text-sm font-normal">内置 Skills（{selected.skills.length}）<span className="ms-2 text-xs text-subtext">悬浮查看用途说明</span></h3>
-          <div className="flex flex-wrap gap-2 rounded-md border border-border bg-background p-3">{selected.skills.map((skill) => <SkillBadge key={skill.name} skill={skill} />)}</div>
+          <div className="flex flex-wrap gap-2">{selected.skills.map((skill) => <SkillBadge key={skill.name} skill={skill} />)}</div>
         </section>}
       </div> : <div className="mx-auto flex max-w-3xl flex-col gap-4">
         <div><h2 className="m-0 text-lg font-normal">{selected ? `编辑 ${selected.name}` : "创建自定义 Agent"}</h2><p className="mb-0 mt-1 text-sm text-subtext">自定义 Agent 可与内置专家混合编排。保存修改会递增版本，不会改写已批准任务。</p></div>
@@ -292,7 +292,7 @@ export function AgentLibrary({ agents, mcpServers = [], userSkills = [], onChang
         <label className="flex flex-col gap-1.5 text-sm">角色提示词<textarea className="min-h-64 resize-y rounded-md border border-border bg-background p-3 text-sm text-text outline-none focus:border-text" value={typed ? typed.prompt : form.prompt} maxLength={24000} placeholder="说明这个专家的职责、怎么使用证据、要输出什么、不能做什么" onChange={(event) => { setTyping(null); setForm({ ...form, prompt: event.target.value }); }} /></label>
         <fieldset className="m-0 min-w-0 border-0 p-0 flex flex-col gap-1.5 text-sm">
           <legend className="p-0">MCP 服务<span className="ms-2 text-xs font-normal text-subtext">该专家工作时可以调用这些服务</span></legend>
-          {mcpServers.length === 0 ? <p className="m-0 rounded-md border border-border bg-background p-3 text-subtext">还没有登记 MCP 服务；可先到 MCP 页添加，或在对话里让 AI 提议。</p> : <div className="flex flex-col gap-1.5 rounded-md border border-border bg-background p-3">
+          {mcpServers.length === 0 ? <p className="m-0 text-subtext">还没有登记 MCP 服务；可先到 MCP 页添加，或在对话里让 AI 提议。</p> : <div className="flex flex-col gap-1.5">
             {mcpServers.map((server) => <label key={server.id} className="flex items-start gap-2">
               <input type="checkbox" className="mt-1" checked={form.mcpServers.includes(server.id)} onChange={(event) => setForm({ ...form, mcpServers: event.target.checked ? [...form.mcpServers, server.id] : form.mcpServers.filter((id) => id !== server.id) })} />
               <span className="min-w-0"><span className="text-text">{server.name}</span>{server.description && <span className="ms-2 text-xs text-subtext">{server.description}</span>}</span>
@@ -301,7 +301,7 @@ export function AgentLibrary({ agents, mcpServers = [], userSkills = [], onChang
         </fieldset>
         <fieldset className="m-0 min-w-0 border-0 p-0 flex flex-col gap-1.5 text-sm">
           <legend className="p-0">使用的技能<span className="ms-2 text-xs font-normal text-subtext">该专家工作时自动携带这些技能；未勾选的技能不生效</span></legend>
-          {userSkills.length === 0 ? <p className="m-0 rounded-md border border-border bg-background p-3 text-subtext">还没有上传技能；可先到 Skills 页上传，或在对话里让 AI 登记。</p> : <div className="flex flex-col gap-1.5 rounded-md border border-border bg-background p-3">
+          {userSkills.length === 0 ? <p className="m-0 text-subtext">还没有上传技能；可先到 Skills 页上传，或在对话里让 AI 登记。</p> : <div className="flex flex-col gap-1.5">
             {userSkills.map((skill) => <label key={skill.name} className="flex items-start gap-2">
               <input type="checkbox" className="mt-1" checked={form.userSkills.includes(skill.name)} onChange={(event) => setForm({ ...form, userSkills: event.target.checked ? [...form.userSkills, skill.name] : form.userSkills.filter((name) => name !== skill.name) })} />
               <span className="min-w-0"><span className="text-text">{skill.name}</span>{skill.description && <span className="ms-2 text-xs text-subtext">{skill.description}</span>}</span>

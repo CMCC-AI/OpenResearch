@@ -13,7 +13,9 @@ import { Button } from "../components/ui";
 import { LocateCurrent } from "../components/ResearchTeamDag";
 import { TaskDetails } from "../components/ResearchWorkflow";
 import { buildWorkflowGraph, systemNodeForStudy, systemNodeIds } from "./graph";
-import { foreachConditionText, routeConditionText, waitConditionText, workflowNodeTypes, type WorkflowCanvasNode } from "./WorkflowCanvas";
+import { foreachConditionText, routeConditionText, waitConditionText } from "./canvasText";
+import { workflowNodeTypes } from "./canvasNodeTypes";
+import type { WorkflowCanvasNode } from "./canvasNodes";
 import { ROUTE_ELSE, ROUTE_THEN, type WorkflowTask } from "./model";
 import "../components/ResearchTeamDag.css";
 
@@ -151,7 +153,7 @@ export function WorkflowPane({ sessionId, onOpenSession, onOpenStudio }: {
         <WorkflowRunGraph key={`${study?.id ?? "preview"}-${plan?.version ?? 0}`} nodes={nodes} edges={edges} currentIds={currentIds} onSelect={setSelected} />
       </div>
       <div className="research-team-progress flex shrink-0 flex-wrap items-center gap-3 border-t border-border">
-        <div className="flex min-w-0 flex-1 items-center gap-2"><span className="shrink-0 text-sm text-text"><span className="text-primary">{progress.completed}</span>/{progress.total} 已验收</span><div className="research-team-progress-track h-2 min-w-12 flex-1 overflow-hidden rounded-full" role="progressbar" aria-label="专家任务验收进度" aria-valuemin={0} aria-valuemax={progress.total || 1} aria-valuenow={progress.completed}><div className="h-full rounded-full bg-primary" style={{ width: `${progress.total ? progress.completed / progress.total * 100 : 0}%` }} /></div></div>
+        <div className="flex flex-1 items-center gap-2"><span className="shrink-0 text-sm text-text"><span className="text-primary">{progress.completed}</span>/{progress.total} 已验收</span><div className="research-team-progress-track h-2 min-w-12 flex-1 overflow-hidden rounded-full" role="progressbar" aria-label="专家任务验收进度" aria-valuemin={0} aria-valuemax={progress.total || 1} aria-valuenow={progress.completed}><div className="h-full rounded-full bg-primary" style={{ width: `${progress.total ? progress.completed / progress.total * 100 : 0}%` }} /></div></div>
         <div className="flex flex-wrap gap-3 text-xs text-subtext" aria-label="任务状态图例">{[{ label: "执行中", state: "running" }, { label: "已验收", state: "completed" }, { label: "已跳过", state: "optional" }, { label: "待处理", state: "blocked" }, { label: "未安排", state: "waiting" }].map((item) => <span key={item.state} className="flex items-center gap-1.5"><span data-state={item.state} className="research-team-legend-dot size-2 shrink-0 rounded-full" />{item.label}</span>)}</div>
       </div>
       <section hidden={!selected} className="max-h-60 shrink-0 overflow-y-auto border-t border-border p-3" aria-label="节点详情">

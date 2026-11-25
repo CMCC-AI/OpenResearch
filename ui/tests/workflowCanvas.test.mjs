@@ -7,6 +7,7 @@ import ts from "typescript";
 import * as model from "../src/workflow/model.ts";
 import * as graph from "../src/workflow/graph.ts";
 import * as research from "../src/research.ts";
+import * as canvasText from "../src/workflow/canvasText.ts";
 const require = createRequire(import.meta.url);
 const code = ts.transpileModule(readFileSync(new URL("../src/workflow/WorkflowCanvas.tsx", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 function elements(tree) { return React.isValidElement(tree) ? [tree, ...React.Children.toArray(tree.props.children).flatMap(elements)] : []; }
@@ -19,6 +20,7 @@ function harness(startDraft = model.createLiteratureDraft(), agents = []) {
     "@xyflow/react": { ReactFlow: "Flow", Handle: "Handle", Controls: "Controls", Background: "Background", MarkerType: { ArrowClosed: "arrow" }, Position: { Top: "top", Bottom: "bottom" } },
     "./model": model, "./graph": graph, "./SystemNode": { SystemNodeCard: "SystemNode" }, "../research": research,
     "../components/ui": { Button: "Button", Tooltip: "Tooltip" }, "../components/ui/Switch": { Switch: "Switch" },
+    "./canvasText": canvasText, "./canvasNodeTypes": { workflowNodeTypes: {} },
   };
   new Function("require", "exports", code)(id => id in mocks ? mocks[id] : require(id), exported);
   function render() { cursor = 0; return elements(exported.WorkflowCanvas({ draft, agents, onChange: next => { writes.push(next); draft = next; } })); }
@@ -54,6 +56,25 @@ test("clicking a dependency edge selects it for keyboard deletion; system edges 
   assert.deepEqual(h.draft().tasks[1].dependsOn, []);
   flow.onEdgesChange([{ type: "select", id: systemId, selected: true }]);
   assert.ok(h.flow().edges.filter(edge => edge.selected).every(edge => edge.id === systemId));
+});
+
+test("clicking an edge thickens and colors it instead of adding a text label", () => {
+  const h = harness();
+  const id = "search-strategy->literature-discovery";
+  const before = h.flow().edges.find(edge => edge.id === id);
+  assert.equal(before.label, undefined);
+  assert.equal(before.style?.stroke, undefined);
+  h.flow().onEdgesChange([{ type: "select", id, selected: true }]);
+  const selected = h.flow().edges.find(edge => edge.id === id);
+  // 只加粗变色，不铺文字说明。
+  assert.equal(selected.label, undefined);
+  assert.equal(selected.style?.stroke, "var(--primary)");
+  assert.ok(selected.style?.strokeWidth >= 2);
+  // 取消选中后恢复普通线条。
+  h.flow().onEdgesChange([{ type: "select", id, selected: false }]);
+  const restored = h.flow().edges.find(edge => edge.id === id);
+  assert.equal(restored.style?.stroke, undefined);
+  assert.equal(restored.label, undefined);
 });
 
 test("right-click opens an in-canvas menu: dependency edge offers deletion, system edge explains", () => {
@@ -93,6 +114,24 @@ test("adding and cancelling a checkpoint only changes requiresApproval, while dr
   assert.deepEqual(h.draft().tasks[1], { ...before[1], requiresApproval: false });
   assert.equal(h.draft().objective, "");
   assert.equal(h.draft().tasks.length, before.length);
+});
+
+test("a drag writes the draft once on release, not on every pointer move", () => {
+  const h = harness();
+  const id = "literature-discovery";
+  const before = structuredClone(h.draft().positions);
+  const position = () => h.flow().nodes.find(node => node.id === id).position;
+  // 拖动过程中 React Flow 连续发 dragging=true 的坐标：节点跟手，但草稿不动。
+  h.flow().onNodesChange([{ type: "position", id, position: { x: 10, y: 20 }, dragging: true }]);
+  assert.deepEqual(position(), { x: 10, y: 20 });
+  h.flow().onNodesChange([{ type: "position", id, position: { x: 30, y: 40 }, dragging: true }]);
+  assert.deepEqual(position(), { x: 30, y: 40 });
+  assert.deepEqual(h.draft().positions, before);
+  assert.equal(h.writes.length, 0);
+  // 松手后的最终坐标照常落盘。
+  h.flow().onNodesChange([{ type: "position", id, position: { x: 30, y: 40 }, dragging: false }]);
+  assert.deepEqual(h.draft().positions[id], { x: 30, y: 40 });
+  assert.equal(h.writes.length, 1);
 });
 
 test("the editor canvas renders only explicitly added tasks; the fixed chain stays in the run view", () => {

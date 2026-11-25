@@ -132,12 +132,12 @@ export function SkillsLibrary({ skills, agents, projects, projectId, sessionId =
         </div>
         <section className="flex flex-col gap-1.5 text-sm" aria-label="用途说明">
           <h3 className="m-0 text-sm font-normal">用途说明</h3>
-          <p className="m-0 whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 leading-relaxed text-text">{selected.description || "暂无说明"}</p>
+          <p className="m-0 whitespace-pre-wrap break-words leading-relaxed text-text">{selected.description || "暂无说明"}</p>
         </section>
         {scope}
         {selected.source === "user" && <section className="flex flex-col gap-1.5 text-sm" aria-label="技能信息">
           <h3 className="m-0 text-sm font-normal">技能信息</h3>
-          <ul className="m-0 flex list-disc flex-col gap-1 rounded-md border border-border bg-background p-3 ps-8 leading-relaxed text-text">
+          <ul className="m-0 flex list-disc flex-col gap-1 ps-8 leading-relaxed text-text">
             {selected.bytes != null && <li>大小：{formatBytes(selected.bytes)}</li>}
             {selected.updatedAt != null && <li>更新时间：{new Date(selected.updatedAt).toLocaleString()}</li>}
           </ul>
@@ -179,10 +179,10 @@ export function SkillScopeSection({ skill, projects, busy, scopeSummary, boundAg
 }) {
   return <section className="flex flex-col gap-1.5 text-sm" aria-label="生效范围">
     <h3 className="m-0 text-sm font-normal">生效范围</h3>
-    <p className="m-0 rounded-md border border-border bg-background p-3 leading-relaxed text-text">{scopeSummary}</p>
+    <p className="m-0 leading-relaxed text-text">{scopeSummary}</p>
     {skill.legacyGlobal && !skill.origin && <div><Button variant="ghost" disabled={busy} onClick={onDemote}>改为按需绑定</Button></div>}
-    <fieldset className="m-0 flex flex-col gap-1.5 rounded-md border border-border bg-background p-3">
-      <legend className="px-1 text-xs text-subtext">在哪些项目自动携带</legend>
+    <fieldset className="m-0 flex flex-col gap-1.5">
+      <legend className="p-0 text-xs text-subtext">在哪些项目自动携带</legend>
       {projects.length === 0 ? <p className="m-0 text-xs text-subtext">还没有研究项目。</p> : projects.map((project) => {
         const bound = (skill.boundProjects ?? []).includes(project.id);
         return <label key={project.id} className="flex items-center gap-2 text-sm text-text">
@@ -191,8 +191,8 @@ export function SkillScopeSection({ skill, projects, busy, scopeSummary, boundAg
         </label>;
       })}
     </fieldset>
-    <fieldset className="m-0 flex flex-col gap-1.5 rounded-md border border-border bg-background p-3">
-      <legend className="px-1 text-xs text-subtext">哪些专家自动携带</legend>
+    <fieldset className="m-0 flex flex-col gap-1.5">
+      <legend className="p-0 text-xs text-subtext">哪些专家自动携带</legend>
       {boundAgentNames.length === 0 ? <p className="m-0 text-xs text-subtext">还没有专家挂载这个技能；在 Agents 页编辑自定义专家时勾选。</p> : <ul className="m-0 flex list-disc flex-col gap-1 ps-8 leading-relaxed text-text">{boundAgentNames.map((name) => <li key={name}>{name}</li>)}</ul>}
     </fieldset>
   </section>;

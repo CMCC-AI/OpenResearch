@@ -48,14 +48,14 @@ export function WorkflowLibrary({ onEdit }: {
       {drafts.isPending ? <p role="status" className="flex items-center gap-2 text-sm text-subtext"><Spinner />正在读取工作流库…</p> : drafts.error ? <div role="alert" className="flex flex-col items-start gap-3 text-sm text-accent-red">
         <p className="m-0">工作流读取失败：{drafts.error.message}</p>
         <Button onClick={() => void drafts.refetch()}>重试</Button>
-      </div> : all.length === 0 ? <section className="flex flex-col items-start gap-3 rounded-lg border border-border p-5">
+      </div> : all.length === 0 ? <section className="flex flex-col items-start gap-3 py-8">
         <h2 className="m-0 text-base font-medium">工作流库还是空的</h2>
         <p className="m-0 text-sm text-subtext">从空白画布编排一条工作流保存入库，所有项目都能在聊天中按它执行。</p>
         <Button variant="primary" onClick={() => onEdit(null)}>编排一条新工作流</Button>
       </section> : <>
         <WorkflowSearchBox value={search} onChange={setSearch} matched={matched.length} total={all.length} />
         {matched.length === 0 ? <p role="status" className="m-0 text-sm text-subtext">没有匹配「{search.trim()}」的工作流，换个关键词试试。</p> : <div className="grid gap-3 sm:grid-cols-2">
-          {matched.map(({ draft, source, experts }) => <div key={draft.id} className="capability-card flex items-start gap-2 rounded-xl border border-border-variant bg-background p-4">
+          {matched.map(({ draft, source, experts }) => <div key={draft.id} className="capability-card flex items-start gap-2 rounded-lg border border-border-variant bg-background p-4">
             <button type="button" onClick={() => onEdit(draft.id)} className="m-0 grid min-w-0 flex-1 cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-1 border-0 bg-transparent p-0 text-start">
               <CapabilityTile kind="workflow" name={draft.name} size="md" />
               <strong className="break-words text-sm font-medium">{draft.name}</strong>
