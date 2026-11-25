@@ -67,6 +67,8 @@ export interface ResearchStudy {
   /** deliveryNotice 的来源："human"（人工产物对账）或 "package"（交付包校验）；界面暂不消费。 */
   deliveryNoticeSource?: string | null;
   deliverySnapshot?: { scopeHash: string; identityHash: string; archive?: { formatVersion: number; sha256: string; bytes: number; manifestSha256: string } };
+  /** 模型额度耗尽后的研究级阻断；由负责人对话上的换模型卡片清除。 */
+  modelBlock?: { sessionId: string; model?: string | null; createdAt: number } | null;
   claimRevision?: number;
   activeClaimIds?: string[];
   claimChanges?: ResearchClaimChange[];

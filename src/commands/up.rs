@@ -565,6 +565,10 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
         .route("/api/research/studies/{id}/end", post(research::end))
         .route("/api/research/studies/{id}/pause", post(research::pause))
         .route("/api/research/studies/{id}/resume", post(research::resume))
+        .route(
+            "/api/research/studies/{id}/switch-model",
+            post(research::switch_model),
+        )
         .route("/api/research/studies/{id}/package", get(research::package))
         .route(
             "/api/research/studies/{id}/delivery/file",

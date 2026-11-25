@@ -190,6 +190,45 @@ pub(crate) fn orx_retry_delay(
     (delay <= ORX_RETRY_BUDGET).then_some(delay)
 }
 
+/// Provider failures that mean the selected model cannot run again until the
+/// user switches models or the provider's quota resets. Retrying the same
+/// model only burns time and tokens, so callers stop and surface a switch.
+///
+/// Deliberately conservative: this only ever sees a turn-level failure, never
+/// tool output, so a task that merely talks about rate limits cannot match.
+pub(crate) fn is_model_usage_limit(kind: &str, message: &str) -> bool {
+    if kind == "claude_usage_limit" {
+        return true;
+    }
+    let text = message.to_ascii_lowercase();
+    const NEEDLES: &[&str] = &[
+        "usage limit",
+        "usage_limit",
+        "usagelimit",
+        "rate limit",
+        "rate_limit",
+        "ratelimit",
+        "session limit",
+        "insufficient_quota",
+        "quota exceeded",
+        "quota_exceeded",
+        "exceeded your current quota",
+        "insufficient credits",
+        "credit balance",
+        "too many requests",
+        "named models unavailable",
+    ];
+    NEEDLES.iter().any(|needle| text.contains(needle))
+        || [
+            "\"status\":429",
+            "\"status\": 429",
+            "\"code\":429",
+            "\"code\": 429",
+        ]
+        .iter()
+        .any(|needle| text.contains(needle))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnOutcome {
     Completed,
@@ -1114,5 +1153,45 @@ mod tests {
             Some(ORX_RETRY_BUDGET + Duration::from_millis(1))
         )
         .is_none());
+    }
+
+    #[test]
+    fn model_usage_limit_matches_provider_quota_failures_only() {
+        for (kind, message) in [
+            ("claude_usage_limit", ""),
+            ("adapter_error", "429 Too Many Requests"),
+            (
+                "opencode_terminal",
+                r#"{"error":{"type":"insufficient_quota"}}"#,
+            ),
+            (
+                "adapter_error",
+                "You have hit your session limit · resets at 3pm",
+            ),
+            ("adapter_error", "usage_limit_reached"),
+            ("adapter_error", "RateLimitExceeded: slow down"),
+            ("adapter_error", "Named models unavailable"),
+            ("adapter_error", r#"{"status": 429, "body": "quota"}"#),
+        ] {
+            assert!(
+                is_model_usage_limit(kind, message),
+                "{kind}: {message} should count as a model limit"
+            );
+        }
+        for (kind, message) in [
+            ("claude_auth", "invalid api key"),
+            ("adapter_error", "connection reset by peer"),
+            ("codex_terminal", "sandbox denied"),
+            (
+                "adapter_error",
+                "the paper discusses throughput optimization",
+            ),
+            ("adapter_error", "token budget exceeded for this run"),
+        ] {
+            assert!(
+                !is_model_usage_limit(kind, message),
+                "{kind}: {message} must not pause the study"
+            );
+        }
     }
 }

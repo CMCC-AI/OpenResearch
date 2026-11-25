@@ -421,6 +421,23 @@ pub struct EvidenceClaim {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct ModelBlock {
+    /// 触发额度失败的研究会话（负责人或某个专家）。
+    pub session_id: String,
+    /// 该会话当时使用的模型；没有显式模型时为空。
+    pub model: Option<String>,
+    pub created_at: i64,
+}
+/// Result of switching a blocked study to a new model.
+pub struct ModelSwitch {
+    pub lead_session: String,
+    /// The lead itself hit the limit, so it needs an explicit continuation.
+    pub lead_failed: bool,
+    /// Dedupes the continuation note when the same block is switched twice.
+    pub block_created_at: i64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Study {
     pub id: String,
     pub project_id: String,
@@ -448,6 +465,9 @@ pub struct Study {
     pub delivery_notice_source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_snapshot: Option<DeliverySnapshot>,
+    /// 模型额度耗尽后的研究级阻断：派发停止、由负责人对话上的换模型卡片清除。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_block: Option<ModelBlock>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -657,6 +677,9 @@ impl Study {
     }
     pub fn ready(&self, id: &str) -> Result<()> {
         self.ensure_active()?;
+        if self.model_block.is_some() {
+            return Err(anyhow!("模型额度已用完，请先在对话上方切换模型"));
+        }
         self.require_gate("G1", &self.plan_scope()?)?;
         let task = self.task(id)?;
         let wait_any = task.spec.wait_for == "any";
@@ -1822,6 +1845,99 @@ impl Store {
             )
             .optional()?)
     }
+    /// Carry a lead's model change into the expert sessions that never picked a
+    /// model of their own: same harness, and still on the lead's previous model
+    /// (or none). A session already on another model was chosen explicitly and
+    /// keeps it. Running turns finish on their current model; the next turn
+    /// reads the new one. `service_tier` is dropped because it is tied to the
+    /// model on that harness, exactly as at dispatch.
+    pub fn research_inherit_model(
+        &self,
+        study_id: &str,
+        lead_id: &str,
+        lead_harness: &str,
+        from: Option<&str>,
+        to: &str,
+    ) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE chat_sessions SET model = ?4, service_tier = NULL
+             WHERE harness = ?3 AND id != ?2 AND (model IS NULL OR model IS ?5)
+               AND id IN (SELECT session_id FROM research_sessions WHERE study_id = ?1)",
+            params![study_id, lead_id, lead_harness, to, from],
+        )?)
+    }
+    /// Stop a study whose selected model ran out of quota. Only an active study
+    /// blocks, and the first failure is the cause — later failures (which are
+    /// consequences) must not rewrite which session/model the card explains.
+    /// The pause itself happens in the watcher, which can also interrupt the
+    /// bound sessions.
+    pub fn research_block_model_usage(&self, session: &str) -> Result<bool> {
+        let Some(study) = self.research_for_session(session)? else {
+            return Ok(false);
+        };
+        if study.status != "active" || study.model_block.is_some() {
+            return Ok(false);
+        }
+        let model = self
+            .get_chat_session(session)?
+            .and_then(|session| session.model);
+        self.research_update(&study.id, |study| {
+            if study.status == "active" && study.model_block.is_none() {
+                study.model_block = Some(ModelBlock {
+                    session_id: session.to_string(),
+                    model,
+                    created_at: now_ms(),
+                });
+            }
+            Ok(())
+        })?;
+        Ok(true)
+    }
+    /// Switch the lead model for a blocked study, carry it into the inheriting
+    /// experts, clear the block and resume, all in one transaction. The caller
+    /// dispatches and nudges the lead afterwards.
+    pub fn research_switch_model(
+        &self,
+        id: &str,
+        model: &str,
+        service_tier: Option<&str>,
+        reasoning_level: Option<&str>,
+    ) -> Result<ModelSwitch> {
+        let model = model.trim();
+        if model.is_empty() {
+            return Err(anyhow!("请选择模型"));
+        }
+        let tx = self.begin_immediate()?;
+        let mut study = self.research_study(id)?;
+        let block = study
+            .model_block
+            .clone()
+            .ok_or_else(|| anyhow!("模型额度提示已失效，请刷新后重试"))?;
+        let lead = self
+            .get_chat_session(&study.session_id)?
+            .ok_or_else(|| anyhow!("研究主会话不存在"))?;
+        if study.status != "active" && study.status != "paused" {
+            return Err(anyhow!("研究已停止，无法继续"));
+        }
+        self.set_chat_session_model(&lead.id, model)?;
+        self.set_chat_session_service_tier(&lead.id, service_tier.filter(|tier| !tier.is_empty()))?;
+        if let Some(level) = reasoning_level.filter(|level| !level.is_empty()) {
+            self.set_chat_session_reasoning_level(&lead.id, level)?;
+        }
+        self.research_inherit_model(id, &lead.id, &lead.harness, lead.model.as_deref(), model)?;
+        let was_paused = study.status == "paused";
+        study.model_block = None;
+        if was_paused {
+            study.status = "active".into();
+        }
+        self.research_save(&study)?;
+        tx.commit()?;
+        Ok(ModelSwitch {
+            lead_session: lead.id,
+            lead_failed: block.session_id == study.session_id,
+            block_created_at: block.created_at,
+        })
+    }
     pub fn research_save(&self, study: &Study) -> Result<()> {
         self.conn.execute(
             "UPDATE research_studies SET document=?2 WHERE id=?1",
@@ -1892,6 +2008,7 @@ impl Store {
             delivery_notice: None,
             delivery_notice_source: None,
             delivery_snapshot: None,
+            model_block: None,
             created_at: now_ms(),
             updated_at: now_ms(),
         };
@@ -4217,6 +4334,153 @@ mod tests {
         let artifact = inspect_artifact(dir.path(), "ok.md").unwrap();
         assert_eq!(artifact.sha256, digest(b"ok"));
         assert_eq!(artifact.bytes, 2);
+    }
+    #[test]
+    fn lead_model_change_reaches_inheriting_experts_only() {
+        let (_dir, store, study) = setup();
+        let insert = |id: &str, harness: &str, model: Option<&str>| {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO chat_sessions(id,project_id,harness,model,created_at,updated_at) VALUES(?1,'project',?2,?3,1,1)",
+                    params![id, harness, model],
+                )
+                .unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO research_sessions(session_id,study_id,task_id,version) VALUES(?1,?2,'task',1)",
+                    params![id, study.id],
+                )
+                .unwrap();
+        };
+        insert("inherited", "codex", Some("provider/a"));
+        insert("unset", "codex", None);
+        insert("explicit", "codex", Some("provider/c"));
+        // A model id only means something on its own harness.
+        insert("other-harness", "claude-code", Some("provider/a"));
+        store
+            .conn
+            .execute(
+                "INSERT INTO chat_sessions(id,project_id,harness,model,created_at,updated_at) VALUES('outsider','project','codex','provider/a',1,1)",
+                [],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE chat_sessions SET service_tier='priority' WHERE id='inherited'",
+                [],
+            )
+            .unwrap();
+
+        let changed = store
+            .research_inherit_model(&study.id, "lead", "codex", Some("provider/a"), "provider/b")
+            .unwrap();
+        assert_eq!(changed, 2);
+        let model = |id: &str| store.get_chat_session(id).unwrap().unwrap().model.clone();
+        assert_eq!(model("inherited").as_deref(), Some("provider/b"));
+        assert_eq!(model("unset").as_deref(), Some("provider/b"));
+        // An explicit choice, another harness, and another study stay put.
+        assert_eq!(model("explicit").as_deref(), Some("provider/c"));
+        assert_eq!(model("other-harness").as_deref(), Some("provider/a"));
+        assert_eq!(model("outsider").as_deref(), Some("provider/a"));
+        // Changing a model is not activity: Recents ordering must not move.
+        let inherited = store.get_chat_session("inherited").unwrap().unwrap();
+        assert_eq!(inherited.service_tier, None);
+        assert_eq!(inherited.updated_at, 1);
+    }
+    #[test]
+    fn quota_block_stops_dispatch_and_model_switch_resumes_the_team() {
+        let (_dir, store, study) = setup();
+        store.set_chat_session_model("lead", "provider/a").unwrap();
+        for (id, model) in [
+            ("inherited", Some("provider/a")),
+            ("explicit", Some("provider/c")),
+        ] {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO chat_sessions(id,project_id,harness,model,created_at,updated_at,parent_session_id) VALUES(?1,'project','codex',?2,1,1,'lead')",
+                    params![id, model],
+                )
+                .unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO research_sessions(session_id,study_id,task_id,version) VALUES(?1,?2,'task',1)",
+                    params![id, study.id],
+                )
+                .unwrap();
+        }
+        store.research_set_plan(&study.id, plan()).unwrap();
+        approve(&store, &study, "G1");
+
+        assert!(store.research_block_model_usage("lead").unwrap());
+        let blocked = store.research_study(&study.id).unwrap();
+        let block = blocked.model_block.clone().unwrap();
+        assert_eq!(block.session_id, "lead");
+        assert_eq!(block.model.as_deref(), Some("provider/a"));
+        // A later consequence must not rewrite which failure the card explains.
+        assert!(!store.research_block_model_usage("inherited").unwrap());
+        assert_eq!(
+            store
+                .research_study(&study.id)
+                .unwrap()
+                .model_block
+                .unwrap()
+                .session_id,
+            "lead"
+        );
+        assert!(blocked
+            .ready("design")
+            .unwrap_err()
+            .to_string()
+            .contains("模型额度"));
+        assert!(
+            crate::commands::research_dispatch::auto_dispatch_sync(&store, &study.id)
+                .unwrap()
+                .is_empty()
+        );
+
+        // The watcher pauses within a tick; switching then resumes and rebinds.
+        let version = blocked.plans.last().unwrap().version;
+        store.research_pause(&study.id, version).unwrap();
+        let switched = store
+            .research_switch_model(&study.id, "provider/b", None, None)
+            .unwrap();
+        assert!(switched.lead_failed);
+        assert_eq!(switched.block_created_at, block.created_at);
+        let resumed = store.research_study(&study.id).unwrap();
+        assert_eq!(resumed.status, "active");
+        assert!(resumed.model_block.is_none());
+        assert_eq!(
+            store
+                .get_chat_session("lead")
+                .unwrap()
+                .unwrap()
+                .model
+                .as_deref(),
+            Some("provider/b")
+        );
+        assert_eq!(
+            store
+                .get_chat_session("inherited")
+                .unwrap()
+                .unwrap()
+                .model
+                .as_deref(),
+            Some("provider/b")
+        );
+        assert_eq!(
+            store
+                .get_chat_session("explicit")
+                .unwrap()
+                .unwrap()
+                .model
+                .as_deref(),
+            Some("provider/c")
+        );
     }
     #[test]
     fn research_metrics_union_activity_and_scope_real_token_usage() {

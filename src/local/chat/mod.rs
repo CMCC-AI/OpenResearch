@@ -4903,6 +4903,24 @@ impl ChatHost {
         })
     }
 
+    /// Start a hidden continuation turn from outside the watcher (for example
+    /// after the user switches models). Returns `false` when the session is
+    /// busy or has queued messages: the workflow is already moving, so the
+    /// caller should not force another turn.
+    pub(crate) async fn send_hidden_note(
+        self: &Arc<Self>,
+        session_id: &str,
+        text: String,
+        client_turn_id: String,
+    ) -> Result<bool> {
+        let Some(guard) = TurnGuard::claim_hidden(self, session_id).await else {
+            return Ok(false);
+        };
+        self.send_hidden_message_with_id(session_id, text, guard, Some(client_turn_id))
+            .await?;
+        Ok(true)
+    }
+
     pub async fn recover_turn(
         self: &Arc<Self>,
         session_id: &str,
@@ -5716,6 +5734,7 @@ impl ChatHost {
             .reserved_store_phase(guard, move |store| {
                 let session_id = settings_session_id.as_str();
                 let mut session = session;
+                let previous_model = session.model.clone();
                 let reset_codex_model = if overrides.clear_model && session.harness == "codex" {
                     match session.native_session_id.as_deref() {
                         Some(native_id) => {
@@ -5762,6 +5781,26 @@ impl ChatHost {
                     if session.model.as_deref() != Some(model.as_str()) {
                         store.set_chat_session_model(&session.id, &model)?;
                         session.model = Some(model);
+                    }
+                }
+                // The lead's model is the team's default: experts inherit it when
+                // they are dispatched, and sessions that never picked a model of
+                // their own follow a switch so a quota-driven change does not
+                // strand the rest of the run on the old model. Turns already
+                // running finish on their current model.
+                if previous_model != session.model {
+                    if let Some(model) = session.model.as_deref() {
+                        if let Some(study) = store.research_for_session(&session.id)? {
+                            if study.session_id == session.id {
+                                store.research_inherit_model(
+                                    &study.id,
+                                    &session.id,
+                                    &session.harness,
+                                    previous_model.as_deref(),
+                                    model,
+                                )?;
+                            }
+                        }
                     }
                 }
                 if let Some(tier) = overrides.service_tier.filter(|tier| !tier.is_empty()) {
@@ -6233,9 +6272,23 @@ impl ChatHost {
                 },
                 None => TurnSettlement::Completed,
             };
+            let model_limit = failure.as_ref().is_some_and(|(kind, message)| {
+                crate::local::harness::is_model_usage_limit(kind, message)
+            });
             let terminal_won = settle_turn_with_store(&ctx.turn_id, settlement, Store::open)
                 .await
                 .unwrap_or(false);
+            // A model that ran out of quota will fail every retry the same way.
+            // Record it on the study so the watcher can pause dispatch and the
+            // lead conversation can offer a model switch.
+            if terminal_won && model_limit {
+                let session_id = ctx.session_id.clone();
+                let _ = crate::local::blocking::run(move || {
+                    let store = Store::open()?;
+                    store.research_block_model_usage(&session_id).map(|_| ())
+                })
+                .await;
+            }
             if let Some((kind, message)) = failure {
                 if terminal_won {
                     ctx.push_turn_failure(&kind, message, ctx.delivery_state.recovery_action());

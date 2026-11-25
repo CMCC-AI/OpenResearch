@@ -80,6 +80,10 @@ test("failed, stopped, unavailable, and unplanned studies never appear completed
   assert.match(status({ ...study(), status: "stopped" }).label, /已停止/);
   assert.equal(status({ ...study(), status: "paused" }).kind, "paused");
   assert.match(status({ ...study(), status: "paused" }).label, /已暂停/);
+  const blocked = { ...study(), status: "paused", modelBlock: { sessionId: "lead", model: "provider/a", createdAt: 1 } };
+  assert.equal(status(blocked).kind, "attention");
+  assert.match(status(blocked).label, /模型额度已用完/);
+  assert.doesNotMatch(status(blocked).label, /点击继续/);
   assert.match(status(study(), { stopping: true }).label, /停止当前回复/);
   assert.equal(status(study([task("completed")], [decision("approved")]), { unavailable: true }).kind, "attention");
 });

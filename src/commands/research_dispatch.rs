@@ -347,7 +347,7 @@ pub(crate) async fn submit_ready_experiment_tasks(study_id: &str) -> Result<Vec<
     let candidates: Vec<(String, crate::store::research::RunContract)> = {
         let store = Store::open()?;
         let study = store.research_study(&study_id)?;
-        if study.status != "active" {
+        if study.status != "active" || study.model_block.is_some() {
             return Ok(Vec::new());
         }
         let plan = study.plan()?;
@@ -603,7 +603,7 @@ pub(crate) fn auto_dispatch_ignoring_session(
     ignore_session: Option<&str>,
 ) -> Result<Vec<(String, String)>> {
     let study = store.research_study(study_id)?;
-    if study.status != "active" {
+    if study.status != "active" || study.model_block.is_some() {
         return Ok(Vec::new());
     }
     let Ok(plan) = study.plan() else {
@@ -790,7 +790,11 @@ pub(crate) fn on_research_spawn_finished(
         return Ok(None);
     };
     let study_id = study.id.clone();
+    // A quota block retires the failing expert instead of retrying it: the
+    // watcher pauses the study and the task returns to pending, where the
+    // model switch re-dispatches it on the new model.
     if study.status != "active"
+        || study.model_block.is_some()
         || study.plan().map_or(true, |p| p.version != version)
         || study
             .task(&task_id)

@@ -366,6 +366,93 @@ pub(super) async fn resume(
     .map_err(|error| ApiError::from(anyhow!("research resume task failed: {error}")))?
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct SwitchModelReq {
+    model: String,
+    #[serde(default)]
+    service_tier: Option<String>,
+    #[serde(default)]
+    reasoning_level: Option<String>,
+}
+
+/// Apply the user's model choice to a quota-blocked study: persist it on the
+/// lead (and the experts that inherit from it), clear the block, resume, and
+/// dispatch. The continuation turn is a hidden note so the user does not have
+/// to send anything after clicking.
+pub(super) async fn switch_model(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<SwitchModelReq>,
+) -> ApiResult {
+    browser_decision(&headers)?;
+    reject_if_stopping(&state)?;
+    reject_if_moving(&state)?;
+    let model = req.model.trim().to_string();
+    if model.is_empty() {
+        return Err(bad_request(anyhow!("请选择模型")));
+    }
+    tokio::spawn(async move {
+        let gate = state.data_dir_gate.clone().lock_owned().await;
+        reject_if_stopping(&state)?;
+        reject_if_moving(&state)?;
+        let switch_id = id.clone();
+        let chosen = model.clone();
+        let (switched, dispatched, running) = blocking_task(move || {
+            let _gate = gate;
+            let store = Store::open()?;
+            let switched = store.research_switch_model(
+                &switch_id,
+                &chosen,
+                req.service_tier.as_deref(),
+                req.reasoning_level.as_deref(),
+            )?;
+            let dispatched =
+                crate::commands::research_dispatch::auto_dispatch_sync(&store, &switch_id)?;
+            let running = store.research_study(&switch_id).map_or(true, |study| {
+                study
+                    .plan()
+                    .is_ok_and(|plan| plan.tasks.iter().any(|task| task.state == "running"))
+            });
+            Ok::<_, crate::error::Error>((switched, dispatched, running))
+        })
+        .await
+        .map_err(|error| ApiError::from(anyhow!("research switch-model failed: {error}")))?
+        .map_err(bad_request)?;
+        // Continue when the lead's own turn was interrupted, or when nothing is
+        // running and nothing was re-dispatched. Otherwise the engine already
+        // has work in flight and will wake the lead by itself.
+        let should_continue = switched.lead_failed || (dispatched.is_empty() && !running);
+        let resume_error = if should_continue {
+            let text = if switched.lead_failed {
+                format!(
+                    "[orx 研究编排] 模型已切换为 {model}，额度问题已解除。请从中断处继续推进当前研究；已完成的任务不要重做。"
+                )
+            } else {
+                format!(
+                    "[orx 研究编排] 模型已切换为 {model}，额度问题已解除，研究已恢复。请查看当前状态并继续推进剩余任务。"
+                )
+            };
+            state
+                .chat
+                .send_hidden_note(
+                    &switched.lead_session,
+                    text,
+                    format!("orx-model-switch-{id}-{}", switched.block_created_at),
+                )
+                .await
+                .err()
+                .map(|error| error.to_string())
+        } else {
+            None
+        };
+        Ok(Json(json!({"ok": true, "resumeError": resume_error})))
+    })
+    .await
+    .map_err(|error| ApiError::from(anyhow!("research switch-model task failed: {error}")))?
+}
+
 pub(super) async fn decide(
     State(state): State<AppState>,
     Path((id, decision)): Path<(String, String)>,

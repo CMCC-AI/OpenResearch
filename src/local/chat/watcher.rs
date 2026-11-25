@@ -796,6 +796,31 @@ async fn deliver_wake_up(
     Ok(store)
 }
 
+/// A model that ran out of quota cannot make progress on any expert. Pause the
+/// study (soft-returning running tasks to pending) and interrupt the bound
+/// sessions, mirroring the user-initiated pause handler. The block stays until
+/// the lead conversation switches models, which resumes the study.
+async fn process_model_blocked_studies(chat: &Arc<ChatHost>, store: Store) -> Result<()> {
+    for study in store.research_active_studies()? {
+        if study.model_block.is_none() {
+            continue;
+        }
+        let version = study.plans.last().map_or(0, |plan| plan.version);
+        let sessions = match store.research_pause(&study.id, version) {
+            Ok(sessions) => sessions,
+            // A plan revision raced this tick; the next one retries on it.
+            Err(error) => {
+                eprintln!("orx up: pause quota-blocked study {}: {error}", study.id);
+                continue;
+            }
+        };
+        for session in sessions.iter().chain(std::iter::once(&study.session_id)) {
+            let _ = chat.interrupt_by_user(session).await;
+        }
+    }
+    Ok(())
+}
+
 /// Resume explicitly subscribed agent sessions after a run finishes. Busy and
 /// draining sessions retain their durable wake-up until they become idle.
 pub async fn watch_runs(
@@ -852,6 +877,18 @@ pub async fn watch_runs(
         .await
         {
             eprintln!("orx up: spawn watcher: {err}");
+        }
+        let gate = data_dir_guard.clone();
+        let Ok(Ok(store)) = crate::local::blocking::run(move || {
+            let _gate = gate;
+            Store::open()
+        })
+        .await
+        else {
+            continue;
+        };
+        if let Err(err) = process_model_blocked_studies(&chat, store).await {
+            eprintln!("orx up: model block watcher: {err}");
         }
     }
 }

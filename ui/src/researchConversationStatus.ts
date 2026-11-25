@@ -19,6 +19,7 @@ export function researchConversationStatus(study: ResearchStudy, {
 }): ResearchConversationStatus {
   if (unavailable) return { kind: "attention", label: "研究状态暂不可用 · 点击查看" };
   if (study.status === "stopped") return { kind: "idle", label: "本轮研究已停止" };
+  if (study.modelBlock) return { kind: "attention", label: "模型额度已用完 · 换模型后继续" };
   if (study.status === "paused") return { kind: "paused", label: "研究已暂停 · 点击继续按钮恢复" };
   if (stopping) return { kind: "working", label: "正在停止当前回复…" };
   const tasks = study.plans.at(-1)?.tasks ?? [];

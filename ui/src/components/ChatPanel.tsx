@@ -231,6 +231,7 @@ import {
   type ModelSelection,
 } from "./ModelPicker";
 import { ContextMeter } from "./ContextMeter";
+import { ModelQuotaCard } from "./ModelQuotaCard";
 import { renderNote } from "./agentNote";
 import {
   canonicalSkillName,
@@ -6770,6 +6771,14 @@ export function ChatPanel({
               )}
             </IconButton>
           )}
+          {/* A quota-exhausted model pauses the study; this is its only resume path. */}
+          {!embedded && !readOnly && activeId && researchState.data?.study?.sessionId === activeId && (
+            <ModelQuotaCard
+              study={researchState.data.study}
+              session={sessions.find((session) => session.id === researchState.data?.study?.sessionId)}
+              onSwitched={(selection) => void onPreferredAgentChange(selection)}
+            />
+          )}
           {/* 研究负责人的 MCP 服务提案确认卡：批准才写入登记表。 */}
           {activeId && <McpProposalCards sessionId={activeId} />}
           {/* Inside the composer so the composer's popovers (mode/model pickers,
@@ -7265,7 +7274,7 @@ export function ChatPanel({
                 />
                 <ContextMeter usage={openSession?.contextUsage} />
               </div>
-              {!embedded && !isDemoProjectId(projectId) && (researchState.data?.study?.status === "active" || researchState.data?.study?.status === "paused") && <ResearchPauseControl study={researchState.data.study} />}
+              {!embedded && !isDemoProjectId(projectId) && !researchState.data?.study?.modelBlock && (researchState.data?.study?.status === "active" || researchState.data?.study?.status === "paused") && <ResearchPauseControl study={researchState.data.study} />}
               {stopping || (busy && !pendingQuestion) ? (
                 // Stop whenever the turn is busy and typed text has nowhere to
                 // go — actively streaming, or held on a plan/permission card
