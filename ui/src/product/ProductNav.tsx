@@ -1,6 +1,6 @@
 import { stripAppBase } from "../appBasePath";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { useState, type ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { PanelLeft, Star, Workflow } from "lucide-react";
 import brand from "../assets/workbench/brand.svg";
 import newChat from "../assets/workbench/new-chat.svg";
@@ -43,7 +43,10 @@ export function ProductSidebar({ children, connectionInfo, onCollapse, collapsed
   const [mobileOpen, setMobileOpen] = useState(false);
   // 桌面端收缩复用窄屏图标栏的那套隐藏规则；窄屏自身的媒体查询行为保持不变。
   const collapsedClasses = "w-16 px-2 [&_.product-brand-text]:hidden [&_.research-nav-label]:hidden [&_.research-projects]:hidden";
-  return <aside style={width !== undefined && !collapsed ? { width } : undefined} className={`product-sidebar session-rail [&_.rail-body]:ps-1 [&_.rail-body]:pe-1 flex min-h-0 shrink-0 flex-col py-4 mac-titlebar:pt-10 win-titlebar:pt-10 ${collapsed ? collapsedClasses : "w-70 px-3"} ${mobileOpen ? "[@media((max-width:_820px))]:absolute [@media((max-width:_820px))]:inset-y-0 [@media((max-width:_820px))]:start-0 [@media((max-width:_820px))]:z-40" : ""} ${children || mobileOpen || collapsed ? "" : "[@media((max-width:_820px))]:w-16 [@media((max-width:_820px))]:px-2 [@media((max-width:_820px))]:[&_.product-brand-text]:hidden [@media((max-width:_820px))]:[&_.research-nav-label]:hidden [@media((max-width:_820px))]:[&_.research-projects]:hidden"}`}>
+  // 拖拽宽度只在大屏生效：内联 width 会盖过窄屏的 w-16 图标栏规则，
+  // 所以用 CSS 变量 + 媒体查询消费，窄屏仍保持自己的收缩行为。
+  const railStyle = width !== undefined ? ({ "--product-sidebar-width": `${width}px` } as CSSProperties) : undefined;
+  return <aside style={railStyle} className={`product-sidebar session-rail [&_.rail-body]:ps-1 [&_.rail-body]:pe-1 flex min-h-0 shrink-0 flex-col py-4 mac-titlebar:pt-10 win-titlebar:pt-10 ${collapsed ? collapsedClasses : "w-70 px-3 [@media((min-width:_821px))]:w-[var(--product-sidebar-width)]"} ${mobileOpen ? "[@media((max-width:_820px))]:absolute [@media((max-width:_820px))]:inset-y-0 [@media((max-width:_820px))]:start-0 [@media((max-width:_820px))]:z-40" : ""} ${children || mobileOpen || collapsed ? "" : "[@media((max-width:_820px))]:w-16 [@media((max-width:_820px))]:px-2 [@media((max-width:_820px))]:[&_.product-brand-text]:hidden [@media((max-width:_820px))]:[&_.research-nav-label]:hidden [@media((max-width:_820px))]:[&_.research-projects]:hidden"}`}>
     <div className={`flex shrink-0 items-center justify-between gap-1 px-2 pb-4 ${!children && !mobileOpen ? "[@media((max-width:_820px))]:flex-col [@media((max-width:_820px))]:px-0 [@media((max-width:_820px))]:gap-2" : ""}`}><ProductWordmark compact={collapsed} />{!children && <button type="button" aria-label={mobileOpen ? "收起项目导航" : "展开历史项目"} aria-expanded={mobileOpen} onClick={() => setMobileOpen((value) => !value)} className="hidden [@media((max-width:_820px))]:block"><PanelLeft size={17} /></button>}{onCollapse && <IconButton size="small" aria-label={collapsed ? "展开导航" : "收起导航"} title={collapsed ? "展开导航" : "收起导航"} onClick={onCollapse}><PanelLeft size={17} /></IconButton>}</div>
     <nav aria-label="MobileSci 菜单" className="product-navigation flex shrink-0 flex-col gap-1 pb-4">
       {productLinks.filter(() => canAccessResearch).map(({ to, label, image }) => {
