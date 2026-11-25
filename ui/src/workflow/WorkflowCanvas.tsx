@@ -54,11 +54,10 @@ function TaskNodeCard({ selected, icon, accent, title, taskId, onDelete, state, 
   const tone = state ? workflowTone[state] : "";
   return <div className={`group relative w-64 rounded-lg border shadow-sm transition-shadow ${tone || "bg-background"} ${selected ? "border-primary ring-2 ring-primary/20" : tone ? "" : "border-border hover:shadow-control-subtle"} ${state === "running" && !selected ? "ring-2 ring-primary" : ""}`}>
     <Handle type="target" position={Position.Top} />
-    <div className="flex items-start gap-2.5 px-3 pb-1.5 pt-2.5">
+    <div className="flex items-center gap-2.5 px-3 pb-1.5 pt-2.5">
       <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${accent}`} aria-hidden="true">{icon}</span>
       <div className="min-w-0 flex-1">
         <strong className="block truncate text-sm text-text">{title}</strong>
-        <span className="block truncate font-mono text-xs text-subtext">{taskId}</span>
       </div>
       {onDelete && <button type="button" className="nodrag absolute end-2 top-2 hidden h-6 w-6 items-center justify-center rounded-md border border-border bg-background text-subtext hover:border-accent-red hover:text-accent-red group-hover:flex" aria-label={`删除节点 ${taskId}`} title="删除节点" onClick={onDelete}>
         <Trash2 size={12} />
