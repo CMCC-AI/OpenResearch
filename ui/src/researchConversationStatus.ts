@@ -53,7 +53,7 @@ export function researchConversationStatus(study: ResearchStudy, {
     if (study.evidenceReviewRequired) return { kind: "attention", label: "证据已修订 · 等待重新审查与交付确认" };
     if (tasks.some(task => task.verdict?.status === "blocked")) return { kind: "attention", label: "专家结论有问题 · 等待处理" };
     return researchPackageUrl(study) && !study.deliveryError
-      ? { kind: "complete", label: "本轮研究已完成 · 查看成果" }
+      ? { kind: "complete", label: `本轮研究已完成 · 查看成果${study.deliveryNotice ? " · 工作文件有改动" : ""}` }
       : { kind: "attention", label: study.deliveryError ? `交付确认受阻 · ${study.deliveryError}` : "本轮任务已验收 · 交付确认尚未生成" };
   }
   return { kind: "idle", label: tasks.length ? "研究流程未完成 · 等待下一步处理" : "研究已就绪 · 等待明确计划" };

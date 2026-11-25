@@ -6623,7 +6623,7 @@ export function ChatPanel({
                   onRecover={readOnly ? undefined : recoverFailedTurn}
                   skills={transcriptSkills}
                 />
-                {conversationStudy && <ResearchConversation key={conversationStudy.id} projectId={projectId} study={conversationStudy} onInspect={() => { stickToBottom.current = false; setTranscriptAtBottom(false); }} onOpenArtifactFile={onOpenFile ? (path, intent) => onOpenFile(path, conversationStudy.sessionId, undefined, undefined, undefined, intent) : undefined} renderMessage={(message, sessionId, running) => renderParts(message.parts, {
+                {conversationStudy && <ResearchConversation key={conversationStudy.id} projectId={projectId} study={conversationStudy} metrics={researchState.data?.metrics} onInspect={() => { stickToBottom.current = false; setTranscriptAtBottom(false); }} onOpenArtifactFile={onOpenFile ? (path, intent) => onOpenFile(path, conversationStudy.sessionId, undefined, undefined, undefined, intent) : undefined} renderMessage={(message, sessionId, running) => renderParts(message.parts, {
                   activePermissionId: firstPendingPermission([message])?.id ?? null,
                   onOpenFile: onOpenFile ? (path, line, exp, ref, intent) => onOpenFile(path, sessionId, line, exp, ref, intent) : undefined,
                   onOpenRun,

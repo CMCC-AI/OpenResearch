@@ -686,10 +686,10 @@ export function validateWorkflowDraft(draft: WorkflowDraftInput, agents: Workflo
       }
       if (task.waitStep) errors.push(`${label} 是逐项任务，不能配置事件等待`);
     } else if (task.kind === "human") {
-      // 人工任务的规则：主理人亲自完成，提交即验收，不叠加确认或把关。
+      // 人工任务的规则：用户亲自完成，提交即验收，不叠加确认或把关。
       if (task.role) errors.push(`${label} 是人工任务，不选择专家`);
-      if (task.outputs.length !== 1) errors.push(`${label} 需要恰好一个产物路径：主理人的提交会写入它`);
-      if (task.requiresApproval) errors.push(`${label} 是人工任务，不需要完成后确认：主理人提交本身就是产出`);
+      if (task.outputs.length !== 1) errors.push(`${label} 需要恰好一个产物路径：你的提交会写入它`);
+      if (task.requiresApproval) errors.push(`${label} 是人工任务，不需要完成后确认：你的提交本身就是产出`);
       if (task.gateDownstream || (task.maxRework ?? 0) > 0) errors.push(`${label} 是人工任务，不支持结论把关或返工`);
       if (task.route || task.forEach || task.waitStep || task.routeBranch) errors.push(`${label} 是人工任务，不支持分流、逐项、等待或分支配置`);
     } else if (task.kind === "experiment") {

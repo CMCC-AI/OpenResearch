@@ -40,7 +40,7 @@ export interface ResearchTask {
   verdict?: ResearchTaskVerdict | null;
   reworkCount?: number;
   reworkFeedback?: string | null;
-  /** 节点类型：缺省为专家任务；"route" 分流；"foreach" 逐项处理；"human" 主理人亲自完成；"experiment" 实验执行；"wait" 事件等待。 */
+  /** 节点类型：缺省为专家任务；"route" 分流；"foreach" 逐项处理；"human" 用户亲自完成；"experiment" 实验执行；"wait" 事件等待。 */
   kind?: "agent" | "route" | "foreach" | "human" | "experiment" | "wait";
   routeBranch?: "then" | "else";
   waitFor?: "all" | "any";
@@ -58,11 +58,15 @@ export interface ResearchDecision {
   status: "pending" | "approved" | "rejected" | "superseded"; reason: string | null;
 }
 export interface ResearchStudy {
-  id: string; sessionId: string; mode: ResearchMode; objective: string; status: string;
+  id: string; projectId: string; sessionId: string; mode: ResearchMode; objective: string; status: string;
   plans: { version: number; workflow?: PresetWorkflowMode | null; workflowSource?: { id: string; name: string; updatedAt: number } | null; summary: string; tasks: ResearchTask[] }[];
   decisions: ResearchDecision[];
   deliveryError?: string | null;
-  deliverySnapshot?: { scopeHash: string; identityHash: string; archive: { formatVersion: number; sha256: string; bytes: number; manifestSha256: string } };
+  /** 交付已确认、但工作区文件在确认后被改动；不是阻断错误。 */
+  deliveryNotice?: string | null;
+  /** deliveryNotice 的来源："human"（人工产物对账）或 "package"（交付包校验）；界面暂不消费。 */
+  deliveryNoticeSource?: string | null;
+  deliverySnapshot?: { scopeHash: string; identityHash: string; archive?: { formatVersion: number; sha256: string; bytes: number; manifestSha256: string } };
   claimRevision?: number;
   activeClaimIds?: string[];
   claimChanges?: ResearchClaimChange[];
@@ -145,6 +149,195 @@ export const expertRoles: Record<string, string> = {
   "as-result-analyst": "结果分析专家",
 };
 
+/** 成果文件按内容角色分类：正文优先，审计、复核类文件归入过程记录。 */
+const reviewArtifactPath = /(^|\/)(review|verdict|audit|check|gate|pass|fallback|rework)(\/|\.|$)/i;
+const contentDirPath = /(^|\/)(writing|draft|synthesis|evidence|discovery|outline|strategy|package)\//i;
+const reportArtifactPath = /(report|final|summary|conclusion|abstract|one[-_ ]?liner|result|deliverable|报告|结论|摘要)/i;
+const indexArtifactPath = /(^|\/)(manifest|index|inventory)\.[^.]+$/i;
+const reviewRoles = new Set(["as-independent-reviewer", "as-quality-citation-auditor"]);
+/** 写作、汇总、归档类角色更可能产出最终交付；复核类角色产出过程记录。 */
+const deliverableRoleWeight: Record<string, number> = {
+  "as-research-package-curator": 40,
+  "as-evidence-writer": 45,
+  "as-research-synthesizer": 40,
+  "as-result-analyst": 38,
+  "as-outline-architect": 30,
+  "as-literature-researcher": 25,
+  "as-paper-evidence-analyst": 20,
+  "as-experiment-operator": 18,
+  "as-experiment-designer": 15,
+  "as-code-data-engineer": 12,
+  "as-figure-citation-editor": 10,
+  "as-independent-reviewer": -20,
+  "as-quality-citation-auditor": -15,
+};
+const artifactLabels: [RegExp, string][] = [
+  [/(^|\/)one[-_ ]?liner\.[^.]+$/i, "一句话结论"],
+  [/(^|\/)review\/verdict\.[^.]+$/i, "复核意见"],
+  [/(^|\/)pass\/[^/]+\.[^.]+$/i, "通过报告"],
+  [/(^|\/)fallback\/[^/]+\.[^.]+$/i, "阻塞说明"],
+  [/(^|\/)audit\/[^/]+\.[^.]+$/i, "引用核验"],
+  [/(^|\/)package\/manifest\.[^.]+$/i, "成果清单"],
+  [/(^|\/)writing\/[^/]+\.[^.]+$/i, "研究正文"],
+  [/(^|\/)draft\/[^/]+\.[^.]+$/i, "研究草稿"],
+  [/(^|\/)synthesis\/[^/]+\.[^.]+$/i, "综合分析"],
+  [/(^|\/)evidence\/[^/]+\.[^.]+$/i, "证据笔记"],
+  [/(^|\/)discovery\/[^/]+\.[^.]+$/i, "文献清单"],
+  [/(^|\/)strategy\/[^/]+\.[^.]+$/i, "检索策略"],
+  [/(^|\/)outline\/[^/]+\.[^.]+$/i, "研究提纲"],
+  [/(^|\/)review\/[^/]+\.[^.]+$/i, "审阅记录"],
+  [/(^|\/)report\.[^.]+$/i, "研究报告"],
+  [/(^|\/)verdict\.[^.]+$/i, "复核意见"],
+  [/(^|\/)metrics?\.[^.]+$/i, "指标记录"],
+  [/(^|\/)result\.[^.]+$/i, "结果报告"],
+  [/(^|\/)manifest\.[^.]+$/i, "成果清单"],
+  [/(^|\/)survey\.[^.]+$/i, "文献综述"],
+];
+/** 路径只用于兜底；用户优先看到的是文件在研究里的角色。 */
+export function researchArtifactLabel(path: string): string {
+  for (const [pattern, label] of artifactLabels) if (pattern.test(path)) return label;
+  const name = path.split("/").at(-1) ?? path;
+  return name.replace(/\.[^.\\/]+$/, "") || path;
+}
+export function researchFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+export interface ResearchOutcomeFile {
+  task: ResearchTask;
+  artifact: ResearchTask["artifacts"][number];
+  label: string;
+  deliverable: boolean;
+  score: number;
+}
+export interface ResearchOutcome {
+  tasks: ResearchTask[];
+  files: ResearchOutcomeFile[];
+  conclusion: ResearchOutcomeFile | null;
+  deliverables: ResearchOutcomeFile[];
+  reviews: ResearchOutcomeFile[];
+  counts: {
+    steps: number; completed: number; skipped: number; experts: number; files: number;
+    reworkRounds: number; transcripts: number;
+    verdict: "pass" | "blocked" | "recorded" | null;
+  };
+}
+/** 交付阅读顺序：先结论正文，再过程记录；复核报告不抢研究结论的位置。 */
+export function researchOutcome(study: ResearchStudy): ResearchOutcome {
+  const tasks = study.plans.at(-1)?.tasks ?? [];
+  const reviewMode = researchWorkflowMode(study) === "review";
+  const raw = tasks.flatMap((task) => task.artifacts.map((artifact) => {
+    const process = !reviewMode && (reviewRoles.has(task.role) || (reviewArtifactPath.test(artifact.path) && !contentDirPath.test(artifact.path)));
+    const leaf = !tasks.some((candidate) => candidate.dependsOn.includes(task.id));
+    const score = (deliverableRoleWeight[task.role] ?? 0)
+      + (reportArtifactPath.test(artifact.path) ? 20 : 0)
+      - (indexArtifactPath.test(artifact.path) ? 25 : 0)
+      - (process ? 60 : 0)
+      + (leaf ? 15 : 0)
+      + Math.min(10, Math.floor(artifact.bytes / 2048));
+    return { task, artifact, label: researchArtifactLabel(artifact.path), deliverable: !process, score };
+  }));
+  // 审稿、核验类流程没有正文，复核记录本身就是交付，不能全部降级为过程。
+  const allProcess = raw.length > 0 && raw.every((file) => !file.deliverable);
+  const files = raw.map((file) => allProcess ? { ...file, deliverable: true } : file);
+  const reviewTasks = tasks.filter((task) => task.verdict || reviewRoles.has(task.role));
+  const verdict: ResearchOutcome["counts"]["verdict"] = reviewTasks.some((task) => task.verdict?.status === "blocked") ? "blocked"
+    : reviewTasks.some((task) => task.verdict?.status === "pass") ? "pass"
+      : reviewTasks.length ? "recorded" : null;
+  return {
+    tasks, files,
+    conclusion: [...files].sort((a, b) => b.score - a.score)[0] ?? null,
+    deliverables: files.filter((file) => file.deliverable),
+    reviews: files.filter((file) => !file.deliverable),
+    counts: {
+      steps: tasks.length,
+      completed: tasks.filter((task) => task.state === "completed").length,
+      skipped: tasks.filter((task) => task.state === "skipped").length,
+      experts: new Set(tasks.filter((task) => task.role && (task.sessionId || task.state !== "pending")).map((task) => task.role)).size,
+      files: files.length,
+      reworkRounds: tasks.reduce((sum, task) => sum + Math.max(0, task.reworkCount ?? 0), 0),
+      transcripts: tasks.filter((task) => task.sessionId).length,
+      verdict,
+    },
+  };
+}
+/** 过程一句话：用户扫一眼就知道研究像人一样走了哪些环节，哪些没走。 */
+export function researchProcessSummary(study: ResearchStudy): string {
+  const tasks = study.plans.at(-1)?.tasks ?? [];
+  const walked = tasks.filter((task) => task.state !== "skipped");
+  if (!walked.length) return "";
+  const names = walked.slice(0, 8).map((task) => task.kind === "route" ? "条件分流"
+    : task.kind === "human" ? "人工确认"
+      : task.kind === "foreach" ? "逐项处理"
+        : task.kind === "experiment" ? "实验执行"
+          : task.agent?.name ?? expertRoles[task.role] ?? task.id);
+  const skipped = tasks.length - walked.length;
+  return `${names.join(" → ")}${walked.length > 8 ? " → …" : ""}${skipped ? `；另有 ${skipped} 步未走` : ""}`;
+}
+/** 可信度一句话：独立复核是否通过、退回修订过几轮。 */
+export function researchReviewSummary(study: ResearchStudy): string {
+  const { counts } = researchOutcome(study);
+  if (!counts.verdict) return "";
+  const rework = counts.reworkRounds ? `；期间退回修订 ${counts.reworkRounds} 轮` : "";
+  if (counts.verdict === "blocked") return `独立复核发现了需要处理的问题${rework}。`;
+  return `${counts.verdict === "pass" ? "已通过独立复核" : "已完成独立复核"}${rework}。`;
+}
+
+export interface ResearchScopeTask {
+  id: string; brief?: string; kind?: string; role?: string;
+  outputs?: string[]; dependsOn?: string[];
+  requiresApproval?: boolean; gateDownstream?: boolean; maxRework?: number;
+  artifacts?: { path: string; sha256?: string; bytes?: number }[];
+}
+export interface ResearchScopeOutline {
+  steps: number; humanSteps: number; expertCount: number; routeSteps: number;
+  gateSteps: number; maxRework: number; outputs: string[];
+}
+/** 审批范围的规模：人数、步骤、分支与产物，供审批卡说人话，不再复述模板句。 */
+export function researchScopeOutline(tasks: ResearchScopeTask[]): ResearchScopeOutline {
+  const routes = tasks.filter((task) => task.kind === "route").length;
+  const artifacts = tasks.flatMap((task) => (task.artifacts ?? []).map((artifact) => artifact.path));
+  const declared = tasks.flatMap((task) => task.outputs ?? []);
+  return {
+    steps: tasks.length,
+    humanSteps: tasks.filter((task) => task.kind === "human").length,
+    expertCount: new Set(tasks.map((task) => task.role).filter(Boolean)).size,
+    routeSteps: routes,
+    gateSteps: tasks.filter((task) => task.requiresApproval || task.gateDownstream || (task.maxRework ?? 0) > 0).length,
+    maxRework: tasks.reduce((max, task) => Math.max(max, task.maxRework ?? 0), 0),
+    outputs: [...new Set(artifacts.length ? artifacts : declared)],
+  };
+}
+/** G1 说明接下来做什么，G4 说明交付覆盖什么；两者都不再重复计划模板。 */
+export function researchScopeSentence(tasks: ResearchScopeTask[], gate: string): string {
+  const outline = researchScopeOutline(tasks);
+  if (!outline.steps) return "";
+  const files = outline.outputs.length
+    ? gate === "G4" ? `，产出 ${outline.outputs.length} 份文件` : `${outline.routeSteps ? "，预计最多" : "，预计产出"} ${outline.outputs.length} 份文件`
+    : "";
+  if (gate === "G4") return `本次交付覆盖 ${outline.steps} 个步骤${files}。`;
+  if (outline.humanSteps === outline.steps) return `将执行 ${outline.steps} 个步骤，都由你亲自完成${files}。`;
+  const people = [
+    outline.expertCount ? `${outline.expertCount} 位专家参与` : null,
+    outline.humanSteps ? `${outline.humanSteps} 项由你完成` : null,
+  ].filter(Boolean);
+  return `将执行 ${outline.steps} 个步骤${people.length ? `：${people.join("，")}` : ""}${files}。`;
+}
+export function researchScopeControls(tasks: ResearchScopeTask[]): string {
+  const outline = researchScopeOutline(tasks);
+  return [
+    outline.routeSteps ? `含 ${outline.routeSteps} 处条件分流` : null,
+    outline.gateSteps ? `${outline.gateSteps} 项结论把关${outline.maxRework ? `（最多返工 ${outline.maxRework} 轮）` : ""}` : null,
+  ].filter(Boolean).join(" · ");
+}
+/** 主理人生成的通用计划说明；有结构化任务时不再把它整段展示给用户。 */
+export function isTemplatePlanSummary(summary?: string | null): boolean {
+  return Boolean(summary && summary.startsWith("围绕目标「") && summary.includes("各任务按依赖顺序登记产物"));
+}
+
+
 export type WorkflowState = "waiting" | "running" | "completed" | "blocked" | "optional" | "stopped";
 export const workflowStateNames: Record<WorkflowState, string> = {
   waiting: "待推进", running: "进行中", completed: "已完成", blocked: "待处理", optional: "按需安排", stopped: "已停止",
@@ -216,7 +409,7 @@ export function researchAttention(study: ResearchStudy) {
   if (failed.length) return `${failed.length} 个任务需处理`;
   const active = tasks.filter((task) => task.state === "running");
   if (active.length) return `${active.length} 位专家执行中 / 待验收`;
-  if (decisions.some((decision) => decision.gate === deliveryGate(researchWorkflowMode(study)) && decision.status === "approved")) return researchWorkflowMode(study) === "proposal" ? "实验方案已确认 · 未授权运行实验" : "成果已确认";
+  if (decisions.some((decision) => decision.gate === deliveryGate(researchWorkflowMode(study)) && decision.status === "approved")) return `${researchWorkflowMode(study) === "proposal" ? "实验方案已确认 · 未授权运行实验" : "成果已确认"}${study.deliveryNotice ? " · 工作文件有改动" : ""}`;
   if (!tasks.length) return "主理人正在梳理目标与材料";
   const awaitingHuman = tasks.find((task) => task.state === "awaiting");
   if (awaitingHuman) return `等你完成一项 · ${awaitingHuman.brief.slice(0, 40)}`;
@@ -243,7 +436,7 @@ export function researchTaskStatus(study: ResearchStudy, task: ResearchTask): { 
   }
   if (task.state === "completed") {
     if (task.verdict?.status === "blocked") return { state: "blocked", label: "结论有问题 · 等待主理人处理" };
-    if (task.requiresApproval && !currentDecisions(study).some((decision) => decision.gate === `G5:${task.id}` && decision.status === "approved")) return { state: "blocked", label: "已验收 · 等待主理人批准" };
+    if (task.requiresApproval && !currentDecisions(study).some((decision) => decision.gate === `G5:${task.id}` && decision.status === "approved")) return { state: "blocked", label: "已验收 · 等待你批准" };
     return { state: "completed", label: "产物已验收" };
   }
   if (study.status === "paused") return { state: "stopped", label: "已暂停" };
@@ -260,7 +453,7 @@ export function researchTaskStatus(study: ResearchStudy, task: ResearchTask): { 
   const blockedDep = depTasks.find((dep) => dep?.verdict?.status === "blocked");
   if (blockedDep) return { state: "blocked", label: `前置结论有问题 · ${blockedDep.agent?.name ?? expertRoles[blockedDep.role] ?? blockedDep.role}` };
   const unapprovedDep = depTasks.find((dep) => dep?.requiresApproval && !decisions.some((decision) => decision.gate === `G5:${dep.id}` && decision.status === "approved"));
-  if (unapprovedDep) return { state: "blocked", label: `等待主理人确认 ${unapprovedDep.agent?.name ?? expertRoles[unapprovedDep.role] ?? unapprovedDep.role}` };
+  if (unapprovedDep) return { state: "blocked", label: `等待你确认 ${unapprovedDep.agent?.name ?? expertRoles[unapprovedDep.role] ?? unapprovedDep.role}` };
   if (task.role === "as-experiment-operator") {
     const contract = task.runContract;
     if (!contract) return { state: "waiting", label: "正在准备实验运行" };
@@ -443,4 +636,9 @@ export function researchPackageUrl(study: ResearchStudy): string | null {
   const snapshot = study.deliverySnapshot;
   if (!snapshot || !currentDecisions(study).some(decision => decision.gate === deliveryGate(researchWorkflowMode(study)) && decision.status === "approved" && decision.scopeHash === snapshot.scopeHash)) return null;
   return `/api/research/studies/${encodeURIComponent(study.id)}/package`;
+}
+
+/** 已确认交付的归档哈希；成果页与下载只从这个归档读字节。 */
+export function researchDeliveryArchive(study: ResearchStudy): string | null {
+  return researchPackageUrl(study) ? study.deliverySnapshot?.archive?.sha256 ?? null : null;
 }

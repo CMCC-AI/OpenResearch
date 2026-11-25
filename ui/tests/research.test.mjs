@@ -92,8 +92,8 @@ test("verdict gating, task approval, and bounded rework surface as task states",
   assert.equal(researchTaskStatus(value, write).state, "running");
   assert.match(researchTaskStatus(value, write).label, /返工修订中 · 第 1 轮/);
   assert.equal(researchTaskStatus(value, strategy).state, "blocked");
-  assert.match(researchTaskStatus(value, strategy).label, /等待主理人批准/);
-  assert.match(researchTaskStatus(value, next).label, /等待主理人确认 文献检索策略专家/);
+  assert.match(researchTaskStatus(value, strategy).label, /等待你批准/);
+  assert.match(researchTaskStatus(value, next).label, /等待你确认 文献检索策略专家/);
   value.decisions.push({ id: "g5", gate: "G5:strategy", status: "approved", version: 2, scope: "{}" });
   assert.equal(researchTaskStatus(value, strategy).label, "产物已验收");
   assert.match(researchTaskStatus(value, next).label, /已就绪/);
@@ -163,6 +163,43 @@ test("CMCC capability panorama includes all 20 experts without inventing executi
   const topologyTasks = researchTeamLevels.flat().map((role) => task(role, role, researchTeamEdges.filter(([, target]) => target === role).map(([source]) => source)));
   const layout = new Map(researchDagLayout(topologyTasks).map((node) => [node.id, node.x]));
   assert.ok(researchTeamEdges.every(([source, target]) => layout.get(source) < layout.get(target)));
+});
+
+const { researchArtifactLabel, researchOutcome, researchProcessSummary, researchReviewSummary } = await import("../src/research.ts");
+test("outcome leads with the research conclusion instead of the gate report", () => {
+  const file = (path, bytes = 500) => ({ path, sha256: "x", bytes });
+  const draft = { ...task("draft", "as-experiment-designer"), state: "completed", summary: "写了一句结论", artifacts: [file("draft/one-liner.md", 1200)] };
+  const review = { ...task("review", "as-independent-reviewer", ["draft"]), state: "completed", reworkCount: 1, verdict: { status: "pass", reasons: [], path: "review/verdict.md.verdict.json", sha256: "x" }, artifacts: [file("review/verdict.md", 300)] };
+  const route = { ...task("route", "", ["review"], "completed"), kind: "route" };
+  const pass = { ...task("pass", "as-research-synthesizer", ["route"]), state: "completed", summary: "通过报告", artifacts: [file("pass/result.md", 508)] };
+  const fallback = { ...task("fallback", "as-research-synthesizer", ["route"], "skipped"), artifacts: [] };
+  const value = study([draft, review, route, pass, fallback]);
+  const outcome = researchOutcome(value);
+  // 验收关的报告是过程记录，不能顶替研究结论。
+  assert.equal(outcome.conclusion.artifact.path, "draft/one-liner.md");
+  assert.equal(researchArtifactLabel("draft/one-liner.md"), "一句话结论");
+  assert.equal(researchArtifactLabel("review/verdict.md"), "复核意见");
+  assert.equal(researchArtifactLabel("writing/review.md"), "研究正文");
+  assert.deepEqual(outcome.reviews.map((item) => item.artifact.path).sort(), ["pass/result.md", "review/verdict.md"]);
+  assert.equal(outcome.counts.reworkRounds, 1);
+  assert.equal(outcome.counts.verdict, "pass");
+  assert.equal(outcome.counts.skipped, 1);
+  assert.equal(researchProcessSummary(value), "实验设计专家 → 独立审稿专家 → 条件分流 → 研究综合专家；另有 1 步未走");
+  assert.equal(researchReviewSummary(value), "已通过独立复核；期间退回修订 1 轮。");
+});
+test("review-only flows keep their review records as the deliverable", () => {
+  const review = { ...task("audit", "as-quality-citation-auditor"), state: "completed", artifacts: [{ path: "audit/citations.md", sha256: "x", bytes: 900 }] };
+  const outcome = researchOutcome(study([review]));
+  assert.equal(outcome.conclusion.artifact.path, "audit/citations.md");
+  assert.equal(outcome.reviews.length, 0);
+  assert.equal(outcome.deliverables.length, 1);
+});
+test("the written report outranks the package index for the conclusion slot", () => {
+  const writer = { ...task("writing", "as-evidence-writer", ["synthesis"]), state: "completed", artifacts: [{ path: "writing/review.md", sha256: "x", bytes: 20000 }] };
+  const curator = { ...task("package", "as-research-package-curator", ["writing"]), state: "completed", artifacts: [{ path: "package/manifest.md", sha256: "x", bytes: 800 }] };
+  const outcome = researchOutcome(study([writer, curator]));
+  assert.equal(outcome.conclusion.artifact.path, "writing/review.md");
+  assert.equal(outcome.conclusion.label, "研究正文");
 });
 test("panorama overlays current plan and does not hide repeated role tasks or failures", () => {
   const done = task("main", "as-experiment-operator", [], "completed");
@@ -277,4 +314,23 @@ test("artifact body links resolve to registered study artifacts, not dead anchor
   // 未登记或越出研究根的链接返回 null，由调用方保持纯文本。
   assert.equal(resolveArtifactLinkPath("external/notes.md", "package/manifest.md", paths), null);
   assert.equal(resolveArtifactLinkPath("../../outside.md", "package/manifest.md", paths), null);
+});
+test("approval scope summaries count people, branches and outputs instead of template prose", async () => {
+  const { researchScopeSentence, researchScopeControls, researchScopeOutline, isTemplatePlanSummary } = await import("../src/research.ts");
+  const tasks = [
+    { id: "draft", role: "as-experiment-designer", outputs: ["draft/one-liner.md"] },
+    { id: "review", role: "as-independent-reviewer", gateDownstream: true, maxRework: 1, outputs: ["review/verdict.md"] },
+    { id: "route", kind: "route", outputs: [] },
+    { id: "pass", role: "as-research-synthesizer", outputs: ["pass/result.md"] },
+    { id: "fallback", role: "as-research-synthesizer", outputs: ["fallback/result.md"] },
+  ];
+  assert.equal(researchScopeSentence(tasks, "G1"), "将执行 5 个步骤：3 位专家参与，预计最多 4 份文件。");
+  assert.equal(researchScopeControls(tasks), "含 1 处条件分流 · 1 项结论把关（最多返工 1 轮）");
+  assert.equal(researchScopeSentence([], "G1"), "");
+  assert.equal(researchScopeSentence([{ id: "collect", kind: "human", outputs: ["notes/points.md"] }], "G1"), "将执行 1 个步骤，都由你亲自完成，预计产出 1 份文件。");
+  // G4 按已登记产物计数，不把未走分支的声明产物算进去。
+  assert.equal(researchScopeSentence([{ id: "package", artifacts: [{ path: "a.md" }, { path: "b.md" }] }], "G4"), "本次交付覆盖 1 个步骤，产出 2 份文件。");
+  assert.equal(researchScopeOutline(tasks).outputs.length, 4);
+  assert.equal(isTemplatePlanSummary("围绕目标「x」，按「y」流程执行 1 个专家任务，各任务按依赖顺序登记产物。"), true);
+  assert.equal(isTemplatePlanSummary("这是主理人写的真实研究边界与停止条件。"), false);
 });

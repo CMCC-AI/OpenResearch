@@ -122,12 +122,12 @@ export function systemNodeForStudy(data: SystemNodeData, study: ResearchStudy): 
   if (data.kind === "input") state = "completed";
   if (decision) {
     state = decision.status === "approved" ? "completed" : "blocked";
-    label = decision.status === "approved" ? "已批准当前版本" : decision.status === "rejected" ? "已拒绝 · 等待处理" : "等待主理人确认";
+    label = decision.status === "approved" ? "已批准当前版本" : decision.status === "rejected" ? "已拒绝 · 等待处理" : "等待你确认";
   }
   if (task && task.state !== "completed") { state = "waiting"; label = "等待任务产物验收"; }
   if (data.gate === "G4" || data.kind === "output") {
     const delivered = decisions.some((item) => item.gate === "G4" && item.status === "approved" && item.scopeHash === study.deliverySnapshot?.scopeHash) && !study.evidenceReviewRequired;
-    if (data.kind === "output" && delivered) { state = "completed"; label = "成果已确认"; }
+    if (data.kind === "output" && delivered) { state = "completed"; label = `成果已确认${study.deliveryNotice ? " · 工作文件有改动" : ""}`; }
     if (study.evidenceReviewRequired || study.deliveryError) { state = "blocked"; label = study.evidenceReviewRequired ? "证据已变化 · 等待重新审查" : "交付受阻 · 查看人工确认"; }
     else if (data.gate === "G4" && decision?.status === "approved" && !delivered) { state = "waiting"; label = "等待交付完成"; }
   }

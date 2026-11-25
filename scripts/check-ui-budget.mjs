@@ -10,7 +10,8 @@ const content = await readFile(resolve(root, "ui/dist", entry));
 const compressed = gzipSync(content).length;
 // The entry already excludes the lazily loaded workflow studio/canvas and
 // research panel. The raw limit keeps a small allowance for the AI drafting
-// wiring. The gzip ceiling leaves room for zlib differences between local
-// Node and CI runners (about 7 KB on this bundle).
-if (content.length > 3_120_000 || compressed > 960_000) throw Error(`UI entry budget exceeded: ${content.length} raw / ${compressed} gzip bytes`);
+// wiring and the conversation research outcome block. The gzip ceiling leaves
+// room for zlib differences between local Node and CI runners (about 7 KB on
+// this bundle).
+if (content.length > 3_150_000 || compressed > 966_000) throw Error(`UI entry budget exceeded: ${content.length} raw / ${compressed} gzip bytes`);
 console.log(JSON.stringify({ entry, bytes: (await stat(resolve(root, "ui/dist", entry))).size, gzipBytes: compressed }));

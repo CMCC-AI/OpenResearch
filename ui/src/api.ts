@@ -1420,13 +1420,12 @@ export interface FileTextBody {
 
 export const FILE_PREVIEW_BYTES = 512_000;
 
-/** Text-safe body of an artifact, or `null` when the file is missing. */
-export const getArtifactFileText = (
-  projectId: string,
-  path: string,
+/** Text-safe body of a previewable asset, or `null` when the file is missing. */
+const readTextBody = (
+  url: string,
   signal?: AbortSignal,
 ): Promise<FileTextBody | null> => {
-  return runtimeFetch(artifactUrl(projectId, path), { signal, credentials: "include",
+  return runtimeFetch(url, { signal, credentials: "include",
     headers: { Range: `bytes=0-${FILE_PREVIEW_BYTES - 1}` },
   }).then((r) => {
     if (r.status === 404) return null;
@@ -1439,6 +1438,24 @@ export const getArtifactFileText = (
     return readPreviewResponse(r, FILE_PREVIEW_BYTES).then(({ bytes, truncated }) => decodePreviewText(bytes, truncated || (Number.isFinite(total) && total > bytes.byteLength)));
   });
 };
+
+/** Text-safe body of an artifact, or `null` when the file is missing. */
+export const getArtifactFileText = (
+  projectId: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<FileTextBody | null> => readTextBody(artifactUrl(projectId, path), signal);
+
+/** 已确认交付的归档文件；URL 带归档哈希，切换交付版本时不会命中旧缓存。 */
+export const deliveryArtifactUrl = (studyId: string, path: string, archive: string) =>
+  projectAssetUrl(`/api/research/studies/${encodeURIComponent(studyId)}/delivery/file?path=${encodeURIComponent(path)}&archive=${encodeURIComponent(archive)}`);
+
+export const getDeliveryArtifactFileText = (
+  studyId: string,
+  path: string,
+  archive: string,
+  signal?: AbortSignal,
+): Promise<FileTextBody | null> => readTextBody(deliveryArtifactUrl(studyId, path, archive), signal);
 
 const isFilePresentation = (value: string | null): value is FilePresentation =>
   value === "image" || value === "audio" || value === "video" || value === "pdf" ||
@@ -2405,6 +2422,9 @@ export const resumeResearchStudy = (studyId: string, version: number) =>
   post<{ ok: boolean }>(`/api/research/studies/${studyId}/resume`, { version });
 export const submitHumanTaskOutput = (studyId: string, taskId: string, content: string) =>
   post<{ ok: boolean }>(`/api/research/studies/${studyId}/tasks/${taskId}/submit`, { content });
+/** 撤回一个已完成的人工任务：验收作废，下游回到待执行。 */
+export const reopenHumanTask = (studyId: string, taskId: string) =>
+  post<{ ok: boolean }>(`/api/research/studies/${studyId}/tasks/${taskId}/reopen`, {});
 
 // Workflow Studio resources remain local and compile into the native research plan.
 export const listWorkflowAgents = (signal?: AbortSignal) =>

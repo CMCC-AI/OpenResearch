@@ -21,7 +21,7 @@ function fixture() {
 function load({ histories = {}, file = { content: "Report", binary: false, truncated: false } } = {}) {
   const exported = {}, readers = [];
   const mocks = {
-    "../api": { artifactUrl: (project, path) => `/${project}/${path}`, getArtifactFileText: async () => file, interruptChat: async () => ({ ok: true }) },
+    "../api": { artifactUrl: (project, path) => `/${project}/${path}`, deliveryArtifactUrl: (study, path, archive) => `/delivery/${study}/${path}?archive=${archive}`, getArtifactFileText: async () => file, getDeliveryArtifactFileText: async () => file, interruptChat: async () => ({ ok: true }), reopenHumanTask: async () => ({ ok: true }) },
     "@tanstack/react-query": { useQuery: options => { readers.push(options); return { data: file, isPending: false, refetch() {} }; } },
     "../queries/client": { workspaceKey: (...parts) => parts, queryClient: { invalidateQueries() {} } },
     "../queries/chatStore": { useChatState: (_, id) => [{ messagesBySession: { [id]: histories[id] ?? [] }, activeLeafBySession: { [id]: histories[id]?.at(-1)?.id }, busySessions: new Set([id]) }, () => {}, { isPending: false }] },
@@ -69,7 +69,9 @@ test("inline artifact readers verify accepted bytes and reject a later mutable f
   const app = load({ file }), study = fixture();
   const artifact = { path: "writing/review.md", sha256: await sha256Hex(new TextEncoder().encode(file.content)), bytes: file.content.length };
   study.plans[0].tasks[0].artifacts = [artifact];
-  app.render(study);
+  const html = app.render(study);
+  assert.match(html, /文件指纹/);
+  assert.doesNotMatch(html, /验收 SHA-256/);
   const reader = app.readers.find(item => item.queryKey.includes(artifact.sha256));
   assert.ok(reader);
   await reader.queryFn({ signal: new AbortController().signal });
@@ -111,17 +113,26 @@ test("a delivered study surfaces its final results open while mid-chain artifact
   const file = { content: "Accepted report\n", binary: false, truncated: false };
   const app = load({ file }), study = fixture();
   const hash = await sha256Hex(new TextEncoder().encode(file.content));
-  // 叶子任务（research-package，无下游依赖）是最终产出：结论与首份产物默认展开。
+  // 叶子任务（research-package，无下游依赖）是最终产出：结论正文默认展开。
   const leaf = study.plans[0].tasks.at(-1);
-  study.plans[0].tasks[study.plans[0].tasks.length - 1] = { ...leaf, state: "completed", summary: "Final packaged conclusion", artifacts: [{ path: "writing/review.md", sha256: hash, bytes: file.content.length }], runIds: [] };
+  study.plans[0].tasks[study.plans[0].tasks.length - 1] = { ...leaf, state: "completed", summary: "Final packaged conclusion", artifacts: [{ path: "package/manifest.md", sha256: hash, bytes: file.content.length }], runIds: [] };
   // 中段任务完成后保持折叠，产物不重复铺开。
   study.plans[0].tasks[2] = { ...study.plans[0].tasks[2], state: "completed", artifacts: [{ path: "evidence/papers.md", sha256: hash, bytes: file.content.length }], runIds: [] };
-  study.deliverySnapshot = { scopeHash: "delivery" };
+  study.deliverySnapshot = { scopeHash: "delivery", archive: { formatVersion: 1, sha256: "archive", bytes: 0, manifestSha256: "manifest" } };
   study.decisions.push({ id: "g4", gate: "G4", version: 1, status: "approved", scopeHash: "delivery" });
   const html = app.render(study);
   assert.match(html, /aria-label="研究成果"/);
   assert.match(html, /Final packaged conclusion/);
   assert.match(html, /Accepted report/);
+  assert.match(html, /data-outcome-conclusion/);
+  assert.match(html, /成果清单/);
+  assert.match(html, /研究结论/);
+  assert.match(html, /研究过程/);
+  assert.match(html, /专家工作摘要/);
+  // 已确认交付的正文与下载都从封存归档取，不读工作区。
+  assert.match(html, /\/delivery\/study\/package\/manifest\.md\?archive=archive/);
+  // 指纹只藏在「文件指纹」里，不再作为验收噪声顶在文件开头。
+  assert.doesNotMatch(html, /验收 SHA-256/);
   assert.doesNotMatch(html, /evidence\/papers\.md/);
   assert.doesNotMatch(html, /复制报告全文/);
 });

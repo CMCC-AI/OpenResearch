@@ -1,14 +1,15 @@
-import { useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ArrowRight, CheckCircle2, Circle, CircleDot, GitBranch, ShieldCheck, Users, Workflow, X } from "lucide-react";
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Node, type NodeProps } from "@xyflow/react";
-import { consultationCoverage, researchWorkflowMode, expertRoles, researchAttention, currentDecisions, researchDagLayout, researchModes, researchProgress, researchTaskStatus, researchWorkflow, workflowStateNames, workflowTone, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
+import { consultationCoverage, researchWorkflowMode, expertRoles, isTemplatePlanSummary, researchAttention, researchPackageUrl, researchScopeControls, researchScopeSentence, currentDecisions, researchDagLayout, researchModes, researchProgress, researchTaskStatus, researchWorkflow, workflowStateNames, workflowTone, type ResearchStudy, type ResearchTask, type WorkflowState } from "../research";
 import { invalidateFamilies } from "../queries/invalidation";
 import * as api from "../api";
 import { ResearchEvidence } from "./ResearchEvidence";
 import { ResearchModulePreview } from "./ResearchModulePreview";
 import { ResearchJourneyIntro } from "./ResearchJourneyIntro";
 import { useDialogFocus } from "./useDialogFocus";
+import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
 import { Button, IconButton } from "./ui";
 
 export { workflowTone };
@@ -48,6 +49,11 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
   const [view, setView] = useState<"dag" | "list">("dag");
   const [selected, setSelected] = useState<string | null>(null);
   const tasks = study.plans.at(-1)?.tasks ?? [];
+  const plan = study.plans.at(-1);
+  // 通用计划模板对用户没有信息量；有结构化任务时用步骤、人数和控制点代替整段模板句。
+  const templatePlan = isTemplatePlanSummary(plan?.summary) && tasks.length > 0;
+  const planOutline = templatePlan ? researchScopeSentence(tasks, "G1") : "";
+  const planControls = templatePlan ? researchScopeControls(tasks) : "";
   const progress = researchProgress(study);
   const coverage = consultationCoverage(study);
   const workflowMode = researchWorkflowMode(study);
@@ -65,7 +71,7 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
   }))), [tasks, study.status]);
   const content = <div ref={embedded ? undefined : ref} role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-labelledby={titleId} tabIndex={-1} className={`flex min-h-0 w-full flex-col overflow-hidden bg-background text-text ${embedded ? "h-full" : "max-h-full max-w-6xl rounded-xl border border-border shadow-elevated"}`} onClick={(event) => event.stopPropagation()}>
       <header className="flex shrink-0 items-start justify-between gap-3 border-b border-border p-4">
-        <div><div className="flex items-center gap-2">{workflowSource ? <Workflow size={20} className="text-primary" /> : <Users size={20} className="text-primary" />}<h2 id={titleId} className="font-semibold">{workflowSource ? `${workflowSource.name} · 研究流程` : `${researchModes[workflowMode]} · 研究流程`}</h2></div><p role="status" className="mt-1 text-sm text-subtext">{researchAttention(study)} · {progress.completed}/{progress.total} 个任务已验收{study.plans.length ? ` · 计划 v${study.plans.at(-1)?.version}` : ""}</p></div>
+        <div><div className="flex items-center gap-2">{workflowSource ? <Workflow size={20} className="text-primary" /> : <Users size={20} className="text-primary" />}<h2 id={titleId} className="font-semibold">{workflowSource ? `${workflowSource.name} · 研究流程` : `${researchModes[workflowMode]} · 研究流程`}</h2></div><p role="status" className="mt-1 text-sm text-subtext">{researchAttention(study)} · {progress.completed}/{progress.total} 个步骤已结束{study.plans.length ? ` · 计划 v${study.plans.at(-1)?.version}` : ""}</p></div>
         <IconButton data-initial-focus aria-label={embedded ? (workflowSource ? "返回工作流" : "返回专家团流程图") : "关闭研究流程"} onClick={onClose}><X size={18} /></IconButton>
       </header>
       <div className="flex min-h-0 flex-col gap-5 overflow-y-auto p-4 sm:p-5">
@@ -82,7 +88,10 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
           <h3 className="text-sm font-medium">本次具体计划{study.plans.length > 0 ? ` · v${study.plans.at(-1)?.version}` : " · 尚未登记"}</h3>
           {!tasks.length ? <p className="rounded-lg border border-dashed border-border p-5 text-sm text-subtext">暂无计划</p> : <>
             <p className="text-xs text-subtext">本次安排 {coverage.roles.length} 类专家、{coverage.total} 个任务。</p>
-            <div className="rounded-lg border border-border bg-surface p-3"><h4 className="text-sm font-medium">安排依据与研究范围</h4><p className="mt-2 whitespace-pre-wrap text-sm text-subtext">{study.plans.at(-1)?.summary}</p></div>
+            <div className="rounded-lg border border-border bg-surface p-3"><h4 className="text-sm font-medium">安排依据与研究范围</h4>{templatePlan ? <>
+              <p className="mt-2 text-sm text-text">{planOutline}</p>
+              {planControls && <p className="mt-1 text-xs text-subtext">{planControls}</p>}
+            </> : <p className="mt-2 whitespace-pre-wrap text-sm text-subtext">{plan?.summary}</p>}</div>
             <ol className="grid gap-2 sm:grid-cols-2">{tasks.map((task) => <li key={task.id} className="rounded-lg border border-border p-3 text-sm"><strong>{task.agent?.name ?? expertRoles[task.role] ?? task.role}</strong><span className="ms-2 text-xs text-muted">{task.id}</span><p className="mt-2 whitespace-pre-wrap">{task.brief}</p><p className="mt-2 text-xs text-subtext">前置任务：{task.dependsOn.map((id) => { const parent = tasks.find((entry) => entry.id === id); return parent ? `${parent.agent?.name ?? expertRoles[parent.role] ?? parent.role}（${id}）` : id; }).join("、") || "无，可独立开始"}</p><p className="mt-1 text-xs text-subtext">交付要求：{task.outputs.join("、")}</p></li>)}</ol>
             {coverage.unselected.length > 0 && <details className="rounded-lg border border-border p-3"><summary className="cursor-pointer text-xs text-subtext">本次未安排专家（{coverage.unselected.length} 类）</summary><p className="mt-2 text-xs leading-relaxed text-subtext">{coverage.unselected.map((role) => expertRoles[role] ?? role).join("、")}</p></details>}
           </>}
@@ -119,15 +128,35 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
         </section>
         <ResearchEvidence study={study} />
         </>}
-        {layer === "execution" && study.plans.at(-1)?.summary && <details className="text-sm"><summary className="cursor-pointer text-subtext">查看研究计划说明</summary><p className="mt-2 whitespace-pre-wrap">{study.plans.at(-1)?.summary}</p></details>}
+        {layer === "execution" && plan?.summary && !templatePlan && <details className="text-sm"><summary className="cursor-pointer text-subtext">查看研究计划说明</summary><p className="mt-2 whitespace-pre-wrap">{plan.summary}</p></details>}
       </div>
       <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border p-3">{actions}</footer>
     </div>;
   return embedded ? content : createPortal(<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3 sm:p-6" onClick={onClose}>{content}</div>, document.body);
 }
 export function TaskDetails({ study, task, runs, onOpenSession }: { study: ResearchStudy; task: ResearchTask; runs: { id: string; status: string; cancelRequested?: boolean }[]; onOpenSession?: (sessionId: string) => void }) {
+  const readOnly = useReadOnlyWorkspace();
   const status = researchTaskStatus(study, task);
   const planTasks = study.plans.at(-1)?.tasks ?? [];
+  const current = planTasks.some((entry) => entry.id === task.id);
+  // 已确认交付后不能直接重开：修订走计划新版本（forceRerun），与后端守卫一致。
+  const delivered = Boolean(researchPackageUrl(study));
+  const canReopen = current && !readOnly && study.status === "active" && task.kind === "human" && task.state === "completed" && !delivered;
+  const [confirmReopen, setConfirmReopen] = useState(false);
+  const [reopening, setReopening] = useState(false);
+  const [reopenError, setReopenError] = useState<string | null>(null);
+  const reopen = async () => {
+    setReopening(true); setReopenError(null);
+    try {
+      await api.reopenHumanTask(study.id, task.id);
+      setConfirmReopen(false);
+      invalidateFamilies(["researchStudy"]);
+    } catch (cause) {
+      setReopenError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setReopening(false);
+    }
+  };
   const dependencyNames = task.dependsOn.map((id) => {
     const parent = planTasks.find((entry) => entry.id === id);
     if (!parent) return id;
@@ -142,6 +171,15 @@ export function TaskDetails({ study, task, runs, onOpenSession }: { study: Resea
     {task.kind !== "foreach" && <p className="mt-1 text-xs text-subtext">要求产物：{task.outputs.join("、")}</p>}
     {task.kind === "foreach" && <ForEachProgress task={task} />}
     {task.state === "awaiting" && <HumanSubmitForm study={study} task={task} />}
+    {current && task.kind === "human" && task.state === "completed" && delivered && study.status === "active" && <p className="mt-2 text-xs text-subtext">交付已确认；如需修改这一步，请在主对话让主理人按受影响任务修订计划（forceRerun）。</p>}
+    {canReopen && <div className="mt-3 flex flex-col gap-2">
+      {confirmReopen ? <div className="flex flex-wrap items-center gap-2 rounded-md border border-accent-amber bg-background p-2 text-xs">
+        <span className="min-w-0 flex-1">修改后，这一步的下游任务和当前交付确认都会失效，需要重新提交并确认。</span>
+        <Button size="small" disabled={reopening} onClick={() => void reopen()}>{reopening ? "撤回中…" : "确认修改"}</Button>
+        <Button size="small" variant="ghost" disabled={reopening} onClick={() => setConfirmReopen(false)}>取消</Button>
+      </div> : <Button size="small" variant="ghost" className="self-start" onClick={() => setConfirmReopen(true)}>修改这一步</Button>}
+      {reopenError && <p role="alert" className="m-0 text-xs text-accent-red">撤回失败：{reopenError}</p>}
+    </div>}
     {task.sessionId && onOpenSession && <Button size="small" className="mt-3" onClick={() => onOpenSession(task.sessionId!)}>查看专家对话</Button>}
     {task.artifacts.length > 0 && <ul className="mt-3 flex flex-col gap-1 text-xs text-accent-green" aria-label="已交付产物">{task.artifacts.map((artifact) => <li key={artifact.path} className="break-all">{artifact.path} · {artifact.bytes} 字节</li>)}</ul>}
     {task.summary && <p className="mt-2 whitespace-pre-wrap">{task.summary}</p>}
@@ -175,11 +213,30 @@ function ForEachProgress({ task }: { task: ResearchTask }) {
   </ul>;
 }
 
-/** 人工任务的提交框：主理人的文字直接写入任务产物并推进流程。 */
+/** 人工任务的提交框：用户的文字直接写入任务产物并推进流程。 */
 export function HumanSubmitForm({ study, task }: { study: ResearchStudy; task: ResearchTask }) {
   const [content, setContent] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const output = task.outputs[0];
+  // 验收被撤回/作废后，产物文件通常就是用户想重新提交的正文；载入它，避免重新手打。
+  const reopened = Boolean(task.summary && (task.summary.includes("原验收作废") || task.summary.includes("已撤回该步验收")));
+  const loadedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!reopened || loadedFor.current === task.id) return;
+    loadedFor.current = task.id;
+    let cancelled = false;
+    setLoading(true);
+    void api.getArtifactFileText(study.projectId, `research/${study.id}/${output}`)
+      .then((file) => {
+        if (cancelled || !file || file.binary || file.truncated || file.content.length > 24000) return;
+        setContent((current) => current || file.content);
+      })
+      .catch(() => { /* 文件不存在时保持空白，由用户直接填写。 */ })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [reopened, task.id, study.projectId, study.id, output]);
   const submit = async () => {
     if (busy) return;
     setBusy(true);
@@ -196,9 +253,11 @@ export function HumanSubmitForm({ study, task }: { study: ResearchStudy; task: R
   };
   return <div className="mt-3 flex flex-col gap-2 rounded-md border border-border bg-background p-3">
     <label className="flex flex-col gap-1 text-xs text-subtext">
-      你的产出会写入 {task.outputs[0]}
+      你的产出会写入 {output}
       <textarea className="min-h-24 resize-y rounded-md border border-border bg-background p-2.5 text-sm text-text outline-none focus:border-text" value={content} maxLength={24000} aria-label="人工任务产出" onChange={(event) => setContent(event.target.value)} />
     </label>
+    {loading && <p className="m-0 text-xs text-subtext">正在载入当前文件内容…</p>}
+    {reopened && !loading && <p className="m-0 text-xs text-subtext">已载入当前文件内容；提交后会重新验收这一步。</p>}
     {error && <p className="m-0 text-xs text-accent-red" role="alert">{error}</p>}
     <Button size="small" disabled={!content.trim() || busy} onClick={() => void submit()}>{busy ? "提交中…" : "提交并继续"}</Button>
   </div>;

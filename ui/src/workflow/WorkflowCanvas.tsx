@@ -171,7 +171,7 @@ function ForeachNodeCard({ data, selected }: NodeProps<ForeachNode>) {
   </TaskNodeCard>;
 }
 
-// 人工任务节点：主理人在研究面板亲自提交产出后流程继续。
+// 人工任务节点：用户在研究面板亲自提交产出后流程继续。
 export type HumanNodeData = {
   taskId: string;
   brief: string;
