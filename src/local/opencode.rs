@@ -1908,6 +1908,7 @@ mod tests {
         assert!(!md.contains("<!--"), "HTML comment leaked into the prompt");
         assert!(md.contains("Use the available MobileSci skills"));
         assert!(md.contains("execute important user flows"));
+        assert!(md.contains("<orx-model-context>"));
         assert!(!md.contains("orx skill <name>"));
         // Native catalogs may abbreviate descriptions; preserve routing context here.
         for skill in agent_skills::skills(SkillSet::Local) {

@@ -147,13 +147,25 @@ pub(super) async fn run_turn(
         .iter()
         .filter_map(|m| m["id"].as_str().map(str::to_owned))
         .collect();
+    let previous_model = last_assistant_model(&before);
+    let model_context = if let Some(active_model) = active_model_id(ctx.model.as_deref(), &before) {
+        let supports_image_input = lookup_model_image_input(&endpoint, &active_model).await;
+        format_model_context(
+            &active_model,
+            previous_model.as_deref(),
+            supports_image_input,
+        )
+    } else {
+        None
+    };
+    let prompt_text = inject_model_context(&ctx.text, model_context.as_deref());
     let prompt_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
     ctx.persist_delivery(DeliveryState::Unknown)?;
     // A transport failure can follow durable admission. Never replay this POST.
     let admission = post(
         &endpoint,
         &format!("{path}/prompt"),
-        &json!({"id":prompt_id,"text":ctx.text}),
+        &json!({"id":prompt_id,"text":prompt_text}),
     )
     .await;
     if admission.is_ok() {
@@ -1190,6 +1202,147 @@ fn image_input(model: &Value) -> Option<bool> {
     (!input.is_empty()).then(|| input.iter().any(|modality| modality == "image"))
 }
 
+fn model_key(model: &Value) -> Option<String> {
+    let provider = model
+        .get("providerID")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let id = model
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    Some(format!("{provider}/{id}"))
+}
+
+fn last_assistant_model(projection: &Value) -> Option<String> {
+    messages(projection)
+        .ok()?
+        .iter()
+        .rev()
+        .filter(|message| message["type"] == "assistant")
+        .find_map(|message| model_key(&message["model"]))
+}
+
+fn active_model_id(configured: Option<&str>, projection: &Value) -> Option<String> {
+    if let Some((provider, id)) = configured.and_then(|value| value.split_once('/')) {
+        let provider = provider.trim();
+        let id = id.trim();
+        if !provider.is_empty() && !id.is_empty() {
+            return Some(format!("{provider}/{id}"));
+        }
+    }
+    projection
+        .pointer("/data/info/model")
+        .and_then(model_key)
+        .or_else(|| {
+            messages(projection)
+                .ok()?
+                .iter()
+                .rev()
+                .filter(|message| message["type"] == "model-switched")
+                .find_map(|message| model_key(&message["model"]))
+        })
+        .or_else(|| last_assistant_model(projection))
+}
+
+async fn lookup_model_image_input(endpoint: &AgentEndpoint, active_model: &str) -> Option<bool> {
+    let (provider, id) = active_model.split_once('/')?;
+    let response = endpoint
+        .client
+        .get(format!("{}/api/model", endpoint.base_url))
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let catalog: Value = response.json().await.ok()?;
+    catalog["data"]
+        .as_array()?
+        .iter()
+        .find(|entry| {
+            entry["providerID"].as_str() == Some(provider) && entry["id"].as_str() == Some(id)
+        })
+        .and_then(image_input)
+}
+
+fn escape_xml_attr(value: &str) -> String {
+    value.replace('&', "&amp;").replace('"', "&quot;")
+}
+
+fn format_model_context(
+    active_model: &str,
+    previous_model: Option<&str>,
+    supports_image_input: Option<bool>,
+) -> Option<String> {
+    let switched = previous_model.filter(|prev| *prev != active_model);
+    if switched.is_none() && supports_image_input.is_none() {
+        return None;
+    }
+    let mut attrs = vec![format!(r#"model="{}""#, escape_xml_attr(active_model))];
+    if let Some(prev) = switched {
+        attrs.push(format!(r#"previous-model="{}""#, escape_xml_attr(prev)));
+    }
+    match supports_image_input {
+        Some(true) => attrs.push(r#"image-input="supported""#.into()),
+        Some(false) => attrs.push(r#"image-input="unsupported""#.into()),
+        None => {}
+    }
+
+    let mut lines = Vec::new();
+    if let Some(prev) = switched {
+        lines.push(format!(
+            "The active model switched from `{prev}` to `{active_model}` for this turn. \
+             Capability limits or errors from previous models in earlier turns, compaction \
+             summaries, or workspace notes no longer apply."
+        ));
+    }
+    match supports_image_input {
+        Some(true) => {
+            lines.push(format!(
+                "The current model `{active_model}` natively supports image input. When visual \
+                 inspection is needed, use the `read` tool directly on image files rather than \
+                 assuming vision is unavailable or delegating to another model solely to read \
+                 images."
+            ));
+        }
+        Some(false) => {
+            lines.push(format!(
+                "The current model `{active_model}` does not support image input. Do not claim \
+                 to view images directly; report this limitation honestly or delegate visual \
+                 inspection only when a vision-capable model is available."
+            ));
+        }
+        None => {
+            lines.push(
+                "Verify model-specific capabilities directly with tools rather than assuming \
+                 limits from earlier turns."
+                    .into(),
+            );
+        }
+    }
+
+    Some(format!(
+        "<orx-model-context {}>\n{}\n</orx-model-context>",
+        attrs.join(" "),
+        lines.join("\n")
+    ))
+}
+
+fn inject_model_context(text: &str, context: Option<&str>) -> String {
+    let Some(context) = context else {
+        return text.to_owned();
+    };
+    if text.contains("<current-user-message>\n") {
+        format!("{context}\n\n{text}")
+    } else {
+        format!("{context}\n\n<current-user-message>\n{text}\n</current-user-message>")
+    }
+}
+
 pub(super) async fn detect(
     binary: crate::local::opencode::ResolvedBinary,
     mut info: HarnessInfo,
@@ -2205,6 +2358,170 @@ mod tests {
             field_answer(&form["fields"][0], &["Continue".into()]).unwrap(),
             json!("yes")
         );
+    }
+
+    #[test]
+    fn model_resolution_prefers_configured_and_tracks_last_assistant_model() {
+        let projection = json!({
+            "data": {
+                "info": { "model": { "providerID": "opencode", "id": "hy4-flash-free" } },
+                "messages": [
+                    { "type": "assistant", "model": { "providerID": "CmccRouter", "id": "glm" } },
+                    { "type": "assistant", "model": { "providerID": "jt236b", "id": "jt236b" } },
+                    { "type": "model-switched", "model": { "providerID": "opencode", "id": "deepseek-v4.1-flash-free" } }
+                ]
+            }
+        });
+        assert_eq!(
+            last_assistant_model(&projection).as_deref(),
+            Some("jt236b/jt236b")
+        );
+        assert_eq!(
+            active_model_id(Some("opencode/deepseek-v4.1-flash-free"), &projection).as_deref(),
+            Some("opencode/deepseek-v4.1-flash-free")
+        );
+        assert_eq!(
+            active_model_id(None, &projection).as_deref(),
+            Some("opencode/hy4-flash-free")
+        );
+        let without_info = json!({
+            "data": {
+                "messages": [
+                    { "type": "assistant", "model": { "providerID": "jt236b", "id": "jt236b" } },
+                    { "type": "model-switched", "model": { "providerID": "opencode", "id": "deepseek-v4.1-flash-free" } }
+                ]
+            }
+        });
+        assert_eq!(
+            active_model_id(None, &without_info).as_deref(),
+            Some("opencode/deepseek-v4.1-flash-free")
+        );
+        let assistant_only = json!({
+            "data": {
+                "messages": [
+                    { "type": "assistant", "model": { "providerID": "jt236b", "id": "jt236b" } }
+                ]
+            }
+        });
+        assert_eq!(
+            active_model_id(None, &assistant_only).as_deref(),
+            Some("jt236b/jt236b")
+        );
+    }
+
+    #[test]
+    fn model_context_formats_switch_and_image_input_capabilities() {
+        let switched_to_vision = format_model_context(
+            "opencode/deepseek-v4.1-flash-free",
+            Some("jt236b/jt236b"),
+            Some(true),
+        )
+        .unwrap();
+        assert!(switched_to_vision.contains(
+            r#"<orx-model-context model="opencode/deepseek-v4.1-flash-free" previous-model="jt236b/jt236b" image-input="supported">"#
+        ));
+        assert!(switched_to_vision
+            .contains("switched from `jt236b/jt236b` to `opencode/deepseek-v4.1-flash-free`"));
+        assert!(switched_to_vision.contains("natively supports image input"));
+
+        let same_vision = format_model_context(
+            "opencode/deepseek-v4.1-flash-free",
+            Some("opencode/deepseek-v4.1-flash-free"),
+            Some(true),
+        )
+        .unwrap();
+        assert!(!same_vision.contains("previous-model="));
+        assert!(same_vision.contains(r#"image-input="supported""#));
+
+        let non_vision = format_model_context("jt236b/jt236b", None, Some(false)).unwrap();
+        assert!(!non_vision.contains("previous-model="));
+        assert!(non_vision.contains(r#"image-input="unsupported""#));
+        assert!(non_vision.contains("does not support image input"));
+
+        let switched_unknown =
+            format_model_context("custom/unknown", Some("jt236b/jt236b"), None).unwrap();
+        assert!(switched_unknown.contains(r#"previous-model="jt236b/jt236b""#));
+        assert!(!switched_unknown.contains("image-input="));
+
+        assert!(format_model_context("custom/unknown", Some("custom/unknown"), None).is_none());
+        assert!(format_model_context("custom/unknown", None, None).is_none());
+    }
+
+    #[test]
+    fn inject_model_context_avoids_double_wrapping_current_user_message() {
+        let context = "<orx-model-context model=\"opencode/deepseek-v4.1-flash-free\" image-input=\"supported\">\ninfo\n</orx-model-context>";
+        let already_wrapped =
+            "<orx-autonomy level=\"copilot\">\nrules\n</orx-autonomy>\n\n<current-user-message>\nread fig1\n</current-user-message>";
+        let injected = inject_model_context(already_wrapped, Some(context));
+        assert!(injected.starts_with(context));
+        assert_eq!(injected.matches("<current-user-message>").count(), 1);
+        assert!(injected.ends_with("<current-user-message>\nread fig1\n</current-user-message>"));
+
+        let plain = inject_model_context("read fig1", Some(context));
+        assert!(plain.starts_with(context));
+        assert_eq!(plain.matches("<current-user-message>").count(), 1);
+        assert!(plain.ends_with("<current-user-message>\nread fig1\n</current-user-message>"));
+
+        assert_eq!(inject_model_context("read fig1", None), "read fig1");
+    }
+
+    #[tokio::test]
+    async fn lookup_model_image_input_reads_v2_catalog_and_degrades_gracefully() {
+        use axum::{http::StatusCode, routing::get, Json, Router};
+
+        let app = Router::new().route(
+            "/api/model",
+            get(|| async {
+                Json(json!({
+                    "data": [
+                        {
+                            "providerID": "opencode",
+                            "id": "deepseek-v4.1-flash-free",
+                            "capabilities": { "input": ["text", "image"] }
+                        },
+                        {
+                            "providerID": "jt236b",
+                            "id": "jt236b",
+                            "capabilities": { "input": ["text"] }
+                        },
+                        {
+                            "providerID": "custom",
+                            "id": "uncatalogued",
+                            "capabilities": { "input": [] }
+                        }
+                    ]
+                }))
+            }),
+        );
+        let (endpoint, server) = catalog_server(app, false).await;
+        assert_eq!(
+            lookup_model_image_input(&endpoint, "opencode/deepseek-v4.1-flash-free").await,
+            Some(true)
+        );
+        assert_eq!(
+            lookup_model_image_input(&endpoint, "jt236b/jt236b").await,
+            Some(false)
+        );
+        assert_eq!(
+            lookup_model_image_input(&endpoint, "custom/uncatalogued").await,
+            None
+        );
+        assert_eq!(
+            lookup_model_image_input(&endpoint, "opencode/missing").await,
+            None
+        );
+        server.abort();
+
+        let failing_app = Router::new().route(
+            "/api/model",
+            get(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "boom") }),
+        );
+        let (failing_endpoint, failing_server) = catalog_server(failing_app, false).await;
+        assert_eq!(
+            lookup_model_image_input(&failing_endpoint, "opencode/deepseek-v4.1-flash-free").await,
+            None
+        );
+        failing_server.abort();
     }
 }
 
