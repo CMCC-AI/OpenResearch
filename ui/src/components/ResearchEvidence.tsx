@@ -19,7 +19,7 @@ export function ResearchEvidence({ study }: { study: ResearchStudy }) {
     {claim.excerpt && <pre className="mt-1 whitespace-pre-wrap break-words text-xs">{claim.excerpt}</pre>}
   </div>;
   return <section aria-label="证据声明" className="space-y-2">
-    {study.evidenceReviewRequired && <p role="status" className="rounded-lg border border-accent-amber bg-accent-amber-subtle p-3 text-sm text-accent-amber">证据已修订，需要主理人修订计划、重新独立审查，再申请交付确认。</p>}
+    {study.evidenceReviewRequired && <p role="status" className="rounded-lg border border-accent-amber bg-accent-amber-subtle p-3 text-sm text-accent-amber">证据已修订，需要研究负责人修订计划、重新独立审查，再申请交付确认。</p>}
     <details className="rounded-lg border border-border p-3">
       <summary className="cursor-pointer text-sm font-medium">当前证据声明（{current.length}）</summary>
       {current.length ? current.map(statement) : <p className="mt-2 text-sm text-subtext">当前没有有效声明，历史声明仅供审计。</p>}

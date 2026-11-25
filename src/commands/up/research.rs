@@ -451,7 +451,7 @@ async fn apply_decision(
     let (_gate, session, wakeup_prompt) =
         prepare_decision(gate, id.clone(), decision, req, Store::open).await?;
     // 决策已持久化：G2/G3 批准即授权，就绪的实验节点在此自动提交运行；
-    // 提交失败不回滚批准，任务详情里会带原因等待主理人处理。
+    // 提交失败不回滚批准，任务详情里会带原因等待研究负责人处理。
     let _ = crate::commands::research_dispatch::submit_ready_experiment_tasks(&id).await;
     let resume_error = if let Some(prompt) = wakeup_prompt {
         state

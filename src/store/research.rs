@@ -77,7 +77,7 @@ pub struct TaskSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_step: Option<WaitStepSpec>,
 }
-/// 事件等待定义：等研究根目录下指定路径出现；超时转失败等待主理人处理。
+/// 事件等待定义：等研究根目录下指定路径出现；超时转失败等待研究负责人处理。
 /// 时间点等待（等次日数据等）暂未纳入，待真实场景出现再评审。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -104,7 +104,7 @@ pub struct ForEachSpec {
     pub item_output: String,
     /// 每项派发给专家的简报；`{item}` 会替换为该项标题。
     pub item_brief: String,
-    /// 部分失败策略："pause"（默认，整任务失败等待主理人）｜"skip"（跳过该项继续剩余项）。
+    /// 部分失败策略："pause"（默认，整任务失败等待研究负责人）｜"skip"（跳过该项继续剩余项）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub on_failure: String,
 }
@@ -690,7 +690,9 @@ impl Study {
                 && !task.reads_verdict_from(dep_task)
             {
                 // 分流节点读取阻塞结论属于预期（按结论走备用路径）；其余下游维持暂停。
-                return Err(anyhow!("前置任务 {dep} 结论为阻塞，需主理人处理后再派发"));
+                return Err(anyhow!(
+                    "前置任务 {dep} 结论为阻塞，需研究负责人处理后再派发"
+                ));
             }
         }
         if task.spec.depends_on.is_empty() {
@@ -2361,7 +2363,7 @@ impl Store {
         })
     }
     /// 实验节点的运行终态验收：全部 Run 到达终态后按声明产物收束（幂等，reconcile 周期调用）。
-    /// 运行成功但产物缺失/为空按失败处理，等待主理人重试；失败不伪装为下游可用。
+    /// 运行成功但产物缺失/为空按失败处理，等待研究负责人重试；失败不伪装为下游可用。
     pub fn research_reconcile_experiment_tasks(&self, study_id: &str) -> Result<()> {
         let study = self.research_study(study_id)?;
         if study.status != "active" {
@@ -3130,9 +3132,9 @@ impl Store {
                 return Ok(());
             }
             let note = if max > 0 {
-                format!("返工上限（{max} 轮）已用完，结论仍为阻塞：需主理人修订计划（对相关任务设置 forceRerun）后重新审阅。")
+                format!("返工上限（{max} 轮）已用完，结论仍为阻塞：需研究负责人修订计划（对相关任务设置 forceRerun）后重新审阅。")
             } else {
-                "结论为阻塞：下游任务已暂停，需主理人修订计划（对相关任务设置 forceRerun）后重新审阅。".to_string()
+                "结论为阻塞：下游任务已暂停，需研究负责人修订计划（对相关任务设置 forceRerun）后重新审阅。".to_string()
             };
             let task = study.task_mut(task_id)?;
             if let Some(text) = task.summary.as_mut() {

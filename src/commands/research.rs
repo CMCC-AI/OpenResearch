@@ -99,7 +99,7 @@ impl CapabilityKind {
     }
 }
 
-/// 能力库登记入口：主理人在对话里用它扩充自定义专家，无需已启用研究。
+/// 能力库登记入口：研究负责人在对话里用它扩充自定义专家，无需已启用研究。
 /// 只触自定义表，内置 20 角色不受影响；已在跑的研究按冻结快照继续。
 /// MCP 服务引用必须在登记前已存在（走 `orx mcp propose` 并经用户批准）。
 fn capability_command(
@@ -296,7 +296,7 @@ pub async fn run(args: ResearchArgs) -> Result<()> {
             let own = store.research_session_task(&session)?;
             let id = task
                 .or_else(|| own.as_ref().map(|(id, _)| id.clone()))
-                .ok_or_else(|| anyhow!("主理人验收需要 --task"))?;
+                .ok_or_else(|| anyhow!("研究负责人验收需要 --task"))?;
             if !lead
                 && (own.as_ref().is_none_or(|(task, version)| {
                     task != &id || study.plan().map_or(true, |p| p.version != *version)
@@ -353,7 +353,7 @@ pub async fn run(args: ResearchArgs) -> Result<()> {
 }
 fn require_lead(lead: bool) -> Result<()> {
     if !lead {
-        return Err(anyhow!("此操作仅允许研究主理人执行"));
+        return Err(anyhow!("此操作仅允许研究负责人执行"));
     }
     Ok(())
 }

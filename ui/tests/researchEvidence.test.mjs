@@ -23,7 +23,7 @@ const render = value => renderToStaticMarkup(React.createElement(exports.Researc
 test("legacy studies show every statement as current and empty studies remain empty", () => {
   const html = render(study);
   assert.match(html, /当前证据声明（2）/);
-  assert.doesNotMatch(html, /历史声明|需要主理人/);
+  assert.doesNotMatch(html, /历史声明|需要研究负责人/);
   assert.equal(render({ ...study, claims: [] }), "");
 });
 

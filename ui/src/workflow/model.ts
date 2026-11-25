@@ -74,7 +74,7 @@ export interface McpServerInput {
   enabled: boolean;
 }
 
-/** 主理人提交的 MCP 提案：用户在聊天卡片确认后才写入登记表。 */
+/** 研究负责人提交的 MCP 提案：用户在聊天卡片确认后才写入登记表。 */
 export interface McpProposal {
   id: string;
   sessionId: string;
@@ -95,13 +95,13 @@ export interface WorkflowTask {
   forceRerun?: boolean;
   /** 声明要读取的上游产物路径，派发时自动注入专家开工指令。 */
   inputs?: string[];
-  /** 完成后需主理人在人工确认页批准才放行下游。 */
+  /** 完成后需研究负责人在人工确认页批准才放行下游。 */
   requiresApproval?: boolean;
   /** 结论把关：完成时读取 <首个产物>.verdict.json，有问题时暂停下游任务。 */
   gateDownstream?: boolean;
   /** 结论为阻塞时自动带意见返工上游的轮数上限（0–3）。 */
   maxRework?: number;
-  /** 节点类型：缺省为专家任务；"route" 条件分流；"foreach" 逐项处理；"human" 主理人亲自完成；"experiment" 实验执行；"wait" 事件等待。 */
+  /** 节点类型：缺省为专家任务；"route" 条件分流；"foreach" 逐项处理；"human" 研究负责人亲自完成；"experiment" 实验执行；"wait" 事件等待。 */
   kind?: "agent" | "route" | "foreach" | "human" | "experiment" | "wait";
   /** kind = "route" 时的条件定义。defaultBranch：结论拿不到时（上游失败或被跳过）的兜底分支，缺省为一直等。 */
   route?: { on: "verdict" | "failure"; source?: string; verdictIs?: "pass" | "blocked"; defaultBranch?: "then" | "else" };
@@ -117,7 +117,7 @@ export interface WorkflowTask {
     itemOutput: string;
     /** 每项派发给专家的简报；{item} 会替换为该项标题。 */
     itemBrief: string;
-    /** 部分失败策略：缺省暂停等待主理人；"skip" 跳过该项继续剩余项。 */
+    /** 部分失败策略：缺省暂停等待研究负责人；"skip" 跳过该项继续剩余项。 */
     onFailure?: "pause" | "skip";
   } | null;
   /** kind = "wait" 时的等待定义：等研究目录下路径出现，超时转失败。 */
@@ -187,11 +187,11 @@ const literatureTasks = [
   ["as-research-package-curator", "research-package", "整理最终综述、证据、审查记录、失败与限制，形成成果归档清单。", "package/manifest.md"],
 ] as const;
 
-/** 自动保存下编辑器不再强制先命名：新草稿先用默认名落库，主理人随时可以改名。 */
+/** 自动保存下编辑器不再强制先命名：新草稿先用默认名落库，研究负责人随时可以改名。 */
 export const DEFAULT_WORKFLOW_NAME = "未命名工作流";
 
 export function createBlankDraft(): WorkflowDraftInput {
-  // 新建工作流从空白画布开始：任务为空，由主理人自行组合专家；名称先用默认名，
+  // 新建工作流从空白画布开始：任务为空，由研究负责人自行组合专家；名称先用默认名，
   // 编辑器里的改动由自动保存落库，改名直接覆盖。
   return {
     name: DEFAULT_WORKFLOW_NAME,
@@ -208,7 +208,7 @@ export function createBlankDraft(): WorkflowDraftInput {
 export function createLiteratureDraft(): WorkflowDraftInput {
   // 文献综述模板：不再作为新建默认，仅供测试当作结构完整的夹具；节点可自由增删重连，
   // 草稿按自定义编排提交，不绑定预设契约。
-  // 默认展示三种控制属性：检索策略需主理人确认，审稿阻塞时自动返工写作，审计阻塞时拦截下游。
+  // 默认展示三种控制属性：检索策略需研究负责人确认，审稿阻塞时自动返工写作，审计阻塞时拦截下游。
   const controls: Partial<Record<string, Pick<WorkflowTask, "requiresApproval" | "gateDownstream" | "maxRework">>> = {
     "search-strategy": { requiresApproval: true },
     "independent-review": { gateDownstream: true, maxRework: 2 },
@@ -719,7 +719,7 @@ export function validateWorkflowDraft(draft: WorkflowDraftInput, agents: Workflo
       if (task.gateDownstream || (task.maxRework ?? 0) > 0) errors.push(`${label} 是实验节点，不支持结论把关或返工`);
       if (task.route || task.forEach || task.waitStep || task.routeBranch) errors.push(`${label} 是实验节点，不支持分流、逐项、等待或分支配置`);
     } else if (task.kind === "wait") {
-      // 等待节点的规则：等研究目录下路径出现，超时转失败等待主理人。
+      // 等待节点的规则：等研究目录下路径出现，超时转失败等待研究负责人。
       if (task.role) errors.push(`${label} 是等待节点，不选择专家`);
       if (task.outputs.length) errors.push(`${label} 是等待节点，不产出文件`);
       if (task.requiresApproval || task.gateDownstream || (task.maxRework ?? 0) > 0) errors.push(`${label} 是等待节点，不支持完成后确认、结论把关或返工`);
@@ -796,7 +796,7 @@ export function validateWorkflowDraft(draft: WorkflowDraftInput, agents: Workflo
     if (!frame.title.trim() || frame.title.length > 60) errors.push(`阶段分组「${frame.title || frame.id}」的名称需要为 1–60 个字符`);
     if (!Number.isFinite(frame.width) || !Number.isFinite(frame.height) || frame.width < 160 || frame.height < 120 || frame.width > 6000 || frame.height > 6000) errors.push(`阶段分组「${frame.title}」的尺寸无效`);
   }
-  // 画布草稿按自定义编排提交：专家与依赖由主理人自由组合，不做预设名册检查。
+  // 画布草稿按自定义编排提交：专家与依赖由研究负责人自由组合，不做预设名册检查。
   // W1–W4 预设契约只约束聊天里 AI 自动路由登记的计划。
   return [...new Set(errors)];
 }

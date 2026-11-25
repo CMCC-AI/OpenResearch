@@ -297,7 +297,7 @@ test("awaiting human tasks and foreach progress read as plain-language statuses"
   const foreachStatus = researchTaskStatus(study([foreach]), foreach);
   assert.equal(foreachStatus.state, "running");
   assert.match(foreachStatus.label, /第 2\/2 项/);
-  // 总览提示等主理人完成的人工任务。
+  // 总览提示等研究负责人完成的人工任务。
   const value = study([human, { ...task("next", "as-research-synthesizer", ["confirm"]) }], [gate("G1", "approved")]);
   assert.match(researchAttention(value), /等你完成/);
 });
@@ -332,5 +332,5 @@ test("approval scope summaries count people, branches and outputs instead of tem
   assert.equal(researchScopeSentence([{ id: "package", artifacts: [{ path: "a.md" }, { path: "b.md" }] }], "G4"), "本次交付覆盖 1 个步骤，产出 2 份文件。");
   assert.equal(researchScopeOutline(tasks).outputs.length, 4);
   assert.equal(isTemplatePlanSummary("围绕目标「x」，按「y」流程执行 1 个专家任务，各任务按依赖顺序登记产物。"), true);
-  assert.equal(isTemplatePlanSummary("这是主理人写的真实研究边界与停止条件。"), false);
+  assert.equal(isTemplatePlanSummary("这是研究负责人写的真实研究边界与停止条件。"), false);
 });

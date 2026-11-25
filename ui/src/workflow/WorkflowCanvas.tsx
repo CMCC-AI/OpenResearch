@@ -91,7 +91,7 @@ function AgentNodeCard({ data, selected }: NodeProps<AgentNode>) {
   >
     {data.brief && <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">{data.brief}</p>}
     {(data.requiresApproval || data.gateDownstream) && <div className="flex flex-wrap gap-1 px-3 pb-1.5">
-      {data.requiresApproval && <span className="flex items-center gap-1 rounded bg-accent-amber-subtle px-1.5 py-0.5 text-xs text-accent-amber" title="完成后需主理人确认才放行下游"><ShieldCheck size={11} aria-hidden="true" />需主理人确认</span>}
+      {data.requiresApproval && <span className="flex items-center gap-1 rounded bg-accent-amber-subtle px-1.5 py-0.5 text-xs text-accent-amber" title="完成后需研究负责人确认才放行下游"><ShieldCheck size={11} aria-hidden="true" />需研究负责人确认</span>}
       {data.gateDownstream && <span className="flex items-center gap-1 rounded bg-primary-subtle px-1.5 py-0.5 text-xs text-primary" title={data.maxRework > 0 ? `结论没通过时暂停下游任务，自动返工最多 ${data.maxRework} 轮` : "结论没通过时暂停下游任务"}><Split size={11} aria-hidden="true" />结论把关{data.maxRework > 0 && <span className="flex items-center gap-0.5"><RefreshCw size={10} aria-hidden="true" />≤{data.maxRework}轮</span>}</span>}
     </div>}
   </TaskNodeCard>;
@@ -193,7 +193,7 @@ function HumanNodeCard({ data, selected }: NodeProps<HumanNode>) {
     state={data.state}
     footer={<TaskNodeMeta output={<><FileText size={12} aria-hidden="true" /><span className="truncate font-mono">{data.output}</span></>} dependencyCount={data.dependencyCount} />}
   >
-    <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">主理人亲自完成：提交后流程继续</p>
+    <p className="mb-2 line-clamp-2 px-3 text-xs leading-4 text-subtext">研究负责人亲自完成：提交后流程继续</p>
   </TaskNodeCard>;
 }
 
@@ -223,7 +223,7 @@ function ExperimentNodeCard({ data, selected }: NodeProps<ExperimentNode>) {
   </TaskNodeCard>;
 }
 
-// 事件等待节点：等研究目录下路径出现，超时转失败等待主理人。
+// 事件等待节点：等研究目录下路径出现，超时转失败等待研究负责人。
 export type WaitNodeData = {
   taskId: string;
   brief: string;
@@ -270,7 +270,7 @@ export function waitConditionText(task: WorkflowTask): string {
 export function foreachConditionText(task: WorkflowTask): string {
   const forEach = task.forEach;
   if (!forEach?.source) return "尚未选择列表来源：先连线，再选要逐项处理的清单";
-  const policy = forEach.onFailure === "skip" ? "某项失败时跳过继续" : "某项失败时暂停等待主理人";
+  const policy = forEach.onFailure === "skip" ? "某项失败时跳过继续" : "某项失败时暂停等待研究负责人";
   return `按「${forEach.source}」的清单逐项执行 · ${policy}`;
 }
 
@@ -289,7 +289,7 @@ function WorkflowHelp({ onClose }: { onClose: () => void }) {
     </div>
     <dl className="m-0 flex flex-col gap-2.5 text-subtext">
       <div><dt className="font-normal text-text">节点 = 专家任务</dt><dd className="m-0">从左侧拖入一位专家就是一个节点，写明谁做什么、产出什么；产出写入研究目录，供后面的专家引用。</dd></div>
-      <div><dt className="font-normal text-text">连线 = 先后顺序</dt><dd className="m-0">前者做完，后者才开始。虚线是系统环节自带的，不用手动连，也不能改不能删；「需主理人确认」「结论把关」决定下游什么时候开始。</dd></div>
+      <div><dt className="font-normal text-text">连线 = 先后顺序</dt><dd className="m-0">前者做完，后者才开始。虚线是系统环节自带的，不用手动连，也不能改不能删；「需研究负责人确认」「结论把关」决定下游什么时候开始。</dd></div>
       <div><dt className="font-normal text-text">条件分流 = 二选一</dt><dd className="m-0">一条线进来、两条线出去，按前置结论走「成立」或「不成立」，没走的标「已跳过」。</dd></div>
       <div><dt className="font-normal text-text">阶段分组 = 只是画面分区</dt><dd className="m-0">只把节点圈成几段方便看，不参与执行。</dd></div>
     </dl>
@@ -336,7 +336,7 @@ export function WorkflowCanvas({ draft, agents, onChange, preview = false }: {
     if (!preview || draft.tasks.length === 0) return;
     void flowRef.current?.fitView({ padding: 0.1, duration: 200 });
   }, [preview, draft.tasks.length]);
-  // 编辑画布只呈现主理人显式添加的内容：固定确认环节（G1/G4）留在节点库说明与运行视图，研究交付只在运行视图出现，都不自动铺上画布。
+  // 编辑画布只呈现研究负责人显式添加的内容：固定确认环节（G1/G4）留在节点库说明与运行视图，研究交付只在运行视图出现，都不自动铺上画布。
   const graph = useMemo(() => buildWorkflowGraph(draft.tasks, draft.positions, { fixedChain: "never" }), [draft.tasks, draft.positions]);
   const agentNames = useMemo(() => new Map(agents.map((agent) => [agent.id, agent.name])), [agents]);
   const nodes = useMemo<WorkflowCanvasNode[]>(() => [
@@ -737,7 +737,7 @@ export function WorkflowCanvas({ draft, agents, onChange, preview = false }: {
     setSelected(systemId);
   }
 
-  // 阶段分组通过按钮添加：放在当前视口中心，主理人再拖动调整范围。
+  // 阶段分组通过按钮添加：放在当前视口中心，研究负责人再拖动调整范围。
   function addFrame() {
     const bounds = flowRef.current?.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
     const index = (draft.frames?.length ?? 0) + 1;
@@ -947,7 +947,7 @@ export function WorkflowCanvas({ draft, agents, onChange, preview = false }: {
         <p className="m-0 rounded-md border border-border bg-surface p-3 text-xs leading-5 text-subtext">前置任务完成后开始等待；路径出现即通过。超时不是静默跳过：任务转失败并通知你处理。</p>
       </div> : selectedTask?.kind === "human" ? <div className="flex flex-col gap-3">
         <div className="flex items-start justify-between gap-2"><div><h2 className="m-0 text-base font-normal">{selectedTask.brief || "人工任务"}</h2><p className="mb-0 mt-1 text-sm text-subtext">运行到这一步会停下来等你提交</p></div><Button size="small" variant="danger" aria-label="删除人工任务" onClick={() => deleteTask(selectedTask.id)}><Trash2 size={14} /></Button></div>
-        <label className="flex flex-col gap-1.5 text-sm">任务说明（给主理人的要求）<textarea className="min-h-32 resize-y rounded-md border border-border bg-background p-2.5 text-sm text-text outline-none focus:border-text" value={selectedTask.brief} maxLength={24000} onChange={(event) => updateTask(selectedTask.id, { brief: event.target.value })} /></label>
+        <label className="flex flex-col gap-1.5 text-sm">任务说明（给研究负责人的要求）<textarea className="min-h-32 resize-y rounded-md border border-border bg-background p-2.5 text-sm text-text outline-none focus:border-text" value={selectedTask.brief} maxLength={24000} onChange={(event) => updateTask(selectedTask.id, { brief: event.target.value })} /></label>
         <label className="flex flex-col gap-1.5 text-sm">产出文件（相对路径，提交的文字会写入它）<input className="h-8 rounded-md border border-border bg-background px-2 font-mono text-sm text-text" value={selectedTask.outputs[0] ?? ""} maxLength={200} onChange={(event) => updateTask(selectedTask.id, { outputs: [event.target.value] })} /></label>
         <p className="m-0 rounded-md border border-border bg-surface p-3 text-xs leading-5 text-subtext">前置任务完成后，这项任务在研究面板显示「等你完成」：把你的产出（如挑选结论、标题定稿、补充标准）以文字提交，写入上面的文件后流程自动继续；不再叠加额外确认。</p>
       </div> : selectedTask ? <div className="flex flex-col gap-3">
@@ -983,12 +983,12 @@ export function WorkflowCanvas({ draft, agents, onChange, preview = false }: {
         <div className="flex flex-col gap-2.5 rounded-md border border-border p-3">
           <span className="text-sm text-text">流程控制</span>
           <label className="flex items-center justify-between gap-2 text-sm text-subtext">
-            完成后需主理人确认
-            <Switch checked={!!selectedTask.requiresApproval} aria-label="完成后需主理人确认" title="任务完成后先暂停，主理人批准后，下游任务才会开始" onClick={() => updateTask(selectedTask.id, { requiresApproval: !selectedTask.requiresApproval })} />
+            完成后需研究负责人确认
+            <Switch checked={!!selectedTask.requiresApproval} aria-label="完成后需研究负责人确认" title="任务完成后先暂停，研究负责人批准后，下游任务才会开始" onClick={() => updateTask(selectedTask.id, { requiresApproval: !selectedTask.requiresApproval })} />
           </label>
           <label className="flex items-center justify-between gap-2 text-sm text-subtext">
             结论把关：有问题时暂停下游
-            <Switch checked={!!selectedTask.gateDownstream} aria-label="结论把关" title="任务完成时给出结论（通过/有问题）；有问题时下游任务先暂停，并通知主理人" onClick={() => updateTask(selectedTask.id, { gateDownstream: !selectedTask.gateDownstream, maxRework: selectedTask.gateDownstream ? 0 : selectedTask.maxRework })} />
+            <Switch checked={!!selectedTask.gateDownstream} aria-label="结论把关" title="任务完成时给出结论（通过/有问题）；有问题时下游任务先暂停，并通知研究负责人" onClick={() => updateTask(selectedTask.id, { gateDownstream: !selectedTask.gateDownstream, maxRework: selectedTask.gateDownstream ? 0 : selectedTask.maxRework })} />
           </label>
           {selectedTask.gateDownstream && <label className="flex items-center justify-between gap-2 text-sm text-subtext">
             结论有问题时自动返工

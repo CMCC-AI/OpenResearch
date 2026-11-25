@@ -455,7 +455,7 @@ fn contract_run_args(contract: &crate::store::research::RunContract) -> Result<c
     })
 }
 
-/// 首次派发逐项任务前读取并固化清单；缺失或非法时任务转失败，等待主理人处理。
+/// 首次派发逐项任务前读取并固化清单；缺失或非法时任务转失败，等待研究负责人处理。
 fn materialize_foreach_items(
     study: &mut crate::store::research::Study,
     root: &std::path::Path,
@@ -510,7 +510,7 @@ pub(crate) fn dispatch_study_task_sync(
     }
     study.ready(task_id)?;
     // 逐项任务首次派发前物化清单：读取上游产物旁的 .items.json 并固化到任务上，
-    // 执行期间不再重读；清单缺失或非法时任务转失败等待主理人处理。
+    // 执行期间不再重读；清单缺失或非法时任务转失败等待研究负责人处理。
     if study
         .task(task_id)
         .is_ok_and(|task| task.spec.kind == "foreach" && task.foreach_items.is_none())
@@ -520,7 +520,7 @@ pub(crate) fn dispatch_study_task_sync(
         study = store.research_study(study_id)?;
         let entry = study.task(task_id)?;
         if entry.state != "pending" {
-            // 物化失败：任务已带错误说明转入失败，交给主理人处理。
+            // 物化失败：任务已带错误说明转入失败，交给研究负责人处理。
             return Ok(None);
         }
     }
@@ -915,7 +915,7 @@ pub(crate) fn on_research_spawn_finished(
         return Ok(Some(ResearchWakeAction::RetireSilently));
     }
     let plan = study.plan()?;
-    // 结论阻塞触发自动返工时，让主理人及时知道返工已启动而不是静默等待。
+    // 结论阻塞触发自动返工时，让研究负责人及时知道返工已启动而不是静默等待。
     if study
         .task(&task_id)
         .is_ok_and(|t| t.state == "pending" && t.rework_count > 0)
@@ -1142,7 +1142,7 @@ pub(crate) async fn spawn(store: &Store, request: SpawnRequest) -> Result<()> {
     }
     if let (Some(study), Some(task_id)) = (&research, &research_task) {
         if study.session_id != parent_id {
-            return Err(anyhow!("只有主理人可派发专家任务"));
+            return Err(anyhow!("只有研究负责人可派发专家任务"));
         }
         let task = study.task(task_id)?;
         if let Some(session) = &task.session_id {

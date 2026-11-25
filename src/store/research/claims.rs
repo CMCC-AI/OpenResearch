@@ -260,7 +260,7 @@ impl Store {
         let validate = |study: &Study| -> Result<Option<ClaimChange>> {
             study.ensure_active()?;
             if study.session_id != actor {
-                return Err(anyhow!("声明修订仅允许研究主理人执行"));
+                return Err(anyhow!("声明修订仅允许研究负责人执行"));
             }
             let evidence = self.research_evidence(study)?;
             if let Some(previous) = evidence

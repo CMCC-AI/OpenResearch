@@ -1,15 +1,17 @@
 import { useReadOnlyWorkspace } from "./ReadOnlyWorkspace";
-import { type ChatSession, type Experiment, type Run, runDisplayStatus, fmtNumber } from "../api";
+import { type ChatSession, type Experiment, type Run, getResearchStudy, runDisplayStatus, fmtNumber } from "../api";
 import { activeWorkspaceRuns } from "../workspaceRuns";
 import { statusLabel } from "./StatusBadge";
 import { useEffect, useMemo, useRef } from "react";
 import { FlaskConical, FolderOpen, Package, GitBranch, MoreHorizontal, Terminal, Workflow as WorkflowIcon } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { workspaceKey } from "../queries/client";
 import { getSessionWorktreeQuery } from "../queries/files";
 import { countChanges, parseDiffFiles } from "./GitDiff";
 import { m } from "../paraglide/messages.js";
 import { IconButton, MenuItem, StatusIndicator } from "./ui";
 import { ResearchPanel } from "./ResearchPanel";
+import { EndResearchControl } from "./EndResearchControl";
 import { usePopover } from "./ModelPicker";
 import { SideChatMenu } from "./SideChatMenu";
 
@@ -41,6 +43,11 @@ export function WorkspaceTools({ placement = "floating", expanded, experiments, 
   const experimentRows = activeWorkspaceRuns(experiments, runs, sessionId);
   const moreTrigger = useRef<HTMLButtonElement>(null);
   const more = usePopover(moreTrigger);
+  // 绑定保存工作流的对话里，研究面板那一行已变成「工作流」入口并带进度副标题；
+  // 通用菜单项让位，避免侧栏出现两条同名入口。
+  const studyQuery = useQuery({ queryKey: workspaceKey("researchStudy", sessionId), queryFn: ({ signal }) => getResearchStudy(sessionId!, signal), enabled: Boolean(sessionId), refetchInterval: (query) => ["active", "paused"].includes(query.state.data?.study?.status ?? "") ? 2500 : false });
+  const study = studyQuery.data?.study;
+  const workflowBound = Boolean(study?.plans.at(-1)?.workflowSource);
   const items = [
     ...(readOnly ? [] : [
       { id: "workflow", label: "工作流", Icon: WorkflowIcon, onClick: onWorkflow },
@@ -49,7 +56,7 @@ export function WorkspaceTools({ placement = "floating", expanded, experiments, 
     { id: "files", label: m.app_files(), Icon: FolderOpen, onClick: onFiles },
     { id: "artifacts", label: m.app_artifacts(), Icon: Package, onClick: onArtifacts },
     { id: "experiments", label: m.app_experiments(), Icon: FlaskConical, onClick: onExperiments },
-  ];
+  ].filter((item) => !(workflowBound && item.id === "workflow"));
   return (
     <div className={placement === "header" ? "workspace-tools relative" : `workspace-tools absolute end-3.5 top-23 z-30 ${rightOffset === undefined ? "win-titlebar:top-26" : ""}`} style={placement === "header" ? undefined : { insetInlineEnd: rightOffset }}>
       {!expanded ? (
@@ -89,6 +96,7 @@ export function WorkspaceTools({ placement = "floating", expanded, experiments, 
               <span className="flex items-center gap-4"><Icon size={15} />{itemLabel}</span>
             </MenuItem>
           ))}
+          {workflowBound && study && (study.status === "active" || study.status === "paused") && !readOnly && <EndResearchControl variant="menu" study={study} version={study.plans.at(-1)?.version ?? 0} onDone={() => studyQuery.refetch()} />}
           <div className="mt-2 border-t border-border/50 pt-3">
             <h2 className="m-0 px-2 pt-1 pb-2 text-sm font-normal text-subtext">{m.workspace_this_worktree()}</h2>
             <MenuItem className="min-h-7 py-1" onClick={onFiles}>

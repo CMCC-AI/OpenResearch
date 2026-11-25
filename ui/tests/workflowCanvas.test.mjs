@@ -106,7 +106,7 @@ test("the editor canvas renders only explicitly added tasks; the fixed chain sta
   // 点一个专家只加一个节点：固定链路不随任务自动出现，画布零系统节点、零系统连线。
   assert.deepEqual(started.systemNodes, []);
   assert.deepEqual(started.edges, []);
-  // 显式开启「完成后需主理人确认」才生成检查点节点。
+  // 显式开启「完成后需研究负责人确认」才生成检查点节点。
   const gated = { ...withTask, tasks: withTask.tasks.map(task => ({ ...task, requiresApproval: true })) };
   const gatedGraph = graph.buildWorkflowGraph(gated.tasks, gated.positions, editor);
   assert.deepEqual(gatedGraph.systemNodes.map(node => node.id), [graph.approvalNodeId("task-1")]);
@@ -133,7 +133,7 @@ test("a blank draft keeps the pipeline library visible while the canvas stays em
   h.render().find(node => node.type === "button" && JSON.stringify(node.props.children).includes("G1 · 研究范围确认")).props.onClick();
   text = labels();
   assert.ok(text.includes("系统环节 · 运行时执行"));
-  assert.ok(text.includes("主理人批准当前计划后启动专家任务"));
+  assert.ok(text.includes("研究负责人批准当前计划后启动专家任务"));
 });
 
 test("agent entries are drag sources; dropping on the canvas adds the dragged agent", () => {

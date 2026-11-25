@@ -18,7 +18,7 @@ test("W1 template compiles into a valid complete expert DAG; the goal is a run i
 
 test("new workflows start from a blank canvas and the first added task lands at the grid origin", () => {
   const draft = createBlankDraft();
-  // 自动保存下新草稿带默认名，可随时落库；主理人改名直接覆盖。
+  // 自动保存下新草稿带默认名，可随时落库；研究负责人改名直接覆盖。
   assert.equal(draft.name, "未命名工作流");
   assert.deepEqual(draft.tasks, []);
   assert.deepEqual(draft.positions, {});

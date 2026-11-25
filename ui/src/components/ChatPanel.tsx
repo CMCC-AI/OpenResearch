@@ -3073,7 +3073,7 @@ export const Message = memo(function Message({
   onSelectFork,
 }: {
   message: ChatMessage;
-  /** 研究/工作流会话里这条回答的发言人（主理人或专家名）；普通对话为空。 */
+  /** 研究/工作流会话里这条回答的发言人（研究负责人或专家名）；普通对话为空。 */
   speaker?: string | null;
   activePermissionId: string | null;
   pendingTailToolId?: string | null;
@@ -6685,8 +6685,8 @@ export function ChatPanel({
                 <Transcript
                   key={activeId}
                   sessionKey={activeId ?? undefined}
-                  // 研究/工作流会话的主线程只由主理人发言，署名避免读者误以为是某个专家。
-                  speaker={conversationStudy ? "主理人" : null}
+                  // 研究/工作流会话的主线程只由研究负责人发言，署名避免读者误以为是某个专家。
+                  speaker={conversationStudy ? "研究负责人" : null}
                   scrollRef={threadRef}
                   scrollToEndRef={scrollToEndRef}
                   stickToBottom={stickToBottom}
@@ -6770,7 +6770,7 @@ export function ChatPanel({
               )}
             </IconButton>
           )}
-          {/* 主理人的 MCP 服务提案确认卡：批准才写入登记表。 */}
+          {/* 研究负责人的 MCP 服务提案确认卡：批准才写入登记表。 */}
           {activeId && <McpProposalCards sessionId={activeId} />}
           {/* Inside the composer so the composer's popovers (mode/model pickers,
             z 50 within this stacking context) layer above the strip — as a

@@ -5,7 +5,7 @@ import { queryClient, workspaceKey } from "../queries/client";
 import { Button, showAlert } from "./ui";
 import type { McpProposal } from "../workflow/model";
 
-/** 主理人提交的 MCP 提案确认卡：批准才写入登记表并启用，拒绝只留历史。
+/** 研究负责人提交的 MCP 提案确认卡：批准才写入登记表并启用，拒绝只留历史。
  * 环境变量只显示键名，值不回显到聊天里。 */
 export function McpProposalCards({ sessionId }: { sessionId: string }) {
   const proposalsQuery = useQuery({

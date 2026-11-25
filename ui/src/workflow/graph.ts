@@ -30,7 +30,7 @@ export interface WorkflowGraphEdge {
 // 三个固定系统节点的说明集中在这里：画布渲染与节点库静态展示共用，避免两处文案漂移。
 function fixedChainCatalog(): { id: string; data: SystemNodeData }[] {
   return [
-    { id: systemNodeIds.scope, data: { kind: "approval", title: "G1 · 研究范围确认", description: "主理人批准当前计划后启动专家任务", gate: "G1", label: "运行时确认" } },
+    { id: systemNodeIds.scope, data: { kind: "approval", title: "G1 · 研究范围确认", description: "研究负责人批准当前计划后启动专家任务", gate: "G1", label: "运行时确认" } },
     { id: systemNodeIds.delivery, data: { kind: "approval", title: "G4 · 交付确认", description: "全部任务验收、结论与证据检查通过后，确认成果交付", gate: "G4", label: "运行时确认" } },
     { id: systemNodeIds.output, data: { kind: "output", title: "研究交付", description: "交付确认后在当前对话查看研究成果", label: "运行时生成" } },
   ];
@@ -43,7 +43,7 @@ export function fixedSystemData(id: string): SystemNodeData | null {
 
 export interface WorkflowGraphOptions {
   /** 固定链路渲染策略："always"（默认，运行视图）始终渲染 G1、G4 与研究交付；
-   *  "never"（编辑画布）只渲染主理人拖入画布的 G1/G4（positions 里的 :system: 坐标键即“已放置”），
+   *  "never"（编辑画布）只渲染研究负责人拖入画布的 G1/G4（positions 里的 :system: 坐标键即“已放置”），
    *  研究交付是运行时结果出口，只在运行视图出现。 */
   fixedChain?: "always" | "never";
 }

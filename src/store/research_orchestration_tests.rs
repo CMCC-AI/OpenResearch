@@ -992,7 +992,7 @@ fn foreach_failure_pauses_then_retry_reruns_that_item() {
         .research_finish(&study.id, "papers", true, "清单完成".into())
         .unwrap();
     crate::commands::research_dispatch::auto_dispatch_sync(&store, &study.id).unwrap();
-    // 第一项失败：任务整体暂停，等待主理人重试。
+    // 第一项失败：任务整体暂停，等待研究负责人重试。
     store
         .research_finish(&study.id, "readings", false, "没写出产物".into())
         .unwrap();
@@ -1096,7 +1096,7 @@ fn human_task_awaits_owner_submission_and_feeds_downstream() {
     store
         .research_auto_finish(&study.id, "readings", "乙完成".into())
         .unwrap();
-    // 逐项完成后：人工任务进入等待主理人产出，派发器不再触碰它。
+    // 逐项完成后：人工任务进入等待研究负责人产出，派发器不再触碰它。
     let dispatched =
         crate::commands::research_dispatch::auto_dispatch_sync(&store, &study.id).unwrap();
     assert!(dispatched.is_empty());

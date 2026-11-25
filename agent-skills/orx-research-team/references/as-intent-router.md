@@ -9,7 +9,7 @@
 4. **边界意识**：区分“用户已有事实”与“期望系统完成”，不把缺失信息脑补为已有资产
 
 ## 工作流程
-1. 读取主理人在 prompt 中指定的 workspace 文件（如 `00-input.json`）与用户材料摘要
+1. 读取研究负责人在 prompt 中指定的 workspace 文件（如 `00-input.json`）与用户材料摘要
 2. 按意图、阶段、交付、材料、缺失五个维度结构化分析
 3. 输出意图状态 JSON（`02-intent-state.json` 内容）
 
@@ -25,4 +25,4 @@
 
 
 
-平台适配规则优先于以上通用科研规范：工作目录、输入与输出以任务上下文为准；使用原生 OpenResearch 文献、实验树、证据和报告技能。禁止自行派生其他专家。实验必须通过受管的 `orx exp run <experiment-id> --backend <backend>`，不得用 Bash 直接启动训练或评测。不得自行批准 G1–G4。完成后使用 `orx research finish` 登记任务和真实产物，再向主理人返回摘要。
+平台适配规则优先于以上通用科研规范：工作目录、输入与输出以任务上下文为准；使用原生 OpenResearch 文献、实验树、证据和报告技能。禁止自行派生其他专家。实验必须通过受管的 `orx exp run <experiment-id> --backend <backend>`，不得用 Bash 直接启动训练或评测。不得自行批准 G1–G4。完成后使用 `orx research finish` 登记任务和真实产物，再向研究负责人返回摘要。

@@ -14,7 +14,7 @@ export const researchStates: Record<string, string> = {
   pending: "待执行", running: "执行中 / 待验收", completed: "产物已验收", failed: "未通过", cancelled: "已取消",
 };
 export const gateNames: Record<string, string> = { G1: "研究范围与目标", G2: "资源与权限", G3: "实验方案与执行", G4: "成果交付" };
-/** G5:{任务id} 是任务确认门：任务完成后需主理人批准才放行下游。 */
+/** G5:{任务id} 是任务确认门：任务完成后需研究负责人批准才放行下游。 */
 export function gateDisplayName(gate: string): string {
   if (gate.startsWith("G5:")) return `任务确认 · ${gate.slice(3)}`;
   return gateNames[gate] ?? gate;
@@ -332,7 +332,7 @@ export function researchScopeControls(tasks: ResearchScopeTask[]): string {
     outline.gateSteps ? `${outline.gateSteps} 项结论把关${outline.maxRework ? `（最多返工 ${outline.maxRework} 轮）` : ""}` : null,
   ].filter(Boolean).join(" · ");
 }
-/** 主理人生成的通用计划说明；有结构化任务时不再把它整段展示给用户。 */
+/** 研究负责人生成的通用计划说明；有结构化任务时不再把它整段展示给用户。 */
 export function isTemplatePlanSummary(summary?: string | null): boolean {
   return Boolean(summary && summary.startsWith("围绕目标「") && summary.includes("各任务按依赖顺序登记产物"));
 }
@@ -410,7 +410,7 @@ export function researchAttention(study: ResearchStudy) {
   const active = tasks.filter((task) => task.state === "running");
   if (active.length) return `${active.length} 位专家执行中 / 待验收`;
   if (decisions.some((decision) => decision.gate === deliveryGate(researchWorkflowMode(study)) && decision.status === "approved")) return `${researchWorkflowMode(study) === "proposal" ? "实验方案已确认 · 未授权运行实验" : "成果已确认"}${study.deliveryNotice ? " · 工作文件有改动" : ""}`;
-  if (!tasks.length) return "主理人正在梳理目标与材料";
+  if (!tasks.length) return "研究负责人正在梳理目标与材料";
   const awaitingHuman = tasks.find((task) => task.state === "awaiting");
   if (awaitingHuman) return `等你完成一项 · ${awaitingHuman.brief.slice(0, 40)}`;
   if (tasks.every((task) => task.state === "completed" || task.state === "skipped")) return study.deliveryError ? `交付确认受阻 · ${study.deliveryError}` : "任务已验收 · 交付确认尚未生成";
@@ -435,7 +435,7 @@ export function researchTaskStatus(study: ResearchStudy, task: ResearchTask): { 
       : { state: "completed", label: `已走「不成立」分支 · ${decision?.basis ?? "等待判定"}` };
   }
   if (task.state === "completed") {
-    if (task.verdict?.status === "blocked") return { state: "blocked", label: "结论有问题 · 等待主理人处理" };
+    if (task.verdict?.status === "blocked") return { state: "blocked", label: "结论有问题 · 等待研究负责人处理" };
     if (task.requiresApproval && !currentDecisions(study).some((decision) => decision.gate === `G5:${task.id}` && decision.status === "approved")) return { state: "blocked", label: "已验收 · 等待你批准" };
     return { state: "completed", label: "产物已验收" };
   }

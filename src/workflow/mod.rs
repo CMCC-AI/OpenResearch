@@ -217,7 +217,7 @@ pub fn plan_summary(workflow: &str, objective: &str, tasks: &[TaskSpec]) -> Stri
 
 impl WorkflowDraftInput {
     pub fn into_plan(self, objective: &str) -> PlanInput {
-        // 画布草稿一律按自定义编排提交（workflow:null）：专家与依赖由主理人自由组合，
+        // 画布草稿一律按自定义编排提交（workflow:null）：专家与依赖由研究负责人自由组合，
         // 不套用预设契约。W1–W4 预设只由聊天自动路由登记，workflow 字段仅作旧数据兼容。
         let summary = plan_summary("custom", objective, &self.tasks);
         PlanInput {

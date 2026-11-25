@@ -116,7 +116,7 @@ export function ResearchWorkflowDialog({ study, runs, decisionCards, actions, on
             <div className="flex gap-1" role="group" aria-label="专家任务展示方式"><Button size="small" aria-pressed={view === "dag"} onClick={() => setView("dag")}>流程图</Button><Button size="small" aria-pressed={view === "list"} onClick={() => setView("list")}>任务列表</Button></div>
           </div>
           <div className="mb-2 flex flex-wrap gap-3 text-xs text-subtext" aria-label="状态图例">{(["completed", "running", "blocked", "waiting"] as const).map((state) => <span key={state} className={`flex items-center gap-1 rounded border px-2 py-1 ${workflowTone[state]}`}><StateIcon state={state} />{workflowStateNames[state]}</span>)}</div>
-          {!tasks.length ? <div className="rounded-lg border border-dashed border-border bg-surface p-8 text-center"><Users size={24} className="mx-auto mb-2 text-primary" /><p className="text-sm">主理人正在制定计划</p></div> : <>
+          {!tasks.length ? <div className="rounded-lg border border-dashed border-border bg-surface p-8 text-center"><Users size={24} className="mx-auto mb-2 text-primary" /><p className="text-sm">研究负责人正在制定计划</p></div> : <>
             {view === "dag" ? <div className="h-96 overflow-hidden rounded-lg border border-border bg-surface [&_.react-flow__controls-button]:bg-background [&_.react-flow__controls-button]:text-text [&_.react-flow__controls-button]:border-border [&_.react-flow__controls-button_svg]:fill-current" aria-label="专家任务流程图">
               <ReactFlow key={`${study.id}-${study.plans.at(-1)?.version}`} nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView minZoom={0.3} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} onNodeClick={(_, node) => setSelected(node.id)} proOptions={{ hideAttribution: true }}><Background /><Controls showInteractive={false} /></ReactFlow>
             </div> : <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">{tasks.map((task) => {
@@ -171,7 +171,7 @@ export function TaskDetails({ study, task, runs, onOpenSession }: { study: Resea
     {task.kind !== "foreach" && <p className="mt-1 text-xs text-subtext">要求产物：{task.outputs.join("、")}</p>}
     {task.kind === "foreach" && <ForEachProgress task={task} />}
     {task.state === "awaiting" && <HumanSubmitForm study={study} task={task} />}
-    {current && task.kind === "human" && task.state === "completed" && delivered && study.status === "active" && <p className="mt-2 text-xs text-subtext">交付已确认；如需修改这一步，请在主对话让主理人按受影响任务修订计划（forceRerun）。</p>}
+    {current && task.kind === "human" && task.state === "completed" && delivered && study.status === "active" && <p className="mt-2 text-xs text-subtext">交付已确认；如需修改这一步，请在主对话让研究负责人按受影响任务修订计划（forceRerun）。</p>}
     {canReopen && <div className="mt-3 flex flex-col gap-2">
       {confirmReopen ? <div className="flex flex-wrap items-center gap-2 rounded-md border border-accent-amber bg-background p-2 text-xs">
         <span className="min-w-0 flex-1">修改后，这一步的下游任务和当前交付确认都会失效，需要重新提交并确认。</span>

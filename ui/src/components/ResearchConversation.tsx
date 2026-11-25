@@ -289,16 +289,18 @@ function TaskRow({ projectId, study, task, version, renderMessage, onOpenArtifac
   return <li data-research-task-id={task.id} aria-label={`专家任务 · ${name}`} className={`min-w-0 rounded-lg border ${workflowTone[status.state]}`}>
     {canExpand ? <button type="button" aria-expanded={open} onClick={() => setExpanded(value => !value)} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-start focus-visible:outline-2 focus-visible:outline-primary">{header}</button> : <div className="flex w-full items-center gap-2 px-3 py-2">{header}</div>}
     {open && <div className="flex flex-col gap-3 border-t border-border px-3 py-3">
-      <p className="m-0 whitespace-pre-wrap text-sm text-subtext">{task.brief}</p>
+      <div className="flex min-w-0 items-start gap-3">
+        <p className="m-0 min-w-0 flex-1 whitespace-pre-wrap text-sm text-subtext">{task.brief}</p>
+        {runningLive && task.sessionId && !readOnly && <Button size="small" variant="ghost" disabled={cancelling} className="shrink-0" onClick={() => {
+          setCancelling(true); setCancelError(null);
+          void interruptChat(task.sessionId!).catch(error => { setCancelError(error instanceof Error ? error.message : String(error)); }).finally(() => { setCancelling(false); void queryClient.invalidateQueries({ queryKey: workspaceKey("researchStudy", study.sessionId) }); });
+        }}><CircleStop size={13} aria-hidden="true" />{cancelling ? "正在停止…" : "停止该专家"}</Button>}
+      </div>
       {humanAwaiting && !readOnly && <HumanSubmitForm study={study} task={task} />}
-      {runningLive && task.sessionId && !readOnly && <Button size="small" disabled={cancelling} onClick={() => {
-        setCancelling(true); setCancelError(null);
-        void interruptChat(task.sessionId!).catch(error => { setCancelError(error instanceof Error ? error.message : String(error)); }).finally(() => { setCancelling(false); void queryClient.invalidateQueries({ queryKey: workspaceKey("researchStudy", study.sessionId) }); });
-      }}>{cancelling ? "正在停止…" : "停止该专家"}</Button>}
       {cancelError && <p role="alert" className="m-0 text-sm text-accent-red">停止失败：{cancelError}</p>}
       {task.verdict?.status === "blocked" && <p role="status" className="m-0 text-sm text-accent-amber">需处理：{task.verdict.reasons.join("；")}</p>}
       {task.summary && <div className="flex min-w-0 flex-col gap-1 rounded-md border border-border bg-background p-3"><span className="text-xs text-subtext">专家工作摘要</span><div className="min-w-0 text-sm text-text"><Md text={task.summary} /></div></div>}
-      {current && task.kind === "human" && task.state === "completed" && delivery && study.status === "active" && <p className="m-0 text-xs text-subtext">交付已确认；如需修改这一步，请在主对话让主理人按受影响任务修订计划（forceRerun）。</p>}
+      {current && task.kind === "human" && task.state === "completed" && delivery && study.status === "active" && <p className="m-0 text-xs text-subtext">交付已确认；如需修改这一步，请在主对话让研究负责人按受影响任务修订计划（forceRerun）。</p>}
       {canReopen && <div className="flex flex-col gap-2">
         {confirmReopen ? <div className="flex flex-wrap items-center gap-2 rounded-md border border-accent-amber bg-surface p-2 text-xs">
           <span className="min-w-0 flex-1">修改后，这一步的下游任务和当前交付确认都会失效，需要重新提交并确认。</span>

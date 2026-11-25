@@ -206,9 +206,9 @@ test("research conversations state who is answering above each reply", () => {
     compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React },
   }).outputText;
   const SpeakerLabel = new Function("React", "Users", `${js}\nreturn SpeakerLabel;`)(React, props => React.createElement("svg", props));
-  const html = renderToStaticMarkup(React.createElement(SpeakerLabel, { name: "主理人" }));
-  assert.match(html, /data-speaker-name="主理人"/);
-  assert.match(html, />主理人</);
+  const html = renderToStaticMarkup(React.createElement(SpeakerLabel, { name: "研究负责人" }));
+  assert.match(html, /data-speaker-name="研究负责人"/);
+  assert.match(html, />研究负责人</);
   // 主线程按研究状态署名，逐条消息把 speaker 传给助手回复；普通对话不传，保持匿名。
   find(node => ts.isJsxAttribute(node) && node.name.getText(file) === "speaker" && node.initializer?.getText(file).includes("conversationStudy"));
   find(node => ts.isJsxAttribute(node) && node.name.getText(file) === "speaker" && node.initializer?.getText(file) === "{speaker}");
