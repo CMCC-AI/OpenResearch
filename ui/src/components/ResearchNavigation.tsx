@@ -9,13 +9,14 @@ import { useLocale } from "../locale";
 import { taskLocation } from "../workspaceState";
 import { useSessionNavigation } from "../useSessionNavigation";
 import { QUICK_CHAT_PROJECT_ID, QUICK_CHAT_PROJECT_NAME, isQuickChatProject, deleteChatSession, renameChatSession, setChatSessionArchived, type ChatSession } from "../api";
+import { deleteSessionEndingResearch, researchBlocksSessionDelete } from "../deleteSession";
 import { ProjectInfoCard } from "./ProjectInfoCard";
 import { QuickChatGroupControls, SessionFilterMenu, SessionRow, useCollapsedSidebarGroups, type SessionFilter } from "./NativeSidebarRows";
 import { m } from "../paraglide/messages.js";
 import { isSidebarSession } from "../researchSessions";
 import { useOptionalAuthSession } from "../product/AuthSession";
 import { readSidebarProjectsSnapshot, readSidebarSessionsSnapshot, writeSidebarProjectsSnapshot, writeSidebarSessionsSnapshot } from "../sidebarSnapshot";
-import { IconButton, Button, showAlert } from "./ui";
+import { IconButton, Button, dismissAlert, showAlert } from "./ui";
 
 export function ResearchNavigationMore({ onClick, indented = true }: { onClick: () => void; indented?: boolean }) {
   return <div className={`flex h-8.5 items-start ${indented ? sidebarClasses.indent : ""}`}>
@@ -83,17 +84,33 @@ export function ResearchProjectNavigation({ enabled }: { enabled: boolean }) {
   async function act(action: () => Promise<unknown>, session: ChatSession) {
     try {
       await action();
-      if (session.projectId === QUICK_CHAT_PROJECT_ID) await quickChatSessions.refetch();
-      else await sessions[sorted.findIndex((project) => project.id === session.projectId)]?.refetch();
+      await refresh(session);
     }
     catch (error) { showAlert(error instanceof Error ? error.message : String(error), "error"); }
+  }
+  async function refresh(session: ChatSession) {
+    if (session.projectId === QUICK_CHAT_PROJECT_ID) await quickChatSessions.refetch();
+    else await sessions[sorted.findIndex((project) => project.id === session.projectId)]?.refetch();
+  }
+  async function removeSession(session: ChatSession) {
+    if (!window.confirm(m.chat_delete_session_confirm({ title: session.title || m.chat_untitled() }))) return;
+    try {
+      await deleteChatSession(session.id, true);
+      await refresh(session);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      // 进行中的研究会挡住删除：给出一键结束本轮研究并删除的入口，和项目侧栏保持一致。
+      const alertId = showAlert(reason, "error", researchBlocksSessionDelete(reason) ? {
+        action: { label: m.chat_end_research_then_delete(), onClick: () => { dismissAlert(alertId); void act(() => deleteSessionEndingResearch(session.id, true), session); } },
+      } : undefined);
+    }
   }
   const matching = (rows: ChatSession[]) => rows.filter((session) => isSidebarSession(session) && (filter === "all" || (filter === "archived" ? session.archived : !session.archived))).sort((a, b) => b.updatedAt - a.updatedAt);
   const renderSession = (session: ChatSession) => <SessionRow key={session.id} session={session} active={false} unread={false} busy={session.busy} waiting={false} revealTitle={undefined}
     onOpen={() => sessionNavigation.open(session.projectId, session.id, (pane) => { void navigate({ href: taskLocation(session.projectId, session.id, pane) }); })}
     onRename={(title) => void act(() => renameChatSession(session.id, title, true), session)}
     onSetArchived={(archived) => void act(() => setChatSessionArchived(session.id, archived, true), session)}
-    onDelete={() => { if (window.confirm(m.chat_delete_session_confirm({ title: session.title || m.chat_untitled() }))) void act(() => deleteChatSession(session.id, true), session); }} />;
+    onDelete={() => void removeSession(session)} />;
   const skeleton = <div role="status" aria-busy="true" aria-label="正在准备项目列表" className="flex flex-col gap-2.5 px-2 py-1">
     <p className="m-0 text-xs text-subtext">正在准备项目列表…</p>
     <div aria-hidden="true" className="flex flex-col gap-2 motion-safe:animate-pulse">

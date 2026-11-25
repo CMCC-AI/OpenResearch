@@ -10,10 +10,15 @@ export function Toaster(props: ComponentProps<typeof SonnerToaster>) {
 }
 
 export function showAlert(message: string, type: ToastVariant, options?: ExternalToast) {
-  toast[type](message, {
+  return toast[type](message, {
     duration: type === "warning" || type === "error" ? Infinity : 5000,
     position: "top-center",
     closeButton: true,
     ...options,
   });
+}
+
+/** 行动按钮完成后收起原提示，避免留下已经不适用的错误。 */
+export function dismissAlert(id: string | number) {
+  toast.dismiss(id);
 }

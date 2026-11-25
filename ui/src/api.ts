@@ -2410,8 +2410,8 @@ export const checkLocalModel = (id: string) => post<{ models: string[] }>(`/api/
 export const removeLocalModel = (id: string) => writeResponse(`/api/local-models/${encodeURIComponent(id)}`, { method: "DELETE" }).then((r) => json<{ ok: boolean }>(r));
 
 // Expert research uses native project sessions, runs and artifacts.
-export const getResearchStudy = (sessionId: string, signal?: AbortSignal) =>
-  get<{ study: import("./research").ResearchStudy | null; runs: Run[]; metrics?: import("./research").ResearchMetrics | null }>(`/api/research/sessions/${sessionId}`, signal);
+export const getResearchStudy = (sessionId: string, signal?: AbortSignal, personal = false) =>
+  get<{ study: import("./research").ResearchStudy | null; runs: Run[]; metrics?: import("./research").ResearchMetrics | null }>(`/api/research/sessions/${sessionId}`, signal, personal);
 export const decideResearchGate = (studyId: string, decisionId: string, scopeHash: string, approved: boolean, reason: string) =>
   post<{ ok: boolean; resumeError?: string | null }>(`/api/research/studies/${studyId}/decisions/${decisionId}`, { scopeHash, approved, reason });
 export const endResearchStudy = (studyId: string, version: number) =>

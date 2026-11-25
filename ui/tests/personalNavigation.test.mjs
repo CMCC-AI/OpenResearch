@@ -139,6 +139,7 @@ test("the original sidebar renders project menus and new-chat controls while a c
     } },
     "../paraglide/messages.js": { m: messages }, "../researchSessions": { isSidebarSession: () => true },
     "../product/AuthSession": { useOptionalAuthSession: () => ({ user: {} }) }, "../sidebarSnapshot": sidebarSnapshot, "./ui": ui,
+    "../deleteSession": { deleteSessionEndingResearch: async () => {}, researchBlocksSessionDelete: () => false },
   });
   const storage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   try {
@@ -255,6 +256,7 @@ test("the real home SessionRow opens the personal session with its saved pane",a
     "../paraglide/messages.js":{m:messages},"../researchSessions":{isSidebarSession:()=>true},"../product/AuthSession":{useOptionalAuthSession:()=>({user:{}})},
     "../sidebarSnapshot":sidebarSnapshot,
     "./ui":{Button:({children})=>children,IconButton:({children})=>children,showAlert:()=>{}},
+    "../deleteSession":{deleteSessionEndingResearch:async()=>{},researchBlocksSessionDelete:()=>false},
   });
   globalThis.fetch=async()=>Response.json({version:1,tasks:{s:{active:{kind:"side",sessionId:"own-side"}}}});
   try{
@@ -296,6 +298,7 @@ test("navigation renders a skeleton before cached projects arrive and shows wake
     "../paraglide/messages.js": { m: messages }, "../researchSessions": { isSidebarSession: () => true },
     "../product/AuthSession": { useOptionalAuthSession: () => ({ user: { id: "u1" } }) }, "../sidebarSnapshot": sidebarSnapshot,
     "./ui": { Button: ({ children }) => children, IconButton: ({ children }) => children, showAlert: () => {} },
+    "../deleteSession": { deleteSessionEndingResearch: async () => {}, researchBlocksSessionDelete: () => false },
   });
   try {
     const pendingHtml = renderToStaticMarkup(React.createElement(ResearchProjectNavigation, { enabled: true }));

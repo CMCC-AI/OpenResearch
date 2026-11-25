@@ -219,21 +219,32 @@ export function HumanSubmitForm({ study, task }: { study: ResearchStudy; task: R
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
+  // 文件不存在或不可读时也要结束载入状态，否则用户会一直看到「正在载入」且无从提交。
+  const [loadMissing, setLoadMissing] = useState(false);
   const output = task.outputs[0];
   // 验收被撤回/作废后，产物文件通常就是用户想重新提交的正文；载入它，避免重新手打。
   const reopened = Boolean(task.summary && (task.summary.includes("原验收作废") || task.summary.includes("已撤回该步验收")));
-  const loadedFor = useRef<string | null>(null);
   useEffect(() => {
-    if (!reopened || loadedFor.current === task.id) return;
-    loadedFor.current = task.id;
+    if (!reopened) {
+      setLoading(false);
+      setLoadMissing(false);
+      return;
+    }
+    // 不缓存「已载入」标记：StrictMode 会先执行一次再立刻清理，标记一旦生效，
+    // 第二次执行就会跳过，而第一次的结果已被丢弃，loading 将永远停不下来。
     let cancelled = false;
     setLoading(true);
+    setLoadMissing(false);
     void api.getArtifactFileText(study.projectId, `research/${study.id}/${output}`)
       .then((file) => {
-        if (cancelled || !file || file.binary || file.truncated || file.content.length > 24000) return;
+        if (cancelled) return;
+        if (!file || file.binary || file.truncated || file.content.length > 24000) {
+          setLoadMissing(true);
+          return;
+        }
         setContent((current) => current || file.content);
       })
-      .catch(() => { /* 文件不存在时保持空白，由用户直接填写。 */ })
+      .catch(() => { if (!cancelled) setLoadMissing(true); /* 文件不存在时保持空白，由用户直接填写。 */ })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [reopened, task.id, study.projectId, study.id, output]);
@@ -257,7 +268,8 @@ export function HumanSubmitForm({ study, task }: { study: ResearchStudy; task: R
       <textarea className="min-h-24 resize-y rounded-md border border-border bg-background p-2.5 text-sm text-text outline-none focus:border-text" value={content} maxLength={24000} aria-label="人工任务产出" onChange={(event) => setContent(event.target.value)} />
     </label>
     {loading && <p className="m-0 text-xs text-subtext">正在载入当前文件内容…</p>}
-    {reopened && !loading && <p className="m-0 text-xs text-subtext">已载入当前文件内容；提交后会重新验收这一步。</p>}
+    {reopened && !loading && !loadMissing && <p className="m-0 text-xs text-subtext">已载入当前文件内容；提交后会重新验收这一步。</p>}
+    {reopened && loadMissing && !loading && <p className="m-0 text-xs text-subtext">没找到可载入的既有内容，请直接填写后提交。</p>}
     {error && <p className="m-0 text-xs text-accent-red" role="alert">{error}</p>}
     <Button size="small" disabled={!content.trim() || busy} onClick={() => void submit()}>{busy ? "提交中…" : "提交并继续"}</Button>
   </div>;

@@ -2547,7 +2547,9 @@ impl Store {
         let tx = self.begin_immediate()?;
         if let Some(study) = self.research_for_session(id)? {
             if study.status == "active" {
-                return Err(anyhow!("当前会话关联的研究仍处于活动状态，暂不能删除。"));
+                return Err(anyhow!(
+                    "这个对话关联的研究还没结束；请先结束本轮研究，再删除对话。"
+                ));
             }
         }
         let has_children: bool = tx.query_row(

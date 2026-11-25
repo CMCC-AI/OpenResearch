@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 import { defaultRangeExtractor } from "@tanstack/react-virtual";
 
@@ -196,4 +198,18 @@ test("returning from an expert restores reading instead of forcing the main tran
   listener();
   cleanup();
   assert.deepEqual(remembered, { key: "main", offset: 1600, atBottom: false, width: 800 });
+});
+
+test("research conversations state who is answering above each reply", () => {
+  const declaration = find(node => ts.isFunctionDeclaration(node) && node.name?.text === "SpeakerLabel");
+  const js = ts.transpileModule(declaration.getText(file), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React },
+  }).outputText;
+  const SpeakerLabel = new Function("React", "Users", `${js}\nreturn SpeakerLabel;`)(React, props => React.createElement("svg", props));
+  const html = renderToStaticMarkup(React.createElement(SpeakerLabel, { name: "主理人" }));
+  assert.match(html, /data-speaker-name="主理人"/);
+  assert.match(html, />主理人</);
+  // 主线程按研究状态署名，逐条消息把 speaker 传给助手回复；普通对话不传，保持匿名。
+  find(node => ts.isJsxAttribute(node) && node.name.getText(file) === "speaker" && node.initializer?.getText(file).includes("conversationStudy"));
+  find(node => ts.isJsxAttribute(node) && node.name.getText(file) === "speaker" && node.initializer?.getText(file) === "{speaker}");
 });

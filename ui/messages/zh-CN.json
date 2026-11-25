@@ -543,6 +543,7 @@
   "status_idle": "空闲",
   "chat_delete_session_confirm": "删除“{title}”？\n\n其聊天记录及所有侧边聊天都将被永久删除。",
   "chat_delete_session_failed": "删除“{title}”失败：{error}",
+  "chat_end_research_then_delete": "结束研究并删除",
   "chat_untitled": "未命名",
   "skills_delete_skill_label": "删除技能 {name}",
   "skills_delete_skill_confirm": "删除技能“{name}”？",

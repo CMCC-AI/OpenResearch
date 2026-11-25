@@ -539,6 +539,7 @@
   "status_idle": "Bezczynny",
   "chat_delete_session_confirm": "Usunąć „{title}”?\n\nHistoria rozmowy i wszystkie czaty poboczne zostaną trwale usunięte.",
   "chat_delete_session_failed": "Nie udało się usunąć „{title}”: {error}",
+  "chat_end_research_then_delete": "Zakończ badanie i usuń",
   "chat_untitled": "Bez tytułu",
   "skills_delete_skill_label": "Usuń umiejętność {name}",
   "skills_delete_skill_confirm": "Usunąć umiejętność „{name}”?",

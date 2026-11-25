@@ -535,6 +535,7 @@
   "status_idle": "بی‌کار",
   "chat_delete_session_confirm": "«{title}» حذف شود؟\n\nمتن گفتگو و تمام گفتگوهای جانبی آن برای همیشه حذف خواهند شد.",
   "chat_delete_session_failed": "حذف «{title}» ناموفق بود: {error}",
+  "chat_end_research_then_delete": "پایان پژوهش و حذف",
   "chat_untitled": "بدون عنوان",
   "skills_delete_skill_label": "حذف مهارت {name}",
   "skills_delete_skill_confirm": "مهارت «{name}» حذف شود؟",

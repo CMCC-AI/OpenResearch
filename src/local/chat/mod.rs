@@ -7370,7 +7370,9 @@ impl ChatHost {
             .research_for_session(session_id)?
             .is_some_and(|study| study.status == "active")
         {
-            return Err(anyhow!("当前会话关联的研究仍处于活动状态，暂不能删除。"));
+            return Err(anyhow!(
+                "这个对话关联的研究还没结束；请先结束本轮研究，再删除对话。"
+            ));
         }
         for side_chat in store.side_chats_of(session_id)? {
             Box::pin(self.delete_session(&side_chat)).await?;

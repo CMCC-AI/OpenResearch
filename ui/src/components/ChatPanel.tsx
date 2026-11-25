@@ -31,6 +31,7 @@ import { fitSidebarRows, sidebarRowHeight, sidebarClasses, type SidebarRow } fro
 import { useVirtualizer, defaultRangeExtractor, measureElement as measureVirtualElement, type Range as VirtualRange } from "@tanstack/react-virtual";
 import { markLiveUpdate } from "../queries/live";
 import { removeSession as removeCachedSession } from "../queries/invalidation";
+import { deleteSessionEndingResearch, researchBlocksSessionDelete } from "../deleteSession";
 import {
   isCurrentScope,
   setScopedQueryData,
@@ -260,7 +261,7 @@ import {
   shouldRecoverLegacyMath,
   tableMarkdown,
 } from "./annotationMarkdown";
-import { Button, IconButton, LoadingRow, showAlert, Spinner, Tooltip } from "./ui";
+import { Button, dismissAlert, IconButton, LoadingRow, showAlert, Spinner, Tooltip } from "./ui";
 import { PaperTitle } from "./PaperTitle";
 
 const TOOL_LINE_CLASS_NAME = "tool-line flex-1 min-w-0 line-clamp-2 break-words text-base leading-6";
@@ -3014,6 +3015,7 @@ function ForkControls({
 
 export const Message = memo(function Message({
   message,
+  speaker,
   activePermissionId,
   pendingTailToolId,
   onOpenFile,
@@ -3040,6 +3042,8 @@ export const Message = memo(function Message({
   onSelectFork,
 }: {
   message: ChatMessage;
+  /** 研究/工作流会话里这条回答的发言人（主理人或专家名）；普通对话为空。 */
+  speaker?: string | null;
   activePermissionId: string | null;
   pendingTailToolId?: string | null;
   onOpenFile?: OpenTranscriptFile;
@@ -3203,6 +3207,7 @@ export const Message = memo(function Message({
   const copyText = predictTextTail && !message.completedAt ? "" : responseText(message);
   return (
     <div className="msg-assistant group/turn text-base leading-[1.62] text-text min-w-0">
+      {speaker ? <SpeakerLabel name={speaker} /> : null}
       <AssistantTurn message={message} parts={regularParts} options={{
         activePermissionId,
         pendingTailToolId,
@@ -3242,6 +3247,16 @@ export const Message = memo(function Message({
     </div>
   );
 });
+
+/** 多专家对话里标明这条回答的发言人；普通一对一对话不传 speaker，保持匿名。 */
+function SpeakerLabel({ name }: { name: string }) {
+  return (
+    <div className="msg-speaker mb-2 flex items-center gap-1.5 text-sm font-medium text-subtext" data-speaker-name={name}>
+      <Users size={15} className="shrink-0" aria-hidden="true" />
+      <span className="min-w-0 truncate">{name}</span>
+    </div>
+  );
+}
 
 function AssistantTurn({ message, parts, options }: {
   message: ChatMessage;
@@ -3776,6 +3791,7 @@ const TRANSCRIPT_ROW_SIZES_LIMIT = 5_000;
 
 export const Transcript = memo(function Transcript({
   messages,
+  speaker,
   sessionKey,
   scrollRef,
   scrollToEndRef,
@@ -3801,6 +3817,8 @@ export const Transcript = memo(function Transcript({
 }: {
   /** The branch on screen, oldest first. */
   messages: ChatMessage[];
+  /** 研究/工作流会话里助手回复的发言人；为空时保持普通匿名对话。 */
+  speaker?: string | null;
   sessionKey?: string;
   scrollRef: React.RefObject<HTMLDivElement | null>;
   scrollToEndRef: React.RefObject<(() => void) | null>;
@@ -3980,6 +3998,7 @@ export const Transcript = memo(function Transcript({
           >
           <Message
             message={m}
+            speaker={speaker}
             forkCount={positions.get(m.id)?.count}
             forkIndex={positions.get(m.id)?.index}
             forkPrevId={positions.get(m.id)?.prevId}
@@ -6169,10 +6188,23 @@ export function ChatPanel({
   async function removeSession(session: ChatSession) {
     const title = session.title?.trim() || m.chat_untitled();
     if (!window.confirm(m.chat_delete_session_confirm({ title: autoDir(title) }))) return;
+    const failed = (reason: string) => m.chat_delete_session_failed({ title: autoDir(title), error: ltr(reason) });
     try {
       await deleteChatSessionMutation.mutateAsync(session.id);
     } catch (err) {
-      showAlert(m.chat_delete_session_failed({ title: autoDir(title), error: ltr(err instanceof Error ? err.message : String(err)) }), "error");
+      const reason = err instanceof Error ? err.message : String(err);
+      // 进行中的研究会挡住删除：给出一键结束本轮研究并删除的入口，而不是让用户卡在错误上。
+      const alertId = showAlert(failed(reason), "error", researchBlocksSessionDelete(reason) ? {
+        action: {
+          label: m.chat_end_research_then_delete(),
+          onClick: () => {
+            dismissAlert(alertId);
+            void deleteSessionEndingResearch(session.id)
+              .then(() => forgetSession(session.id))
+              .catch((next) => showAlert(failed(next instanceof Error ? next.message : String(next)), "error"));
+          },
+        },
+      } : undefined);
       return;
     }
     forgetSession(session.id);
@@ -6600,6 +6632,8 @@ export function ChatPanel({
                 <Transcript
                   key={activeId}
                   sessionKey={activeId ?? undefined}
+                  // 研究/工作流会话的主线程只由主理人发言，署名避免读者误以为是某个专家。
+                  speaker={conversationStudy ? "主理人" : null}
                   scrollRef={threadRef}
                   scrollToEndRef={scrollToEndRef}
                   stickToBottom={stickToBottom}

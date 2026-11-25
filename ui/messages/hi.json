@@ -539,6 +539,7 @@
   "status_idle": "निष्क्रिय",
   "chat_delete_session_confirm": "“{title}” हटाएँ?\n\nइसका वार्तालाप और सभी साइड चैट स्थायी रूप से हटा दिए जाएँगे।",
   "chat_delete_session_failed": "“{title}” हटाने में विफल: {error}",
+  "chat_end_research_then_delete": "अनुसंधान समाप्त करें और हटाएँ",
   "chat_untitled": "बिना शीर्षक",
   "skills_delete_skill_label": "{name} स्किल हटाएं",
   "skills_delete_skill_confirm": "“{name}” स्किल हटाएं?",
