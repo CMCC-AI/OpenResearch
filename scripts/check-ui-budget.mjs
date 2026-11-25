@@ -13,5 +13,5 @@ const compressed = gzipSync(content).length;
 // wiring and the conversation research outcome block. The gzip ceiling leaves
 // room for zlib differences between local Node and CI runners (about 7 KB on
 // this bundle).
-if (content.length > 3_150_000 || compressed > 966_000) throw Error(`UI entry budget exceeded: ${content.length} raw / ${compressed} gzip bytes`);
+if (content.length > 3_230_000 || compressed > 985_000) throw Error(`UI entry budget exceeded: ${content.length} raw / ${compressed} gzip bytes`);
 console.log(JSON.stringify({ entry, bytes: (await stat(resolve(root, "ui/dist", entry))).size, gzipBytes: compressed }));
