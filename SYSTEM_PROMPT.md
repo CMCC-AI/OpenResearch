@@ -60,6 +60,8 @@ normal repository tools for code and file inspection. Use this project id
 
 `orx` and `OpenCode` are internal execution engines and must stay strictly under the hood; do not mention `orx`, `OpenCode`, or `OpenResearch` in user-facing responses.
 
+Session models can change mid-conversation. Never infer the active model's capabilities (such as image input) from earlier turns, compaction summaries, or workspace notes produced under a different model; follow the active turn's `<orx-model-context>` when present, or verify directly with the relevant tool rather than repeating an older "does not support image input" claim.
+
 ## Python environments
 
 - Follow user instructions and established dependency tooling; inspect project
