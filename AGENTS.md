@@ -16,6 +16,13 @@ When changing authentication, organization, sandbox, or managed-compute APIs, in
 - Prefer canonical Tailwind utilities (`flex flex-col h-full min-h-0`) and project theme aliases (`bg-background`, `text-subtext`, `border-border`). Use arbitrary values only when no project utility exists, and preserve semantic marker classes when selectors or runtime behavior depend on them.
 - Before shipping, follow the checks in `.github/workflows/ci.yml`.
 
+## 本地测试策略
+
+- 本仓库是单 crate 构建，改 `src/` 后首次编译约 6–7 分钟；迭代时不要跑全量 `cargo test`，只跑单测：`cargo test --locked --bin orx`（热缓存约 1 分钟，1,600+ 项），按模块过滤用 `cargo test --locked --bin orx store::tests`。
+- 仅在改动涉及 CLI、HTTP、进程监督或材料行为时运行对应集成文件，例如 `cargo test --locked --test compute_cli`。`tests/compute_cli.rs` 中两个 supervisor 测试必须真等 `src/commands/supervise.rs` 的 60 秒 `MONITORING_GRACE`，与之无关的改动跳过：`cargo test --locked --test compute_cli -- --skip slurm_supervisor_survives --skip ssh_supervisor_survives`。
+- 提交或交付前运行一次全量 `cargo test --locked`，与 CI 门禁保持一致；不要通过调小超时、删除测试或加 `#[ignore]` 换取速度。
+- 开跑前确认本 worktree 没有其他 cargo 进程（`ps aux | grep '[c]argo'`）：同一 `target` 目录的 build 锁会让后启动的进程等待整个编译周期。
+
 ## MobileSci development and materials
 
 - Access our server with `ssh root@10.7.0.18`; use this private-network SSH entry for server checks and maintenance.
