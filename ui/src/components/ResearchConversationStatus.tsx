@@ -8,7 +8,7 @@ export function ResearchConversationStatus({ status, onOpen }: { status: Status;
   const Icon = status.kind === "complete" ? CheckCircle2
     : status.kind === "paused" ? Pause
     : status.kind === "confirmation" || status.kind === "attention" ? CircleHelp : CircleDot;
-  const content = <><Icon size={13} className="shrink-0" aria-hidden="true" /><span>{status.label}</span>{onOpen && <ChevronRight size={12} className="shrink-0" aria-hidden="true" />}</>;
+  const content = <><Icon size={13} className="shrink-0" aria-hidden="true" /><span className="min-w-0 truncate" title={status.label}>{status.label}</span>{onOpen && <ChevronRight size={12} className="shrink-0" aria-hidden="true" />}</>;
   return <div role="status" className={`min-w-0 text-xs ${tone}`}>
     {onOpen ? <button type="button" onClick={onOpen} title="查看研究进度与人工确认" className="flex min-w-0 items-center gap-1.5 rounded text-start hover:underline focus-visible:outline-2 focus-visible:outline-primary">{content}</button>
       : <span className="flex min-w-0 items-center gap-1.5">{content}</span>}

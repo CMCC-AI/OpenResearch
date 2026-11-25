@@ -132,8 +132,13 @@ export function WorkModeSwitch({ value, onChange, readOnly = false, activeWorkfl
   if (compact && !readOnly) return <CompactWorkModeSwitch value={value} onChange={onChange} workflows={workflows} workflowsPending={savedWorkflows.isPending} workflowsError={savedWorkflows.error !== null} workflowDraftId={workflowDraftId} onWorkflowDraftChange={onWorkflowDraftChange} />;
   const workflow = presetWorkflowModes.includes(value as PresetWorkflowMode) ? value as PresetWorkflowMode : null;
   const Icon = categoryIcon(category);
+  // 只读行已经说明是哪个模式：把流程/工作流名并进同一行，长名字截断而不是换行铺满输入框上方。
+  const readOnlyDetail = category === "workflow" ? boundWorkflowName ?? "保存的工作流"
+    : category === "team" ? (workflow ? `指定流程：${researchModes[workflow]}` : value === "team" ? `自动判断${activeWorkflow ? ` · 当前流程：${researchModes[activeWorkflow]}` : ""}` : "历史研究流程")
+      : null;
+  const readOnlyLabel = `${workModeLabels[category]}${readOnlyDetail ? ` · ${readOnlyDetail}` : ""}`;
   return <div className="min-w-0" aria-label={readOnly ? "当前工作模式" : "工作模式切换"}>
-    {readOnly ? <div className="flex flex-wrap items-center gap-2 text-sm"><span className="inline-flex items-center gap-2 text-primary"><Icon size={15} />{workModeLabels[category]}</span>{category === "workflow" && <span className="text-subtext">{boundWorkflowName ? `这个对话使用工作流「${boundWorkflowName}」` : "这个对话使用保存的工作流"}</span>}{category === "team" && <span className="text-subtext">{workflow ? `指定流程：${researchModes[workflow]}` : value === "team" ? `自动判断${activeWorkflow ? ` · 当前流程：${researchModes[activeWorkflow]}` : ""}` : "历史研究流程"}</span>}</div> : <div className="flex flex-wrap items-center gap-3">
+    {readOnly ? <div className="flex min-w-0 items-center gap-2 text-sm"><span className="inline-flex min-w-0 items-center gap-2 text-primary" title={readOnlyLabel}><Icon size={15} className="shrink-0" /><span className="min-w-0 truncate">{readOnlyLabel}</span></span></div> : <div className="flex flex-wrap items-center gap-3">
       <label className="inline-flex max-w-full items-center gap-2 text-sm text-primary"><Icon size={15} className="shrink-0" /><select aria-label="工作模式大类" value={category} onChange={(event) => { const next = event.target.value; onChange(next === "normal" || next === "workflow" ? next : workflow ?? "team"); }} className="min-w-0 rounded-lg border border-border bg-background px-3 py-2 text-sm text-text">
         <option value="normal">{workModeLabels.normal}</option>
         <option value="team">{workModeLabels.team}</option>

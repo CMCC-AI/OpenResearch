@@ -124,7 +124,7 @@ test("persisted studies display category and submode separately without allowing
   for (const value of ["normal", ...research.presetWorkflowModes, "team", "diagnosis"]) {
     const tree = render({ value, onChange() { throw new Error("unexpected mutation"); }, readOnly: true });
     assert.ok(!tree.some((node) => node.type === "select"));
-    const text = tree.filter((node) => node.type === "span").flatMap((node) => React.Children.toArray(node.props.children)).filter((child) => typeof child === "string");
+    const text = tree.filter((node) => node.type === "span").flatMap((node) => React.Children.toArray(node.props.children)).filter((child) => typeof child === "string").join("");
     assert.ok(text.includes(value === "normal" ? "工作模式" : "专家团模式"));
     if (research.presetWorkflowModes.includes(value)) assert.ok(text.includes(`指定流程：${research.researchModes[value]}`));
   }
@@ -134,7 +134,8 @@ test("workflow-bound studies display as workflow mode with the bound name", () =
   assert.ok(!tree.some((node) => node.type === "select"));
   const text = tree.filter((node) => node.type === "span").flatMap((node) => React.Children.toArray(node.props.children)).filter((child) => typeof child === "string").join("");
   assert.ok(text.includes("工作流模式"));
-  assert.ok(text.includes("这个对话使用工作流「文献流水线」"));
+  assert.ok(text.includes("文献流水线"));
+  assert.ok(!text.includes("这个对话使用工作流"));
   assert.ok(!text.includes("专家团模式"));
 });
 
@@ -148,7 +149,7 @@ test("team mode defaults to automatic routing and allows opting in and out of a 
   workflow.props.onChange({ target: { value: "team" } });
   assert.deepEqual(localChanges, ["analysis", "team"]);
   const readonly = render({ value: "team", activeWorkflow: "proposal", readOnly: true, onChange() {} });
-  assert.ok(readonly.some((node) => node.props.children === "自动判断 · 当前流程：Idea 到实验方案"));
+  assert.ok(readonly.some((node) => itemText(node).includes("自动判断 · 当前流程：Idea 到实验方案")));
 });
 
 test("compact menu shows the three categories and keeps presets one click away", () => {

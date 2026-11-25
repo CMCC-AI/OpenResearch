@@ -57,13 +57,18 @@ export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSess
     </div>}
     {study?.deliveryNotice && <p role="status" className="text-sm text-accent-amber">{study.deliveryNotice}</p>}
     {study?.status === "stopped" && <p role="status" className="text-sm text-subtext">本轮研究已结束，历史记录继续保留。</p>}
-    {pendingDecisions.length > 0 ? pendingDecisions.map(renderDecision) : <p className="text-sm text-subtext">{study?.status === "active" && plan?.tasks.length && plan.tasks.every((task) => task.state === "completed") && !decisions.some((decision) => decision.status === "approved" && decision.gate === deliveryGate(researchWorkflowMode(study))) ? "交付确认尚未生成，请先处理交付校验问题；无需重复修订全部任务。" : "暂无待确认事项"}</p>}
+    {pendingDecisions.length > 0 ? pendingDecisions.map(renderDecision) : placement !== "conversation" ? <p className="text-sm text-subtext">{study?.status === "active" && plan?.tasks.length && plan.tasks.every((task) => task.state === "completed") && !decisions.some((decision) => decision.status === "approved" && decision.gate === deliveryGate(researchWorkflowMode(study))) ? "交付确认尚未生成，请先处理交付校验问题；无需重复修订全部任务。" : "暂无待确认事项"}</p : null}
     {decided.length > 0 && <details><summary className="cursor-pointer text-xs text-subtext">确认记录（{decided.length}）</summary><div className="mt-2 flex flex-col gap-2">{decided.map(renderDecision)}</div></details>}
     {error && <p role="alert" className="text-sm text-accent-red">{error}</p>}
   </>;
   const dagDialog = dagOpen && (sessionId && (queryError || pending) ? <ResearchStateErrorDialog loading={pending} error={queryError?.message ?? ""} onRetry={() => void query.refetch()} onClose={() => setDagOpen(false)} /> : <ResearchTeamDagDialog metrics={data?.metrics} study={study ?? null} runs={data?.runs ?? []} onClose={() => setDagOpen(false)} confirmationContent={<>{decisionCards}{endResearchBlock}</>} onOpenSession={onOpenSession} />);
   const openResearch = () => onOpenResearch ? onOpenResearch() : setDagOpen(true);
-  if (placement === "conversation") return <section aria-label="研究确认" className="flex flex-col gap-3">{queryError ? <div role="alert" className="text-sm text-accent-red">确认状态读取失败<Button size="small" onClick={() => void query.refetch()}>重试</Button></div> : study ? <>{decisionCards}{plan?.workflowSource ? endResearchBlock : null}</> : null}</section>;
+  if (placement === "conversation") {
+    // 对话里这块只在有确认要处理或有记录可回看时出现；没有待办就不占一行。
+    if (queryError) return <section aria-label="研究确认" className="flex flex-col gap-3"><div role="alert" className="text-sm text-accent-red">确认状态读取失败<Button size="small" onClick={() => void query.refetch()}>重试</Button></div></section>;
+    const hasContent = Boolean(study && (pendingDecisions.length > 0 || decided.length > 0 || study.deliveryError || study.deliveryNotice || study.status === "stopped"));
+    return hasContent ? <section aria-label="研究确认" className="flex flex-col gap-3">{decisionCards}</section> : null;
+  }
   if (readOnly && !study && placement === "composer") return null;
   if (placement === "pane") return <div className="flex h-full min-h-0 flex-col">{pending && sessionId ? <p className="p-4 text-sm text-subtext">正在读取专家团状态…</p> : queryError ? <div role="alert" className="p-4 text-sm text-accent-red">研究状态读取失败：{queryError.message}<Button onClick={() => void query.refetch()}>重试</Button></div> : <ResearchTeamDagDialog embedded metrics={data?.metrics} study={study ?? null} runs={data?.runs ?? []} onClose={() => {}} confirmationContent={<>{decisionCards}{endResearchBlock}</>} onOpenSession={onOpenSession} />}</div>;
   if (placement === "workspace") {
@@ -89,7 +94,7 @@ export function ResearchPanel({ sessionId, onStartWorkflow, disabled, onOpenSess
       </div>
       <p role="status" className="mt-2 text-sm font-medium text-primary">{researchAttention(study)}</p>
       {activeStages.length > 0 && <p className="mt-1 text-xs text-subtext">当前环节：{activeStages.map((stage) => stage.title).join(" · ")}</p>}
-      <div className="mt-2 flex items-center gap-3"><div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-surface" role="progressbar" aria-label="已验收专家任务" aria-valuemin={0} aria-valuemax={progress?.total || 1} aria-valuenow={progress?.completed ?? 0}><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progress?.total ? progress.completed / progress.total * 100 : 0}%` }} /></div><span className="shrink-0 text-xs text-subtext">{progress?.completed}/{progress?.total} 任务{plan ? ` · v${plan.version}` : " · 规划中"}</span></div>
+      <div className="mt-2 flex items-center gap-3"><div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-surface" role="progressbar" aria-label="已验收专家任务" aria-valuemin={0} aria-valuemax={progress?.total || 1} aria-valuenow={progress?.completed ?? 0}><div className="h-full rounded-full bg-primary" style={{ width: `${progress?.total ? progress.completed / progress.total * 100 : 0}%` }} /></div><span className="shrink-0 text-xs text-subtext">{progress?.completed}/{progress?.total} 任务{plan ? ` · v${plan.version}` : " · 规划中"}</span></div>
 
     </div>}
     {error && <p role="alert" className="px-3 pb-3 text-accent-red">{error}</p>}

@@ -16,7 +16,7 @@ test("an idle lead with dispatched experts keeps the research visibly in progres
   const value = study();
   const waiting = status(value);
   assert.equal(waiting.kind, "experts");
-  assert.match(waiting.label, /主理人正在等待任务结果/);
+  assert.match(waiting.label, /1 项任务处理中/);
   assert.match(waiting.placeholder, /可以补充要求或提出问题/);
   assert.equal(status(value, { busy: true }).kind, "working");
   // A live child overrides a delayed persisted task state; unrelated sessions do not.
@@ -80,7 +80,7 @@ test("failed, stopped, unavailable, and unplanned studies never appear completed
   assert.match(status({ ...study(), status: "stopped" }).label, /已停止/);
   assert.equal(status({ ...study(), status: "paused" }).kind, "paused");
   assert.match(status({ ...study(), status: "paused" }).label, /已暂停/);
-  assert.match(status(study(), { stopping: true }).label, /停止主理人的当前回复/);
+  assert.match(status(study(), { stopping: true }).label, /停止当前回复/);
   assert.equal(status(study([task("completed")], [decision("approved")]), { unavailable: true }).kind, "attention");
 });
 
@@ -94,7 +94,7 @@ test("the status is announced and offers progress navigation without a stop cont
   const props = { status: status(study()), onOpen() {} };
   const html = renderToStaticMarkup(React.createElement(exported.ResearchConversationStatus, props));
   assert.match(html, /role="status"/);
-  assert.match(html, /主理人正在等待任务结果/);
+  assert.match(html, /1 项任务处理中/);
   assert.match(html, /<button/);
   assert.doesNotMatch(html, /停止/);
   const nonInteractive = renderToStaticMarkup(React.createElement(exported.ResearchConversationStatus, { status: props.status }));

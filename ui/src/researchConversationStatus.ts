@@ -20,7 +20,7 @@ export function researchConversationStatus(study: ResearchStudy, {
   if (unavailable) return { kind: "attention", label: "研究状态暂不可用 · 点击查看" };
   if (study.status === "stopped") return { kind: "idle", label: "本轮研究已停止" };
   if (study.status === "paused") return { kind: "paused", label: "研究已暂停 · 点击继续按钮恢复" };
-  if (stopping) return { kind: "working", label: "正在停止主理人的当前回复…" };
+  if (stopping) return { kind: "working", label: "正在停止当前回复…" };
   const tasks = study.plans.at(-1)?.tasks ?? [];
   const decisions = currentDecisions(study);
   const activeRuns = runs.filter((run) => !["done", "failed", "cancelled"].includes(run.status));
@@ -29,12 +29,12 @@ export function researchConversationStatus(study: ResearchStudy, {
   const pending = decisions.filter((decision) => decision.status === "pending");
   if (pending.length || waitingForInput) return {
     kind: "confirmation",
-    label: `${pending.length ? `待你确认 · ${pending.length} 项` : "主理人正在等待你的回复"}${activeTasks.length ? ` · ${activeTasks.length} 项专家任务处理中` : ""}`,
+    label: `${pending.length ? `待你确认 · ${pending.length} 项` : "等你回复"}${activeTasks.length ? ` · ${activeTasks.length} 项专家任务处理中` : ""}`,
   };
-  if (busy) return { kind: "working", label: "主理人正在处理…" };
+  if (busy) return { kind: "working", label: "正在处理…" };
   if (activeTasks.length) return {
     kind: "experts",
-    label: `主理人正在等待任务结果 · ${activeTasks.length} 项任务处理中`,
+    label: `${activeTasks.length} 项任务处理中`,
     placeholder: "任务正在处理，你可以补充要求或提出问题…",
   };
   if (activeRuns.length) return {

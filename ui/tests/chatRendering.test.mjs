@@ -5,6 +5,7 @@ import {
   partIsVisible,
   pendingQuestionId,
   partsTailToolId,
+  runningTailToolId,
   streamTailIsText,
   streamTailTool,
   lastResponseText,
@@ -40,6 +41,19 @@ test("errored tools and visible text end the tool tail", () => {
   assert.equal(partsTailToolId([error]), null);
   assert.equal(partsTailToolId([{ id: "tool", type: "tool" }, text]), null);
   assert.equal(streamTailIsText([message(text)]), true);
+});
+
+test("only a live transcript animates a tool that is still executing", () => {
+  const running = { id: "run", type: "tool", state: { status: "running" } };
+  const done = { id: "done", type: "tool", state: { status: "completed" } };
+  const text = { id: "text", type: "text", text: "answer" };
+
+  assert.equal(runningTailToolId([done, running], true), "run");
+  assert.equal(runningTailToolId([running, { id: "reasoning", type: "reasoning" }], true), "run");
+  // A finished turn, a finished tail, or text after the call keeps the row static.
+  assert.equal(runningTailToolId([done, running], false), null);
+  assert.equal(runningTailToolId([running, done], true), null);
+  assert.equal(runningTailToolId([running, text], true), null);
 });
 
 test("only the selected unresolved permission is visible when one is active", () => {

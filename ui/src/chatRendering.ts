@@ -75,6 +75,19 @@ export function partsTailToolId(parts: ChatPart[]): string | null {
   return null;
 }
 
+/** The tool a live transcript animates: the last visible part, only while it
+ * is a tool still running. Finished tails stay static so a stale turn never
+ * shimmers forever. */
+export function runningTailToolId(parts: ChatPart[], live: boolean): string | null {
+  if (!live) return null;
+  for (let index = parts.length - 1; index >= 0; index--) {
+    const part = parts[index];
+    if (part.type === "steer" || isTurnStatusPart(part) || !partIsVisible(part)) continue;
+    return part.type === "tool" && part.state?.status === "running" ? part.id : null;
+  }
+  return null;
+}
+
 export function streamTailTool(messages: ChatMessage[]): { messageId: string; toolId: string } | null {
   const message = messages.at(-1);
   if (message?.role !== "assistant") return null;

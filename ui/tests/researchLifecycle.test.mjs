@@ -11,8 +11,12 @@ const require = createRequire(import.meta.url);
 const file = ts.createSourceFile("ResearchPanel.tsx", readFileSync(new URL("../src/components/ResearchPanel.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const declarations = file.statements.filter(ts.isFunctionDeclaration).map(node => node.getText(file).replace(/^export /, "")).join("\n");
 const code = ts.transpileModule(`${declarations}\nexports.Panel = ResearchPanel;`, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+// 结束本轮研究已抽到独立组件；测试同样按源码函数拼接，保持对结束流程的端到端断言。
+const endFile = ts.createSourceFile("EndResearchControl.tsx", readFileSync(new URL("../src/components/EndResearchControl.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const endDeclarations = endFile.statements.filter(ts.isFunctionDeclaration).map(node => node.getText(endFile).replace(/^export /, "")).join("\n");
+const endCode = ts.transpileModule(`${endDeclarations}\nexports.EndResearchControl = EndResearchControl;`, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 
-function setup({ status = "active", readOnly = false, failure = null, disabled = false, decisions = [], tasks = [] } = {}) {
+function setup({ status = "active", readOnly = false, failure = null, disabled = false, decisions = [], tasks = [], placement = "pane" } = {}) {
   const buttons = [], calls = [], errors = [];
   let refetches = 0;
   const study = { id: "study", sessionId: "lead", mode: "team", status, plans: [{ version: 7, tasks, summary: "scope" }], decisions, claims: [] };
@@ -27,9 +31,12 @@ function setup({ status = "active", readOnly = false, failure = null, disabled =
     ResearchModulePreview: () => null,
     endResearchStudy: async (...args) => { calls.push(args); if (failure) throw new Error(failure); },
   };
+  const endExports = {};
+  new Function(...Object.keys(bindings), "exports", endCode)(...Object.values(bindings), endExports);
+  bindings.EndResearchControl = endExports.EndResearchControl;
   const exports = {};
   new Function(...Object.keys(bindings), "exports", code)(...Object.values(bindings), exports);
-  const html = renderToStaticMarkup(React.createElement(exports.Panel, { sessionId: "lead", placement: "pane", disabled }));
+  const html = renderToStaticMarkup(React.createElement(exports.Panel, { sessionId: "lead", placement, disabled }));
   return { html, buttons, calls, errors, get refetches() { return refetches; } };
 }
 
@@ -90,6 +97,16 @@ test("approval scope reads as a task plan instead of raw JSON", () => {
   // 原始 scope JSON 和范围校验编码只留在持久化审批记录里，不再出现在界面。
   assert.doesNotMatch(app.html, /原始审批数据|范围校验|scopeHash|"materialIds"/);
   assert.doesNotMatch(app.html, /bf9df78f/);
+});
+
+test("the conversation card stays out of the way when nothing needs a decision", () => {
+  // 没有待确认、没有记录、没有交付提示时，对话里不留空壳也不写「暂无待确认事项」。
+  assert.equal(setup({ placement: "conversation" }).html, "");
+  const pending = setup({
+    placement: "conversation",
+    decisions: [{ id: "g1", gate: "G1", version: 7, status: "pending", scope: JSON.stringify({ objective: "看结论" }), scopeHash: "g1", reason: null }],
+  });
+  assert.match(pending.html, /研究范围与目标/);
 });
 
 test("delivery confirmation lists the actual files and sizes before approval", () => {

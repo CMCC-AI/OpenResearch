@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { CheckCircle2, ChevronDown, Circle, CircleDot, FileText, ShieldCheck } from "lucide-react";
+import { CheckCircle2, ChevronDown, Circle, CircleDot, CircleStop, FileText, ShieldCheck } from "lucide-react";
 import { artifactUrl, deliveryArtifactUrl, getArtifactFileText, getDeliveryArtifactFileText, interruptChat, reopenHumanTask, type ChatMessage } from "../api";
 import { queryClient, workspaceKey } from "../queries/client";
 import { useChatState } from "../queries/chatStore";
@@ -20,16 +20,18 @@ type DeliverySource = { studyId: string; archive: string } | null;
 
 function StateIcon({ state }: { state: WorkflowState }) {
   const Icon = state === "completed" ? CheckCircle2 : state === "running" ? CircleDot : state === "blocked" ? ShieldCheck : Circle;
-  return <Icon size={16} className={`shrink-0 ${state === "running" ? "animate-pulse" : ""}`} aria-hidden="true" />;
+  return <Icon size={16} className={`shrink-0 ${state === "running" ? "animate-pulse motion-reduce:animate-none" : ""}`} aria-hidden="true" />;
 }
 
-/** Reads original, persisted child messages; SSE updates the existing query cache. */
-function ExpertTranscript({ projectId, sessionId, renderMessage }: { projectId: string; sessionId: string; renderMessage: ExpertRenderer }) {
+/** Reads original, persisted child messages; SSE updates the existing query cache.
+ * `live` marks a task the plan still calls running, so its last call keeps its
+ * in-progress treatment even when the child session's busy flag lags behind. */
+function ExpertTranscript({ projectId, sessionId, renderMessage, live = false }: { projectId: string; sessionId: string; renderMessage: ExpertRenderer; live?: boolean }) {
   const [state, , history] = useChatState(projectId, sessionId);
   const messages = activePath(state.messagesBySession[sessionId] ?? [], state.activeLeafBySession[sessionId]).filter(message => message.role === "assistant");
   if (history.isPending) return <p role="status" className="flex items-center gap-2 text-sm text-subtext"><Spinner />正在读取专家记录…</p>;
   if (history.error) return <div role="alert" className="text-sm text-accent-red">专家记录读取失败<Button size="small" onClick={() => void history.refetch()}>重试</Button></div>;
-  return <div className="flex flex-col gap-4">{messages.length ? messages.map(message => <div key={message.id} data-expert-message-id={message.id}>{renderMessage(message, sessionId, state.busySessions.has(sessionId) && message === messages.at(-1))}</div>) : <p role="status" className="m-0 text-sm text-subtext">等待专家上报进展。</p>}</div>;
+  return <div className="flex flex-col gap-4">{messages.length ? messages.map(message => <div key={message.id} data-expert-message-id={message.id}>{renderMessage(message, sessionId, (live || state.busySessions.has(sessionId)) && message === messages.at(-1))}</div>) : <p role="status" className="m-0 text-sm text-subtext">等待专家上报进展。</p>}</div>;
 }
 
 /** 产物文件按需读取，打开折叠时才请求，并校验内容与验收哈希一致。 */
@@ -306,7 +308,7 @@ function TaskRow({ projectId, study, task, version, renderMessage, onOpenArtifac
         {reopenError && <p role="alert" className="m-0 text-xs text-accent-red">撤回失败：{reopenError}</p>}
       </div>}
       {task.artifacts.map(artifact => <ResearchArtifact key={artifact.sha256 + artifact.path} projectId={projectId} studyId={study.id} artifact={artifact} label={researchArtifactLabel(artifact.path)} paths={paths} onOpenArtifactFile={onOpenArtifactFile} delivery={delivery} />)}
-      {task.sessionId && (runningLive ? <ExpertTranscript projectId={projectId} sessionId={task.sessionId} renderMessage={renderMessage} /> : <details open={processOpen} onToggle={event => setProcessOpen(event.currentTarget.open)}><summary className="cursor-pointer text-xs text-subtext">执行记录</summary>{processOpen && <div className="mt-2"><ExpertTranscript projectId={projectId} sessionId={task.sessionId} renderMessage={renderMessage} /></div>}</details>)}
+      {task.sessionId && (runningLive ? <ExpertTranscript projectId={projectId} sessionId={task.sessionId} renderMessage={renderMessage} live /> : <details open={processOpen} onToggle={event => setProcessOpen(event.currentTarget.open)}><summary className="cursor-pointer text-xs text-subtext">执行记录</summary>{processOpen && <div className="mt-2"><ExpertTranscript projectId={projectId} sessionId={task.sessionId} renderMessage={renderMessage} /></div>}</details>)}
     </div>}
   </li>;
 }
@@ -319,13 +321,25 @@ export function ResearchConversation({ projectId, study, metrics, renderMessage,
   const delivered = Boolean(researchPackageUrl(study)) && !study.evidenceReviewRequired;
   const archive = researchDeliveryArchive(study);
   const delivery: DeliverySource = delivered && archive ? { studyId: study.id, archive } : null;
+  // 计划还没开始时，每个任务都显示同一条「等待确认」：折成一行摘要，展开才看名单。
+  const notStarted = tasks.length > 0 && tasks.every(task => task.state === "pending" && !task.sessionId && !(task.reworkCount ?? 0));
+  const sharedStatus = notStarted ? [...new Set(tasks.map((task) => researchTaskStatus(study, task).label))] : [];
+  const taskList = <ol className="flex flex-col gap-2" data-research-task-list>{tasks.map(task => <TaskRow key={`${plan!.version}:${task.id}:${task.sessionId ?? "pending"}`} projectId={projectId} study={study} task={task} version={plan!.version} renderMessage={renderMessage} onOpenArtifactFile={onOpenArtifactFile} delivery={delivery} />)}</ol>;
   return <section aria-label="对话中的工作流" className="flex min-w-0 flex-col gap-4 rounded-lg border border-border p-4" onClickCapture={event => { if (event.target instanceof Element && event.target.closest("summary")) onInspect?.(); }}>
     <div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-sm">{plan?.workflowSource?.name ?? "科研工作流"}{plan ? ` · 计划 v${plan.version}` : ""}</strong><span role="status" className="text-xs text-subtext">{researchAttention(study)}</span></div>
-    {progress.total > 0 && <div className="flex items-center gap-3"><div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-surface" role="progressbar" aria-label="研究步骤完成情况" aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progress.completed}><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progress.completed / progress.total * 100}%` }} /></div><span className="shrink-0 text-xs text-subtext">{progress.completed}/{progress.total} 个步骤已结束</span></div>}
-    {study.objective.length > 120 ? <details className="group"><summary className="flex cursor-pointer list-none items-start gap-1.5 text-sm text-subtext [&::-webkit-details-marker]:hidden"><span className="line-clamp-2 min-w-0 flex-1 whitespace-pre-wrap group-open:line-clamp-none">{study.objective}</span><ChevronDown size={14} className="mt-1 shrink-0 transition-transform group-open:-rotate-180" aria-hidden="true" /></summary></details> : <p className="m-0 whitespace-pre-wrap text-sm text-subtext">{study.objective}</p>}
+    {progress.total > 0 && !notStarted && <div className="flex items-center gap-3"><div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-surface" role="progressbar" aria-label="研究步骤完成情况" aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progress.completed}><div className="h-full rounded-full bg-primary" style={{ width: `${progress.completed / progress.total * 100}%` }} /></div><span className="shrink-0 text-xs text-subtext">{progress.completed}/{progress.total} 个步骤已结束</span></div>}
     {delivered && <ResearchOutcome projectId={projectId} study={study} metrics={metrics} onOpenArtifactFile={onOpenArtifactFile} />}
     <ResearchPanel placement="conversation" sessionId={study.sessionId} disabled={false} />
-    {tasks.length ? <ol className="flex flex-col gap-2" data-research-task-list>{tasks.map(task => <TaskRow key={`${plan!.version}:${task.id}:${task.sessionId ?? "pending"}`} projectId={projectId} study={study} task={task} version={plan!.version} renderMessage={renderMessage} onOpenArtifactFile={onOpenArtifactFile} delivery={delivery} />)}</ol> : plan && <p role="status" className="m-0 text-sm text-subtext">{currentDecisions(study).some(decision => decision.gate === "G1" && decision.status === "approved") ? "范围已确认，等待就绪专家开始。" : "请先确认本次研究范围，专家随后按依赖执行。"}</p>}
+    {tasks.length ? (notStarted
+      ? <details className="group min-w-0 rounded-lg border border-border bg-surface">
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm text-subtext [&::-webkit-details-marker]:hidden">
+          <Circle size={16} className="shrink-0" aria-hidden="true" />
+          <span className="min-w-0 flex-1 truncate">{tasks.length} 个步骤{sharedStatus.length === 1 ? ` · ${sharedStatus[0]}` : " · 尚未开始"}</span>
+          <ChevronDown size={14} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
+        </summary>
+        <div className="border-t border-border p-3">{taskList}</div>
+      </details>
+      : taskList) : plan && <p role="status" className="m-0 text-sm text-subtext">{currentDecisions(study).some(decision => decision.gate === "G1" && decision.status === "approved") ? "范围已确认，等待就绪专家开始。" : "请先确认本次研究范围，专家随后按依赖执行。"}</p>}
     {study.plans.length > 1 && <details open={historyOpen} onToggle={event => setHistoryOpen(event.currentTarget.open)}><summary className="cursor-pointer text-sm text-subtext">历史计划（{study.plans.length - 1}）</summary>{historyOpen && <div className="mt-3 flex flex-col gap-3">{study.plans.slice(0, -1).map(previous => <details key={previous.version}><summary className="cursor-pointer text-xs text-subtext">计划 v{previous.version}</summary><ol className="mt-2 flex flex-col gap-2">{previous.tasks.map(task => <TaskRow key={`${previous.version}:${task.id}:${task.sessionId ?? "pending"}`} projectId={projectId} study={study} task={task} version={previous.version} renderMessage={renderMessage} onOpenArtifactFile={onOpenArtifactFile} delivery={null} />)}</ol></details>)}</div>}</details>}
   </section>;
 }

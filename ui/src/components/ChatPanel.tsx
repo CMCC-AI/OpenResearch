@@ -182,6 +182,7 @@ import {
   partIsVisible,
   pendingQuestionId,
   partsTailToolId,
+  runningTailToolId,
   streamTailIsText,
   streamTailTool,
   lastResponseText,
@@ -2388,11 +2389,14 @@ function TurnStatusRow({
 }
 
 /** Routine successful calls are static activity rows. Only failures disclose
- * raw command/output, because that detail is useful for diagnosis. */
+ * raw command/output, because that detail is useful for diagnosis. A call the
+ * transcript knows is still running (a long shell command, a live expert
+ * transcript) keeps its label and shimmers instead of looking finished. */
 function ToolRow({
   part,
   activity,
   repeatCount = 1,
+  running = false,
   onOpenFile,
   onOpenRun,
   onOpenSpawnedSession,
@@ -2403,6 +2407,7 @@ function ToolRow({
   part: ChatPart;
   activity: ToolActivity;
   repeatCount?: number;
+  running?: boolean;
   onOpenFile?: OpenTranscriptFile;
   onOpenRun?: OpenTranscriptTarget;
   onOpenSpawnedSession?: (sessionId: string) => void;
@@ -2422,6 +2427,9 @@ function ToolRow({
   if (part.tool === "error") {
     return <TurnStatusRow part={part} busy={false} recovering={false} usageLimited={isUsageLimitPart(part)} />;
   }
+  // Only the transcript's live tail animates: a persisted row that still
+  // claims to run in a finished turn stays static.
+  const live = running && state?.status === "running";
   const line = (
     <>
       {failed && <span className="sr-only">{m.chat_panel_failed()} </span>}
@@ -2430,9 +2438,9 @@ function ToolRow({
           <CircleX size={16} strokeWidth={1.75} className="tool-kind-icon" aria-hidden="true" />
         </span>
       ) : (
-        <ToolActivityIcon activity={activity} className="text-muted" />
+        <ToolActivityIcon activity={activity} className={live ? "tool-running-shimmer-icon" : "text-muted"} />
       )}
-      <span className={`${TOOL_LINE_CLASS_NAME} ${failed ? "text-accent-red group-hover/detail:text-text" : "text-subtext"}`}>
+      <span className={`${TOOL_LINE_CLASS_NAME} ${live ? "tool-running-shimmer" : failed ? "text-accent-red group-hover/detail:text-text" : "text-subtext"}`} title={live ? activity.label : undefined}>
         <ToolActivityLabel
           activity={activity}
           onOpenFile={onOpenFile}
@@ -2447,6 +2455,7 @@ function ToolRow({
             ×{repeatCount}
           </span>
         )}
+        {live && <span className="sr-only"> {m.activity_running()}</span>}
       </span>
     </>
   );
@@ -2498,6 +2507,7 @@ function toggleUnlessControl(toggle: () => void) {
 function ToolGroup({
   parts,
   pendingTail,
+  liveTailId = null,
   onOpenFile,
   onOpenRun,
   onOpenSpawnedSession,
@@ -2507,6 +2517,9 @@ function ToolGroup({
 }: {
   parts: ChatPart[];
   pendingTail?: boolean;
+  /** The tool a live transcript still reports running (expert sub-transcripts
+   * have no turn-level pending tool id). It keeps its label and shimmers. */
+  liveTailId?: string | null;
   onOpenFile?: OpenTranscriptFile;
   onOpenRun?: OpenTranscriptTarget;
   onOpenSpawnedSession?: (sessionId: string) => void;
@@ -2522,6 +2535,7 @@ function ToolGroup({
   };
   const displayParts = squashToolParts(parts);
   const activities = displayParts.map(({ activity }) => activity);
+  const livePart = liveTailId ? displayParts.find(({ part }) => part.id === liveTailId)?.part : undefined;
   const tail = pendingTail ? displayParts.at(-1) : undefined;
   const tailPart = tail?.part;
   const tailActivity = tail?.activity;
@@ -2534,7 +2548,7 @@ function ToolGroup({
     !rawPending?.progressLabel &&
     (emptyToolInput(tailPart.state?.input) || (rawPending?.kind === "command" && !inputString(tailPart.state?.input ?? {}, "command", "cmd")));
   const pendingActivity = useDwelledActivity(rawPending, tailUnclassified);
-  const shimmering = useDelayedToolShimmer(pendingActivity != null);
+  const shimmering = useDelayedToolShimmer(pendingActivity != null || livePart != null);
   const iconActivity = pendingActivity ?? groupIconActivity(activities);
   const summaryLabel = pendingActivity
     ? pendingActivity.label
@@ -2568,6 +2582,7 @@ function ToolGroup({
         <ToolRow
           part={parts[0]}
           activity={displayParts[0].activity}
+          running={shimmering && livePart?.id === parts[0].id}
           onOpenFile={onOpenFile}
           onOpenRun={onOpenRun}
           onOpenSpawnedSession={onOpenSpawnedSession}
@@ -2634,6 +2649,7 @@ function ToolGroup({
                 part={part}
                 repeatCount={count}
                 activity={activity}
+                running={shimmering && livePart?.id === part.id}
                 onOpenFile={onOpenFile}
                 onOpenRun={onOpenRun}
                 onOpenSpawnedSession={onOpenSpawnedSession}
@@ -3408,6 +3424,7 @@ function renderParts(
         key={`tg-${toolRun[0].id}`}
         parts={toolRun}
         pendingTail={toolRun.some((part) => part.id === pendingTailToolId)}
+        liveTailId={runningTailToolId(toolRun, predictTextTail)}
         onOpenFile={onOpenFile}
         onOpenRun={onOpenRun}
         onOpenSpawnedSession={onOpenSpawnedSession}
@@ -6876,7 +6893,7 @@ export function ChatPanel({
             {activeHarness && !activeHarness.agentReady && (
               <div className="composer-harness-warning py-2 px-3 text-subtext text-sm leading-normal border-b border-b-border-variant [&_strong]:text-accent-amber [&_strong]:font-medium [&_code]:font-mono [&_code]:text-text">
                 {activeHarness.catalogPending ? (
-                  <span>{activeHarness.name} — {m.onboarding_checking()}</span>
+                  <span>{activeHarness.name}：{m.onboarding_checking()}</span>
                 ) : (
                   <>
                     <strong>{activeHarness.name} {m.chat_panel_is_unavailable()}</strong>{" "}
@@ -7005,7 +7022,7 @@ export function ChatPanel({
                       ? m.chat_steer_placeholder({ harness: "科研助手", shortcut: ltr(queueChord) })
                       : composerSelection && !activeHarness?.agentReady
                         ? m.chat_harness_unavailable({ harness: "模型服务" })
-                        : conversationStatus?.placeholder ?? "请输入您的研究内容，输入/使用命令和技能"
+                        : conversationStatus?.placeholder ?? (conversationStudy ? "向研究负责人补充要求或提问" : "请输入您的研究内容，输入/使用命令和技能")
                 }
                 rows={2}
                 onPaste={onComposerPaste}

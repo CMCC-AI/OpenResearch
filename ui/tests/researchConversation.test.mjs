@@ -99,6 +99,21 @@ test("awaiting human tasks open their submission form inline; pending ones stay 
   assert.doesNotMatch(idleApp.render(idle), /data-human-submit/);
 });
 
+test("a plan that has not started folds its checklist into one line instead of repeating the gate status", () => {
+  const app = load(), study = fixture();
+  study.plans[0].tasks = study.plans[0].tasks.map(task => ({ ...task, state: "pending", sessionId: null, summary: null, reworkCount: 0 }));
+  study.decisions = [{ id: "scope", gate: "G1", version: 1, status: "pending", scopeHash: "scope" }];
+  const html = app.render(study);
+  const count = study.plans[0].tasks.length;
+  // 摘要一行说清「有几个步骤、卡在哪」，名单默认收起。
+  assert.match(html, /<details[^>]*class="group min-w-0/);
+  assert.match(html, new RegExp(`<summary[^>]*>[\\s\\S]*?${count} 个步骤 · 等待你确认研究范围[\\s\\S]*?</summary>`));
+  assert.ok(html.indexOf(`${count} 个步骤`) < html.indexOf("data-research-task-list"));
+  // 研究目标就是上方用户消息，不再在卡片里重复一遍。
+  assert.doesNotMatch(html, /Compare evidence/);
+  assert.doesNotMatch(html, /个步骤已结束/);
+});
+
 test("pending confirmations render above the expert checklist", () => {
   const app = load();
   const html = app.render(fixture());
