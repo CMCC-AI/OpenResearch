@@ -1127,6 +1127,227 @@ fn human_task_awaits_owner_submission_and_feeds_downstream() {
     let _ = saved;
 }
 
+#[test]
+fn human_artifact_change_voids_acceptance_and_reopens_the_chain() {
+    let (_dir, store, study) = setup();
+    let input = PlanInput {
+        workflow: None,
+        summary: "human only chain".into(),
+        tasks: vec![
+            human_spec("collect", &[], "notes.md"),
+            human_spec("finalize", &["collect"], "summary.md"),
+            // 外部事件不完成，审稿节点不会在测试中自动派发；它仍会随人工链路一起重置。
+            wait_spec("external", &[], "never.txt", 60),
+            spec("review", "as-independent-reviewer", &["finalize", "external"]),
+            spec("audit", "as-quality-citation-auditor", &["review"]),
+        ],
+    };
+    store.research_set_plan(&study.id, input).unwrap();
+    approve(&store, &study, "G1");
+    crate::commands::research_dispatch::auto_dispatch_sync(&store, &study.id).unwrap();
+    store
+        .research_submit_human(&study.id, "collect", "无".into())
+        .unwrap();
+    store
+        .research_submit_human(&study.id, "finalize", "无".into())
+        .unwrap();
+    let root = store.research_root(&study).unwrap();
+    std::fs::write(root.join("notes.md"), "# real notes\nthree observations").unwrap();
+    store.research_reconcile_human_artifacts(&study.id).unwrap();
+    let saved = store.research_study(&study.id).unwrap();
+    // 验收作废：人工任务回到 awaiting，下游一起退回 pending，旧产物清空。
+    assert_eq!(saved.task("collect").unwrap().state, "awaiting");
+    assert_eq!(saved.task("finalize").unwrap().state, "pending");
+    assert!(saved.task("collect").unwrap().artifacts.is_empty());
+    assert!(saved.task("finalize").unwrap().artifacts.is_empty());
+    assert!(saved.delivery_error.is_none());
+    assert!(saved
+        .task("collect")
+        .unwrap()
+        .summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("原验收作废"));
+    // 重新提交真实正文后，下游按依赖顺序恢复。
+    store
+        .research_submit_human(&study.id, "collect", "# real notes\nthree observations".into())
+        .unwrap();
+    let saved = store.research_study(&study.id).unwrap();
+    assert_eq!(saved.task("finalize").unwrap().state, "awaiting");
+    store
+        .research_submit_human(&study.id, "finalize", "# real summary".into())
+        .unwrap();
+    let saved = store.research_study(&study.id).unwrap();
+    assert_eq!(saved.task("collect").unwrap().state, "completed");
+    assert_eq!(saved.task("finalize").unwrap().state, "completed");
+    assert_ne!(
+        saved.task("collect").unwrap().artifacts[0].sha256,
+        saved.task("finalize").unwrap().artifacts[0].sha256
+    );
+    // 用户主动修改：同一状态转换，但提示语是撤回而不是外部改动。
+    store
+        .research_reopen_human_task(&study.id, "collect")
+        .unwrap();
+    let saved = store.research_study(&study.id).unwrap();
+    assert_eq!(saved.task("collect").unwrap().state, "awaiting");
+    assert_eq!(saved.task("finalize").unwrap().state, "pending");
+    assert!(saved
+        .task("collect")
+        .unwrap()
+        .summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("已撤回"));
+    // lead 不能绕过提交接口派发/验收人工任务。
+    assert!(store
+        .research_bind_task(&study.id, "collect", "helper")
+        .is_err());
+    assert!(store
+        .research_finish(&study.id, "collect", true, "lead finished".into())
+        .is_err());
+    assert!(crate::commands::research_dispatch::dispatch_study_task_sync(
+        &store, &study.id, "collect", None
+    )
+    .is_err());
+}
+
+#[test]
+fn human_reconcile_treats_missing_artifact_as_changed() {
+    let (_dir, store, study) = setup();
+    let input = PlanInput {
+        workflow: None,
+        summary: "human missing file".into(),
+        // 审稿审计被外部事件挡住不会自动派发：重开链路时下游不在运行中。
+        tasks: vec![
+            human_spec("collect", &[], "notes.md"),
+            wait_spec("external", &[], "never.txt", 60),
+            spec("review", "as-independent-reviewer", &["collect", "external"]),
+            spec("audit", "as-quality-citation-auditor", &["review"]),
+        ],
+    };
+    store.research_set_plan(&study.id, input).unwrap();
+    approve(&store, &study, "G1");
+    crate::commands::research_dispatch::auto_dispatch_sync(&store, &study.id).unwrap();
+    store
+        .research_submit_human(&study.id, "collect", "内容".into())
+        .unwrap();
+    let root = store.research_root(&study).unwrap();
+    std::fs::remove_file(root.join("notes.md")).unwrap();
+    store.research_reconcile_human_artifacts(&study.id).unwrap();
+    let saved = store.research_study(&study.id).unwrap();
+    // 文件确实消失与内容被改一样：验收作废，回到待提交。
+    assert_eq!(saved.task("collect").unwrap().state, "awaiting");
+}
+
+#[test]
+fn human_reconcile_keeps_package_sourced_notice() {
+    let (_dir, store, study) = setup();
+    let input = PlanInput {
+        workflow: None,
+        summary: "human notice source".into(),
+        tasks: vec![
+            human_spec("collect", &[], "notes.md"),
+            spec("review", "as-independent-reviewer", &["collect"]),
+            spec("audit", "as-quality-citation-auditor", &["review"]),
+        ],
+    };
+    store.research_set_plan(&study.id, input).unwrap();
+    approve(&store, &study, "G1");
+    crate::commands::research_dispatch::auto_dispatch_sync(&store, &study.id).unwrap();
+    store
+        .research_submit_human(&study.id, "collect", "内容".into())
+        .unwrap();
+    // 交付包校验写入的提示（例如专家产物在确认后被改）：人工产物对账不得清除。
+    store
+        .research_update(&study.id, |study| {
+            study.delivery_notice = Some("交付确认已冻结；工作区后续校验未通过：x".into());
+            study.delivery_notice_source = Some("package".into());
+            Ok(())
+        })
+        .unwrap();
+    store.research_reconcile_human_artifacts(&study.id).unwrap();
+    let saved = store.research_study(&study.id).unwrap();
+    assert!(saved.delivery_notice.is_some());
+    assert_eq!(saved.delivery_notice_source.as_deref(), Some("package"));
+    // 人工产物对账自己的提示：产物一致后清除。
+    store
+        .research_update(&study.id, |study| {
+            study.delivery_notice = Some("工作区文件在交付确认后有改动：notes.md".into());
+            study.delivery_notice_source = Some("human".into());
+            Ok(())
+        })
+        .unwrap();
+    store.research_reconcile_human_artifacts(&study.id).unwrap();
+    let saved = store.research_study(&study.id).unwrap();
+    assert!(saved.delivery_notice.is_none());
+    assert!(saved.delivery_notice_source.is_none());
+}
+
+#[test]
+fn human_reopen_is_blocked_after_delivery_approval() {
+    let (_dir, store, study) = setup();
+    let input = PlanInput {
+        workflow: None,
+        summary: "human delivered".into(),
+        tasks: vec![
+            human_spec("collect", &[], "notes.md"),
+            human_spec("finalize", &["collect"], "summary.md"),
+            spec("review", "as-independent-reviewer", &["finalize"]),
+            spec("audit", "as-quality-citation-auditor", &["review"]),
+        ],
+    };
+    store.research_set_plan(&study.id, input).unwrap();
+    approve(&store, &study, "G1");
+    crate::commands::research_dispatch::auto_dispatch_sync(&store, &study.id).unwrap();
+    store
+        .research_submit_human(&study.id, "collect", "内容一".into())
+        .unwrap();
+    store
+        .research_submit_human(&study.id, "finalize", "内容二".into())
+        .unwrap();
+    // 交付确认要求全部任务完成：审稿审计按正常验收路径收尾。
+    crate::commands::research_dispatch::auto_dispatch_sync(&store, &study.id).unwrap();
+    finish(&store, &study, "review");
+    crate::commands::research_dispatch::auto_dispatch_sync(&store, &study.id).unwrap();
+    finish(&store, &study, "audit");
+    let root = store.research_root(&study).unwrap();
+    let prepared = store
+        .research_prepare_delivery_at(&store.research_study(&study.id).unwrap(), &root, |_| Ok(()))
+        .unwrap();
+    store
+        .research_update(&study.id, |study| {
+            store.research_apply_delivery(study, &prepared)?;
+            study.request_gate("G4", prepared.scope.clone())
+        })
+        .unwrap();
+    let current = store.research_study(&study.id).unwrap();
+    let decision = current
+        .decisions
+        .iter()
+        .rev()
+        .find(|d| d.gate == "G4")
+        .unwrap();
+    store
+        .research_commit_decision(
+            &study.id,
+            &decision.id,
+            &decision.scope_hash,
+            true,
+            "test delivery approval".into(),
+            Some(prepared),
+        )
+        .unwrap();
+    assert!(store.research_study(&study.id).unwrap().delivery_approved());
+    // 已确认交付后不能直接重开人工任务：修订需走计划新版本（forceRerun）。
+    let error = store
+        .research_reopen_human_task(&study.id, "collect")
+        .unwrap_err();
+    assert!(error.to_string().contains("交付已确认"));
+    let saved = store.research_study(&study.id).unwrap();
+    assert_eq!(saved.task("collect").unwrap().state, "completed");
+    assert_eq!(saved.task("finalize").unwrap().state, "completed");
+}
+
 // —— 实验节点 experiment 与事件等待 wait（批次三，2026-11-16 方案）——
 
 fn wait_spec(id: &str, deps: &[&str], source: &str, timeout_minutes: u32) -> TaskSpec {

@@ -494,6 +494,9 @@ pub(crate) fn dispatch_study_task_sync(
     ignore_session: Option<&str>,
 ) -> Result<Option<String>> {
     let mut study = store.research_study(study_id)?;
+    if study.task(task_id)?.spec.kind == "human" {
+        return Err(anyhow!("人工任务由用户在任务卡提交，不能派发专家会话"));
+    }
     study.ready(task_id)?;
     // 逐项任务首次派发前物化清单：读取上游产物旁的 .items.json 并固化到任务上，
     // 执行期间不再重读；清单缺失或非法时任务转失败等待主理人处理。
@@ -621,7 +624,7 @@ pub(crate) fn auto_dispatch_ignoring_session(
     let ready_ids: Vec<String> = plan
         .tasks
         .iter()
-        // 人工/等待/实验节点不派发专家会话：分别等待主理人产出、事件到达与引擎提交运行。
+        // 人工/等待/实验节点不派发专家会话：分别等待用户提交、事件到达与引擎提交运行。
         .filter(|t| {
             !matches!(t.spec.kind.as_str(), "human" | "wait" | "experiment")
                 && t.state == "pending"
@@ -671,17 +674,39 @@ fn persist_package_check(
         {
             return Ok(false);
         }
+        let frozen = study.delivery_approved();
         match outcome {
             Ok(prepared) => match store.research_apply_delivery(study, &prepared) {
                 Ok(()) => {
                     study.delivery_error = None;
+                    study.delivery_notice = None;
+                    study.delivery_notice_source = None;
                     study.request_gate(gate, prepared.scope)?;
+                }
+                Err(error) if frozen => {
+                    // 批准绑定的是不可变归档；工作区后续校验失败不能撤销已经确认的交付。
+                    study.delivery_error = None;
+                    if study.delivery_notice.is_none() {
+                        study.delivery_notice = Some(format!(
+                            "交付确认已冻结；工作区后续校验未通过：{error}。已确认版本不受影响；如需交付新版本，请处理后再申请。"
+                        ));
+                        study.delivery_notice_source = Some("package".into());
+                    }
                 }
                 Err(error) => {
                     study.delivery_error = Some(error.to_string());
                     study.supersede_gate(gate)?;
                 }
             },
+            Err(error) if frozen => {
+                study.delivery_error = None;
+                if study.delivery_notice.is_none() {
+                    study.delivery_notice = Some(format!(
+                        "交付确认已冻结；工作区后续校验未通过：{error}。已确认版本不受影响；如需交付新版本，请处理后再申请。"
+                    ));
+                    study.delivery_notice_source = Some("package".into());
+                }
+            }
             Err(error) => {
                 study.delivery_error = Some(error);
                 study.supersede_gate(gate)?;
@@ -703,6 +728,11 @@ pub(crate) fn reconcile_active_studies_with_checks(
     let studies = store.research_active_studies()?;
     checks.retain(|id, _| studies.iter().any(|s| &s.id == id));
     for study in studies {
+        // 人工任务只在提交接口产生验收；文件被外部改写时验收作废并回到待提交。
+        // 下游刚好开始运行时保留错误、下一轮再重开，不影响其他研究。
+        if let Err(error) = store.research_reconcile_human_artifacts(&study.id) {
+            eprintln!("[orx 研究编排] 人工任务对账失败 {}: {error}", study.id);
+        }
         auto_dispatch_sync(store, &study.id)?;
         // 实验节点的运行终态验收：Run 结束后按声明产物收束（无专家会话可依赖）。
         store.research_reconcile_experiment_tasks(&study.id)?;
@@ -958,7 +988,7 @@ fn research_wakeup_text(
         .collect();
     if !awaiting_humans.is_empty() {
         return Ok(format!(
-            "[orx 研究编排] 人工任务 {} 等待主理人亲自完成：请向用户转述任务说明，并提示其到研究面板的任务详情里提交产出（提交后流程自动继续）；请勿代替用户提交或派发任务。",
+            "[orx 研究编排] 人工任务 {} 等待用户完成：请向用户转述任务说明，并提示其到研究面板的任务详情里提交产出（提交后流程自动继续）；请勿代替用户提交、派发或直接改写产物文件。",
             awaiting_humans.join("、")
         ));
     }
@@ -984,7 +1014,7 @@ fn research_wakeup_text(
         .collect();
     if !awaiting.is_empty() {
         return Ok(format!(
-            "[orx 研究编排] 任务 {} 已完成并通过产物验收，正在等待主理人在人工确认页批准任务确认后才会派发其下游任务（进度 {done}/{}）。请向用户说明该任务的核心产出与批准影响，并提示其到研究面板处理；请勿擅自派发任务或修订计划。",
+            "[orx 研究编排] 任务 {} 已完成并通过产物验收，正在等待用户在人工确认页批准任务确认后才会派发其下游任务（进度 {done}/{}）。请向用户说明该任务的核心产出与批准影响，并提示其到研究面板处理；请勿擅自派发任务或修订计划。",
             awaiting.join("、"),
             total
         ));

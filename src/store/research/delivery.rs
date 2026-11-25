@@ -512,13 +512,9 @@ impl Store {
             )
         })
     }
-    pub fn research_download_package(
-        &self,
-        id: &str,
-    ) -> Result<(crate::file_lock::FileLock, DeliverySnapshot)> {
-        let study = self.research_study(id)?;
+    fn approved_delivery_snapshot(&self, study: &Study) -> Result<DeliverySnapshot> {
         if self
-            .research_runs(&study)?
+            .research_runs(study)?
             .iter()
             .any(|r| !crate::local::is_terminal(&r.status))
         {
@@ -529,7 +525,7 @@ impl Store {
             .as_ref()
             .ok_or_else(|| anyhow!("研究包尚未准备，请重新申请交付确认"))?
             .clone();
-        if self.research_delivery_identity(&study)? != snapshot.identity_hash {
+        if self.research_delivery_identity(study)? != snapshot.identity_hash {
             return Err(anyhow!("研究内容已变化，请重新申请交付确认"));
         }
         let gate = crate::local::research::delivery_gate(study.workflow_mode());
@@ -553,6 +549,15 @@ impl Store {
         {
             return Err(anyhow!("封存研究包标识无效"));
         }
+        Ok(snapshot)
+    }
+
+    pub fn research_download_package(
+        &self,
+        id: &str,
+    ) -> Result<(crate::file_lock::FileLock, DeliverySnapshot)> {
+        let study = self.research_study(id)?;
+        let snapshot = self.approved_delivery_snapshot(&study)?;
         let mut file = FileSource::open(
             &self
                 .archive_dir(&study)?
@@ -564,15 +569,83 @@ impl Store {
             return Err(anyhow!("封存研究包已变化，不能下载"));
         }
         let current = self.research_study(id)?;
+        let gate = crate::local::research::delivery_gate(current.workflow_mode());
+        let still_approved = current.decisions.iter().any(|d| {
+            d.version == current.plan().map_or(0, |p| p.version)
+                && d.gate == gate
+                && d.status == "approved"
+                && d.scope_hash == snapshot.scope_hash
+        });
         if self.research_delivery_identity(&current)? != snapshot.identity_hash
             || current.delivery_snapshot.as_ref() != Some(&snapshot)
-            || !current
-                .decisions
-                .iter()
-                .any(|d| d.id == decision.id && d.status == "approved")
+            || !still_approved
         {
             return Err(anyhow!("研究确认状态已变化，请刷新后下载"));
         }
         Ok((file.into_file()?, snapshot))
+    }
+
+    /// 读取已确认交付归档中的单个产物；成果页与下载都从封存 ZIP 取字节，
+    /// 工作区后续改动不会改变已确认版本看到的内容。
+    pub fn read_delivery_member(&self, id: &str, path: &str) -> Result<Vec<u8>> {
+        if !safe_relative(path) {
+            return Err(anyhow!("产物路径无效"));
+        }
+        let study = self.research_study(id)?;
+        let snapshot = self.approved_delivery_snapshot(&study)?;
+        let archive = self
+            .archive_dir(&study)?
+            .join(format!("{}.zip", snapshot.archive.sha256));
+        let metadata =
+            std::fs::metadata(&archive).map_err(|error| anyhow!("封存研究包不存在: {error}"))?;
+        if metadata.len() != snapshot.archive.bytes {
+            return Err(anyhow!("封存研究包已变化，不能读取"));
+        }
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&archive)?)?;
+        let mut manifest_bytes = Vec::new();
+        zip.by_name("manifest.json")?
+            .read_to_end(&mut manifest_bytes)?;
+        if digest(&manifest_bytes) != snapshot.archive.manifest_sha256 {
+            return Err(anyhow!("封存研究包清单已变化，不能读取"));
+        }
+        let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)?;
+        let member = format!("artifacts/{path}");
+        let entry = manifest["files"]
+            .as_array()
+            .and_then(|files| {
+                files
+                    .iter()
+                    .find(|entry| entry["path"].as_str() == Some(member.as_str()))
+            })
+            .ok_or_else(|| anyhow!("该文件不在已确认交付中"))?;
+        let expected_bytes = entry["bytes"]
+            .as_u64()
+            .ok_or_else(|| anyhow!("交付清单文件大小无效"))?;
+        if expected_bytes > super::MAX_ARTIFACT_BYTES {
+            return Err(anyhow!("交付文件超过单文件上限"));
+        }
+        let expected_sha = entry["sha256"]
+            .as_str()
+            .ok_or_else(|| anyhow!("交付清单文件哈希无效"))?;
+        let mut bytes = Vec::with_capacity(expected_bytes as usize);
+        zip.by_name(&member)?.read_to_end(&mut bytes)?;
+        if bytes.len() as u64 != expected_bytes || digest(&bytes) != expected_sha {
+            return Err(anyhow!("交付文件已变化，不能读取"));
+        }
+        let current = self.research_study(id)?;
+        let gate = crate::local::research::delivery_gate(current.workflow_mode());
+        let still_approved = current.decisions.iter().any(|d| {
+            d.version == current.plan().map_or(0, |p| p.version)
+                && d.gate == gate
+                && d.status == "approved"
+                && d.scope_hash == snapshot.scope_hash
+        });
+        if self.research_delivery_identity(&current)? != snapshot.identity_hash
+            || current.delivery_snapshot.as_ref() != Some(&snapshot)
+            || !still_approved
+        {
+            return Err(anyhow!("研究确认状态已变化，请刷新后读取"));
+        }
+        Ok(bytes)
     }
 }

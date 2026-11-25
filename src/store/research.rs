@@ -48,7 +48,7 @@ pub struct TaskSpec {
     /// 声明要读取的上游产物路径；派发时注入子会话提示词并核对哈希。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<String>,
-    /// 完成后需主理人在人工确认页批准（G5:{任务id}）才放行下游。
+    /// 完成后需用户在人工确认页批准（G5:{任务id}）才放行下游。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub requires_approval: bool,
     /// 结论把关：完成时读取 `<首个产物>.verdict.json`，结论为阻塞时拦截下游派发。
@@ -340,7 +340,7 @@ pub struct ForeachRun {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
 }
-/// 人工任务等主理人产出时的状态：派发资格已满足，等待提交产物。
+/// 人工任务等待用户提交时的状态：派发资格已满足，等待用户在任务卡提交产物。
 pub const TASK_AWAITING: &str = "awaiting";
 impl ResearchTask {
     pub fn run_gate_scope(&self) -> Result<String> {
@@ -439,6 +439,13 @@ pub struct Study {
     pub metric_citation_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_error: Option<String>,
+    /// 已确认交付仍然有效，但工作区文件在确认后被改动；这不是阻断错误。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_notice: Option<String>,
+    /// `delivery_notice` 的来源：`human`（人工产物对账）或 `package`（交付包校验）。
+    /// 写入方只清除自己的提示，避免两个周期任务互相清掉对方造成提示振荡。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_notice_source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_snapshot: Option<DeliverySnapshot>,
     pub created_at: i64,
@@ -837,7 +844,7 @@ impl Study {
             }
         }
     }
-    /// 就绪的人工任务转入等待主理人产出：不派发专家会话，提交产物即验收完成。
+    /// 就绪的人工任务转入等待用户提交：不派发专家会话，用户提交即验收完成。
     /// 幂等；在分流求值与派发判定之前调用。
     pub fn resolve_human_tasks(&mut self) {
         loop {
@@ -858,7 +865,7 @@ impl Study {
                     if let Ok(task) = task {
                         if task.state == "pending" && task.session_id.is_none() {
                             task.state = TASK_AWAITING.into();
-                            task.summary = Some("等待主理人完成并提交产物。".into());
+                            task.summary = Some("等待你完成并提交产物。".into());
                             changed = true;
                         }
                     }
@@ -1049,6 +1056,112 @@ fn rework_upstream_tasks(study: &mut Study, gate_task_id: &str, reasons: &[Strin
     task.rework_count = round;
     Ok(())
 }
+
+/// 人工任务验收作废时，计算需要重新等待提交的种子，以及它们的全部传递下游。
+/// 如果某个种子本身是另一个种子的下游，它会被级联重置，不再单独作为 awaiting 种子。
+fn human_reopen_sets(study: &Study, task_ids: &[String]) -> Result<(Vec<String>, HashSet<String>)> {
+    let plan = study.plan()?;
+    let requested: HashSet<&str> = task_ids.iter().map(String::as_str).collect();
+    let candidates: Vec<String> = plan
+        .tasks
+        .iter()
+        .filter(|task| {
+            requested.contains(task.spec.id.as_str())
+                && task.spec.kind == "human"
+                && task.state == "completed"
+        })
+        .map(|task| task.spec.id.clone())
+        .collect();
+    if candidates.is_empty() {
+        return Ok((Vec::new(), HashSet::new()));
+    }
+    let mut closures: Vec<(String, HashSet<String>)> = Vec::new();
+    for seed in &candidates {
+        let mut ids = HashSet::from([seed.clone()]);
+        loop {
+            let before = ids.len();
+            for task in plan.tasks.iter() {
+                if task.spec.depends_on.iter().any(|dep| ids.contains(dep)) {
+                    ids.insert(task.spec.id.clone());
+                }
+            }
+            if ids.len() == before {
+                break;
+            }
+        }
+        closures.push((seed.clone(), ids));
+    }
+    // 只保留最上游的种子；更下游的种子会随上游一起被重置。
+    let seeds: Vec<String> = candidates
+        .into_iter()
+        .filter(|seed| {
+            !closures
+                .iter()
+                .any(|(other, ids)| other != seed && ids.contains(seed))
+        })
+        .collect();
+    let seed_set: HashSet<&str> = seeds.iter().map(String::as_str).collect();
+    let mut descendants = HashSet::new();
+    for seed in &seeds {
+        if let Some((_, ids)) = closures.iter().find(|(candidate, _)| candidate == seed) {
+            for id in ids {
+                if !seed_set.contains(id.as_str()) {
+                    descendants.insert(id.clone());
+                }
+            }
+        }
+    }
+    Ok((seeds, descendants))
+}
+
+/// 验收作废时重置人工任务的下游：归档会话与运行，清空产物/判定，回到 pending。
+/// 运行中的下游拒绝重置，避免打断正在执行的专家或实验。
+fn reset_human_descendants(study: &mut Study, descendants: &HashSet<String>) -> Result<()> {
+    let mut gates = Vec::new();
+    for task_id in descendants {
+        let task = study.task_mut(task_id)?;
+        if task.state == "running" {
+            return Err(anyhow!("下游任务 {task_id} 正在运行，结束后才能修改这一步"));
+        }
+        if let Some(old_session) = task.session_id.take() {
+            task.previous_sessions.push(old_session);
+        }
+        let experiment =
+            task.spec.kind == "experiment" || task.spec.role == "as-experiment-operator";
+        if experiment {
+            if !task.run_ids.is_empty() {
+                task.previous_run_ids.append(&mut task.run_ids);
+            }
+            task.run_contract = None;
+            task.contract_batch = 0;
+        }
+        task.pending_nudge = None;
+        task.pending_nudge_turn_id = None;
+        task.summary = None;
+        task.rework_feedback = None;
+        task.verdict = None;
+        task.route_decision = None;
+        task.artifacts.clear();
+        task.output_baseline = None;
+        task.evidence_digest = None;
+        if task.spec.kind == "foreach" {
+            task.foreach_items = None;
+            task.foreach_runs.clear();
+        }
+        if task.spec.kind == "wait" {
+            task.wait_started_at = None;
+        }
+        task.state = "pending".into();
+        if task.spec.requires_approval {
+            gates.push(Study::task_gate_id(task_id));
+        }
+    }
+    for gate in gates {
+        study.supersede_gate(&gate)?;
+    }
+    Ok(())
+}
+
 pub fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -1492,17 +1605,17 @@ pub fn validate_route_rules(tasks: &[TaskSpec]) -> Result<()> {
             }
             "human" => {
                 if !task.role.is_empty() {
-                    return Err(anyhow!("人工任务 {} 不选择专家：由主理人亲自完成", task.id));
+                    return Err(anyhow!("人工任务 {} 不选择专家：由你亲自完成", task.id));
                 }
                 if task.outputs.len() != 1 {
                     return Err(anyhow!(
-                        "人工任务 {} 需要恰好一个产物路径：主理人的提交会写入它",
+                        "人工任务 {} 需要恰好一个产物路径：你的提交会写入它",
                         task.id
                     ));
                 }
                 if task.requires_approval {
                     return Err(anyhow!(
-                        "人工任务 {} 不需要完成后确认：主理人提交本身就是产出",
+                        "人工任务 {} 不需要完成后确认：你的提交本身就是产出",
                         task.id
                     ));
                 }
@@ -1774,6 +1887,8 @@ impl Store {
             material_citation_revision: None,
             metric_citation_revision: None,
             delivery_error: None,
+            delivery_notice: None,
+            delivery_notice_source: None,
             delivery_snapshot: None,
             created_at: now_ms(),
             updated_at: now_ms(),
@@ -1868,6 +1983,9 @@ impl Store {
     /// Called inside the same transaction that creates the native helper.
     pub fn research_bind_task(&self, study_id: &str, task_id: &str, session: &str) -> Result<()> {
         let mut study = self.research_study(study_id)?;
+        if study.task(task_id)?.spec.kind == "human" {
+            return Err(anyhow!("人工任务由用户在任务卡提交，不能派发专家会话"));
+        }
         // 派发前先求值就绪的分流节点：分支放行与 skipped 传播要在就绪判定之前完成。
         study.resolve_routes()?;
         study.resolve_human_tasks();
@@ -2331,7 +2449,7 @@ impl Store {
         }
         Ok(())
     }
-    /// 人工任务提交：主理人的文本直接写入声明产物并完成验收，不经专家会话、
+    /// 人工任务提交：用户的文本直接写入声明产物并完成验收，不经专家会话、
     /// 不叠加第二套批准；提交后立即推进分流与下游就绪判定。
     pub fn research_submit_human(&self, id: &str, task_id: &str, content: String) -> Result<()> {
         self.research_update(id, |study| {
@@ -2339,7 +2457,7 @@ impl Store {
             let root = self.research_root(study)?;
             let task = study.task(task_id)?;
             if task.spec.kind != "human" {
-                return Err(anyhow!("只有人工任务可以由主理人提交产出"));
+                return Err(anyhow!("只有人工任务可以由用户提交产出"));
             }
             if task.state != TASK_AWAITING {
                 return Err(anyhow!(
@@ -2363,7 +2481,7 @@ impl Store {
             task.artifacts = vec![artifact];
             task.state = "completed".into();
             let excerpt: String = content.chars().take(160).collect();
-            task.summary = Some(format!("主理人已提交产出。内容摘录：{excerpt}"));
+            task.summary = Some(format!("你已提交产出。内容摘录：{excerpt}"));
             study.resolve_routes()?;
             study.resolve_human_tasks();
             Ok(())
@@ -2371,6 +2489,183 @@ impl Store {
         crate::commands::research_dispatch::auto_dispatch_sync(self, id)?;
         Ok(())
     }
+
+    /// 用户撤回/修改一个已完成的人工任务：验收作废，下游回到待执行。
+    pub fn research_reopen_human_task(&self, id: &str, task_id: &str) -> Result<()> {
+        self.research_reopen_human_tasks(
+            id,
+            &[task_id.to_owned()],
+            "已撤回该步验收，请重新提交产物。",
+        )
+    }
+
+    /// 批量重开人工任务；产物被外部改动时由 reconcile 调用，用户主动修改时由界面调用。
+    pub fn research_reopen_human_tasks(
+        &self,
+        id: &str,
+        task_ids: &[String],
+        summary: &str,
+    ) -> Result<()> {
+        let summary = summary.to_owned();
+        self.research_update(id, |study| {
+            study.ensure_active()?;
+            // 已确认交付绑定的是封存归档：直接重做会作废整条链路与确认状态，
+            // 与自动对账「已批准只提示、不动批准」的语义不一致；修订走计划新版本。
+            if study.delivery_approved() {
+                return Err(anyhow!(
+                    "交付已确认，不能直接修改这一步；请修订计划并对需重做的任务设置 forceRerun 生成新版本"
+                ));
+            }
+            let (seeds, descendants) = human_reopen_sets(study, task_ids)?;
+            if seeds.is_empty() {
+                // 幂等：已经 awaiting 的任务不重复处理；非 human/未完成的任务报错。
+                let plan = study.plan()?;
+                for task_id in task_ids {
+                    let task = plan
+                        .tasks
+                        .iter()
+                        .find(|task| task.spec.id == *task_id)
+                        .ok_or_else(|| anyhow!("任务不存在: {task_id}"))?;
+                    if task.spec.kind != "human" {
+                        return Err(anyhow!("只有人工任务可以修改"));
+                    }
+                    if task.state != TASK_AWAITING {
+                        return Err(anyhow!("人工任务尚未完成，无需修改"));
+                    }
+                }
+                return Ok(());
+            }
+            reset_human_descendants(study, &descendants)?;
+            let mut gates = Vec::new();
+            for seed in &seeds {
+                let task = study.task_mut(seed)?;
+                if let Some(old_session) = task.session_id.take() {
+                    task.previous_sessions.push(old_session);
+                }
+                task.artifacts.clear();
+                task.output_baseline = None;
+                task.pending_nudge = None;
+                task.pending_nudge_turn_id = None;
+                task.verdict = None;
+                task.rework_feedback = None;
+                task.summary = Some(summary.clone());
+                task.state = TASK_AWAITING.into();
+                if task.spec.requires_approval {
+                    gates.push(Study::task_gate_id(seed));
+                }
+            }
+            for gate in gates {
+                study.supersede_gate(&gate)?;
+            }
+            let delivery = crate::local::research::delivery_gate(study.workflow_mode()).to_string();
+            study.supersede_gate(&delivery)?;
+            study.delivery_error = None;
+            study.delivery_notice = None;
+            study.delivery_notice_source = None;
+            study.resolve_routes()?;
+            study.resolve_human_tasks();
+            Ok(())
+        })?;
+        crate::commands::research_dispatch::auto_dispatch_sync(self, id)?;
+        Ok(())
+    }
+
+    /// 对账：completed human task 的产物必须与验收哈希一致。
+    /// 未批准交付时验收作废并重开；已批准交付时只提示，不动批准。
+    pub fn research_reconcile_human_artifacts(&self, id: &str) -> Result<()> {
+        let study = self.research_study(id)?;
+        if study.status != "active" {
+            return Ok(());
+        }
+        let Ok(plan) = study.plan() else {
+            return Ok(());
+        };
+        let root = self.research_root(&study)?;
+        let mut changed: Vec<(String, String)> = Vec::new();
+        for task in plan
+            .tasks
+            .iter()
+            .filter(|task| task.spec.kind == "human" && task.state == "completed")
+        {
+            for artifact in &task.artifacts {
+                match inspect_artifact(&root, &artifact.path) {
+                    Ok(current) if current.sha256 == artifact.sha256 => {}
+                    Ok(_) => changed.push((task.spec.id.clone(), artifact.path.clone())),
+                    // 读取失败但文件仍在（占用、权限等瞬态错误）不能证明产物被改：
+                    // 本轮跳过、保住验收，下一轮对账再查；文件确实消失才视为被改动。
+                    Err(_) if root.join(&artifact.path).is_file() => {}
+                    Err(_) => changed.push((task.spec.id.clone(), artifact.path.clone())),
+                }
+            }
+        }
+        if changed.is_empty() {
+            // 只清除人工产物对账自己的提示；交付包校验写入的提示由包校验成功后清除。
+            if study.delivery_notice.is_some()
+                && study.delivery_notice_source.as_deref() != Some("package")
+            {
+                self.research_update(id, |study| {
+                    study.delivery_notice = None;
+                    study.delivery_notice_source = None;
+                    Ok(())
+                })?;
+            }
+            return Ok(());
+        }
+        let mut seen_paths = HashSet::new();
+        let paths: Vec<String> = changed
+            .iter()
+            .map(|(_, path)| path.clone())
+            .filter(|path| seen_paths.insert(path.clone()))
+            .collect();
+        if study.delivery_approved() {
+            let notice = format!(
+                "工作区文件在交付确认后有改动：{}。已确认版本不受影响；如需交付新版本，请修改对应步骤后重新确认。",
+                paths.join("、")
+            );
+            if study.delivery_notice.as_deref() != Some(notice.as_str())
+                || study.delivery_error.is_some()
+            {
+                self.research_update(id, |study| {
+                    study.delivery_notice = Some(notice);
+                    study.delivery_notice_source = Some("human".into());
+                    study.delivery_error = None;
+                    Ok(())
+                })?;
+            }
+            return Ok(());
+        }
+        let mut seen_tasks = HashSet::new();
+        let task_ids: Vec<String> = changed
+            .iter()
+            .map(|(task_id, _)| task_id.clone())
+            .filter(|task_id| seen_tasks.insert(task_id.clone()))
+            .collect();
+        // 下游正在运行时先不动，下一轮对账再重开；避免打断专家/实验。
+        let (_, descendants) = human_reopen_sets(&study, &task_ids)?;
+        if descendants.iter().any(|task_id| {
+            study
+                .task(task_id)
+                .is_ok_and(|task| task.state == "running")
+        }) {
+            let error = format!(
+                "人工产物已变化（{}），但有下游任务正在运行；结束后会自动退回待提交。",
+                paths.join("、")
+            );
+            if study.delivery_error.as_deref() != Some(error.as_str()) {
+                self.research_update(id, |study| {
+                    study.delivery_error = Some(error);
+                    Ok(())
+                })?;
+            }
+            return Ok(());
+        }
+        self.research_reopen_human_tasks(
+            id,
+            &task_ids,
+            "产物在验收后被改动，原验收作废，请重新提交。",
+        )
+    }
+
     pub fn research_session_has_active_runs(&self, session: &str) -> Result<bool> {
         let Some((study_id, task_id, version)) = self
             .conn
@@ -2666,6 +2961,9 @@ impl Store {
     ) -> Result<()> {
         self.research_update(id, |study| {
             study.ensure_active()?;
+            if study.task(task_id)?.spec.kind == "human" {
+                return Err(anyhow!("人工任务由用户在任务卡提交，不能通过 finish 验收"));
+            }
             let root = self.research_root(study)?;
             let task = study.task_mut(task_id)?;
             if task.state != "running" || task.session_id.is_none() {
@@ -3373,6 +3671,72 @@ mod tests {
         assert_eq!(changed.task(task).unwrap().state, "pending");
         assert!(changed.task(task).unwrap().artifacts.is_empty());
     }
+    #[test]
+    fn plan_revision_keeps_workflow_binding() {
+        let (_dir, store, _) = setup();
+        let draft = saved_literature_workflow(&store);
+        let (id, version, _) = store
+            .research_use_workflow("lead", &draft.id, "Compare evidence")
+            .unwrap();
+        let study = store.research_study(&id).unwrap();
+        let source = study.plan().unwrap().workflow_source.clone();
+        assert!(source.is_some());
+        assert!(study.plan_scope().unwrap().contains(&draft.id));
+        approve(&store, &study, "G1");
+        let mut input = PlanInput {
+            workflow: None,
+            summary: study.plan().unwrap().summary.clone(),
+            tasks: study
+                .plan()
+                .unwrap()
+                .tasks
+                .iter()
+                .map(|task| task.spec.clone())
+                .collect(),
+        };
+        input.tasks[0].force_rerun = true;
+        store.research_set_plan(&id, input).unwrap();
+        let revised = store.research_study(&id).unwrap();
+        assert!(revised.plan().unwrap().version > version);
+        assert_eq!(revised.plan().unwrap().workflow_source, source);
+        assert!(revised.plan_scope().unwrap().contains(&draft.id));
+        // 修订继承的绑定让换绑锁依然生效：再绑另一条工作流（不同名称与节点）
+        // 被拒；若修订丢失 workflow_source，这里会静默放行而不是报错。
+        let other = store
+            .create_workflow_draft(
+                "",
+                crate::workflow::WorkflowDraftInput {
+                    name: "Custom pipeline".into(),
+                    objective: String::new(),
+                    summary: String::new(),
+                    workflow: "custom".into(),
+                    tasks: vec![
+                        spec("strategy", "as-literature-strategist", &[]),
+                        spec("evidence", "as-paper-evidence-analyst", &["strategy"]),
+                    ],
+                    positions: HashMap::new(),
+                    viewport: None,
+                    frames: Vec::new(),
+                },
+            )
+            .unwrap();
+        let error = store
+            .research_use_workflow("lead", &other.id, "Another goal")
+            .unwrap_err();
+        assert!(error.to_string().contains("不能更换"));
+        // 锁读到的是继承下来的 A 的名字，而不是新草稿自身。
+        assert!(error.to_string().contains("Saved evidence review"));
+        assert_eq!(
+            store
+                .research_study(&id)
+                .unwrap()
+                .plan()
+                .unwrap()
+                .workflow_source,
+            source
+        );
+    }
+
     fn approve(store: &Store, study: &Study, gate: &str) {
         let study = store.research_study(&study.id).unwrap();
         let decision = study

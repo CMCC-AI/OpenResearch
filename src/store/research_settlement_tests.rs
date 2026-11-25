@@ -49,8 +49,9 @@ fn research_settlement_persistence_errors_do_not_retire_or_consume_recovery() {
                 finish(&store, &study, task);
             }
             if phase == "invalidate" {
+                // 仍在等待确认的交付会被后续产物变化作废；已批准交付的冻结语义
+                // 由 completed_delivery_reconciliation_does_not_rewrite_unchanged_study 覆盖。
                 crate::commands::research_dispatch::reconcile_active_studies(&store).unwrap();
-                approve(&store, &study, "G4");
                 std::fs::write(
                     store.research_root(&study).unwrap().join("design.md"),
                     b"changed",

@@ -21,7 +21,7 @@ fn approved_package_http_streams_the_confirmed_snapshot_without_reading_mutable_
             for task in ["design","review","audit"] {let tx=store.begin_immediate().unwrap();store.research_bind_task(&study.id,task,task).unwrap();tx.commit().unwrap();std::fs::write(artifacts.join(format!("{task}.md")),format!("reviewed {task}")).unwrap();store.research_finish(&study.id,task,true,"verified".into()).unwrap();}
             store.research_request_package(&study.id).unwrap();
             let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();
-            let app=axum::Router::new().route("/api/research/studies/{id}/package",get(package));let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap();});
+            let app=axum::Router::new().route("/api/research/studies/{id}/package",get(package)).route("/api/research/studies/{id}/delivery/file",get(delivery_file));let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap();});
             let url=format!("http://{address}/api/research/studies/{}/package",study.id);let client=crate::net::loopback_client().build().unwrap();
             assert_eq!(client.get(&url).send().await.unwrap().status(),reqwest::StatusCode::BAD_REQUEST);
             let pending=store.research_study(&study.id).unwrap();let gate=pending.decisions.last().unwrap();store.research_decide(&study.id,&gate.id,&gate.scope_hash,true,"human package approval".into()).unwrap();
@@ -31,6 +31,13 @@ fn approved_package_http_streams_the_confirmed_snapshot_without_reading_mutable_
             assert_eq!(response.headers()[header::CONTENT_TYPE],"application/zip");assert_eq!(response.headers()[header::CACHE_CONTROL],"no-store");assert_eq!(response.headers()[header::X_CONTENT_TYPE_OPTIONS],"nosniff");assert!(response.headers()[header::CONTENT_DISPOSITION].to_str().unwrap().contains("attachment"));assert_eq!(response.headers()["x-content-sha256"],snapshot.archive.sha256);
             let bytes=response.bytes().await.unwrap();assert_eq!(bytes.len() as u64,snapshot.archive.bytes);assert_eq!(crate::store::research::digest(&bytes),snapshot.archive.sha256);
             let mut zip=zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();let original_name=format!("materials/{}/{}/{}",materials.id,materials.files[0].id,materials.files[0].path);let mut original=String::new();zip.by_name(&original_name).unwrap().read_to_string(&mut original).unwrap();assert_eq!(original,"approved original\n");
+            // 工作区在批准后被改写：单文件读取仍返回封存归档里的已批准字节。
+            std::fs::write(artifacts.join("design.md"),"changed after approval").unwrap();
+            let file_url=format!("http://{address}/api/research/studies/{}/delivery/file?path=design.md&archive={}",study.id,snapshot.archive.sha256);
+            let response=client.get(&file_url).send().await.unwrap();assert!(response.status().is_success());assert_eq!(response.text().await.unwrap(),"reviewed design");
+            let ranged=client.get(&file_url).header("range","bytes=0-7").send().await.unwrap();assert_eq!(ranged.status(),reqwest::StatusCode::PARTIAL_CONTENT);assert_eq!(ranged.text().await.unwrap(),"reviewed");
+            let missing=client.get(format!("http://{address}/api/research/studies/{}/delivery/file?path=missing.md&archive={}",study.id,snapshot.archive.sha256)).send().await.unwrap();assert_eq!(missing.status(),reqwest::StatusCode::BAD_REQUEST);
+            let stale=client.get(format!("http://{address}/api/research/studies/{}/delivery/file?path=design.md&archive=deadbeef",study.id)).send().await.unwrap();assert_eq!(stale.status(),reqwest::StatusCode::BAD_REQUEST);
             assert_eq!(store.research_study(&study.id).unwrap(),approved);
             assert_eq!(store.material_read_events("project",&Default::default(),0,200).unwrap()["events"].as_array().unwrap().len(),1);
             server.abort();let _=server.await;

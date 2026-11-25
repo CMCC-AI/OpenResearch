@@ -266,13 +266,19 @@ impl Store {
                 }
             }
         }
+        // 计划修订保留会话已经绑定的工作流；绑定锁不允许换绑，修订也不应静默解绑。
+        // `research_use_workflow` 仍会在准备完成后用显式 source 覆盖。
+        let source = study
+            .plans
+            .last()
+            .and_then(|plan| plan.workflow_source.clone());
         Ok(PreparedPlan {
             study,
             input,
             artifacts,
             agents,
             deduplicate: false,
-            source: None,
+            source,
             objective: None,
             explicit_method,
         })

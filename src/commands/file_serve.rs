@@ -206,6 +206,47 @@ pub async fn disk_response(
     )
 }
 
+/// Bytes already in memory (for example a member of the sealed delivery ZIP).
+/// See [`disk_response`] for `type_path`.
+pub fn bytes_response(
+    type_path: &str,
+    bytes: &[u8],
+    presentation: FilePresentation,
+    method: &Method,
+    headers: &HeaderMap,
+    cache_control: &'static str,
+) -> Result<Response> {
+    let size = bytes.len() as u64;
+    let range = match range_for(method, headers, size) {
+        Ok(range) => range,
+        Err(()) => return range_not_satisfiable(size),
+    };
+    if method == Method::HEAD || size == 0 {
+        return response(
+            type_path,
+            presentation,
+            size,
+            range,
+            cache_control,
+            Body::empty(),
+        );
+    }
+    let selection = range.unwrap_or(ByteRange {
+        start: 0,
+        length: size,
+    });
+    let start = selection.start as usize;
+    let end = start + selection.length as usize;
+    response(
+        type_path,
+        presentation,
+        size,
+        range,
+        cache_control,
+        Body::from(bytes[start..end].to_vec()),
+    )
+}
+
 /// See [`disk_response`] for `type_path`.
 pub async fn git_response(
     type_path: &str,

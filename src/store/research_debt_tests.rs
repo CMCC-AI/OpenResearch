@@ -97,6 +97,11 @@ fn completed_delivery_reconciliation_does_not_rewrite_unchanged_study() {
         .query_row("SELECT COUNT(*) FROM debt_writes", [], |r| r.get(0))
         .unwrap();
     assert_eq!(writes, 0);
+    let approved_design = store.read_delivery_member(&study.id, "design.md").unwrap();
+    assert_eq!(
+        String::from_utf8(approved_design.clone()).unwrap(),
+        "# design\nreal output"
+    );
     // Integrity validation is retained even after approval.
     std::fs::write(
         store.research_root(&study).unwrap().join("design.md"),
@@ -104,12 +109,21 @@ fn completed_delivery_reconciliation_does_not_rewrite_unchanged_study() {
     )
     .unwrap();
     crate::commands::research_dispatch::reconcile_active_studies(&store).unwrap();
-    assert!(store
-        .research_study(&study.id)
-        .unwrap()
+    // 批准绑定的是不可变归档；工作区后续改动不能撤销已确认的交付，只留下提示。
+    let saved = store.research_study(&study.id).unwrap();
+    assert!(saved
         .decisions
         .iter()
-        .any(|d| d.gate == "G4" && d.status == "superseded"));
+        .any(|d| d.gate == "G4" && d.status == "approved"));
+    assert!(saved.delivery_snapshot.is_some());
+    assert!(saved.delivery_notice.is_some());
+    assert!(saved.delivery_error.is_none());
+    // 成果页读的是封存归档，不是被改写的工作区。
+    assert_eq!(
+        store.read_delivery_member(&study.id, "design.md").unwrap(),
+        approved_design
+    );
+    assert!(store.read_delivery_member(&study.id, "missing.md").is_err());
 }
 
 #[test]

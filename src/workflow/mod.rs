@@ -181,7 +181,7 @@ pub fn plan_summary(workflow: &str, objective: &str, tasks: &[TaskSpec]) -> Stri
     let waits = tasks.iter().filter(|t| t.kind == "wait").count();
     let mut controls = Vec::new();
     if approvals > 0 {
-        controls.push(format!("{approvals} 项完成后需主理人确认"));
+        controls.push(format!("{approvals} 项完成后需你确认"));
     }
     if gates > 0 {
         controls.push(format!("{gates} 项启用结论把关"));
@@ -199,7 +199,7 @@ pub fn plan_summary(workflow: &str, objective: &str, tasks: &[TaskSpec]) -> Stri
         controls.push(format!("包含 {foreach} 个逐项处理"));
     }
     if humans > 0 {
-        controls.push(format!("{humans} 项由主理人亲自完成"));
+        controls.push(format!("{humans} 项等你完成"));
     }
     if experiments > 0 {
         controls.push(format!("{experiments} 个实验节点（G2/G3 批准后自动运行）"));
@@ -376,7 +376,7 @@ mod tests {
         assert_eq!(first, second);
         assert!(first.contains("围绕目标「系统综述图神经网络在药物发现中的应用」"));
         assert!(first.contains("9 个专家任务"));
-        assert!(!first.contains("需主理人确认"));
+        assert!(!first.contains("需你确认"));
         assert!(first.ends_with("仅文献任务，不运行实验。"));
         assert_ne!(
             first,
@@ -393,7 +393,7 @@ mod tests {
         let first = plan_summary("literature", "综述研究目标", &tasks);
         let second = plan_summary("literature", "综述研究目标", &tasks);
         assert_eq!(first, second);
-        assert!(first.contains("（1 项完成后需主理人确认，1 项启用结论把关，自动返工上限共 2 轮）"));
+        assert!(first.contains("（1 项完成后需你确认，1 项启用结论把关，自动返工上限共 2 轮）"));
         // 配置变化必须改变摘要，从而让计划比对生成新版本并重新确认 G1。
         tasks[1].max_rework = 3;
         assert_ne!(first, plan_summary("literature", "综述研究目标", &tasks));
@@ -436,7 +436,7 @@ mod tests {
         // 逐项与人工任务同样计入摘要，配置变化会生成新版本重新确认 G1。
         let mut with_steps = tasks.clone();
         with_steps[2].kind = "human".into();
-        assert!(plan_summary("custom", "综述目标", &with_steps).contains("1 项由主理人亲自完成"));
+        assert!(plan_summary("custom", "综述目标", &with_steps).contains("1 项等你完成"));
         // 分流条件属于 spec 字段：计划等价比对按 spec 逐字段比较（TaskSpec PartialEq），
         // verdict 变化会判定为不同计划并生成新版本重新确认 G1；摘要只承担可读性与计数。
         let mut flipped = tasks.clone();

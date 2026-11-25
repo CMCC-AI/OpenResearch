@@ -236,7 +236,14 @@ pub(super) struct HumanSubmitReq {
     content: String,
 }
 
-/// 人工任务提交：主理人的文本写入任务声明产物并完成验收，随后自动推进下游。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct DeliveryFileQuery {
+    path: String,
+    archive: String,
+}
+
+/// 人工任务提交：用户的文本写入任务声明产物并完成验收，随后自动推进下游。
 pub(super) async fn submit_human(
     State(state): State<AppState>,
     Path((id, task_id)): Path<(String, String)>,
@@ -263,6 +270,69 @@ pub(super) async fn submit_human(
     })
     .await
     .map_err(|error| ApiError::from(anyhow!("research human submit task failed: {error}")))?
+}
+
+/// 用户撤回/修改人工任务：验收作废，下游回到待执行，等待用户重新提交。
+pub(super) async fn reopen_human(
+    State(state): State<AppState>,
+    Path((id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> ApiResult {
+    browser_decision(&headers)?;
+    reject_if_stopping(&state)?;
+    reject_if_moving(&state)?;
+    tokio::spawn(async move {
+        let gate = state.data_dir_gate.clone().lock_owned().await;
+        reject_if_stopping(&state)?;
+        reject_if_moving(&state)?;
+        let result = blocking_task(move || {
+            let _gate = gate;
+            let store = Store::open()?;
+            store.research_reopen_human_task(&id, &task_id)?;
+            Ok::<_, crate::error::Error>(json!({"ok": true}))
+        })
+        .await
+        .map_err(|error| ApiError::from(anyhow!("research human reopen failed: {error}")))?
+        .map_err(bad_request)?;
+        Ok(Json(result))
+    })
+    .await
+    .map_err(|error| ApiError::from(anyhow!("research human reopen task failed: {error}")))?
+}
+
+/// 已确认交付的单个文件；字节来自封存 ZIP，不读工作区。
+pub(super) async fn delivery_file(
+    Path(id): Path<String>,
+    Query(q): Query<DeliveryFileQuery>,
+    method: Method,
+    headers: HeaderMap,
+) -> std::result::Result<Response, ApiError> {
+    let (path, bytes) = blocking_task(move || {
+        let store = Store::open()?;
+        let study = store.research_study(&id)?;
+        let expected = study
+            .delivery_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.archive.sha256.as_str());
+        if expected != Some(q.archive.as_str()) {
+            return Err(anyhow!("交付版本已变化，请刷新后查看"));
+        }
+        let bytes = store.read_delivery_member(&id, &q.path)?;
+        Ok::<_, crate::error::Error>((q.path, bytes))
+    })
+    .await
+    .map_err(|error| ApiError::from(anyhow!("delivery file task failed: {error}")))?
+    .map_err(bad_request)?;
+    let presentation = crate::local::files::presentation_for_path(&path);
+    crate::commands::file_serve::bytes_response(
+        &path,
+        &bytes,
+        presentation,
+        &method,
+        &headers,
+        "private, max-age=31536000, immutable",
+    )
+    .map_err(ApiError::from)
 }
 
 pub(super) async fn resume(
