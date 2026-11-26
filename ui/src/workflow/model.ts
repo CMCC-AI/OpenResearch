@@ -11,6 +11,8 @@ export interface WorkflowLibrarySkill {
   /** 镜像来源（某个 coding agent 或插件）；上传技能没有该字段。 */
   origin?: string | null;
   bytes?: number | null;
+  /** 技能包里的文件数（含 SKILL.md）；内置技能没有这个字段。 */
+  files?: number | null;
   updatedAt?: number | null;
   /** 历史上传：按需绑定上线前已存在，保留全局生效。 */
   legacyGlobal?: boolean;
@@ -18,6 +20,20 @@ export interface WorkflowLibrarySkill {
   boundProjects?: string[];
   /** 绑定的自定义专家 id 列表（生效范围）。 */
   boundAgents?: string[];
+}
+
+/** 详情页用的技能全貌：正文、文件清单，以及是否允许在页内修改。 */
+export interface WorkflowSkillDetail {
+  name: string;
+  description: string;
+  source: "builtin" | "user";
+  origin?: string | null;
+  bytes: number;
+  files: { path: string; bytes: number }[];
+  updatedAt?: number | null;
+  /** SKILL.md 去掉 frontmatter 后的 Markdown 正文。 */
+  body: string;
+  editable: boolean;
 }
 
 export interface WorkflowAgent {

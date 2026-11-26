@@ -5,6 +5,7 @@ import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
+import * as skillLibrary from "../src/workflow/skillLibrary.ts";
 
 const require = createRequire(import.meta.url);
 const servers = [
@@ -30,24 +31,33 @@ const mocks = {
     bindSkill: async (req) => { calls.push(["bindSkill", req]); return { ok: true }; },
     unbindSkill: async (req) => { calls.push(["unbindSkill", req]); return { ok: true }; },
     demoteLegacySkill: async (name) => { calls.push(["demoteLegacySkill", name]); return { ok: true }; },
+    createUserSkill: async (req) => { calls.push(["createUserSkill", req]); return { name: req.name }; },
+    updateUserSkill: async (name, req) => { calls.push(["updateUserSkill", name, req]); return { name }; },
+    getWorkflowSkillDetail: async (name) => ({ name, description: "", source: "user", origin: null, bytes: 1, files: [{ path: "SKILL.md", bytes: 1 }], updatedAt: 1, body: "# body", editable: true }),
+    userSkillArchiveUrl: (name) => `/api/user-skills/${name}/archive`,
+    fmtBytes: (bytes) => `${bytes} B`,
+    timeAgo: () => "刚刚",
   },
   "../components/ui": {
     Badge: ({ children }) => React.createElement("span", { "data-badge": Array.isArray(children) ? children.join("") : String(children) }, children),
     Button: ({ children, ...props }) => React.createElement("button", props, children),
+    ButtonLink: ({ children, ...props }) => React.createElement("a", props, children),
     Input: (props) => React.createElement("input", props),
     Spinner: (props) => React.createElement("span", { "data-spinner": "true", ...props }),
     showAlert: () => {},
   },
+  "../components/Md": { Md: ({ text }) => React.createElement("div", { "data-md": "true" }, text) },
   "../locale": { useLocale: () => "zh-CN" },
   "../events": { onAgentDraftProgress: () => () => {} },
   "../clientTurnId": { createClientTurnId: () => "ct_test-request" },
   "../components/SkillsTab": { fileToBase64: async () => "ZmFrZQ==" },
   "./conversation": { skillConversationRequest: () => "draft", stageComposerHandoff: () => {} },
+  "./skillLibrary": skillLibrary,
   "../composerStash": { EMPTY_COMPOSER_STASH: { draft: "", attachments: [], annotations: [] }, stageComposerDraft: () => {} },
   "@tanstack/react-query": { useQuery: () => ({ data: servers, isPending: false, refetch() {} }) },
   "../queries/client": { workspaceKey: (...parts) => parts, queryClient: { invalidateQueries() {} }, getWorkspaceGeneration: () => 1 },
   "lucide-react": new Proxy({}, { get: (_, name) => (props) => React.createElement("i", { "data-icon": String(name), ...props }) }),
-  "./CapabilityTile": { CapabilityTile: (props) => React.createElement("i", { "data-tile": `${props.kind}:${props.size ?? "sm"}` }), skillCardSummary: (skill) => skill.description || (skill.source === "builtin" ? "内置技能模块" : skill.origin ? `来自 ${skill.origin} 的镜像技能` : "本地上传的技能包") },
+  "./CapabilityTile": { CapabilityTile: (props) => React.createElement("i", { "data-tile": `${props.kind}:${props.size ?? "sm"}` }) },
 };
 function loadComponent(file) {
   const code = ts.transpileModule(readFileSync(new URL(file, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
@@ -83,17 +93,20 @@ test("SkillsLibrary groups builtin modules and user skills; uploads and deletes 
   const html = renderToStaticMarkup(React.createElement(SkillsLibrary, { skills, agents: [], projects: [], onChanged: async () => {} }));
   assert.match(html, /我的技能（2）/);
   assert.match(html, /内置技能（1）/);
+  // 内置技能卡片用中文展示名，技术标识 orx-* 保留为次要文字。
+  assert.match(html, /文献证据/);
   assert.match(html, /orx-lit-review/);
   assert.match(html, /data-badge="内置"/);
-  // 镜像技能在列表里标注来源，上传技能标注“本地上传”。
+  // 用户技能直接展示自己的用途摘要；镜像技能从描述回退到来源说明。
   assert.match(html, /mirrored-skill/);
-  assert.match(html, /本地上传/);
+  assert.match(html, /来自 claude 的镜像技能/);
+  assert.match(html, /data-badge="按需使用"/);
   // 库说明讲清生效模型：默认不生效、按处绑定、/名字 唤起。
   assert.match(html, /默认不生效/);
   assert.match(html, /\/技能名/);
   // 全局技能库没有项目落点：不渲染对话入口，只保留文字提示。
   assert.doesNotMatch(html, /在对话中创建/);
-  assert.match(html, /在对话里让 AI 登记技能/);
+  assert.match(html, /回对话让 AI 帮你创建/);
   // 未选中详情时展示库说明，不渲染删除按钮。
   assert.doesNotMatch(html, /删除/);
 });
@@ -127,8 +140,8 @@ test("SkillsLibrary shows the effective scope with legacy badge, project checkbo
   ];
   const projects = [{ id: "proj-1", name: "电池材料综述", slug: "battery", githubOwner: "", githubRepo: "", baselineBranch: "main", repoPath: "", path: "", githubEnabled: false, artifactsDir: "", createdAt: 1, updatedAt: 1 }];
   const library = renderToStaticMarkup(React.createElement(SkillsLibrary, { skills, agents, projects, onChanged: async () => {} }));
-  // 列表行：legacy 技能带“全局”徽标；库说明讲清默认不生效。
-  assert.match(library, /data-badge="全局"/);
+  // 列表行：legacy 技能带“全局生效”徽标；库说明讲清默认不生效。
+  assert.match(library, /data-badge="全局生效"/);
   assert.match(library, /默认不生效/);
   // 生效范围区块：legacy 有“改为按需绑定”入口并点出挂载的专家；新技能给项目勾选。
   const legacyScope = renderToStaticMarkup(React.createElement(SkillScopeSection, {

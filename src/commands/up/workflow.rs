@@ -378,10 +378,14 @@ pub(super) async fn skills() -> ApiResult {
             .map(|skill| {
                 json!({
                     "name": skill.name,
-                    "description": Value::Null,
+                    // 上传时 frontmatter 里的说明就是卡片上的用途摘要；之前置空，
+                    // 列表和详情只能回退成“本地上传的技能包”。
+                    "description": skill.description,
                     "source": "user",
                     "origin": skill.origin,
                     "bytes": skill.bytes,
+                    // 列表里的 `files` 是文件数；详情接口的 `files` 是文件清单。
+                    "files": skill.file_count,
                     "updatedAt": skill.updated_at,
                     "legacyGlobal": legacy.contains(&skill.name),
                     "boundProjects": summarize(&skill.name, crate::store::skills::SCOPE_PROJECT),
@@ -392,6 +396,54 @@ pub(super) async fn skills() -> ApiResult {
         let mut skills = builtin;
         skills.extend(user);
         Ok(Json(json!({"skills": skills})))
+    })
+    .await
+}
+
+/// 单个技能的详情：内置技能读二进制里内嵌的 SKILL.md 与附件，用户技能读磁盘上的
+/// 技能目录。详情页的“技能内容 / 文件 / 编辑”都靠这份数据，列表接口只带摘要。
+pub(super) async fn skill_detail(Path(name): Path<String>) -> ApiResult {
+    blocking_api(move || {
+        if let Some(skill) = crate::local::agent_skills::find(
+            &name,
+            crate::local::agent_skills::SkillSet::Local,
+        ) {
+            let mut files: Vec<Value> =
+                vec![json!({"path": "SKILL.md", "bytes": skill.content.len()})];
+            let mut bytes = skill.content.len() as u64;
+            for resource in skill.resources {
+                files.push(json!({"path": resource.path, "bytes": resource.content.len()}));
+                bytes += resource.content.len() as u64;
+            }
+            let body = crate::local::user_skills::skill_body(skill.content)
+                .unwrap_or(skill.content)
+                .to_string();
+            return Ok(Json(json!({"skill": {
+                "name": skill.name,
+                "description": skill.description,
+                "source": "builtin",
+                "origin": Value::Null,
+                "bytes": bytes,
+                "files": files,
+                "updatedAt": Value::Null,
+                "body": body,
+                "editable": false,
+            }})));
+        }
+        let detail = crate::local::user_skills::detail(&name)
+            .map_err(bad_request)?
+            .ok_or_else(|| not_found("skill"))?;
+        Ok(Json(json!({"skill": {
+            "name": detail.name,
+            "description": detail.description,
+            "source": "user",
+            "origin": Value::Null,
+            "bytes": detail.bytes,
+            "files": detail.files.into_iter().map(|file| json!({"path": file.path, "bytes": file.bytes})).collect::<Vec<_>>(),
+            "updatedAt": detail.updated_at,
+            "body": detail.body,
+            "editable": true,
+        }})))
     })
     .await
 }

@@ -82,7 +82,9 @@ export function invalidateWrite(url: string, scope: ReturnType<typeof workspaceS
   const setting = /^\/api\/settings\/([^/]+)/.exec(path)?.[1];
   if (setting) { invalidate(settingsFamilies[setting] ?? [], scope); return; }
   if (path.startsWith("/api/local-models") && !/\/(discover|check)$/.test(path)) { invalidate(["getLocalModels", "getHarnesses"], scope); return; }
-  if (path === "/api/user-skills") { invalidate(["listUserSkills", "getSkills", "getSkillContent"], scope); return; }
+  // 上传、页内新建/修改与下载都会改写技能库；工作流工作室的列表与详情
+  // 用自己的 query family，也要一起失效。
+  if (path.startsWith("/api/user-skills")) { invalidate(["listUserSkills", "getSkills", "getSkillContent", "workflowSkills", "workflowSkill"], scope); return; }
   if (path === "/api/latex-templates") { invalidate(["listLatexTemplates"], scope); return; }
   if (path === "/api/overleaf/token") { invalidate(["getOverleafSettings", "getOverleafState", "getOverleafStatus"], scope); return; }
   if (path.startsWith("/api/update/")) { invalidate(["getUpdateStatus", "getLocalMachine"], scope); return; }

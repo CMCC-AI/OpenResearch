@@ -526,6 +526,7 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
             post(workflow::generate_agent_draft),
         )
         .route("/api/workflow/skills", get(workflow::skills))
+        .route("/api/workflow/skills/{name}", get(workflow::skill_detail))
         .route(
             "/api/mcp/servers",
             get(mcp::servers).post(mcp::create_server),
@@ -833,6 +834,12 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
                 .post(upload_user_skill)
                 .delete(delete_user_skill),
         )
+        .route("/api/user-skills/create", post(create_user_skill))
+        .route(
+            "/api/user-skills/{name}",
+            axum::routing::put(update_user_skill),
+        )
+        .route("/api/user-skills/{name}/archive", get(download_user_skill))
         .route("/api/skill-bindings", post(bind_skill).delete(unbind_skill))
         .route(
             "/api/skill-bindings/legacy/{name}/demote",
@@ -1379,6 +1386,65 @@ async fn delete_user_skill(Query(q): Query<DeleteByNameQ>) -> ApiResult {
         Ok(Json(json!({ "ok": true })))
     })
     .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthorSkillReq {
+    /// Ignored by the update handler, which takes the name from the path.
+    #[serde(default)]
+    name: String,
+    description: String,
+    instructions: String,
+}
+
+/// 页内新建：名称、用途说明与指令正文合成一份 SKILL.md。上传仍走
+/// `POST /api/user-skills`，这条只服务表单，同名会被拒绝而不是覆盖。
+async fn create_user_skill(Json(req): Json<AuthorSkillReq>) -> ApiResult {
+    blocking_api(move || {
+        let saved =
+            crate::local::user_skills::create(&req.name, &req.description, &req.instructions)
+                .map_err(bad_request)?;
+        Ok(Json(json!({ "skill": user_skill_json(&saved) })))
+    })
+    .await
+}
+
+/// 页内修改：只重写 SKILL.md 的用途说明与正文，包里的其它文件保持原样。
+async fn update_user_skill(Path(name): Path<String>, Json(req): Json<AuthorSkillReq>) -> ApiResult {
+    blocking_api(move || {
+        let saved = crate::local::user_skills::update(&name, &req.description, &req.instructions)
+            .map_err(bad_request)?;
+        Ok(Json(json!({ "skill": user_skill_json(&saved) })))
+    })
+    .await
+}
+
+/// 下载技能包：`<name>/...` 的 zip，可直接分享，也能用「上传技能」原样导回。
+async fn download_user_skill(Path(name): Path<String>) -> std::result::Result<Response, ApiError> {
+    let archive_name = name.clone();
+    let bytes =
+        tokio::task::spawn_blocking(move || crate::local::user_skills::archive(&archive_name))
+            .await
+            .map_err(|e| ApiError::from(anyhow!(e)))?
+            .map_err(bad_request)?;
+    let mut response = Response::new(axum::body::Body::from(bytes));
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/zip"),
+    );
+    // 技能名是校验过的 slug，拼进响应头不会带引号或换行。
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        header::HeaderValue::from_str(&format!("attachment; filename=\"{name}.zip\""))
+            .unwrap_or_else(|_| header::HeaderValue::from_static("attachment")),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    Ok(response)
 }
 
 /// 技能绑定/解绑：`scopeKind` 为 `project`（研究项目）或 `agent`（自定义专家）。

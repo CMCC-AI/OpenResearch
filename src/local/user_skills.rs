@@ -42,8 +42,28 @@ pub struct UserSkill {
     pub plugin: Option<String>,
     /// Total size of the skill folder on disk.
     pub bytes: u64,
+    /// How many files the folder holds (`SKILL.md` included) — what the library
+    /// card shows so a package with scripts reads differently from a single file.
+    pub file_count: u64,
     /// `SKILL.md` mtime in epoch millis (0 if unavailable).
     pub updated_at: i64,
+}
+
+/// One file inside a skill package, relative to its folder.
+pub struct SkillFile {
+    pub path: String,
+    pub bytes: u64,
+}
+
+/// A skill's full record for the detail view: metadata, the Markdown body the
+/// agent follows, and every file in the package.
+pub struct SkillDetail {
+    pub name: String,
+    pub description: String,
+    pub bytes: u64,
+    pub updated_at: i64,
+    pub files: Vec<SkillFile>,
+    pub body: String,
 }
 
 // --- storage layout -----------------------------------------------------------
@@ -440,6 +460,166 @@ fn write_skill(root: &Path, name: &str, files: Vec<(String, Vec<u8>)>) -> Result
     read_uploaded_at(&dir)
 }
 
+// --- authoring from the dashboard ---------------------------------------------
+
+/// Largest Markdown body the in-page editor accepts. A skill is instructions,
+/// not a dataset; the cap keeps a paste accident from filling the data dir.
+const MAX_BODY_BYTES: usize = 256 * 1024;
+
+/// Create a skill from the dashboard's form. Same validation as an upload, plus
+/// a duplicate check — editing an existing skill goes through [`update`].
+pub fn create(name: &str, description: &str, instructions: &str) -> Result<UserSkill> {
+    create_in(&root(), name, description, instructions)
+}
+
+fn create_in(root: &Path, name: &str, description: &str, instructions: &str) -> Result<UserSkill> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(anyhow!("give the skill a name"));
+    }
+    validate_name(name)?;
+    let description = validate_description(description)?;
+    let body = validate_body(instructions)?;
+    if store_dir(root).join(name).exists() {
+        return Err(anyhow!(
+            "a skill named `{name}` already exists; open it to edit instead"
+        ));
+    }
+    write_skill(
+        root,
+        name,
+        vec![(
+            "SKILL.md".to_string(),
+            compose_skill_md(name, &description, body).into_bytes(),
+        )],
+    )
+}
+
+/// Rewrite an uploaded skill's `description` and Markdown body. Support files
+/// stay untouched — unlike a re-upload, which replaces the whole folder.
+pub fn update(name: &str, description: &str, instructions: &str) -> Result<UserSkill> {
+    update_in(&root(), name, description, instructions)
+}
+
+fn update_in(root: &Path, name: &str, description: &str, instructions: &str) -> Result<UserSkill> {
+    validate_name(name)?;
+    let description = validate_description(description)?;
+    let body = validate_body(instructions)?;
+    let dir = store_dir(root).join(name);
+    if !dir.is_dir() {
+        return Err(anyhow!("skill `{name}` not found"));
+    }
+    let md_path = dir.join("SKILL.md");
+    let content = fs::read_to_string(&md_path)
+        .map_err(|e| anyhow!("could not read {}: {e}", md_path.display()))?;
+    let rewritten = rewrite_skill_md(&content, &description, body)?;
+    fs::write(&md_path, rewritten)
+        .map_err(|e| anyhow!("could not write {}: {e}", md_path.display()))?;
+    read_uploaded_at(&dir)
+}
+
+fn validate_description(description: &str) -> Result<String> {
+    let description = description.trim();
+    if description.is_empty() {
+        return Err(anyhow!("describe when the skill should be used"));
+    }
+    if description.chars().count() > MAX_DESCRIPTION_LEN {
+        return Err(anyhow!(
+            "the description is longer than {MAX_DESCRIPTION_LEN} characters"
+        ));
+    }
+    Ok(description.to_string())
+}
+
+fn validate_body(instructions: &str) -> Result<&str> {
+    let body = instructions.trim();
+    if body.is_empty() {
+        return Err(anyhow!("write the instructions the skill should follow"));
+    }
+    if body.len() > MAX_BODY_BYTES {
+        return Err(anyhow!("the instructions are too large"));
+    }
+    Ok(body)
+}
+
+/// A JSON string literal is also a valid YAML double-quoted scalar, and
+/// [`parse_scalar`] decodes it with the same parser — so quotes, colons, `#`
+/// and newlines in a description round-trip exactly instead of changing meaning.
+fn yaml_string(value: &str) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| format!("{value:?}"))
+}
+
+fn compose_skill_md(name: &str, description: &str, body: &str) -> String {
+    format!(
+        "---\nname: {name}\ndescription: {}\n---\n\n{}\n",
+        yaml_string(description),
+        body.trim_end()
+    )
+}
+
+/// Replace only the `description` entry and the Markdown body of an existing
+/// `SKILL.md`, leaving every other frontmatter key (`license`, `allowed-tools`,
+/// `metadata`, …) untouched. A description written as a block scalar or a
+/// wrapped value is dropped together with its indented continuation lines, so
+/// the file never ends up with two description keys.
+fn rewrite_skill_md(content: &str, description: &str, body: &str) -> Result<String> {
+    let text = content.strip_prefix('\u{feff}').unwrap_or(content);
+    let after_open = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))
+        .ok_or_else(|| anyhow!("SKILL.md must open with a `---` frontmatter block"))?;
+    let end = after_open
+        .find("\n---")
+        .ok_or_else(|| anyhow!("SKILL.md frontmatter is not closed with `---`"))?;
+    let block = &after_open[..end];
+    let newline = if block.contains("\r\n") { "\r\n" } else { "\n" };
+    let lines: Vec<&str> = block
+        .split('\n')
+        .map(|line| line.trim_end_matches('\r'))
+        .collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut described = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let key = top_level_key(line).map(|(key, _)| key);
+        if key == Some("description") {
+            i += 1;
+            while i < lines.len() && top_level_key(lines[i]).is_none() && !is_comment(lines[i]) {
+                i += 1;
+            }
+            continue;
+        }
+        out.push(line.to_string());
+        i += 1;
+        if key == Some("name") {
+            // Keep the name value's own continuation, then add the description
+            // right below it — the order the uploads are written in.
+            while i < lines.len() && top_level_key(lines[i]).is_none() && !is_comment(lines[i]) {
+                out.push(lines[i].to_string());
+                i += 1;
+            }
+            out.push(format!("description: {}", yaml_string(description)));
+            described = true;
+        }
+    }
+    if !described {
+        out.insert(0, format!("description: {}", yaml_string(description)));
+    }
+    let mut rebuilt = String::from("---");
+    rebuilt.push_str(newline);
+    for line in &out {
+        rebuilt.push_str(line);
+        rebuilt.push_str(newline);
+    }
+    rebuilt.push_str("---");
+    rebuilt.push_str(newline);
+    rebuilt.push_str(newline);
+    rebuilt.push_str(body.trim_end());
+    rebuilt.push_str(newline);
+    Ok(rebuilt)
+}
+
 // --- mirrored coding-agent skills ---------------------------------------------
 
 /// A skill folder belonging to an installed coding agent — its own, or one from
@@ -575,6 +755,7 @@ fn read_uploaded_at(dir: &Path) -> Result<UserSkill> {
         origin: None,
         plugin: None,
         bytes: tally.bytes,
+        file_count: tally.files,
         updated_at: mtime_ms(&md_path),
     })
 }
@@ -640,6 +821,7 @@ fn read_project_at(dir: &Path) -> Result<UserSkill> {
         origin: None,
         plugin: None,
         bytes: content.len() as u64,
+        file_count: 1,
         updated_at: mtime_ms(&md_path),
     })
 }
@@ -677,6 +859,7 @@ fn list_in(root: &Path, mirrored: &[Mirrored]) -> Vec<UserSkill> {
             origin: Some(m.origin.clone()),
             plugin: m.plugin.then(|| m.origin.clone()),
             bytes: tally.bytes,
+            file_count: tally.files,
             updated_at: mtime_ms(&m.dir.join("SKILL.md")),
         });
     }
@@ -735,16 +918,119 @@ fn content_selected_in(
         dir.join("SKILL.md")
     };
     let content = fs::read_to_string(file).ok()?;
-    let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+    Some(skill_body(&content)?.to_string())
+}
+
+/// The Markdown body of a `SKILL.md` — what the agent actually follows. The
+/// frontmatter carries metadata only, so the detail view and the composer
+/// preview both show this.
+pub(crate) fn skill_body(content: &str) -> Option<&str> {
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
     let after_open = content
         .strip_prefix("---\n")
         .or_else(|| content.strip_prefix("---\r\n"))?;
     let end = after_open.find("\n---")?;
-    Some(
-        after_open[end + 4..]
-            .trim_start_matches(['\r', '\n'])
-            .to_string(),
-    )
+    Some(after_open[end + 4..].trim_start_matches(['\r', '\n']))
+}
+
+/// A skill's detail record: frontmatter metadata, the body the agent follows,
+/// and every file in the folder. `None` when no uploaded skill has that name.
+pub fn detail(name: &str) -> Result<Option<SkillDetail>> {
+    detail_in(&root(), name)
+}
+
+fn detail_in(root: &Path, name: &str) -> Result<Option<SkillDetail>> {
+    if !is_valid_slug(name) {
+        return Ok(None);
+    }
+    let dir = store_dir(root).join(name);
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    let md_path = dir.join("SKILL.md");
+    let content = fs::read_to_string(&md_path)
+        .map_err(|e| anyhow!("could not read {}: {e}", md_path.display()))?;
+    let fm = parse_frontmatter(&content)?;
+    let body = skill_body(&content).unwrap_or(content.as_str()).to_string();
+    let tally = within_budget(&dir)
+        .ok_or_else(|| anyhow!("`{name}` is larger than a skill folder may be"))?;
+    Ok(Some(SkillDetail {
+        name: name.to_string(),
+        description: fm.description,
+        bytes: tally.bytes,
+        updated_at: mtime_ms(&md_path),
+        files: list_files(&dir)?,
+        body,
+    }))
+}
+
+/// Every regular file under a skill folder, relative and sorted — the package
+/// contents the detail view lists. Symlinks are skipped: this walks a directory
+/// the dashboard writes but the user may reorganize by hand.
+fn list_files(dir: &Path) -> Result<Vec<SkillFile>> {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<SkillFile>) -> Result<()> {
+        for entry in
+            fs::read_dir(dir).map_err(|e| anyhow!("could not read {}: {e}", dir.display()))?
+        {
+            let entry = entry.map_err(|e| anyhow!("could not read {}: {e}", dir.display()))?;
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                walk(base, &path, out)?;
+            } else if kind.is_file() {
+                let bytes = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+                let rel = path
+                    .strip_prefix(base)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push(SkillFile { path: rel, bytes });
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(dir, dir, &mut files)?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+/// Pack an uploaded skill folder as a `.zip` with a `<name>/` wrapper — the
+/// layout [`save_zip`] accepts back, so a download can be shared or re-imported.
+pub fn archive(name: &str) -> Result<Vec<u8>> {
+    archive_in(&root(), name)
+}
+
+fn archive_in(root: &Path, name: &str) -> Result<Vec<u8>> {
+    use std::io::Write as _;
+    if !is_valid_slug(name) {
+        return Err(anyhow!("invalid skill name"));
+    }
+    let dir = store_dir(root).join(name);
+    if !dir.is_dir() {
+        return Err(anyhow!("skill `{name}` not found"));
+    }
+    within_budget(&dir).ok_or_else(|| anyhow!("`{name}` is larger than a skill folder may be"))?;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for file in list_files(&dir)? {
+        let data = fs::read(dir.join(&file.path))
+            .map_err(|e| anyhow!("could not read {}: {e}", file.path))?;
+        writer
+            .start_file(
+                format!("{name}/{}", file.path),
+                zip::write::SimpleFileOptions::default(),
+            )
+            .map_err(|e| anyhow!("could not pack {}: {e}", file.path))?;
+        writer
+            .write_all(&data)
+            .map_err(|e| anyhow!("could not pack {}: {e}", file.path))?;
+    }
+    let cursor = writer
+        .finish()
+        .map_err(|e| anyhow!("could not finish the archive: {e}"))?;
+    Ok(cursor.into_inner())
 }
 
 #[cfg(test)]
@@ -2417,6 +2703,172 @@ mod tests {
             "---\nname: \"data-cleaner\"\ndescription: Clean CSVs. Use when asked.\n---\nbody\n";
         let saved = save_skill_md_in(&root, md.as_bytes()).unwrap();
         assert_eq!(saved.name, "data-cleaner");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn create_composes_frontmatter_that_parses_back() {
+        let root = temp_root();
+        // Quotes, a colon and a newline are the values a hand-written
+        // frontmatter would break on; the composed file must read back exactly.
+        let description = "梳理「研究空白」: 当用户要 #对比 方向时使用\n第二行也要保留";
+        let created = create_in(
+            &root,
+            "lit-gap",
+            description,
+            "# 文献空白\n\n- 检索\n- 汇总",
+        )
+        .unwrap();
+        assert_eq!(created.name, "lit-gap");
+        assert_eq!(created.file_count, 1);
+
+        let md = fs::read_to_string(store_dir(&root).join("lit-gap/SKILL.md")).unwrap();
+        let fm = parse_frontmatter(&md).unwrap();
+        assert_eq!(fm.name, "lit-gap");
+        assert_eq!(fm.description, description);
+        assert_eq!(skill_body(&md).unwrap(), "# 文献空白\n\n- 检索\n- 汇总\n");
+
+        let listed = list_uploaded_in(&root);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].description, description);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn create_rejects_invalid_reserved_and_duplicate_names() {
+        let root = temp_root();
+        assert!(create_in(&root, "Bad Name", "用途", "正文").is_err());
+        assert!(create_in(&root, "orx-paper", "用途", "正文").is_err());
+        assert!(create_in(&root, "", "用途", "正文").is_err());
+        assert!(create_in(&root, "blank-desc", "   ", "正文").is_err());
+        assert!(create_in(&root, "blank-body", "用途", " \n ").is_err());
+
+        create_in(&root, "mine", "用途", "正文").unwrap();
+        assert!(
+            create_in(&root, "mine", "另一个用途", "另一段正文").is_err(),
+            "create must not silently replace an existing skill"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn update_rewrites_description_and_body_but_keeps_other_keys_and_files() {
+        let root = temp_root();
+        let original = "---\nname: repro-check\ndescription: >-\n  Old description\n  wrapped.\nlicense: MIT\nallowed-tools: Bash Read\nmetadata:\n  author: me\n---\n\n# Old body\n";
+        write_skill(
+            &root,
+            "repro-check",
+            vec![
+                ("SKILL.md".to_string(), original.as_bytes().to_vec()),
+                ("scripts/run.py".to_string(), b"print('hello')\n".to_vec()),
+            ],
+        )
+        .unwrap();
+
+        update_in(
+            &root,
+            "repro-check",
+            "新的用途: 检查复现",
+            "# 新正文\n\n- 第一步",
+        )
+        .unwrap();
+
+        let md = fs::read_to_string(store_dir(&root).join("repro-check/SKILL.md")).unwrap();
+        assert_eq!(md.matches("description:").count(), 1, "{md}");
+        let fm = parse_frontmatter(&md).unwrap();
+        assert_eq!(fm.description, "新的用途: 检查复现");
+        assert!(md.contains("license: MIT"), "{md}");
+        assert!(md.contains("allowed-tools: Bash Read"), "{md}");
+        assert!(md.contains("metadata:\n  author: me"), "{md}");
+        assert!(md.contains("name: repro-check"), "{md}");
+        assert!(!md.contains("Old description"), "{md}");
+        assert_eq!(skill_body(&md).unwrap(), "# 新正文\n\n- 第一步\n");
+        assert_eq!(
+            fs::read_to_string(store_dir(&root).join("repro-check/scripts/run.py")).unwrap(),
+            "print('hello')\n",
+            "editing SKILL.md must leave the rest of the package alone"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn update_replaces_a_quoted_description_without_duplicating_it() {
+        let root = temp_root();
+        write_skill(
+            &root,
+            "quoted",
+            vec![(
+                "SKILL.md".to_string(),
+                b"---\nname: quoted\ndescription: \"Old: quoted\"\n---\nbody\n".to_vec(),
+            )],
+        )
+        .unwrap();
+        update_in(&root, "quoted", "New \"quoted\" description", "next").unwrap();
+        let md = fs::read_to_string(store_dir(&root).join("quoted/SKILL.md")).unwrap();
+        assert_eq!(md.matches("description:").count(), 1, "{md}");
+        assert_eq!(
+            parse_frontmatter(&md).unwrap().description,
+            "New \"quoted\" description"
+        );
+        assert_eq!(skill_body(&md).unwrap(), "next\n");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn archive_round_trips_through_save_zip() {
+        let root = temp_root();
+        let other = temp_root();
+        create_in(&root, "pack-skill", "用途", "正文").unwrap();
+        fs::create_dir_all(store_dir(&root).join("pack-skill/references")).unwrap();
+        fs::write(
+            store_dir(&root).join("pack-skill/references/notes.md"),
+            "notes\n",
+        )
+        .unwrap();
+
+        let bytes = archive_in(&root, "pack-skill").unwrap();
+        let saved = save_zip_in(&other, &bytes).unwrap();
+        assert_eq!(saved.name, "pack-skill");
+        assert_eq!(saved.file_count, 2);
+        assert_eq!(
+            fs::read_to_string(store_dir(&other).join("pack-skill/references/notes.md")).unwrap(),
+            "notes\n"
+        );
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&other);
+    }
+
+    #[test]
+    fn detail_lists_files_sorted_with_sizes_and_body() {
+        let root = temp_root();
+        write_skill(
+            &root,
+            "details",
+            vec![
+                ("SKILL.md".to_string(), skill_md("details").into_bytes()),
+                ("scripts/a.py".to_string(), b"abc".to_vec()),
+                ("references/b.md".to_string(), b"defg".to_vec()),
+            ],
+        )
+        .unwrap();
+
+        let detail = detail_in(&root, "details").unwrap().unwrap();
+        assert_eq!(
+            detail
+                .files
+                .iter()
+                .map(|file| (file.path.as_str(), file.bytes))
+                .collect::<Vec<_>>(),
+            [
+                ("SKILL.md", skill_md("details").len() as u64),
+                ("references/b.md", 4),
+                ("scripts/a.py", 3),
+            ]
+        );
+        assert!(detail.body.contains("# details"));
+        assert!(detail.updated_at > 0);
+        assert!(detail_in(&root, "missing").unwrap().is_none());
+        assert!(detail_in(&root, "../escape").unwrap().is_none());
         let _ = fs::remove_dir_all(&root);
     }
 }

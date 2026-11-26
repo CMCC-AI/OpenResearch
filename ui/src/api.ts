@@ -2475,6 +2475,18 @@ export const decideMcpProposal = (id: string, approve: boolean) =>
   post<{ proposal: import("./workflow/model").McpProposal; server?: import("./workflow/model").McpServer | null }>(`/api/mcp/proposals/${encodeURIComponent(id)}/decide`, { approve });
 export const listWorkflowSkills = (signal?: AbortSignal) =>
   get<{ skills: import("./workflow/model").WorkflowLibrarySkill[] }>("/api/workflow/skills", signal).then((result) => result.skills);
+/** 技能详情：正文、包内文件清单与可编辑性；内置技能读内嵌内容，用户技能读磁盘。 */
+export const getWorkflowSkillDetail = (name: string, signal?: AbortSignal) =>
+  get<{ skill: import("./workflow/model").WorkflowSkillDetail }>(`/api/workflow/skills/${encodeURIComponent(name)}`, signal).then((result) => result.skill);
+/** 页内新建技能：用途说明与指令正文合成 SKILL.md，同名会被拒绝。 */
+export const createUserSkill = (req: { name: string; description: string; instructions: string }) =>
+  post<{ skill: { name: string } }>("/api/user-skills/create", req).then((result) => result.skill);
+/** 页内修改技能：只重写 SKILL.md 的用途说明与正文，附件保持不动。 */
+export const updateUserSkill = (name: string, req: { description: string; instructions: string }) =>
+  put<{ skill: { name: string } }>(`/api/user-skills/${encodeURIComponent(name)}`, req).then((result) => result.skill);
+/** 下载链接：`<name>/...` 的 zip，可直接交给「上传技能」导回。 */
+export const userSkillArchiveUrl = (name: string) =>
+  projectAssetUrl(`/api/user-skills/${encodeURIComponent(name)}/archive`);
 // 技能生效范围：上传后默认不生效，绑定到项目或自定义专家才随对应会话携带。
 export const bindSkill = (req: { scopeKind: "project" | "agent"; scopeId: string; skillName: string }) =>
   post<{ ok: boolean }>("/api/skill-bindings", req);
