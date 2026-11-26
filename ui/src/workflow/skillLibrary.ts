@@ -26,6 +26,7 @@ const BUILTIN_LABELS: Record<string, BuiltinSkillLabel> = {
   "orx-figures": { title: "图表", summary: "生成对话里的交互式图表和论文用的静态图。" },
   "orx-paper": { title: "论文写作", summary: "用 LaTeX 起草论文、预印本或其中某一节。" },
   "orx-customize": { title: "技能与模板", summary: "把可复用的技能和 LaTeX 模板登记到产品里。" },
+  "orx-skill-creator": { title: "技能工坊", summary: "从问清需求到起草、登记、试用迭代，把重复做法写成可复用技能。" },
   "orx-lit-review": { title: "文献证据", summary: "基于原始文献解释、比较科学概念，支撑综述与相关工作。" },
   "orx-feedback": { title: "产品反馈", summary: "把使用中遇到的问题或建议通过 orx feedback 上报。" },
 };

@@ -106,6 +106,7 @@ const REPORTS: &str = include_str!("../../agent-skills/orx-reports/SKILL.md");
 const LOGS: &str = include_str!("../../agent-skills/orx-logs/SKILL.md");
 const RESULTS: &str = include_str!("../../agent-skills/orx-results/SKILL.md");
 const CUSTOMIZE: &str = include_str!("../../agent-skills/orx-customize/SKILL.md");
+const SKILL_CREATOR: &str = include_str!("../../agent-skills/orx-skill-creator/SKILL.md");
 const PAPER: &str = include_str!("../../agent-skills/orx-paper/SKILL.md");
 const INSTANCES: &str = include_str!("../../agent-skills/orx-instances/SKILL.md");
 const FEEDBACK: &str = include_str!("../../agent-skills/orx-feedback/SKILL.md");
@@ -212,8 +213,14 @@ const S_REPORTS: AgentSkill = AgentSkill {
 };
 const S_CUSTOMIZE: AgentSkill = AgentSkill {
     name: "orx-customize",
-    description: "Save reusable skills and LaTeX templates with `orx skills add` and `orx templates add`. Use when the user asks to create, import, or add a skill or template to MobileSci for use across projects.",
+    description: "Save reusable skills and LaTeX templates with `orx skills add` and `orx templates add`. Use when the user asks to import or add an already-written skill file or folder, or a LaTeX template, to MobileSci for use across projects.",
     content: CUSTOMIZE,
+    resources: &[],
+};
+const S_SKILL_CREATOR: AgentSkill = AgentSkill {
+    name: "orx-skill-creator",
+    description: "Author and iteratively improve reusable skills: interview for intent, draft the SKILL.md, register it with `orx skills add`, then refine from real usage. Use whenever the user wants to create a skill from scratch, turn a repeated workflow into a skill, or improve an existing skill's wording, structure, or triggering.",
+    content: SKILL_CREATOR,
     resources: &[],
 };
 const S_PAPER: AgentSkill = AgentSkill {
@@ -271,6 +278,7 @@ pub fn skills(set: SkillSet) -> Vec<&'static AgentSkill> {
             &S_FIGURES,
             &S_PAPER,
             &S_CUSTOMIZE,
+            &S_SKILL_CREATOR,
             &S_LIT,
             &S_FEEDBACK,
         ],
@@ -288,6 +296,7 @@ pub fn skills(set: SkillSet) -> Vec<&'static AgentSkill> {
             &S_FIGURES,
             &S_PAPER,
             &S_CUSTOMIZE,
+            &S_SKILL_CREATOR,
             &S_LIT,
             &S_FEEDBACK,
         ],

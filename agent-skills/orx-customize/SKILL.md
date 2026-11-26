@@ -1,12 +1,14 @@
 ---
 name: orx-customize
-description: "Save reusable skills and LaTeX templates with `orx skills add` and `orx templates add`. Use when the user asks to create, import, or add a skill or template to MobileSci for use across projects."
+description: "Save reusable skills and LaTeX templates with `orx skills add` and `orx templates add`. Use when the user asks to import or add an already-written skill file or folder, or a LaTeX template, to MobileSci for use across projects."
 ---
 
 # Customize OpenResearch
 
-When the user asks to save a reusable skill or LaTeX template, create or prepare
-its files in the working directory, then add them to OpenResearch:
+When the user asks to save a reusable skill or LaTeX template, prepare its
+already-written files in the working directory, then add them to OpenResearch.
+To author a new skill from scratch or improve an existing one, use
+`orx-skill-creator` instead; this module is the registration counter.
 
 | Command | Input |
 |---|---|

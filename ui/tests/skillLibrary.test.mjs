@@ -17,6 +17,7 @@ const blank = { name: "blank-skill", description: null, source: "user" };
 
 test("内置技能用中文展示名，用户技能用自己的用途说明", () => {
   assert.equal(skillTitle(builtin), "文献证据");
+  assert.equal(skillTitle({ name: "orx-skill-creator", description: null, source: "builtin" }), "技能工坊");
   assert.equal(skillTitle(mine), "my-lab");
   assert.match(skillSummary(builtin), /原始文献/);
   assert.equal(skillSummary(blank), "还没有用途说明");
