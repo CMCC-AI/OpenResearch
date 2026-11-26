@@ -2478,9 +2478,6 @@ export const listWorkflowSkills = (signal?: AbortSignal) =>
 /** 技能详情：正文、包内文件清单与可编辑性；内置技能读内嵌内容，用户技能读磁盘。 */
 export const getWorkflowSkillDetail = (name: string, signal?: AbortSignal) =>
   get<{ skill: import("./workflow/model").WorkflowSkillDetail }>(`/api/workflow/skills/${encodeURIComponent(name)}`, signal).then((result) => result.skill);
-/** 页内新建技能：用途说明与指令正文合成 SKILL.md，同名会被拒绝。 */
-export const createUserSkill = (req: { name: string; description: string; instructions: string }) =>
-  post<{ skill: { name: string } }>("/api/user-skills/create", req).then((result) => result.skill);
 /** 页内修改技能：只重写 SKILL.md 的用途说明与正文，附件保持不动。 */
 export const updateUserSkill = (name: string, req: { description: string; instructions: string }) =>
   put<{ skill: { name: string } }>(`/api/user-skills/${encodeURIComponent(name)}`, req).then((result) => result.skill);

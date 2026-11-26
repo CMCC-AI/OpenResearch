@@ -4,7 +4,6 @@ import {
   SOURCE_FILTERS,
   skillMatchesFilter,
   skillMatchesQuery,
-  skillNameError,
   skillScopeSummary,
   skillSummary,
   skillTitle,
@@ -48,14 +47,4 @@ test("生效状态只有内置/全局/自动携带/按需四种", () => {
   assert.equal(skillUsageLabel(skillUsage(mine)), "按需使用");
   assert.match(skillScopeSummary("my-lab", skillUsage({ ...mine, boundProjects: ["p1"], boundAgents: ["a1"] })), /1 个项目、1 个专家/);
   assert.match(skillScopeSummary("my-lab", skillUsage(mine)), /\/my-lab/);
-});
-
-test("名称校验与服务端一致：slug、保留前缀、重名", () => {
-  assert.match(skillNameError("", [], []), /起个名字/);
-  assert.match(skillNameError("Bad Name", [], []), /小写字母/);
-  assert.match(skillNameError("a--b", [], []), /小写字母/);
-  assert.match(skillNameError("orx-paper", [], []), /保留/);
-  assert.match(skillNameError("orx-paper", [], ["orx-paper"]), /保留/);
-  assert.match(skillNameError("my-lab", ["my-lab"], []), /同名/);
-  assert.equal(skillNameError("lit-gap-analysis", ["other"], ["orx-paper"]), null);
 });

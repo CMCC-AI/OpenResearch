@@ -1,9 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Download, MessagesSquare, PencilLine, Plus, Search, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, Download, MessagesSquare, PencilLine, Search, Trash2, Upload } from "lucide-react";
 import { useRef, useState } from "react";
 import {
   bindSkill,
-  createUserSkill,
   deleteUserSkill,
   demoteLegacySkill,
   fmtBytes,
@@ -27,7 +26,6 @@ import {
   SOURCE_FILTERS,
   skillMatchesFilter,
   skillMatchesQuery,
-  skillNameError,
   skillScopeSummary,
   skillSummary,
   skillTitle,
@@ -38,7 +36,7 @@ import {
 
 const EMPTY_DRAFT = { name: "", description: "", instructions: "" };
 type SkillDraft = typeof EMPTY_DRAFT;
-type Mode = "browse" | "create" | "edit";
+type Mode = "browse" | "edit";
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -47,10 +45,11 @@ function accepted(name: string): boolean {
   return lower.endsWith(".md") || lower.endsWith(".markdown") || lower.endsWith(".zip");
 }
 
-/** 能力库的技能视图：列表 → 详情 → 新建/编辑。
+/** 能力库的技能视图：列表 → 详情 → 编辑。
  *
  * 列表给出真实用途、来源、生效方式与包内文件数；详情能看到 SKILL.md 正文和
  * 包里的每个文件，并支持在对话中使用、下载、页内编辑与删除。
+ * 新技能靠上传 SKILL.md/zip 或在对话里让 AI 起草，不做空白表单新建。
  * 用户技能默认不生效：绑定到项目或专家的会话才自动携带，对话里 /名字 始终可用。
  * 内置技能只读；镜像技能归原生 coding agent 所有，也只读。 */
 export function SkillsLibrary({ skills, agents, projects, projectId, sessionId = null, onOpenSession, onOpenChats, onChanged }: { skills: WorkflowLibrarySkill[]; agents: WorkflowAgent[]; projects: Project[]; projectId?: string; sessionId?: string | null; onOpenSession?: (sessionId: string, projectId: string) => void; onOpenChats?: () => void; onChanged: () => Promise<unknown> }) {
@@ -74,7 +73,6 @@ export function SkillsLibrary({ skills, agents, projects, projectId, sessionId =
   });
   const detail: WorkflowSkillDetail | null = selectedName ? detailQuery.data ?? null : null;
 
-  const builtinNames = skills.filter((skill) => skill.source === "builtin").map((skill) => skill.name);
   const visible = skills.filter((skill) => skillMatchesFilter(skill, filter) && skillMatchesQuery(skill, query));
   const mine = visible.filter((skill) => skill.source === "user");
   const builtin = visible.filter((skill) => skill.source === "builtin");
@@ -172,13 +170,6 @@ export function SkillsLibrary({ skills, agents, projects, projectId, sessionId =
     }
   }
 
-  function startCreate() {
-    setDraft(EMPTY_DRAFT);
-    setFormError(null);
-    setSelectedName(null);
-    setMode("create");
-  }
-
   function startEdit() {
     if (!selected) return;
     setDraft({
@@ -196,11 +187,10 @@ export function SkillsLibrary({ skills, agents, projects, projectId, sessionId =
   }
 
   async function save() {
-    if (busy) return;
+    if (busy || !selected) return;
     const description = draft.description.trim();
     const instructions = draft.instructions.trim();
-    const problem = (mode === "create" ? skillNameError(draft.name, skills.map((skill) => skill.name), builtinNames) : null)
-      ?? (description ? null : "写一句用途：模型靠它判断什么时候该用这个技能")
+    const problem = (description ? null : "写一句用途：模型靠它判断什么时候该用这个技能")
       ?? (description.length > 2048 ? "用途说明最多 2048 个字符" : null)
       ?? (instructions ? null : "写点指令正文：告诉 AI 按什么步骤做");
     if (problem) {
@@ -210,15 +200,6 @@ export function SkillsLibrary({ skills, agents, projects, projectId, sessionId =
     setBusy(true);
     setFormError(null);
     try {
-      if (mode === "create") {
-        const saved = await createUserSkill({ name: draft.name.trim(), description, instructions });
-        await onChanged();
-        setSelectedName(saved.name);
-        setMode("browse");
-        showAlert("技能已创建。默认不随会话生效：绑定项目或专家后才会自动携带。", "success");
-        return;
-      }
-      if (!selected) return;
       await updateUserSkill(selected.name, { description, instructions });
       await onChanged();
       await detailQuery.refetch();
@@ -255,19 +236,16 @@ export function SkillsLibrary({ skills, agents, projects, projectId, sessionId =
   }
 
   function formView() {
-    const editing = mode === "edit";
     return <>
       <Button variant="ghost" className="self-start" onClick={cancelForm}><ArrowLeft size={14} />返回技能库</Button>
       <div className="rounded-lg border border-border-variant bg-background p-4">
-        <h2 className="m-0 text-lg font-normal">{editing ? `编辑 ${draft.name}` : "新建技能"}</h2>
-        <p className="mb-0 mt-1 text-sm leading-relaxed text-subtext">{editing ? "只改写 SKILL.md 里的用途说明和指令正文，包里的其它文件保持不变。" : "两项都会写进 SKILL.md：用途决定模型什么时候自动用它，指令是它照着做的步骤。"}</p>
+        <h2 className="m-0 text-lg font-normal">编辑 {draft.name}</h2>
+        <p className="mb-0 mt-1 text-sm leading-relaxed text-subtext">只改写 SKILL.md 里的用途说明和指令正文，包里的其它文件保持不变。</p>
         <div className="mt-4 flex flex-col gap-3">
           <label className="flex flex-col gap-1">
             <span className="text-sm text-text">名称</span>
-            {editing
-              ? <span className="font-mono text-sm text-text">{draft.name}</span>
-              : <Input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="lit-gap-analysis" aria-label="技能名称" className="font-mono" />}
-            <span className="text-xs text-muted">{editing ? "名称就是对话里 /名字 的调用方式，要改它需要重新上传整个技能包。" : "小写字母、数字和连字符；对话里用 /名字 直接调用。"}</span>
+            <span className="font-mono text-sm text-text">{draft.name}</span>
+            <span className="text-xs text-muted">名称就是对话里 /名字 的调用方式，要改它需要重新上传整个技能包。</span>
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-sm text-text">用途说明</span>
@@ -282,9 +260,8 @@ export function SkillsLibrary({ skills, agents, projects, projectId, sessionId =
         </div>
         {formError && <p role="alert" className="mb-0 mt-3 text-sm text-accent-red">{formError}</p>}
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button variant="primary" disabled={busy} onClick={() => void save()}>{busy ? <Spinner /> : null}{editing ? "保存修改" : "保存技能"}</Button>
+          <Button variant="primary" disabled={busy} onClick={() => void save()}>{busy ? <Spinner /> : null}保存修改</Button>
           <Button disabled={busy} onClick={cancelForm}>取消</Button>
-          {!editing && canOpenConversation && <Button variant="ghost" onClick={openConversation}><MessagesSquare size={15} />让 AI 起草</Button>}
         </div>
       </div>
     </>;
@@ -395,8 +372,7 @@ export function SkillsLibrary({ skills, agents, projects, projectId, sessionId =
               <p className="mb-0 mt-1 text-sm leading-relaxed text-subtext">内置技能随产品发布；我的技能默认不生效，绑定项目或专家后自动带上，也可以在对话里用 /技能名 调用。{canOpenConversation ? "不知道怎么写，可以点「在对话中创建」让 AI 起草。" : "也可以回对话让 AI 帮你创建。"}</p>
             </div>
             <div className="flex shrink-0 flex-wrap items-center gap-2">
-              <Button variant="primary" onClick={startCreate}><Plus size={15} />新建技能</Button>
-              <Button disabled={busy} onClick={() => inputRef.current?.click()}>{busy ? <Spinner /> : <Upload size={15} />}上传</Button>
+              <Button variant="primary" disabled={busy} onClick={() => inputRef.current?.click()}>{busy ? <Spinner /> : <Upload size={15} />}上传</Button>
               {canOpenConversation && <Button variant="ghost" onClick={openConversation}><MessagesSquare size={15} />在对话中创建</Button>}
             </div>
           </div>
@@ -417,7 +393,7 @@ export function SkillsLibrary({ skills, agents, projects, projectId, sessionId =
           event.target.value = "";
         }} />
         {skills.length === 0
-          ? <p className="m-0 text-sm text-subtext">还没有任何技能：点「新建技能」写一个，或上传 SKILL.md / zip 开始。</p>
+          ? <p className="m-0 text-sm text-subtext">还没有任何技能：上传 SKILL.md 或 zip 开始，也可以在对话里让 AI 帮你创建。</p>
           : visible.length === 0
             ? <p className="m-0 text-sm text-subtext">没有匹配的技能，换个关键词或切回「全部」。</p>
             : <>

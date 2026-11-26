@@ -31,7 +31,6 @@ const mocks = {
     bindSkill: async (req) => { calls.push(["bindSkill", req]); return { ok: true }; },
     unbindSkill: async (req) => { calls.push(["unbindSkill", req]); return { ok: true }; },
     demoteLegacySkill: async (name) => { calls.push(["demoteLegacySkill", name]); return { ok: true }; },
-    createUserSkill: async (req) => { calls.push(["createUserSkill", req]); return { name: req.name }; },
     updateUserSkill: async (name, req) => { calls.push(["updateUserSkill", name, req]); return { name }; },
     getWorkflowSkillDetail: async (name) => ({ name, description: "", source: "user", origin: null, bytes: 1, files: [{ path: "SKILL.md", bytes: 1 }], updatedAt: 1, body: "# body", editable: true }),
     userSkillArchiveUrl: (name) => `/api/user-skills/${name}/archive`,

@@ -466,35 +466,6 @@ fn write_skill(root: &Path, name: &str, files: Vec<(String, Vec<u8>)>) -> Result
 /// not a dataset; the cap keeps a paste accident from filling the data dir.
 const MAX_BODY_BYTES: usize = 256 * 1024;
 
-/// Create a skill from the dashboard's form. Same validation as an upload, plus
-/// a duplicate check — editing an existing skill goes through [`update`].
-pub fn create(name: &str, description: &str, instructions: &str) -> Result<UserSkill> {
-    create_in(&root(), name, description, instructions)
-}
-
-fn create_in(root: &Path, name: &str, description: &str, instructions: &str) -> Result<UserSkill> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(anyhow!("give the skill a name"));
-    }
-    validate_name(name)?;
-    let description = validate_description(description)?;
-    let body = validate_body(instructions)?;
-    if store_dir(root).join(name).exists() {
-        return Err(anyhow!(
-            "a skill named `{name}` already exists; open it to edit instead"
-        ));
-    }
-    write_skill(
-        root,
-        name,
-        vec![(
-            "SKILL.md".to_string(),
-            compose_skill_md(name, &description, body).into_bytes(),
-        )],
-    )
-}
-
 /// Rewrite an uploaded skill's `description` and Markdown body. Support files
 /// stay untouched — unlike a re-upload, which replaces the whole folder.
 pub fn update(name: &str, description: &str, instructions: &str) -> Result<UserSkill> {
@@ -547,14 +518,6 @@ fn validate_body(instructions: &str) -> Result<&str> {
 /// and newlines in a description round-trip exactly instead of changing meaning.
 fn yaml_string(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| format!("{value:?}"))
-}
-
-fn compose_skill_md(name: &str, description: &str, body: &str) -> String {
-    format!(
-        "---\nname: {name}\ndescription: {}\n---\n\n{}\n",
-        yaml_string(description),
-        body.trim_end()
-    )
 }
 
 /// Replace only the `description` entry and the Markdown body of an existing
@@ -2707,51 +2670,6 @@ mod tests {
     }
 
     #[test]
-    fn create_composes_frontmatter_that_parses_back() {
-        let root = temp_root();
-        // Quotes, a colon and a newline are the values a hand-written
-        // frontmatter would break on; the composed file must read back exactly.
-        let description = "梳理「研究空白」: 当用户要 #对比 方向时使用\n第二行也要保留";
-        let created = create_in(
-            &root,
-            "lit-gap",
-            description,
-            "# 文献空白\n\n- 检索\n- 汇总",
-        )
-        .unwrap();
-        assert_eq!(created.name, "lit-gap");
-        assert_eq!(created.file_count, 1);
-
-        let md = fs::read_to_string(store_dir(&root).join("lit-gap/SKILL.md")).unwrap();
-        let fm = parse_frontmatter(&md).unwrap();
-        assert_eq!(fm.name, "lit-gap");
-        assert_eq!(fm.description, description);
-        assert_eq!(skill_body(&md).unwrap(), "# 文献空白\n\n- 检索\n- 汇总\n");
-
-        let listed = list_uploaded_in(&root);
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].description, description);
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn create_rejects_invalid_reserved_and_duplicate_names() {
-        let root = temp_root();
-        assert!(create_in(&root, "Bad Name", "用途", "正文").is_err());
-        assert!(create_in(&root, "orx-paper", "用途", "正文").is_err());
-        assert!(create_in(&root, "", "用途", "正文").is_err());
-        assert!(create_in(&root, "blank-desc", "   ", "正文").is_err());
-        assert!(create_in(&root, "blank-body", "用途", " \n ").is_err());
-
-        create_in(&root, "mine", "用途", "正文").unwrap();
-        assert!(
-            create_in(&root, "mine", "另一个用途", "另一段正文").is_err(),
-            "create must not silently replace an existing skill"
-        );
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn update_rewrites_description_and_body_but_keeps_other_keys_and_files() {
         let root = temp_root();
         let original = "---\nname: repro-check\ndescription: >-\n  Old description\n  wrapped.\nlicense: MIT\nallowed-tools: Bash Read\nmetadata:\n  author: me\n---\n\n# Old body\n";
@@ -2818,7 +2736,17 @@ mod tests {
     fn archive_round_trips_through_save_zip() {
         let root = temp_root();
         let other = temp_root();
-        create_in(&root, "pack-skill", "用途", "正文").unwrap();
+        write_skill(
+            &root,
+            "pack-skill",
+            vec![(
+                "SKILL.md".to_string(),
+                "---\nname: pack-skill\ndescription: 用途\n---\n正文\n"
+                    .as_bytes()
+                    .to_vec(),
+            )],
+        )
+        .unwrap();
         fs::create_dir_all(store_dir(&root).join("pack-skill/references")).unwrap();
         fs::write(
             store_dir(&root).join("pack-skill/references/notes.md"),

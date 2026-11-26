@@ -121,14 +121,3 @@ export function skillScopeSummary(name: string, usage: SkillUsage): string {
       return `未绑定：不随任何会话自动携带；在对话里输入 /${name} 仍可直接使用。`;
   }
 }
-
-/** 新建表单的名称校验，与服务端规则一致（小写字母、数字、单个连字符）。 */
-export function skillNameError(name: string, taken: readonly string[], builtinNames: readonly string[]): string | null {
-  const trimmed = name.trim();
-  if (!trimmed) return "先给技能起个名字";
-  if (trimmed.length > 64) return "名称最多 64 个字符";
-  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(trimmed)) return "名称只能用小写字母、数字和连字符，例如 lit-gap-analysis";
-  if (trimmed.startsWith("orx-") || builtinNames.includes(trimmed)) return "orx- 前缀和内置技能名是保留的，换一个名字";
-  if (taken.includes(trimmed)) return "已经有同名技能，打开它修改即可";
-  return null;
-}

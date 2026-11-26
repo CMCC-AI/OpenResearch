@@ -834,7 +834,6 @@ fn router(state: AppState, remote_auth: Option<RemoteAuth>) -> Router {
                 .post(upload_user_skill)
                 .delete(delete_user_skill),
         )
-        .route("/api/user-skills/create", post(create_user_skill))
         .route(
             "/api/user-skills/{name}",
             axum::routing::put(update_user_skill),
@@ -1391,23 +1390,8 @@ async fn delete_user_skill(Query(q): Query<DeleteByNameQ>) -> ApiResult {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthorSkillReq {
-    /// Ignored by the update handler, which takes the name from the path.
-    #[serde(default)]
-    name: String,
     description: String,
     instructions: String,
-}
-
-/// 页内新建：名称、用途说明与指令正文合成一份 SKILL.md。上传仍走
-/// `POST /api/user-skills`，这条只服务表单，同名会被拒绝而不是覆盖。
-async fn create_user_skill(Json(req): Json<AuthorSkillReq>) -> ApiResult {
-    blocking_api(move || {
-        let saved =
-            crate::local::user_skills::create(&req.name, &req.description, &req.instructions)
-                .map_err(bad_request)?;
-        Ok(Json(json!({ "skill": user_skill_json(&saved) })))
-    })
-    .await
 }
 
 /// 页内修改：只重写 SKILL.md 的用途说明与正文，包里的其它文件保持原样。
