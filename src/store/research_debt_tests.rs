@@ -286,7 +286,9 @@ fn plan_inheritance_invalidates_changed_brief_and_transitive_reviews_only() {
             }
             let old = &before.task(id).unwrap().artifacts[0];
             assert_eq!(
-                inspect_artifact(&store.research_root(&revised).unwrap(), &old.path).unwrap().sha256,
+                inspect_artifact(&store.research_root(&revised).unwrap(), &old.path)
+                    .unwrap()
+                    .sha256,
                 old.sha256
             );
         }
@@ -396,4 +398,86 @@ fn plan_inheritance_normalizes_legacy_and_explicit_same_manual_workflow() {
         .tasks
         .iter()
         .all(|t| t.state == "completed"));
+}
+
+#[test]
+fn frozen_package_check_keeps_approval_when_scope_drifts() {
+    let (_dir, store, study) = delivery_scope_fixture();
+    for task in ["design", "review", "audit"] {
+        bind(&store, &study, task, task);
+        finish(&store, &study, task);
+    }
+    crate::commands::research_dispatch::reconcile_active_studies(&store).unwrap();
+    approve(&store, &study, "G4");
+    // 批准后外部追加当前 run 的日志：scope 摘要随之漂移，但日志不参与哈希
+    // 校验，打包校验仍然通过——这正是此前会无声撤销确认的路径。
+    let log = store.research_log_path("current").unwrap();
+    let mut content = std::fs::read_to_string(&log).unwrap();
+    content.push_str("\nexternal late append");
+    std::fs::write(&log, content).unwrap();
+
+    crate::commands::research_dispatch::reconcile_active_studies(&store).unwrap();
+    let saved = store.research_study(&study.id).unwrap();
+    // 后台复查不得换快照、不得取代已批准的 decision：只留下如实提示。
+    assert!(saved.delivery_approved());
+    assert!(saved
+        .decisions
+        .iter()
+        .any(|d| d.gate == "G4" && d.status == "approved"));
+    assert!(saved.delivery_error.is_none());
+    assert!(saved
+        .delivery_notice
+        .as_deref()
+        .unwrap_or_default()
+        .contains("与确认版本不一致"));
+    assert_eq!(saved.delivery_notice_source.as_deref(), Some("package"));
+}
+
+#[test]
+fn human_reconcile_does_not_overwrite_package_sourced_notice() {
+    let (_dir, store, study) = setup();
+    let input = PlanInput {
+        workflow: None,
+        summary: "human set guard".into(),
+        tasks: vec![
+            human_spec("collect", &[], "notes.md"),
+            spec("design", "as-experiment-designer", &[]),
+            spec("review", "as-independent-reviewer", &["design"]),
+            spec("audit", "as-quality-citation-auditor", &["review"]),
+        ],
+    };
+    store.research_set_plan(&study.id, input).unwrap();
+    approve(&store, &study, "G1");
+    // 智能体链与人工任务解耦：先走完链路，提交人工产物时已无可派任务，
+    // 自动派发不会绑走任何会话。
+    for task in ["design", "review", "audit"] {
+        bind(&store, &study, task, task);
+        finish(&store, &study, task);
+    }
+    store
+        .research_submit_human(&study.id, "collect", "内容".into())
+        .unwrap();
+    crate::commands::research_dispatch::reconcile_active_studies(&store).unwrap();
+    approve(&store, &study, "G4");
+    // 交付包校验先写入了提示；随后人工产物被改：人工对账不得覆盖它。
+    store
+        .research_update(&study.id, |study| {
+            study.delivery_notice = Some("交付确认已冻结；工作区后续校验未通过：x".into());
+            study.delivery_notice_source = Some("package".into());
+            Ok(())
+        })
+        .unwrap();
+    let root = store.research_root(&study).unwrap();
+    std::fs::write(root.join("notes.md"), " externally rewritten").unwrap();
+    store.research_reconcile_human_artifacts(&study.id).unwrap();
+    let saved = store.research_study(&study.id).unwrap();
+    assert_eq!(saved.delivery_notice_source.as_deref(), Some("package"));
+    assert!(saved
+        .delivery_notice
+        .as_deref()
+        .unwrap_or_default()
+        .contains("未通过"));
+    // 批准不受影响，人工任务也不被重开（对账在批准分支只提示）。
+    assert!(saved.delivery_approved());
+    assert_eq!(saved.task("collect").unwrap().state, "completed");
 }

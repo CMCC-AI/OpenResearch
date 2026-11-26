@@ -26,23 +26,27 @@ export function ModelQuotaCard({ study, session, onSwitched }: { study: Research
     reasoningLevel: session.reasoningLevel,
   } : null);
   const blocked = block.model ? modelLabel(block.model) : "当前模型";
+  // 只有 opencode 有可选的模型目录；其他 harness（以及额度定期重置的场景）
+  // 走“沿用当前模型”的恢复：服务端空 model 即只清阻断继续。
   const pickable = session?.harness === "opencode";
 
   const submit = async () => {
-    if (!current?.model || working) return;
+    if (working) return;
+    if (pickable && !current?.model) return;
     setWorking(true);
     setError(null);
     try {
       const result = await switchResearchModel(study.id, {
-        model: current.model,
-        serviceTier: current.serviceTier,
-        reasoningLevel: current.reasoningLevel,
+        model: current?.model ?? "",
+        serviceTier: current?.serviceTier ?? null,
+        reasoningLevel: current?.reasoningLevel ?? null,
       });
       void queryClient.invalidateQueries({ queryKey: workspaceKey("researchStudy", study.sessionId) });
       void queryClient.invalidateQueries({ queryKey: listChatSessionsQuery(study.projectId).queryKey });
       void queryClient.invalidateQueries({ queryKey: getChatMessagesQuery(study.sessionId).queryKey });
-      onSwitched?.(current);
-      if (result.resumeError) showAlert(`模型已切换，但自动继续没有启动：${result.resumeError}`, "error");
+      // 沿用原模型的恢复不改变任何选择，不写 preferred-agent 状态。
+      if (pickable && current) onSwitched?.(current);
+      if (result.resumeError) showAlert(`已发起继续，但自动续跑没有启动：${result.resumeError}`, "error");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -60,7 +64,8 @@ export function ModelQuotaCard({ study, session, onSwitched }: { study: Research
         <strong className="text-sm font-medium text-text">模型额度已用完</strong>
       </div>
       <p className="m-0 text-sm text-subtext">
-        「{blocked}」无法继续运行，工作流已暂停。换一个有额度的模型后会接着跑。
+        「{blocked}」无法继续运行，工作流已暂停。
+        {pickable ? "换一个有额度的模型后会接着跑。" : "额度会定期重置：已恢复就用原模型继续；仍受限会再次暂停。"}
       </p>
       {pickable ? (
         <div className="flex flex-wrap items-center gap-2">
@@ -76,7 +81,12 @@ export function ModelQuotaCard({ study, session, onSwitched }: { study: Research
           </Button>
         </div>
       ) : (
-        <p className="m-0 text-sm text-subtext">请先在设置里配置一个可用模型。</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="primary" size="small" disabled={working} onClick={() => void submit()}>
+            {working && <Spinner aria-hidden="true" />}
+            额度已恢复，继续
+          </Button>
+        </div>
       )}
       {error && <p role="alert" className="m-0 text-xs text-accent-red">{error}</p>}
     </section>

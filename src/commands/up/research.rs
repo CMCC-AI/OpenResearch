@@ -378,8 +378,10 @@ pub(super) struct SwitchModelReq {
 
 /// Apply the user's model choice to a quota-blocked study: persist it on the
 /// lead (and the experts that inherit from it), clear the block, resume, and
-/// dispatch. The continuation turn is a hidden note so the user does not have
-/// to send anything after clicking.
+/// dispatch. An empty `model` keeps the current one — that is the recovery path
+/// for harnesses without a model picker (and for waiting out a quota reset).
+/// The continuation turn is a hidden note so the user does not have to send
+/// anything after clicking.
 pub(super) async fn switch_model(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -390,9 +392,6 @@ pub(super) async fn switch_model(
     reject_if_stopping(&state)?;
     reject_if_moving(&state)?;
     let model = req.model.trim().to_string();
-    if model.is_empty() {
-        return Err(bad_request(anyhow!("请选择模型")));
-    }
     tokio::spawn(async move {
         let gate = state.data_dir_gate.clone().lock_owned().await;
         reject_if_stopping(&state)?;
@@ -425,7 +424,14 @@ pub(super) async fn switch_model(
         // has work in flight and will wake the lead by itself.
         let should_continue = switched.lead_failed || (dispatched.is_empty() && !running);
         let resume_error = if should_continue {
-            let text = if switched.lead_failed {
+            let text = if model.is_empty() {
+                // 沿用原模型的恢复：措辞不再提“切换”。
+                if switched.lead_failed {
+                    "[orx 研究编排] 额度限制已解除（沿用原模型），请从中断处继续推进当前研究；已完成的任务不要重做。".to_string()
+                } else {
+                    "[orx 研究编排] 额度限制已解除（沿用原模型），研究已恢复。请查看当前状态并继续推进剩余任务。".to_string()
+                }
+            } else if switched.lead_failed {
                 format!(
                     "[orx 研究编排] 模型已切换为 {model}，额度问题已解除。请从中断处继续推进当前研究；已完成的任务不要重做。"
                 )

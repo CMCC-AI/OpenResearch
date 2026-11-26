@@ -687,22 +687,35 @@ fn persist_package_check(
         }
         let frozen = study.delivery_approved();
         match outcome {
+            Ok(prepared) if frozen => {
+                // 批准绑定的是不可变归档：后台复查不换快照、不动已批准的 decision，
+                // 否则 scope 一漂移就会无声撤销确认。差异只如实提示。
+                study.delivery_error = None;
+                let drifted = study
+                    .delivery_snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.scope_hash != prepared.scope_hash());
+                if drifted {
+                    let notice =
+                        "交付确认已冻结；工作区内容与确认版本不一致。已确认版本不受影响；如需交付新版本，请处理后再申请。";
+                    if study.delivery_notice.as_deref() != Some(notice)
+                        || study.delivery_notice_source.as_deref() != Some("package")
+                    {
+                        study.delivery_notice = Some(notice.to_string());
+                        study.delivery_notice_source = Some("package".into());
+                    }
+                } else if study.delivery_notice_source.as_deref() == Some("package") {
+                    // 同一来源的过期提示（此前的校验失败已恢复）由本次成功清除。
+                    study.delivery_notice = None;
+                    study.delivery_notice_source = None;
+                }
+            }
             Ok(prepared) => match store.research_apply_delivery(study, &prepared) {
                 Ok(()) => {
                     study.delivery_error = None;
                     study.delivery_notice = None;
                     study.delivery_notice_source = None;
                     study.request_gate(gate, prepared.scope)?;
-                }
-                Err(error) if frozen => {
-                    // 批准绑定的是不可变归档；工作区后续校验失败不能撤销已经确认的交付。
-                    study.delivery_error = None;
-                    if study.delivery_notice.is_none() {
-                        study.delivery_notice = Some(format!(
-                            "交付确认已冻结；工作区后续校验未通过：{error}。已确认版本不受影响；如需交付新版本，请处理后再申请。"
-                        ));
-                        study.delivery_notice_source = Some("package".into());
-                    }
                 }
                 Err(error) => {
                     study.delivery_error = Some(error.to_string());

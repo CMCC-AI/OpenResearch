@@ -29,6 +29,12 @@ pub struct PreparedDelivery {
     snapshot: DeliverySnapshot,
     files: Vec<FileSource>,
 }
+impl PreparedDelivery {
+    /// 冻结复查只需比较 scope 摘要，不必展开整个准备结果。
+    pub(crate) fn scope_hash(&self) -> &str {
+        &self.snapshot.scope_hash
+    }
+}
 struct TempArchive(PathBuf);
 impl Drop for TempArchive {
     fn drop(&mut self) {

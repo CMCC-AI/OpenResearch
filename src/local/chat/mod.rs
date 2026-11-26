@@ -6280,12 +6280,16 @@ impl ChatHost {
                 .unwrap_or(false);
             // A model that ran out of quota will fail every retry the same way.
             // Record it on the study so the watcher can pause dispatch and the
-            // lead conversation can offer a model switch.
+            // lead conversation can offer a model switch. The turn id lets the
+            // store skip failures from turns that ran on the pre-switch model.
             if terminal_won && model_limit {
                 let session_id = ctx.session_id.clone();
+                let turn_id = ctx.turn_id.clone();
                 let _ = crate::local::blocking::run(move || {
                     let store = Store::open()?;
-                    store.research_block_model_usage(&session_id).map(|_| ())
+                    store
+                        .research_block_model_usage(&session_id, &turn_id)
+                        .map(|_| ())
                 })
                 .await;
             }

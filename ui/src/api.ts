@@ -2436,7 +2436,7 @@ export const pauseResearchStudy = (studyId: string, version: number) =>
   post<{ ok: boolean; interrupted?: string[] }>(`/api/research/studies/${studyId}/pause`, { version });
 export const resumeResearchStudy = (studyId: string, version: number) =>
   post<{ ok: boolean }>(`/api/research/studies/${studyId}/resume`, { version });
-/** 额度阻断后换模型：负责人模型与继承型专家一起切换，研究恢复并自动续跑。 */
+/** 额度阻断后恢复：model 为空表示沿用当前模型（只清阻断继续），否则负责人模型与继承型专家一起切换，研究恢复并自动续跑。 */
 export const switchResearchModel = (studyId: string, selection: { model: string; serviceTier?: string | null; reasoningLevel?: string | null }) =>
   post<{ ok: boolean; resumeError?: string | null }>(`/api/research/studies/${studyId}/switch-model`, selection);
 export const submitHumanTaskOutput = (studyId: string, taskId: string, content: string) =>

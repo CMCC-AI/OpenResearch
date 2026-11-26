@@ -468,6 +468,9 @@ pub struct Study {
     /// 模型额度耗尽后的研究级阻断：派发停止、由负责人对话上的换模型卡片清除。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_block: Option<ModelBlock>,
+    /// 上次换模型的时刻：换模型前已在跑的 turn 失败时不得重新阻断。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_switched_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -1870,13 +1873,23 @@ impl Store {
     /// blocks, and the first failure is the cause — later failures (which are
     /// consequences) must not rewrite which session/model the card explains.
     /// The pause itself happens in the watcher, which can also interrupt the
-    /// bound sessions.
-    pub fn research_block_model_usage(&self, session: &str) -> Result<bool> {
+    /// bound sessions. `turn_id` identifies the failing turn: one that started
+    /// before the last model switch ran on the old model, so its late-arriving
+    /// failure must not re-block the study under the new model.
+    pub fn research_block_model_usage(&self, session: &str, turn_id: &str) -> Result<bool> {
         let Some(study) = self.research_for_session(session)? else {
             return Ok(false);
         };
         if study.status != "active" || study.model_block.is_some() {
             return Ok(false);
+        }
+        if let Some(switched_at) = study.model_switched_at {
+            let stale = self
+                .turn_created_at(turn_id)?
+                .is_some_and(|created_at| created_at < switched_at);
+            if stale {
+                return Ok(false);
+            }
         }
         let model = self
             .get_chat_session(session)?
@@ -1893,6 +1906,16 @@ impl Store {
         })?;
         Ok(true)
     }
+    fn turn_created_at(&self, turn_id: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT created_at FROM chat_turns WHERE id=?1",
+                [turn_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?)
+    }
     /// Switch the lead model for a blocked study, carry it into the inheriting
     /// experts, clear the block and resume, all in one transaction. The caller
     /// dispatches and nudges the lead afterwards.
@@ -1904,9 +1927,6 @@ impl Store {
         reasoning_level: Option<&str>,
     ) -> Result<ModelSwitch> {
         let model = model.trim();
-        if model.is_empty() {
-            return Err(anyhow!("请选择模型"));
-        }
         let tx = self.begin_immediate()?;
         let mut study = self.research_study(id)?;
         let block = study
@@ -1919,14 +1939,32 @@ impl Store {
         if study.status != "active" && study.status != "paused" {
             return Err(anyhow!("研究已停止，无法继续"));
         }
-        self.set_chat_session_model(&lead.id, model)?;
-        self.set_chat_session_service_tier(&lead.id, service_tier.filter(|tier| !tier.is_empty()))?;
-        if let Some(level) = reasoning_level.filter(|level| !level.is_empty()) {
-            self.set_chat_session_reasoning_level(&lead.id, level)?;
+        // 空 model 表示沿用当前模型：只清阻断恢复（额度重置后继续），
+        // 不改任何会话的模型，也不做继承。
+        if !model.is_empty() {
+            self.set_chat_session_model(&lead.id, model)?;
+            self.set_chat_session_service_tier(
+                &lead.id,
+                service_tier.filter(|tier| !tier.is_empty()),
+            )?;
+            if let Some(level) = reasoning_level.filter(|level| !level.is_empty()) {
+                self.set_chat_session_reasoning_level(&lead.id, level)?;
+            }
+            self.research_inherit_model(id, &lead.id, &lead.harness, lead.model.as_deref(), model)?;
+        } else {
+            self.set_chat_session_service_tier(
+                &lead.id,
+                service_tier.filter(|tier| !tier.is_empty()),
+            )?;
+            if let Some(level) = reasoning_level.filter(|level| !level.is_empty()) {
+                self.set_chat_session_reasoning_level(&lead.id, level)?;
+            }
         }
-        self.research_inherit_model(id, &lead.id, &lead.harness, lead.model.as_deref(), model)?;
         let was_paused = study.status == "paused";
         study.model_block = None;
+        // 记下切换时刻：换模型前已在跑的 turn 属于旧模型，其迟到的失败
+        // 不能重新阻断研究（见 research_block_model_usage）。
+        study.model_switched_at = Some(now_ms());
         if was_paused {
             study.status = "active".into();
         }
@@ -2009,6 +2047,7 @@ impl Store {
             delivery_notice_source: None,
             delivery_snapshot: None,
             model_block: None,
+            model_switched_at: None,
             created_at: now_ms(),
             updated_at: now_ms(),
         };
@@ -2741,8 +2780,10 @@ impl Store {
                 "工作区文件在交付确认后有改动：{}。已确认版本不受影响；如需交付新版本，请修改对应步骤后重新确认。",
                 paths.join("、")
             );
-            if study.delivery_notice.as_deref() != Some(notice.as_str())
-                || study.delivery_error.is_some()
+            // 交付包校验写入的提示由包校验自己清除：这里覆盖会让两条提示每轮互换。
+            if study.delivery_notice_source.as_deref() != Some("package")
+                && (study.delivery_notice.as_deref() != Some(notice.as_str())
+                    || study.delivery_error.is_some())
             {
                 self.research_update(id, |study| {
                     study.delivery_notice = Some(notice);
@@ -4416,13 +4457,17 @@ mod tests {
         store.research_set_plan(&study.id, plan()).unwrap();
         approve(&store, &study, "G1");
 
-        assert!(store.research_block_model_usage("lead").unwrap());
+        assert!(store
+            .research_block_model_usage("lead", "turn-late")
+            .unwrap());
         let blocked = store.research_study(&study.id).unwrap();
         let block = blocked.model_block.clone().unwrap();
         assert_eq!(block.session_id, "lead");
         assert_eq!(block.model.as_deref(), Some("provider/a"));
         // A later consequence must not rewrite which failure the card explains.
-        assert!(!store.research_block_model_usage("inherited").unwrap());
+        assert!(!store
+            .research_block_model_usage("inherited", "turn-late")
+            .unwrap());
         assert_eq!(
             store
                 .research_study(&study.id)
@@ -4481,6 +4526,64 @@ mod tests {
                 .as_deref(),
             Some("provider/c")
         );
+    }
+    #[test]
+    fn late_failure_from_a_turn_started_before_the_switch_does_not_reblock() {
+        let (_dir, store, study) = setup();
+        store.set_chat_session_model("lead", "provider/a").unwrap();
+        store.research_set_plan(&study.id, plan()).unwrap();
+        approve(&store, &study, "G1");
+        // 换模型之前就在跑的旧 turn（created_at 远小于真实时钟的 now_ms）。
+        store
+            .conn
+            .execute(
+                "INSERT INTO chat_turns(id,session_id,assistant_message_id,client_turn_id,request_hash,prepared_input,settings_json,state,delivery_state,created_at,updated_at) VALUES('turn-old','lead','m1','c1','hash','input','{}','running','unknown',100,100)",
+                [],
+            )
+            .unwrap();
+        store
+            .research_block_model_usage("lead", "turn-old")
+            .unwrap();
+        assert!(store
+            .research_study(&study.id)
+            .unwrap()
+            .model_block
+            .is_some());
+        let version = store
+            .research_study(&study.id)
+            .unwrap()
+            .plans
+            .last()
+            .map_or(0, |p| p.version);
+        store.research_pause(&study.id, version).unwrap();
+        store
+            .research_switch_model(&study.id, "provider/b", None, None)
+            .unwrap();
+        // 换模型前已开始的 turn 迟到落地失败：不得归咎新模型、不得重新阻断。
+        assert!(!store
+            .research_block_model_usage("lead", "turn-old")
+            .unwrap());
+        assert!(store
+            .research_study(&study.id)
+            .unwrap()
+            .model_block
+            .is_none());
+        // 换模型之后开始的新 turn 失败仍然照常阻断。
+        store
+            .conn
+            .execute(
+                "INSERT INTO chat_turns(id,session_id,assistant_message_id,client_turn_id,request_hash,prepared_input,settings_json,state,delivery_state,created_at,updated_at) VALUES('turn-new','lead','m2','c2','hash','input','{}','running','unknown',99000000000000,99000000000000)",
+                [],
+            )
+            .unwrap();
+        assert!(store
+            .research_block_model_usage("lead", "turn-new")
+            .unwrap());
+        assert!(store
+            .research_study(&study.id)
+            .unwrap()
+            .model_block
+            .is_some());
     }
     #[test]
     fn research_metrics_union_activity_and_scope_real_token_usage() {
