@@ -19,6 +19,7 @@ function browser(routes = {}) {
         append(child) {
           this.children.push(child);
         },
+        removeAttribute() {},
         classList: { add() {}, remove() {} },
         querySelector: () => node("submit"),
         setAttribute(name, value) {
@@ -72,7 +73,7 @@ function browser(routes = {}) {
   });
   vm.runInContext(
     source +
-      "\nglobalThis.ui = { authentication, recovery, load, passwordField };",
+      "\nglobalThis.ui = { authentication, recovery, load, passwordField, boot };",
     context,
   );
   return { context, ui: context.ui, node, events, redirects, calls };
@@ -185,18 +186,39 @@ test("shared-origin workspace login pre-wakes personal space before redirecting"
   assert.deepEqual(b.redirects, ["http://localhost:4791/projects"]);
 });
 
-test("login and registration render autofill attributes and interactive research stages", () => {
+test("login and registration render autofill attributes and interactive science scene", () => {
   const b = browser();
   b.ui.authentication("login");
   const loginHtml = b.node("#app").innerHTML;
   assert.match(loginHtml, /autocomplete="username"/);
   assert.match(loginHtml, /spellcheck="false"/);
   assert.match(loginHtml, /autocomplete="current-password"/);
-  assert.match(loginHtml, /data-stage-tab="0"/);
-  assert.match(loginHtml, /多源学术检索与深度精读/);
+  assert.match(loginHtml, /id="auth-scene"/);
+  assert.match(loginHtml, /data-piece="flask"/);
+  assert.match(loginHtml, /每一次探索都从一个问题开始/);
 
   b.ui.authentication("register");
   const registerHtml = b.node("#app").innerHTML;
   assert.match(registerHtml, /autocomplete="name"/);
   assert.match(registerHtml, /autocomplete="new-password"/);
+});
+
+test("explicit /_account/login renders login UI immediately before /me completes", async () => {
+  let releaseMe;
+  const pendingMe = new Promise((resolve) => {
+    releaseMe = resolve;
+  });
+  const b = browser({
+    "/api/platform/me": async () => {
+      await pendingMe;
+      return {};
+    },
+  });
+  b.context.location.pathname = "/_account/login";
+  const pending = b.ui.boot();
+  assert.match(b.node("#app").innerHTML, /欢迎使用 MobileSci/);
+  assert.match(b.node("#app").innerHTML, /id="auth-scene"/);
+  assert.ok(b.calls.includes("/api/platform/me"));
+  releaseMe();
+  await pending.catch(() => {});
 });

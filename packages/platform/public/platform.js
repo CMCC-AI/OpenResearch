@@ -4,14 +4,28 @@ const dialog = document.querySelector("#detail");
 const detail = document.querySelector("#detail-body");
 let me = null;
 let runtimeTimer;
-let stageTimer;
+let sceneFrame;
+let sceneCleanup;
+let bootLoginTimer;
+function stopSceneMotion() {
+  if (sceneFrame && typeof cancelAnimationFrame === "function") {
+    cancelAnimationFrame(sceneFrame);
+    sceneFrame = 0;
+  }
+  if (sceneCleanup) {
+    sceneCleanup();
+    sceneCleanup = null;
+  }
+}
 window.addEventListener("pagehide", () => {
   clearTimeout(runtimeTimer);
-  clearTimeout(stageTimer);
+  clearTimeout(bootLoginTimer);
+  stopSceneMotion();
 });
 
 async function hostedHome(capabilities) {
-  clearTimeout(stageTimer);
+  stopSceneMotion();
+  authMounted = false;
   renderAccount(capabilities);
   const space = await api("/personal-space", "POST", {});
   app.innerHTML = `<section class="auth card account-card"><h1>我的科研空间</h1><p id="runtime-status" role="status">正在准备运行环境…</p><button id="enter-space" class="primary" disabled>进入科研工作台</button><button id="retry-space" hidden>重新准备环境</button>${capabilities.deepLiteratureUrl ? '<button id="literature">进入论文精读</button>' : ""}</section>`;
@@ -142,64 +156,175 @@ function bindForm(selector, callback) {
 
 const SVG_MAIL =
   '<svg class="auth-input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>';
-const SVG_LOCK =
-  '<svg class="auth-input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
-const SVG_USER =
-  '<svg class="auth-input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>';
-const SVG_SHIELD =
-  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/></svg>';
 
-const RESEARCH_STAGES = [
-  {
-    code: "01",
-    label: "发现论文",
-    chip: "DeepXiv 文献层",
-    title: "多源学术检索与深度精读",
-    desc: "联动学术图谱与预印本库，自动提炼研究脉络、方法对比与关键缺口，将文献直接带入项目。",
-    metrics: ["arXiv / PubMed 检索", "PDF 精读与问答", "自动生成文献笔记"],
-    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/></svg>',
-  },
-  {
-    code: "02",
-    label: "形成假设",
-    chip: "专家协同规划",
-    title: "拆解研究问题与实验方案",
-    desc: "科研专家团协作梳理研究假设、变量控制与评估指标，形成结构化、可审核的研究路线图。",
-    metrics: ["多角色专家评审", "研究计划版本化", "人工确认关键门控"],
-    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></svg>',
-  },
-  {
-    code: "03",
-    label: "执行实验",
-    chip: "隔离沙箱运行",
-    title: "自动编写脚本并追踪实验指标",
-    desc: "在独立科研工作区执行代码与仿真，完整记录命令、Diff、终端日志与每次实验的定量结果。",
-    metrics: ["独立工作区与终端", "实时实验日志流", "可对比指标与 Diff"],
-    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 2v7.527a2 2 0 0 1-.211.896L4.72 20.55a1 1 0 0 0 .9 1.45h12.76a1 1 0 0 0 .9-1.45l-5.069-10.127A2 2 0 0 1 14 9.527V2"/><path d="M8.5 2h7"/></svg>',
-  },
-  {
-    code: "04",
-    label: "沉淀成果",
-    chip: "可复现研究档案",
-    title: "整合图表、论文与精选案例",
-    desc: "将推理过程、源码改动与可视化图表沉淀为可追溯的研究档案，支持一键分享为只读精选案例。",
-    metrics: ["Markdown / LaTeX 报告", "证据链溯源记录", "只读精选案例发布"],
-    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/></svg>',
-  },
-];
+const SVG_EYE_OFF =
+  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>';
+const SVG_EYE_ON =
+  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
+const SVG_BRAND_BLUE = (size, suffix) =>
+  `<svg width="${size}" height="${size}" viewBox="0 0 40 40" fill="none" aria-hidden="true"><defs><linearGradient id="mLeft-${suffix}" x1="4.8" y1="10.6" x2="4.8" y2="33" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1d6ef5"/><stop offset="1" stop-color="#3b8eff"/></linearGradient><linearGradient id="mTop-${suffix}" x1="2" y1="9" x2="30.4" y2="6" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#3898ff"/><stop offset="0.6" stop-color="#1d6ef5"/><stop offset="1" stop-color="#155ee0"/></linearGradient><linearGradient id="mRight-${suffix}" x1="19.5" y1="26" x2="36" y2="20" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2c84f8"/><stop offset="0.55" stop-color="#56a7ff"/><stop offset="1" stop-color="#7ec0ff"/></linearGradient></defs><path d="M2 10.4L7.6 13.5V33L2 29.8V10.4Z" fill="url(#mLeft-${suffix})"/><path d="M2 10.6L20 0.2L30.4 6.1V7.1L20 13.1L12.2 8.7L7.6 13.8L2 10.6Z" fill="url(#mTop-${suffix})"/><path d="M13 16.9L20.2 21V39.8L13 35.8V16.9Z" fill="#1d6ef5"/><path d="M20 21L26.8 17.1V27.8L32.6 24.4V8.8L34.4 7.4L38 9.5V29.4L20 39.8V21Z" fill="url(#mRight-${suffix})"/></svg>`;
 
-function renderStagePanel(stage) {
-  return `<div class="research-stage-head">
-    <span class="research-stage-title"><span class="research-stage-icon">${stage.icon}</span>${stage.title}</span>
-    <span class="research-stage-chip">${stage.chip}</span>
+const SCIENCE_SCENE_HTML = `<div class="auth-scene" id="auth-scene" aria-hidden="true">
+  <svg class="auth-scene__trail" viewBox="0 0 460 270" fill="none">
+    <path d="M74 214 C 52 134, 128 38, 258 46 C 350 52, 412 126, 366 196 C 330 250, 212 260, 118 228" stroke="#c3d9f6" stroke-width="1.5" stroke-dasharray="4 7" stroke-linecap="round"/>
+  </svg>
+  <div class="auth-scene__piece auth-scene__formula" data-piece="formula">
+    <svg viewBox="0 0 112 126" fill="none">
+      <rect x="1" y="1" width="110" height="124" rx="15" fill="#e8f1ff" stroke="#d5e5fb" stroke-width="1.5"/>
+      <path d="M70 35 H42 L58 56 L42 77 H70" stroke="#1d6ef5" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="28" y="93" width="56" height="6" rx="3" fill="#b7d2f7"/>
+      <rect x="36" y="105" width="40" height="5" rx="2.5" fill="#c9defa"/>
+    </svg>
   </div>
-  <p class="research-stage-desc">${stage.desc}</p>
-  <div class="research-stage-metrics">${stage.metrics.map((metric) => `<span><i></i>${metric}</span>`).join("")}</div>`;
+  <div class="auth-scene__piece auth-scene__paper" data-piece="paper">
+    <div class="auth-scene__sheet-back"></div>
+    <svg class="auth-scene__sheet" viewBox="0 0 198 226" fill="none">
+      <rect x="1" y="1" width="196" height="224" rx="19" fill="#ffffff" stroke="#dce7f5" stroke-width="1.5"/>
+      <g stroke="#1d6ef5" stroke-width="2" stroke-linejoin="round" fill="#e6f0ff">
+        <polygon points="34,26 42,30.5 42,39.5 34,44 26,39.5 26,30.5"/>
+        <polygon points="48,34.5 55,38.5 55,46.5 48,50.5 41,46.5 41,38.5"/>
+      </g>
+      <rect x="74" y="29" width="90" height="8" rx="4" fill="#b9d4f8"/>
+      <rect x="74" y="44" width="60" height="6" rx="3" fill="#d9e7fb"/>
+      <rect x="25" y="70" width="148" height="104" rx="12" fill="#f7faff" stroke="#e4eefb"/>
+      <line x1="39" y1="100" x2="159" y2="100" stroke="#e7f0fc" stroke-width="1"/>
+      <line x1="39" y1="126" x2="159" y2="126" stroke="#e7f0fc" stroke-width="1"/>
+      <line x1="39" y1="152" x2="159" y2="152" stroke="#e7f0fc" stroke-width="1"/>
+      <defs>
+        <linearGradient id="sciCurveFill" x1="0" y1="88" x2="0" y2="162" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#3b8eff" stop-opacity="0.28"/>
+          <stop offset="1" stop-color="#3b8eff" stop-opacity="0.02"/>
+        </linearGradient>
+      </defs>
+      <path d="M38 156 C 58 152, 68 112, 86 116 C 102 120, 108 144, 122 126 C 135 109, 144 88, 160 100 L160 162 L38 162 Z" fill="url(#sciCurveFill)"/>
+      <path d="M38 156 C 58 152, 68 112, 86 116 C 102 120, 108 144, 122 126 C 135 109, 144 88, 160 100" stroke="#1d6ef5" stroke-width="2.4" stroke-linecap="round"/>
+      <circle cx="86" cy="116" r="3.5" fill="#ffffff" stroke="#1d6ef5" stroke-width="2"/>
+      <circle cx="148" cy="96" r="3.5" fill="#1d6ef5"/>
+      <rect x="26" y="188" width="96" height="6" rx="3" fill="#d3e3f9"/>
+      <rect x="26" y="201" width="66" height="5" rx="2.5" fill="#e2edfc"/>
+    </svg>
+  </div>
+  <div class="auth-scene__piece auth-scene__flask" data-piece="flask">
+    <svg viewBox="0 0 132 142" fill="none">
+      <g stroke="#1d6ef5" stroke-width="2" stroke-linecap="round">
+        <line x1="30" y1="22" x2="45" y2="30"/>
+        <line x1="30" y1="22" x2="22" y2="36"/>
+        <line x1="45" y1="30" x2="57" y2="21"/>
+      </g>
+      <circle cx="30" cy="22" r="5" fill="#60a5fa" stroke="#1d6ef5" stroke-width="1.8"/>
+      <circle cx="45" cy="30" r="4" fill="#dbeafe" stroke="#1d6ef5" stroke-width="1.8"/>
+      <circle cx="22" cy="36" r="4" fill="#93c5fd" stroke="#1d6ef5" stroke-width="1.8"/>
+      <circle cx="57" cy="21" r="3.5" fill="#1d6ef5"/>
+      <circle cx="77" cy="14" r="3.2" fill="#93c5fd"/>
+      <circle cx="86" cy="23" r="2.2" fill="#bfdbfe"/>
+      <defs>
+        <linearGradient id="flaskLiquid" x1="60" y1="86" x2="108" y2="128" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#3b8eff"/>
+          <stop offset="1" stop-color="#155ee0"/>
+        </linearGradient>
+        <linearGradient id="flaskGlass" x1="56" y1="36" x2="108" y2="128" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#ffffff" stop-opacity="0.88"/>
+          <stop offset="1" stop-color="#dbeafe" stop-opacity="0.72"/>
+        </linearGradient>
+      </defs>
+      <path d="M68 40 H94 L88 47 V72 L114 114 C118 120 113 128 106 128 H56 C49 128 44 120 48 114 L74 72 V47 L68 40 Z" fill="url(#flaskGlass)" stroke="#2563eb" stroke-width="2.2" stroke-linejoin="round"/>
+      <path d="M58 96 C 72 90, 88 102, 104 96 L112 113 C115 119 111 125 104 125 H58 C51 125 47 119 50 113 Z" fill="url(#flaskLiquid)"/>
+      <path d="M60 95 C 73 90, 88 100, 103 95" stroke="#93c5fd" stroke-width="1.8" stroke-linecap="round"/>
+      <rect x="64" y="34" width="34" height="6" rx="3" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+      <circle cx="73" cy="112" r="3" fill="#93c5fd" fill-opacity="0.7"/>
+      <circle cx="88" cy="107" r="2.2" fill="#dbeafe" fill-opacity="0.8"/>
+    </svg>
+  </div>
+  <div class="auth-scene__piece auth-scene__caption" data-piece="caption">
+    <span class="auth-scene__caption-dot" aria-hidden="true"></span>
+    <span>每一次探索都从一个问题开始</span>
+  </div>
+</div>`;
+
+function bindSceneMotion() {
+  stopSceneMotion();
+  const scene = document.querySelector("#auth-scene");
+  if (!scene || typeof scene.addEventListener !== "function") return;
+  const reducedMotion =
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reducedMotion || typeof requestAnimationFrame !== "function") return;
+
+  const pieces =
+    typeof scene.querySelectorAll === "function"
+      ? Array.from(scene.querySelectorAll(".auth-scene__piece"))
+      : [];
+  let targetX = 0;
+  let targetY = 0;
+  let curX = 0;
+  let curY = 0;
+  let activePiece = null;
+  const pieceState = new Map(pieces.map((el) => [el, { lift: 0, turn: 0 }]));
+
+  const tick = () => {
+    curX += (targetX - curX) * 0.14;
+    curY += (targetY - curY) * 0.14;
+    scene.style.setProperty("--scene-x", `${curX.toFixed(2)}px`);
+    scene.style.setProperty("--scene-y", `${curY.toFixed(2)}px`);
+    let moving =
+      Math.abs(targetX - curX) > 0.04 || Math.abs(targetY - curY) > 0.04;
+    for (const el of pieces) {
+      const state = pieceState.get(el);
+      const hovered = el === activePiece;
+      const goalLift = hovered ? 8 : 0;
+      const goalTurn = hovered ? 3.5 : 0;
+      state.lift += (goalLift - state.lift) * 0.16;
+      state.turn += (goalTurn - state.turn) * 0.16;
+      el.style.setProperty("--hover-lift", `${state.lift.toFixed(2)}px`);
+      el.style.setProperty("--hover-turn", `${state.turn.toFixed(2)}deg`);
+      if (
+        Math.abs(goalLift - state.lift) > 0.04 ||
+        Math.abs(goalTurn - state.turn) > 0.04
+      ) {
+        moving = true;
+      }
+    }
+    if (moving) {
+      sceneFrame = requestAnimationFrame(tick);
+    } else {
+      sceneFrame = 0;
+    }
+  };
+
+  const wake = () => {
+    if (!sceneFrame) sceneFrame = requestAnimationFrame(tick);
+  };
+
+  const onMove = (event) => {
+    const rect = scene.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const nx = (event.clientX - rect.left) / rect.width - 0.5;
+    const ny = (event.clientY - rect.top) / rect.height - 0.5;
+    targetX = Math.max(-12, Math.min(12, nx * 20));
+    targetY = Math.max(-10, Math.min(10, ny * 16));
+    const hovered = event.target?.closest?.(".auth-scene__piece") || null;
+    activePiece = hovered;
+    wake();
+  };
+
+  const onLeave = () => {
+    targetX = 0;
+    targetY = 0;
+    activePiece = null;
+    wake();
+  };
+
+  scene.addEventListener("pointermove", onMove);
+  scene.addEventListener("pointerleave", onLeave);
+  sceneCleanup = () => {
+    scene.removeEventListener("pointermove", onMove);
+    scene.removeEventListener("pointerleave", onLeave);
+  };
 }
 
 function passwordField(label, name, autocomplete, minimum = false) {
   const fieldId = `password-${name}`;
-  return `<label for="${fieldId}">${label}<span class="auth-input-wrap password-control">${SVG_LOCK}<input id="${fieldId}" name="${name}" type="password" autocomplete="${autocomplete}" enterkeyhint="done" placeholder="${minimum ? "至少 12 个字符" : "请输入密码"}" ${minimum ? 'minlength="12"' : ""} maxlength="256" required><button type="button" data-password-toggle="${fieldId}" aria-controls="${fieldId}" aria-label="显示${label}" aria-pressed="false">显示</button></span></label>`;
+  return `<label for="${fieldId}">${label}<span class="auth-input-wrap password-control"><input id="${fieldId}" name="${name}" type="password" autocomplete="${autocomplete}" enterkeyhint="done" placeholder="${minimum ? "至少 12 个字符" : "请输入密码"}" ${minimum ? 'minlength="12"' : ""} maxlength="256" required><button type="button" data-password-toggle="${fieldId}" aria-controls="${fieldId}" aria-label="显示${label}" aria-pressed="false">${SVG_EYE_OFF}</button></span></label>`;
 }
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-password-toggle]");
@@ -207,16 +332,19 @@ document.addEventListener("click", (event) => {
   const field = document.getElementById(button.dataset.passwordToggle);
   const visible = field.type === "password";
   field.type = visible ? "text" : "password";
-  button.textContent = visible ? "隐藏" : "显示";
+  button.innerHTML = visible ? SVG_EYE_ON : SVG_EYE_OFF;
   button.setAttribute("aria-label", `${visible ? "隐藏" : "显示"}密码`);
   button.setAttribute("aria-pressed", String(visible));
 });
 
 function recovery(mode) {
-  clearTimeout(stageTimer);
+  stopSceneMotion();
+  authMounted = false;
   document.body.classList.add("auth-page");
+  document.body.classList.remove("auth-login-view");
   account.innerHTML = "";
   const resetting = mode === "reset";
+  app.removeAttribute?.("aria-busy");
   app.innerHTML = `<section class="auth card recovery-card"><span class="eyebrow">统一科研账号</span><h1>${resetting ? "设置新密码" : "找回密码"}</h1>
     <p>${resetting ? "链接有效期为 20 分钟，只能使用一次。重置后所有设备需要重新登录。" : "输入注册邮箱，我们会发送密码重置链接。"}</p>
     <form id="recovery-form" class="stack">
@@ -263,106 +391,43 @@ function recovery(mode) {
 }
 
 function authentication(mode = "login") {
-  clearTimeout(stageTimer);
+  stopSceneMotion();
+  authMounted = true;
   const registering = mode === "register";
-  let activeStage = 0;
-  let stageLocked = false;
-  document.body.classList.add("auth-page");
+  document.body.classList.add("auth-page", "auth-login-view");
   account.innerHTML = "";
-  app.innerHTML = `<section class="auth-shell">
-    <div class="auth-story">
-      <span class="product-pill">AI 原生科研工作台</span>
-      <h1>让科研智能体<br>与你共同推进<br><em>每一次研究</em></h1>
-      <p>从论文发现、研究构思到实验验证与科学写作，在一个可追溯的工作台持续推进。</p>
-      <div class="research-stage" id="research-stage">
-        <div class="research-stage-tabs" role="group" aria-label="产品能力">
-          ${RESEARCH_STAGES.map((stage, index) => `<button type="button" class="research-stage-tab" data-stage-tab="${index}" aria-pressed="${index === 0 ? "true" : "false"}"><b>${stage.code}</b><span>${stage.label}</span></button>`).join("")}
-        </div>
-        <div class="research-stage-panel" id="research-stage-panel" aria-live="polite">
-          ${renderStagePanel(RESEARCH_STAGES[0])}
-        </div>
+  app.removeAttribute?.("aria-busy");
+  // TODO(security): strictly static constant markup; kept compatible with account-ui.test.mjs minimal VM DOM mock.
+  app.innerHTML = `<div class="auth-viewport">
+    <section class="auth-shell" data-auth-mode-view="${registering ? "register" : "login"}">
+      <div class="auth-story">
+        <a href="/" class="auth-brand" aria-label="MobileSci 首页">
+          ${SVG_BRAND_BLUE(32, "top")}
+          <span>MobileSci</span>
+        </a>
+        <h1>从一个 Idea，<br>到一篇 <em>Paper。<svg class="auth-headline-underline" viewBox="0 0 180 14" fill="none" aria-hidden="true"><path d="M4 10 Q90 1 176 9" stroke="#93c5fd" stroke-width="5.5" stroke-linecap="round"/></svg></em></h1>
+        <p class="auth-story-sub">智能体协同科研全链路，让科学假设加速验证成稿。</p>
+        ${SCIENCE_SCENE_HTML}
       </div>
-    </div>
-    <section class="auth card">
-      <div class="auth-mode-tabs" role="group" aria-label="账号操作切换">
-        <button type="button" class="auth-mode-tab" data-auth-mode="login" aria-pressed="${registering ? "false" : "true"}">登录账号</button>
-        <button type="button" class="auth-mode-tab" data-auth-mode="register" aria-pressed="${registering ? "true" : "false"}">创建账号</button>
-      </div>
-      <span class="eyebrow">统一科研账号</span>
-      <h2>${registering ? "创建账号" : "欢迎回来"}</h2>
-      <p class="auth-lead">${registering ? "创建账号后自动登录并进入科研主页。" : "登录后直接进入科研主页。"}</p>
-      ${safeContinue ? '<p class="continue-tip">验证完成后将自动继续当前操作</p>' : ""}
-      <form id="auth-form">
-        ${registering ? `<label for="auth-name">姓名<span class="auth-input-wrap">${SVG_USER}<input id="auth-name" name="name" autocomplete="name" enterkeyhint="next" placeholder="请输入姓名" required maxlength="120"></span></label>` : ""}
-        <label for="auth-email">邮箱<span class="auth-input-wrap">${SVG_MAIL}<input id="auth-email" name="email" type="email" autocomplete="username" spellcheck="false" autocapitalize="none" enterkeyhint="next" placeholder="name@example.com" required></span></label>
-        ${passwordField("密码", "password", registering ? "new-password" : "current-password", registering)}
-        ${registering ? '<small class="muted">密码至少 12 个字符，建议使用字母、数字与符号组合。</small>' : '<div class="auth-link-row"><button type="button" class="auth-link-btn" id="forgot-password">忘记密码？</button></div>'}
-        <button type="submit" class="primary auth-submit">${registering ? "创建账号并进入" : "登录并进入"}<span class="auth-submit-arrow" aria-hidden="true">→</span></button>
-      </form>
-      <button type="button" class="auth-switch" id="auth-switch">${registering ? "已有账号？返回登录" : "第一次使用？创建账号"}</button>
-      <div class="auth-trust">${SVG_SHIELD}<span>会话加密保护 · 研究项目与数据独立隔离</span></div>
+      <section class="auth auth-panel">
+        <div class="auth-panel-mark" aria-hidden="true">${SVG_BRAND_BLUE(42, "form")}</div>
+        <h2>${registering ? "创建 MobileSci 账号" : "欢迎使用 MobileSci"}</h2>
+        <p class="auth-lead">${registering ? "创建账号后自动进入科研工作台。" : "中国移动 AI for Science 科研平台"}</p>
+        ${safeContinue ? '<p class="continue-tip">验证完成后将自动继续当前操作</p>' : ""}
+        <form id="auth-form">
+          ${registering ? `<label for="auth-name">姓名<input id="auth-name" name="name" autocomplete="name" enterkeyhint="next" placeholder="请输入姓名" required maxlength="120"></label>` : ""}
+          <label for="auth-email">账号<input id="auth-email" name="email" type="email" autocomplete="username" spellcheck="false" autocapitalize="none" enterkeyhint="next" placeholder="请输入邮箱账号" required></label>
+          ${passwordField("密码", "password", registering ? "new-password" : "current-password", registering)}
+          ${registering ? '<small class="muted">密码至少 12 个字符，建议使用字母、数字与符号组合。</small>' : '<div class="auth-link-row"><button type="button" class="auth-link-btn" id="forgot-password">忘记密码？</button></div>'}
+          <button type="submit" class="primary auth-submit"><span>${registering ? "创建账号" : "登录"}</span><span class="auth-submit-arrow" aria-hidden="true">→</span></button>
+        </form>
+        <p class="auth-switch-row">${registering ? "已有账号？" : "还没有账号？"}<button type="button" class="auth-switch-link" id="auth-switch">${registering ? "立即登录" : "创建账号"}</button></p>
+      </section>
     </section>
-  </section>`;
+    <footer class="auth-footer">中国移动 · MobileSci</footer>
+  </div>`;
 
-  const selectStage = (index) => {
-    const stage = RESEARCH_STAGES[index];
-    const panel = document.querySelector("#research-stage-panel");
-    if (!stage || !panel) return;
-    activeStage = index;
-    panel.innerHTML = renderStagePanel(stage);
-    if (typeof document.querySelectorAll === "function") {
-      for (const tab of document.querySelectorAll("[data-stage-tab]")) {
-        tab.setAttribute(
-          "aria-pressed",
-          tab.dataset.stageTab === String(index) ? "true" : "false",
-        );
-      }
-    }
-  };
-
-  const stageRoot = document.querySelector("#research-stage");
-  if (stageRoot && typeof stageRoot.addEventListener === "function") {
-    stageRoot.addEventListener("click", (event) => {
-      const button = event.target?.closest?.("[data-stage-tab]");
-      if (!button) return;
-      stageLocked = true;
-      clearTimeout(stageTimer);
-      selectStage(Number(button.dataset.stageTab));
-    });
-    const reducedMotion =
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (!reducedMotion) {
-      let paused = false;
-      stageRoot.addEventListener("mouseenter", () => {
-        paused = true;
-      });
-      stageRoot.addEventListener("mouseleave", () => {
-        paused = false;
-      });
-      stageRoot.addEventListener("focusin", () => {
-        paused = true;
-      });
-      stageRoot.addEventListener("focusout", () => {
-        paused = false;
-      });
-      const scheduleStage = () => {
-        stageTimer = setTimeout(() => {
-          if (!document.querySelector("#research-stage") || stageLocked) return;
-          if (!paused) selectStage((activeStage + 1) % RESEARCH_STAGES.length);
-          scheduleStage();
-        }, 4500);
-      };
-      scheduleStage();
-    }
-  }
-
-  if (typeof document.querySelectorAll === "function") {
-    for (const tab of document.querySelectorAll("[data-auth-mode]")) {
-      tab.onclick = () => authentication(tab.dataset.authMode);
-    }
-  }
-
+  bindSceneMotion();
   bindForm("#auth-form", async (data) => {
     await api(registering ? "/register" : "/login", "POST", data);
     await load();
@@ -395,13 +460,16 @@ function personalSettingsUrl(capabilities) {
   destination.hash = "";
   return destination.href;
 }
+let authMounted = false;
 function renderAccount(capabilities) {
-  clearTimeout(stageTimer);
-  document.body.classList.remove("auth-page");
+  stopSceneMotion();
+  authMounted = false;
+  document.body.classList.remove("auth-page", "auth-login-view");
   account.innerHTML = `<a href="${esc(personalSettingsUrl(capabilities))}">个人设置</a>`;
 }
 
 async function administration(capabilities) {
+  authMounted = false;
   if (!me.isAdmin) {
     app.innerHTML =
       '<section class="card"><h1>无权访问系统管理</h1><p>此页面仅对系统管理员开放。</p><a href="/">返回主页</a></section>';
@@ -413,10 +481,12 @@ async function administration(capabilities) {
 async function load() {
   try {
     me = await api("/me");
+    clearTimeout(bootLoginTimer);
   } catch (error) {
+    clearTimeout(bootLoginTimer);
     if (error.status !== 401) throw error;
     me = null;
-    authentication();
+    if (!authMounted) authentication();
     return;
   }
   if (safeContinue) {
@@ -448,6 +518,21 @@ async function load() {
   location.replace(personalSettingsUrl(capabilities));
 }
 
-(resetToken ? Promise.resolve(recovery("reset")) : load()).catch((error) =>
+function boot() {
+  const params = new URLSearchParams(location.search);
+  const explicitLogin = location.pathname === "/_account/login";
+  if (explicitLogin) {
+    authentication("login");
+  } else if (!params.has("account") && !params.has("admin")) {
+    // Render the login view immediately if /me does not settle within 100ms
+    // so slow networks or cold backends never block first paint.
+    bootLoginTimer = setTimeout(() => {
+      if (!me && !authMounted) authentication("login");
+    }, 100);
+  }
+  return load();
+}
+
+(resetToken ? Promise.resolve(recovery("reset")) : boot()).catch((error) =>
   notice(error.message),
 );
