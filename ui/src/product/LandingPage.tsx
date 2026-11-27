@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction, RefObject, KeyboardEvent, ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowRight, ArrowUpRight, ArrowDown, Play, Pause, X, Check, CircleCheck as CheckCircle, Copy, Users as UsersThree, GitBranch, ShieldCheck, RefreshCw as ArrowsClockwise, Layers as Stack, Maximize as Expand } from "lucide-react";
+import { ArrowRight, ArrowUpRight, ArrowDown, Play, Pause, X, Check, Copy, Users as UsersThree, GitBranch, ShieldCheck, RefreshCw as ArrowsClockwise, Layers as Stack, CircleCheck as CheckCircle } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { stages, mechanisms, trinity, prompts } from "./landingContent";
 import { ResearchDiagram } from "./LandingResearchDiagram";
+import { WorkflowFlowchartSvg } from "./WorkflowFlowchartSvg";
+import { AnthropicInsightsSection } from "./AnthropicInsightsSection";
 import { BenchmarkComparison } from "./BenchmarkComparison";
 import { landingAsset } from "./landingAssets";
 import { useAuthSession } from "./AuthSession";
@@ -78,7 +80,7 @@ function Media({ name, alt, priority = false, className = "" }: { name: string; 
       sizes="(max-width: 700px) 94vw, (max-width: 1100px) 85vw, 1100px"
       alt={alt}
       width="1800"
-      height={name === "start" ? 1125 : 1013}
+      height="1004"
       loading={priority ? "eager" : "lazy"}
       decoding="async"
       fetchPriority={priority ? "high" : "auto"}
@@ -113,10 +115,11 @@ function ProductVideo() {
   const [selected, setSelected] = useState(0);
   const [playing, setPlaying] = useState(true);
   const screens = [
-    ["project", "研究项目"],
-    ["capabilities", "科研能力"],
-    ["conversation", "研究对话"],
-    ["experts", "科研专家团"],
+    ["showcase-chat", "新对话与科研工作台"],
+    ["showcase-discover", "多源论文发现"],
+    ["showcase-reading", "论文精读与伴读"],
+    ["showcase-capabilities", "科研能力全景"],
+    ["showcase-experts", "任务专家团调度"],
   ];
   useEffect(() => {
     if (!visible || !playing || reduced) return;
@@ -189,174 +192,68 @@ function ProductVideo() {
     </div>
   );
 }
-function Workflow({ onZoom, selected, setSelected }: { onZoom: (image: string, title: string) => void; selected: number; setSelected: StateSetter<number> }) {
-  const ref = useRef<HTMLDivElement>(null),
-    visible = useVisible(ref);
-  const reduced = useReduced();
-  const [auto, setAuto] = useState(true),
-    [cycle, setCycle] = useState(0);
-  useEffect(() => {
-    if (!visible || !auto || reduced) return;
-    const timer = setInterval(() => {
-      setSelected((i) => (i + 1) % stages.length);
-      setCycle((c) => c + 1);
-    }, 7000);
-    return () => clearInterval(timer);
-  }, [visible, auto, reduced, selected, setSelected]);
-  const active = stages[selected];
+function Workflow() {
   return (
-    <section id="workflow" className="section workflow" ref={ref}>
+    <section id="workflow" className="section workflow doubao-skill-section">
       <SectionHeading
         eyebrow="THE RESEARCH JOURNEY"
         title="科研全流程自动化接管"
-        description="从发现问题到形成成果，五个阶段、二十多个科研环节，在同一个研究项目中持续衔接。"
+        description="覆盖发现与理解、构思与定义、方法与实验设计、实现与验证、分析与表达五大阶段，一图看清各环节推进脉络。"
       />
-      <div className="workflow-layout">
-        <div
-          className="vertical-tabs"
-          role="tablist"
-          onKeyDown={handleTabKeys}
-          aria-label="科研流程"
-        >
-          {stages.map((s, i) => (
-            <button
-              key={s.id}
-              role="tab"
-              id={`stage-${s.id}`}
-              aria-controls="stage-panel"
-              tabIndex={i === selected ? 0 : -1}
-              aria-selected={i === selected}
-              onClick={() => {
-                setSelected(i);
-                setAuto(false);
-              }}
-              className={i === selected ? "active" : ""}
-            >
-              <span className="tab-heading">
-                <span className="tab-number">0{i + 1}</span>
-                {s.label}
-              </span>
-              <span className="tab-description">{s.description}</span>
-              <span className="progress-track">
-                <span
-                  key={`${selected}-${cycle}`}
-                  className={
-                    i === selected && auto && visible && !reduced
-                      ? "progress-fill running"
-                      : "progress-fill"
-                  }
-                  style={{ animationPlayState: visible ? "running" : "paused" }}
-                />
-              </span>
-            </button>
-          ))}
-          <button
-            className="autoplay-toggle"
-            onClick={() => setAuto((v) => !v)}
-            aria-label={auto ? "暂停流程轮播" : "播放流程轮播"}
-          >
-            {auto ? <Pause size={13} /> : <Play size={13} />}{" "}
-            {auto ? "暂停轮播" : "自动浏览"}
-          </button>
-        </div>
-        <div
-          id="stage-panel"
-          role="tabpanel"
-          aria-labelledby={`stage-${active.id}`}
-          className={`workflow-panel panel-${active.color}`}
-        >
-          <div key={active.id} className="workflow-panel-inner">
-            <div className="panel-copy">
-              <span className="mini-eyebrow">{active.en}</span>
-              <h3>{active.title}</h3>
-              <div className="tag-list">
-                {active.tags.map((t) => (
-                  <span key={t}>{t}</span>
-                ))}
-              </div>
-            </div>
-            <button
-              className="screen-button"
-              onClick={() => onZoom(active.image, active.label)}
-              aria-label={`放大${active.label}产品界面`}
-            >
-              <Media
-                name={active.image}
-                alt={`MobileSci ${active.label}产品设计界面`}
-              />
-              <span className="expand-label">
-                <Expand size={15} /> 查看界面
-              </span>
-            </button>
-            <div className="outcome">
-              <CheckCircle size={17} />
-              <span>{active.outcome}</span>
-            </div>
-          </div>
-        </div>
-      </div>
+      <figure className="doubao-showcase-frame workflow-vector-frame">
+        <WorkflowFlowchartSvg />
+      </figure>
     </section>
   );
 }
 function Mechanisms() {
   const [selected, setSelected] = useState(0);
-  const m = mechanisms[selected];
   return (
-    <section className="section advantages" id="technology">
+    <section className="section advantages doubao-delivery-section" id="technology">
       <SectionHeading
         eyebrow="BUILT FOR REAL RESEARCH"
         title="核心技术优势，让复杂研究持续向前"
-        description="四项能力优势，承接长程执行、反复验证与关键决策。"
+        description="四项核心能力，支撑长程科研稳定执行与可信交付。"
       />
-      <div className="advantage-layout">
+      <div className="doubao-delivery-layout">
         <div
-          className="advantage-tabs"
+          className="doubao-delivery-tabs"
           role="tablist"
-          aria-label="能力优势"
+          aria-label="核心技术优势"
           aria-orientation="vertical"
           onKeyDown={handleTabKeys}
         >
           {mechanisms.map((item, i) => {
             const Icon = icons[item.icon];
+            const isSelected = selected === i;
             return (
               <button
                 key={item.label}
+                type="button"
                 role="tab"
                 id={`advantage-${i}`}
                 aria-controls="advantage-panel"
-                aria-selected={selected === i}
-                tabIndex={selected === i ? 0 : -1}
+                aria-selected={isSelected}
+                tabIndex={isSelected ? 0 : -1}
                 onClick={() => setSelected(i)}
               >
-                <span className="advantage-topic">
-                  <Icon size={21} />
+                <span className="doubao-tab-title">
+                  <Icon size={25} strokeWidth={1.6} aria-hidden="true" />
                   <strong>{item.label}</strong>
-                  <ArrowRight size={17} />
                 </span>
-                <span className="advantage-sentence">{item.subtitle}</span>
-                {selected === i && (
-                  <span className="advantage-description">{item.text}</span>
-                )}
+                <small className="doubao-tab-desc">{item.subtitle}</small>
+                <span className="doubao-tab-line" aria-hidden="true" />
               </button>
             );
           })}
         </div>
         <div
-          className="advantage-panel"
+          className="doubao-delivery-panel"
           role="tabpanel"
           id="advantage-panel"
           aria-labelledby={`advantage-${selected}`}
         >
           <ResearchDiagram selected={selected} />
-          <p className="advantage-mobile-description">{m.text}</p>
-          <div className="advantage-legend">
-            {m.steps.map((step, i) => (
-              <span key={step}>
-                <i>0{i + 1}</i>
-                {step}
-              </span>
-            ))}
-          </div>
         </div>
       </div>
     </section>
@@ -475,7 +372,7 @@ function PromptWall({ onPrompt }: { onPrompt: (title: string, body: string) => v
     </section>
   );
 }
-function DialogContent({ modal, setModal, setStage }: { modal: Modal | null; setModal: StateSetter<Modal | null>; setStage: StateSetter<number> }) {
+function DialogContent({ modal, setModal }: { modal: Modal | null; setModal: StateSetter<Modal | null> }) {
   const ref = useRef<HTMLDialogElement>(null),
     [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -533,7 +430,6 @@ function DialogContent({ modal, setModal, setStage }: { modal: Modal | null; set
             <button
               className="text-button"
               onClick={() => {
-                setStage(modal.stage ?? 0);
                 setModal(null);
                 document
                   .getElementById("workflow")
@@ -556,7 +452,7 @@ function useScrollReveal() {
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const elements = [
       ...document.querySelectorAll(
-        ".product-landing .section-heading,.product-landing .advantage-art,.product-landing .trinity-illustration",
+        ".product-landing .section-heading,.product-landing .doubao-showcase-frame,.product-landing .advantage-art,.product-landing .insights-artwork-frame,.product-landing .trinity-illustration",
       ),
     ];
     elements.forEach((e) => e.classList.add("scroll-reveal"));
@@ -589,7 +485,6 @@ export function LandingPage() {
   };
   useScrollReveal();
   const [scrolled, setScrolled] = useState(false),
-    [stage, setStage] = useState(0),
     [modal, setModal] = useState<Modal | null>(null);
   useEffect(() => {
     const page = pageRef.current;
@@ -599,7 +494,6 @@ export function LandingPage() {
     sync();
     return () => page.removeEventListener("scroll", sync);
   }, []);
-  const zoom = (image: string, title: string) => setModal({ type: "image", image, title });
   return (
     <div ref={pageRef} className="product-landing h-full overflow-y-auto" lang="zh-CN">
       <a className="skip-link" href="#workflow">
@@ -609,7 +503,8 @@ export function LandingPage() {
         <Brand />
         <nav aria-label="页面导航">
           <a href="#workflow">科研能力</a>
-          <a href="#technology">能力优势</a>
+          <a href="#technology">核心优势</a>
+          <a href="#insights">科研洞察</a>
           <a href="#trinity">三位一体</a>
           <a href="#benchmark">能力验证</a>
         </nav>
@@ -674,8 +569,9 @@ export function LandingPage() {
             </div>
           </div>
         </section>
-        <Workflow selected={stage} setSelected={setStage} onZoom={zoom} />
+        <Workflow />
         <Mechanisms />
+        <AnthropicInsightsSection />
         <Trinity />
         <Benchmark />
         <PromptWall
@@ -715,7 +611,7 @@ export function LandingPage() {
           返回顶部 <ArrowUpRight size={14} />
         </a>
       </footer>
-      <DialogContent modal={modal} setModal={setModal} setStage={setStage} />
+      <DialogContent modal={modal} setModal={setModal} />
     </div>
   );
 }

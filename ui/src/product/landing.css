@@ -471,12 +471,10 @@
 }
 .product-landing .tab-description {
   font-size: 12px;
-  line-height: 1.8;
+  line-height: 1.75;
   display: block;
-  margin: 9px 0 14px;
+  margin: 8px 0 13px;
   color: var(--landing-palette-52);
-  max-height: 46px;
-  overflow: hidden;
   transition: color 0.25s;
 }
 .product-landing .vertical-tabs > button.active .tab-heading {
@@ -1481,7 +1479,7 @@
 }
 .product-landing .carousel-window {
   overflow: hidden;
-  aspect-ratio: 16 / 9;
+  aspect-ratio: 2554 / 1424;
   background: var(--landing-palette-117);
 }
 .product-landing .carousel-track {
@@ -2062,3 +2060,384 @@
 .product-landing .benchmark-selection > strong { display: flex; align-items: center; gap: 8px; color: var(--landing-palette-142); font-size: 11px; font-weight: 500; }
 .product-landing .benchmark-selection > strong > span { margin-left: auto; color: var(--landing-palette-145); font-size: 16px; }
 .product-landing .benchmark-selection p { margin: 7px 0 0; color: var(--landing-palette-128); font-size: 10px; line-height: 1.7; }
+
+/* Doubao-inspired box-free Workflow Showcase */
+.product-landing .doubao-skill-section .section-heading,
+.product-landing .doubao-delivery-section .section-heading,
+.product-landing .insights-section .section-heading {
+  margin-bottom: 36px;
+}
+.product-landing .doubao-skill-section .section-heading h2,
+.product-landing .doubao-delivery-section .section-heading h2,
+.product-landing .insights-section .section-heading h2 {
+  font-size: clamp(28px, 2.8vw, 36px);
+  line-height: 1.38;
+  letter-spacing: -0.6px;
+  font-weight: 600;
+  color: var(--landing-palette-1);
+}
+.product-landing .doubao-skill-section .section-description,
+.product-landing .doubao-delivery-section .section-description,
+.product-landing .insights-section .section-description {
+  font-size: clamp(16px, 1.5vw, 20px);
+  line-height: 1.55;
+  color: var(--landing-palette-42);
+  margin-top: 10px;
+}
+.product-landing .doubao-showcase-frame {
+  margin: 0;
+  border-radius: 24px;
+  overflow: hidden;
+  border: 1px solid var(--landing-doubao-border);
+  background: var(--landing-panorama-bg);
+  transition:
+    transform 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.45s ease;
+}
+.product-landing .doubao-showcase-frame img,
+.product-landing .workflow-vector-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.product-landing .wf-flow-dash {
+  animation: wf-dash-flow 18s linear infinite;
+}
+.product-landing .wf-stage-group {
+  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@media (hover: hover) {
+  .product-landing .wf-stage-group:hover {
+    transform: translateY(-4px);
+  }
+}
+@keyframes wf-dash-flow {
+  to {
+    stroke-dashoffset: -256;
+  }
+}
+@media (hover: hover) {
+  .product-landing .doubao-showcase-frame:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 24px 54px -26px var(--landing-palette-31);
+  }
+}
+
+/* Doubao-inspired box-free Delivery / Core Advantages */
+.product-landing .doubao-delivery-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
+  gap: 44px;
+  align-items: center;
+}
+.product-landing .doubao-delivery-tabs {
+  display: flex;
+  flex-direction: column;
+}
+.product-landing .doubao-delivery-tabs button {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  padding: 24px 0;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--landing-doubao-muted);
+  transition: color 0.25s ease;
+}
+.product-landing .doubao-delivery-tabs button:hover {
+  color: var(--landing-doubao-desc);
+}
+.product-landing .doubao-delivery-tabs button[aria-selected="true"] {
+  color: var(--landing-doubao-ink);
+}
+.product-landing .doubao-tab-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.product-landing .doubao-tab-title strong {
+  font-size: 24px;
+  font-weight: 450;
+  line-height: 1.3;
+  letter-spacing: -0.3px;
+}
+.product-landing .doubao-tab-desc {
+  font-size: 17.5px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--landing-doubao-muted);
+  transition: color 0.25s ease;
+}
+.product-landing .doubao-delivery-tabs button[aria-selected="true"] .doubao-tab-desc {
+  color: var(--landing-doubao-desc);
+}
+.product-landing .doubao-tab-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--landing-doubao-hairline);
+}
+.product-landing .doubao-tab-line::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 2px;
+  background: var(--landing-palette-1);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.product-landing .doubao-delivery-tabs button[aria-selected="true"] .doubao-tab-line::after {
+  transform: scaleX(1);
+}
+.product-landing .doubao-delivery-panel {
+  min-width: 0;
+}
+.product-landing .doubao-delivery-panel .advantage-art {
+  border-radius: 20px;
+  border: 1px solid var(--landing-doubao-border);
+}
+
+/* Open, box-free Anthropic AI for Science Insights + MobileSci Capability Visual */
+.product-landing .insights-section {
+  padding-top: 115px;
+  padding-bottom: 20px;
+}
+.product-landing .insights-open-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  gap: 48px;
+  align-items: center;
+}
+.product-landing .insights-open-chart {
+  margin: 0;
+  min-width: 0;
+}
+.product-landing .insights-chart-caption {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.product-landing .insights-chart-caption strong {
+  font-size: 18px;
+  font-weight: 550;
+  color: var(--landing-palette-1);
+}
+.product-landing .insights-chart-caption span {
+  font-size: 12px;
+  color: var(--landing-palette-128);
+}
+.product-landing .insights-plot {
+  position: relative;
+  height: 274px;
+  padding-left: 36px;
+}
+.product-landing .insights-gridlines {
+  position: absolute;
+  inset: 0 0 42px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  pointer-events: none;
+}
+.product-landing .insights-gridlines span {
+  display: block;
+  height: 1px;
+  border-top: 1px solid var(--landing-palette-30);
+  color: var(--landing-palette-128);
+  font-size: 10px;
+  padding-top: 4px;
+}
+.product-landing .insights-columns {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 20px;
+  height: 100%;
+}
+.product-landing .insights-column {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.product-landing .insights-bar-space {
+  height: 232px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.product-landing .insights-vbar {
+  position: relative;
+  width: min(46px, 68%);
+  height: var(--bar-height);
+  min-height: 12px;
+  border: 0;
+  padding: 0;
+  border-radius: 8px 8px 0 0;
+  box-shadow: 0 10px 24px -10px var(--landing-palette-25);
+  transition:
+    transform 0.25s ease,
+    filter 0.25s ease,
+    box-shadow 0.25s ease;
+}
+.product-landing .insights-vbar.bar-0 {
+  background: var(--landing-insights-bar-0);
+}
+.product-landing .insights-vbar.bar-1 {
+  background: var(--landing-insights-bar-1);
+}
+.product-landing .insights-vbar.bar-2 {
+  background: var(--landing-insights-bar-2);
+}
+.product-landing .insights-vbar.bar-3 {
+  background: var(--landing-insights-bar-3);
+}
+.product-landing .insights-vbar:hover,
+.product-landing .insights-vbar[aria-pressed="true"] {
+  filter: brightness(1.04);
+  transform: translateY(-2px);
+}
+.product-landing .insights-vbar strong {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: clamp(18px, 1.8vw, 24px);
+  font-weight: 600;
+  letter-spacing: -0.8px;
+  color: var(--landing-palette-145);
+  white-space: nowrap;
+}
+.product-landing .insights-vbar strong span {
+  font-size: 12px;
+  margin-left: 1px;
+  letter-spacing: 0;
+}
+.product-landing .insights-xlabel {
+  padding-top: 14px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--landing-palette-142);
+  white-space: nowrap;
+}
+.product-landing .insights-chart-detail {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--landing-palette-30);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.product-landing .insights-chart-detail strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--landing-palette-1);
+}
+.product-landing .insights-chart-detail span {
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--landing-palette-128);
+}
+.product-landing .insights-artwork-frame {
+  margin: 0;
+  border-radius: 24px;
+  overflow: hidden;
+  border: 1px solid var(--landing-doubao-border);
+  background: var(--landing-panorama-bg);
+  transition:
+    transform 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.45s ease;
+}
+.product-landing .insights-artwork-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+@media (hover: hover) {
+  .product-landing .insights-artwork-frame:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 22px 48px -24px var(--landing-palette-31);
+  }
+}
+.product-landing .insights-footnote {
+  margin: 26px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--landing-palette-83);
+}
+
+@media (max-width: 1050px) {
+  .product-landing .doubao-delivery-layout {
+    grid-template-columns: 300px minmax(0, 1fr);
+    gap: 30px;
+  }
+  .product-landing .doubao-tab-title strong {
+    font-size: 20px;
+  }
+  .product-landing .doubao-tab-desc {
+    font-size: 15px;
+  }
+  .product-landing .insights-open-layout {
+    grid-template-columns: 1fr;
+    gap: 34px;
+  }
+}
+@media (max-width: 760px) {
+  .product-landing .doubao-showcase-frame,
+  .product-landing .insights-artwork-frame {
+    border-radius: 17px;
+  }
+  .product-landing .doubao-delivery-layout {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+  .product-landing .doubao-delivery-tabs button {
+    padding: 16px 0;
+    gap: 8px;
+  }
+  .product-landing .doubao-tab-title strong {
+    font-size: 19px;
+  }
+  .product-landing .doubao-tab-desc {
+    font-size: 14px;
+  }
+  .product-landing .insights-section {
+    padding-top: 80px;
+  }
+  .product-landing .insights-columns {
+    gap: 10px;
+  }
+  .product-landing .insights-xlabel {
+    font-size: 11px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .product-landing .doubao-showcase-frame,
+  .product-landing .insights-artwork-frame,
+  .product-landing .insights-vbar,
+  .product-landing .doubao-tab-line::after,
+  .product-landing .wf-stage-group {
+    transition: none;
+  }
+  .product-landing .wf-flow-dash {
+    animation: none;
+  }
+  .product-landing .doubao-showcase-frame:hover,
+  .product-landing .insights-artwork-frame:hover,
+  .product-landing .insights-vbar:hover,
+  .product-landing .wf-stage-group:hover {
+    transform: none;
+  }
+}

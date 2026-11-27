@@ -6,15 +6,15 @@ const diagrams = [
   },
   {
     name: "feedback",
-    alt: "反馈驱动：实验行动、结果评测、反馈分析、方案修订通过顺时针箭头组成完整循环。",
+    alt: "RSI：把实验行动、结果评测、反馈分析与方案修订连成持续迭代闭环。",
   },
   {
     name: "collaboration",
-    alt: "人机协同：研究者参与确定研究假设、确认资源投入与审查结果解释，科研智能体承接执行。",
+    alt: "人机协同：AI 承接繁复执行，关键假设与决策由研究者亲自把关。",
   },
   {
     name: "evidence",
-    alt: "版本与证据：从研究结论沿连线追溯到实验运行、代码版本、科学数据、实验配置与文献来源。",
+    alt: "可信科研：代码版本、运行日志、科学数据与研究结论全链路绑定溯源。",
   },
 ];
 export function ResearchDiagram({ selected }: { selected: number }) {

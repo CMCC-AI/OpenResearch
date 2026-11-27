@@ -3,26 +3,26 @@ export const stages = [
     id: "discover",
     label: "发现与理解",
     en: "DISCOVER",
+    subtitle: "建立可信的研究认知",
     title: "让值得研究的问题，浮出水面",
     description:
-      "发现相关论文，读懂方法与局限。在跨论文对照中，建立属于课题的研究脉络。",
-    image: "capabilities",
+      "检索多源学术文献，精读方法与局限，在跨论文对照中建立课题脉络。",
     color: "blue",
     tags: ["论文发现", "论文精读", "跨论文问答", "文献综述", "研究地图"],
-    outcome: "一份有来源、有比较的研究认知",
+    outcome: "一份有来源、有比较的研究认知与文献证据矩阵",
     detail: "从文献中的假设、方法和证据出发，找到下一步可以验证的研究问题。",
   },
   {
     id: "define",
     label: "构思与定义",
     en: "DEFINE",
+    subtitle: "把问题转化为可检验假设",
     title: "把一个好想法，变成可验证的假设",
     description:
-      "从模糊的 Idea 开始澄清目标，检查已有研究，定义问题与验证条件。",
-    image: "project",
+      "澄清模糊 Idea 与研究目标，查重定位近似工作并凝练可证伪假设。",
     color: "mint",
     tags: ["Idea 澄清", "新颖性检查", "假设形成", "研究问题定义"],
-    outcome: "一个清晰的问题，一条可检验的假设",
+    outcome: "一个边界清晰的问题，一条可被实验支持或否证的假设",
     detail:
       "不必先准备完整方案。让科研智能体与你一起，把想研究的事逐步讲清楚。",
   },
@@ -30,26 +30,26 @@ export const stages = [
     id: "design",
     label: "方法与实验设计",
     en: "DESIGN",
+    subtitle: "形成可执行的研究方案",
     title: "每一次实验，都知道在验证什么",
     description:
-      "组织方法、基线、对照和评价指标，在执行之前考虑数据与计算资源。",
-    image: "experts",
+      "拆解方法与技术路线，提前冻结基线、对照、消融方案与算力可行性。",
     color: "lavender",
     tags: ["方法设计", "实验设计", "指标与基线", "资源可行性"],
-    outcome: "一份可以执行、可以比较的研究计划",
+    outcome: "一份可冻结、可执行、可公平比较的研究计划",
     detail: "将研究目标拆解为具体行动，让不同专业角色围绕同一个验证标准协作。",
   },
   {
     id: "experiment",
     label: "实现与验证",
     en: "EXPERIMENT",
+    subtitle: "用代码、数据和实验检验",
     title: "让研究计划，走进代码与实验",
     description:
-      "接续已有代码与数据，构建环境、执行实验、诊断失败，并依据结果继续研究。",
-    image: "conversation",
+      "接管项目代码与数据，复现论文基线，固定环境执行实验并诊断失败。",
     color: "peach",
     tags: ["代码与数据接管", "论文复现", "环境构建", "实验执行", "失败诊断"],
-    outcome: "代码、运行记录与可以检查的实验结果",
+    outcome: "真实代码、完整运行记录与可核验的实验结果",
     detail:
       "实验出现偏差时，回到实际依据，判断应该修复实现、优化方法，还是调整方向。",
   },
@@ -57,10 +57,10 @@ export const stages = [
     id: "express",
     label: "分析与表达",
     en: "EXPRESS",
+    subtitle: "沉淀结果并接受评审",
     title: "让每一个结论，都有证据可循",
     description:
-      "从结果分析、科研绘图到论文写作与模拟审稿，将成果与研究依据连接起来。",
-    image: "start",
+      "完成定量分析与科研绘图，撰写可溯源论文初稿并执行引用与审稿核验。",
     color: "ice",
     tags: [
       "结果分析",
@@ -68,9 +68,8 @@ export const stages = [
       "论文写作",
       "引用核验",
       "模拟审稿",
-      "研究包",
     ],
-    outcome: "一份可以审查、交接和继续完善的研究成果",
+    outcome: "一份附带完整证据链、可审阅交付的论文与研究包",
     detail:
       "保留代码、数据、配置与日志，让图表和文字背后的研究过程也能被看见。",
   },
@@ -78,33 +77,59 @@ export const stages = [
 export const mechanisms = [
   {
     label: "科研 Harness",
-    subtitle: "长程执行，研究持续向前",
-    text: "将任务编排、上下文和阶段状态连接起来。面对环境错误与实验异常，依据运行反馈诊断、修复，再验证。",
-    steps: ["研究计划", "受控执行", "诊断与恢复", "继续验证"],
+    subtitle: "长程任务断点续跑，跨小时实验稳定不漂移。",
     icon: "branch",
   },
   {
-    label: "反馈驱动",
-    subtitle: "让实验结果，改变下一步",
-    text: "将实验、评测与模拟审稿的反馈带回研究过程，补充证据、调整方法，让每一次尝试为下一步提供依据。",
-    steps: ["实验行动", "结果评测", "反馈分析", "修订再验证"],
+    label: "RSI",
+    subtitle: "把实验反馈与诊断转化为受控迭代，持续进化。",
     icon: "cycle",
   },
   {
     label: "人机协同",
-    subtitle: "关键的选择，由研究者把握",
-    text: "AI 组织任务与执行，研究者在假设确定、资源投入和结果解释等关键节点参与判断，共同掌握方向。",
-    steps: ["AI 规划", "明确依据", "研究者决策", "协同推进"],
+    subtitle: "AI 承接繁复执行，关键假设与决策由研究者把关。",
     icon: "users",
   },
   {
-    label: "版本与证据",
-    subtitle: "从一个结论，回到原始依据",
-    text: "关联代码版本、实验配置、运行日志、结果图表与研究结论，让成果可以回查、检查与持续完善。",
-    steps: ["代码与数据", "实验与日志", "结果图表", "结论与来源"],
+    label: "可信科研",
+    subtitle: "代码、日志与原始证据全链路绑定，可核验复现。",
     icon: "shield",
   },
 ];
+
+export const anthropicInsights = {
+  topics: [
+    {
+      id: "analysis",
+      label: "科学数据分析",
+      share: 33.7,
+      humanBaseline: 27.6,
+      note: "科学数据分析占科研会话 33.7%，显著高于研究者日常 27.6% 的时间投入。",
+    },
+    {
+      id: "writing",
+      label: "科学论文撰写",
+      share: 32.0,
+      humanBaseline: 16.0,
+      note: "科学论文撰写占科研会话 32.0%，约为研究者日常 16.0% 写作时间占比的两倍。",
+    },
+    {
+      id: "gathering",
+      label: "数据采集",
+      share: 11.5,
+      humanBaseline: 28.6,
+      note: "数据采集占科研会话 11.5%，多与文献检索及实验样本整理协同。",
+    },
+    {
+      id: "ideation",
+      label: "构思与假设",
+      share: 4.2,
+      humanBaseline: 7.1,
+      note: "构思与假设占科研会话 4.2%，亟需科研智能体协同拓展思路。",
+    },
+  ],
+  footnote: "来自于 Anthropic 研究报告 2025 年 10 月 5 号发布",
+};
 export const trinity = [
   {
     name: "科研工具",
