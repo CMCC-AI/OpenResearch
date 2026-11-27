@@ -104,7 +104,7 @@ function GateCard({ decision, taskNames, deliveryGateName, disabled, onDecide, r
   const [reason, setReason] = useState("");
   const scopeKindNames: Record<string, string> = { human: "人工任务", route: "条件分流", foreach: "逐项处理", experiment: "实验执行", wait: "等待事件" };
   let scope: {
-    summary?: string; command?: string; revision?: string;
+    summary?: string; command?: string;
     options?: { backend?: string; flavor?: string; host?: string; timeout?: string };
     plan?: { summary?: string; materialIds?: string[]; tasks?: ResearchScopeTask[]; version?: number };
     claims?: { id?: string; text?: string; support?: string; source?: string; location?: string }[];
@@ -161,7 +161,6 @@ function GateCard({ decision, taskNames, deliveryGateName, disabled, onDecide, r
     {scope.command && <div className="flex min-w-0 flex-col gap-1 text-xs">
       <p className="m-0 text-subtext">执行位置：{scope.options?.backend} {scope.options?.host} {scope.options?.flavor} {scope.options?.timeout}</p>
       <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-surface p-2 font-mono text-xs text-text">{scope.command}</pre>
-      <p className="m-0 break-all text-subtext">代码版本：{scope.revision}</p>
     </div>}
     {taskApproval && <p className="m-0 text-xs leading-relaxed text-subtext">该任务已通过产物验收；批准后它的下游任务才会开始。拒绝则下游保持暂停，需修订计划后重新执行。</p>}
     {decision.gate === "G3" && !scope.command && <p className="m-0 text-xs leading-relaxed text-subtext">确认实验方案的假设、指标、基线、预算与停止条件；此项确认不授权运行实验。</p>}
